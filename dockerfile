@@ -321,8 +321,13 @@ RUN mkdir -p actions-runner && cd actions-runner \
 RUN chmod +x actions-runner/bin/installdependencies.sh && \
     actions-runner/bin/installdependencies.sh
 
-# Add the start script
+# Add scripts
 ADD scripts/start.sh /root/start.sh
-RUN chmod +x /root/start.sh
+ADD scripts/cleanup.sh /root/cleanup.sh
+RUN chmod +x /root/start.sh /root/cleanup.sh
+
+# Cron: cleanup stale docker data every 6 hours
+RUN apt-get update && apt-get install -y cron && rm -rf /var/lib/apt/lists/* && \
+    echo "0 */6 * * * /root/cleanup.sh >> /var/log/docker-cleanup.log 2>&1" | crontab -
 
 ENTRYPOINT ["/root/start.sh"]
