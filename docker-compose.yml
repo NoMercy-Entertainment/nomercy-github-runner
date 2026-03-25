@@ -10,6 +10,8 @@ services:
     build:
       context: .
       dockerfile: dockerfile
+      args:
+        BUILDKIT_INLINE_CACHE: 1
     environment:
       GH_TOKEN: ${GH_TOKEN}
       GITHUB_ORG: ${GITHUB_ORG:-NoMercy-Entertainment}
