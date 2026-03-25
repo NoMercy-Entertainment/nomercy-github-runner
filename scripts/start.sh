@@ -1,58 +1,68 @@
 #!/bin/bash
 
-echo "Configuring runner..."
-
 RUNNER_SUFFIX=$(cat /dev/urandom | tr -dc 'a-z0-9' | fold -w 5 | head -n 1)
-RUNNER_NAME="runner-$RUNNER_SUFFIX"
+RUNNER_NAME="nomercy-${RUNNER_SUFFIX}"
 
 cd /root/actions-runner
 
-reg_url=https://api.github.com/orgs/$GITHUB_ORG/actions/runners/registration-token
+export RUNNER_ALLOW_RUNASROOT=1
 
-AUTH_RESPONSE=$(curl -sS -X POST -H "Authorization: Bearer $GH_TOKEN" $reg_url)
+# ── Register ────────────────────────────────────────────────────────────────
+register() {
+  echo "Registering runner ${RUNNER_NAME}..."
 
-RESPONE_MESSAGE=$(echo $AUTH_RESPONSE | jq .message --raw-output)
+  local reg_url="https://api.github.com/orgs/${GITHUB_ORG}/actions/runners/registration-token"
+  local auth_response
+  auth_response=$(curl -sS -X POST -H "Authorization: Bearer ${GH_TOKEN}" "$reg_url")
 
-if [ "$RESPONE_MESSAGE" == "Bad credentials" ]; then
-    echo "Error: $RESPONE_MESSAGE"
+  local message
+  message=$(echo "$auth_response" | jq -r '.message // empty')
+  if [ "$message" = "Bad credentials" ]; then
+    echo "Error: Bad credentials"
     exit 1
-fi
+  fi
 
-REG_TOKEN=$(echo $AUTH_RESPONSE | jq -r .token)
-
-if [ "$REG_TOKEN" == "null" ]; then
-    echo "Error: No registration token found"
+  REG_TOKEN=$(echo "$auth_response" | jq -r '.token')
+  if [ "$REG_TOKEN" = "null" ] || [ -z "$REG_TOKEN" ]; then
+    echo "Error: No registration token"
     exit 1
-fi
+  fi
 
-export ENV RUNNER_ALLOW_RUNASROOT=1
+  local config_cmd=(./config.sh
+    --replace
+    --unattended
+    --ephemeral
+    --token "$REG_TOKEN"
+    --url "https://github.com/${GITHUB_ORG}"
+    --labels "${RUNNER_LABELS:-self-hosted,Linux,X64}"
+    --name "$RUNNER_NAME"
+  )
 
+  if [ -n "$RUNNER_GROUP" ]; then
+    config_cmd+=(--runnergroup "$RUNNER_GROUP")
+  fi
 
-# Build config.sh command with optional runner group
-CONFIG_CMD=(./config.sh \
-  --replace \
-  --unattended \
-  --token "$REG_TOKEN" \
-  --url "https://github.com/$GITHUB_ORG" \
-  --labels "${RUNNER_LABELS:-unlabeled}" \
-  --name "$RUNNER_NAME")
-
-# Add runner group if set
-if [ -n "$RUNNER_GROUP" ]; then
-  CONFIG_CMD+=(--runnergroup "$RUNNER_GROUP")
-fi
-
-# Run the config command
-"${CONFIG_CMD[@]}"
-
-  
-remove () {
-  ./config.sh remove --token $REG_TOKEN
+  "${config_cmd[@]}"
 }
 
-trap remove EXIT
+# ── Cleanup on signal ───────────────────────────────────────────────────────
+remove() {
+  if [ -n "$REG_TOKEN" ]; then
+    echo "Removing runner ${RUNNER_NAME}..."
+    ./config.sh remove --token "$REG_TOKEN" 2>/dev/null || true
+  fi
+}
 
 trap 'remove; exit 130' INT
 trap 'remove; exit 143' TERM
+trap remove EXIT
 
-./bin/runsvc.sh
+# ── Run loop: register → run one job → repeat ──────────────────────────────
+# --ephemeral makes the runner exit after completing one job.
+# The loop re-registers and picks up the next job.
+# If the container is killed, Docker restart policy brings it back.
+while true; do
+  register
+  ./run.sh
+  echo "Job completed. Re-registering for next job..."
+done
