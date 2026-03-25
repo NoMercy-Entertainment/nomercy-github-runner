@@ -84,27 +84,14 @@ RUN apt-get update && \
     rm -rf /var/lib/apt/lists/*
 
 # =============================================================================
-# 4. Node.js (20 default + nvm for version switching)
+# 4. Node.js 20 + 22 via NodeSource
 # =============================================================================
-ENV NVM_DIR=/root/.nvm
-RUN curl -fsSL https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.4/install.sh | bash && \
-    . "$NVM_DIR/nvm.sh" && \
-    nvm install 20 && \
-    nvm install 22 && \
-    nvm alias default 20 && \
-    nvm use default && \
-    npm install -g yarn corepack && \
+RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && \
+    apt-get install -y nodejs && \
+    npm install -g yarn corepack n && \
     corepack enable && \
+    n 22 && \
     rm -rf /var/lib/apt/lists/*
-
-# Make node/npm/yarn available without sourcing nvm
-ENV PATH="/root/.nvm/versions/node/$(ls /root/.nvm/versions/node/ | head -1)/bin:${PATH}"
-# Re-export after build (shell form needed for glob)
-RUN ln -sf "$(which node)" /usr/local/bin/node && \
-    ln -sf "$(which npm)" /usr/local/bin/npm && \
-    ln -sf "$(which npx)" /usr/local/bin/npx && \
-    ln -sf "$(which yarn)" /usr/local/bin/yarn && \
-    ln -sf "$(which corepack)" /usr/local/bin/corepack
 
 # =============================================================================
 # 5. PHP 8.3 + Composer + PHPUnit
