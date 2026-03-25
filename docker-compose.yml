@@ -1,20 +1,21 @@
-
-volumes:
-  tmp: ~
-
 services:
   github-runner:
     deploy:
-      replicas: 1
+      replicas: ${RUNNER_REPLICAS:-1}
+      resources:
+        limits:
+          cpus: "${RUNNER_CPU_LIMIT:-0}"
+          memory: "${RUNNER_MEM_LIMIT:-0}"
     restart: unless-stopped
     build:
       context: .
       dockerfile: dockerfile
     environment:
       GH_TOKEN: ${GH_TOKEN}
-      GITHUB_ORG: ${GITHUB_ORG}
-      RUNNER_LABELS: ${RUNNER_LABELS}
-      RUNNER_GROUP: ${RUNNER_GROUP}
+      GITHUB_ORG: ${GITHUB_ORG:-NoMercy-Entertainment}
+      RUNNER_LABELS: ${RUNNER_LABELS:-self-hosted,Linux,X64}
+      RUNNER_GROUP: ${RUNNER_GROUP:-}
+    tmpfs:
+      - /tmp
     volumes:
-      - tmp:/tmp
       - /var/run/docker.sock:/var/run/docker.sock
