@@ -127,13 +127,14 @@ ENV JAVA_HOME_21_X64=/usr/lib/jvm/java-21-openjdk-amd64
 # =============================================================================
 # 7. .NET SDK (8 + 9)
 # =============================================================================
-RUN curl -fsSL https://packages.microsoft.com/config/ubuntu/24.04/packages-microsoft-prod.deb \
-        -o /tmp/packages-microsoft-prod.deb && \
-    dpkg -i /tmp/packages-microsoft-prod.deb && \
-    rm /tmp/packages-microsoft-prod.deb && \
-    apt-get update && \
-    apt-get install -y dotnet-sdk-8.0 dotnet-sdk-9.0 && \
-    rm -rf /var/lib/apt/lists/*
+RUN curl -fsSL https://dot.net/v1/dotnet-install.sh -o /tmp/dotnet-install.sh && \
+    chmod +x /tmp/dotnet-install.sh && \
+    /tmp/dotnet-install.sh --channel 8.0 --install-dir /usr/share/dotnet && \
+    /tmp/dotnet-install.sh --channel 9.0 --install-dir /usr/share/dotnet && \
+    ln -sf /usr/share/dotnet/dotnet /usr/local/bin/dotnet && \
+    rm /tmp/dotnet-install.sh
+
+ENV DOTNET_ROOT=/usr/share/dotnet
 
 # =============================================================================
 # 8. Go
