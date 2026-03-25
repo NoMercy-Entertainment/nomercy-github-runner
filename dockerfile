@@ -44,7 +44,6 @@ RUN apt-get update && apt-get install -y curl && \
 FROM ubuntu:24.04 AS stage-rust
 RUN apt-get update && apt-get install -y curl gcc && \
     curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable
-# Outputs to /root/.cargo and /root/.rustup
 
 # ── CMake ───────────────────────────────────────────────────────────────────
 FROM ubuntu:24.04 AS stage-cmake
@@ -106,61 +105,63 @@ ENV ImageOS=ubuntu24
 
 WORKDIR /root
 
-# ── System packages ─────────────────────────────────────────────────────────
-RUN apt-get update && apt-get upgrade -y && \
+# ── Step 1: Add all third-party repos ────────────────────────────────────────
+RUN apt-get update && \
     apt-get install -y --no-install-recommends \
-        ca-certificates curl wget git git-lfs gnupg sudo lsb-release \
-        software-properties-common apt-transport-https \
-        openssh-client locales tzdata \
+        ca-certificates curl wget gnupg lsb-release software-properties-common && \
+    add-apt-repository ppa:git-core/ppa -y && \
+    add-apt-repository ppa:ondrej/php -y && \
+    install -m 0755 -d /etc/apt/keyrings && \
+    curl -fsSL https://download.docker.com/linux/ubuntu/gpg \
+        | gpg --dearmor -o /etc/apt/keyrings/docker.gpg && \
+    echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] \
+        https://download.docker.com/linux/ubuntu $(. /etc/os-release && echo $VERSION_CODENAME) stable" \
+        | tee /etc/apt/sources.list.d/docker.list > /dev/null && \
+    curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && \
+    curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
+        | tee /etc/apt/keyrings/githubcli-archive-keyring.gpg > /dev/null && \
+    echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] \
+        https://cli.github.com/packages stable main" \
+        | tee /etc/apt/sources.list.d/github-cli-stable.list > /dev/null && \
+    curl -fsSL https://dl.google.com/linux/linux_signing_key.pub \
+        | gpg --dearmor -o /etc/apt/keyrings/google-chrome.gpg && \
+    echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/google-chrome.gpg] \
+        https://dl.google.com/linux/chrome/deb/ stable main" \
+        | tee /etc/apt/sources.list.d/google-chrome.list > /dev/null && \
+    rm -rf /var/lib/apt/lists/*
+
+# ── Step 2: One single apt install ───────────────────────────────────────────
+RUN apt-get update && apt-get upgrade -y && \
+    apt-get install -y \
+        # Core
+        git git-lfs sudo openssh-client locales tzdata apt-transport-https \
+        # Build
         build-essential gcc g++ gfortran make autoconf automake \
-        libtool bison flex pkg-config gettext \
+        libtool bison flex pkg-config gettext ninja-build ant \
+        # Compression
         zip unzip p7zip-full p7zip-rar tar zstd pigz aria2 \
+        # Tools
         vim jq rsync parallel patchelf shellcheck yamllint \
+        # Libs
         libssl-dev libffi-dev libcurl4-openssl-dev libxml2-dev \
         libsqlite3-dev libpq-dev libmysqlclient-dev \
         libreadline-dev libyaml-dev libgdbm-dev libncurses5-dev \
         libz-dev libbz2-dev liblzma-dev libgmp-dev \
         libgd-dev libzip-dev libonig-dev libicu-dev \
+        # Media
         mediainfo imagemagick fakeroot rpm xvfb \
+        # Python
         python3 python3-venv python3-dev python3-pip python3-setuptools \
+        # Network
         net-tools dnsutils iproute2 iputils-ping telnet \
-        sqlite3 postgresql-client mysql-client && \
-    locale-gen en_US.UTF-8 && \
-    rm -rf /var/lib/apt/lists/*
-
-ENV LANG=en_US.UTF-8
-ENV LANGUAGE=en_US:en
-ENV LC_ALL=en_US.UTF-8
-
-# ── Git (latest PPA) ────────────────────────────────────────────────────────
-RUN add-apt-repository ppa:git-core/ppa -y && \
-    apt-get update && apt-get install -y git && \
-    rm -rf /var/lib/apt/lists/*
-
-# ── Docker CE ────────────────────────────────────────────────────────────────
-RUN install -m 0755 -d /etc/apt/keyrings && \
-    curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor -o /etc/apt/keyrings/docker.gpg && \
-    chmod a+r /etc/apt/keyrings/docker.gpg && \
-    echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu \
-        $(. /etc/os-release && echo "$VERSION_CODENAME") stable" \
-        | tee /etc/apt/sources.list.d/docker.list > /dev/null && \
-    apt-get update && \
-    apt-get install -y docker-ce docker-ce-cli containerd.io \
-        docker-buildx-plugin docker-compose-plugin buildah podman skopeo && \
-    rm -rf /var/lib/apt/lists/*
-
-# ── Node.js 20 + 22 ─────────────────────────────────────────────────────────
-RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && \
-    apt-get install -y nodejs && \
-    npm install -g yarn corepack n && \
-    corepack enable && \
-    n 22 && \
-    rm -rf /var/lib/apt/lists/*
-
-# ── PHP 8.3 + 8.4 ───────────────────────────────────────────────────────────
-RUN add-apt-repository ppa:ondrej/php -y && \
-    apt-get update && \
-    apt-get install -y --no-install-recommends \
+        # Databases
+        sqlite3 postgresql-client mysql-client \
+        # Docker
+        docker-ce docker-ce-cli containerd.io \
+        docker-buildx-plugin docker-compose-plugin buildah podman skopeo \
+        # Node.js
+        nodejs \
+        # PHP 8.3 + 8.4
         php8.3 php8.3-cli php8.3-common \
         php8.3-curl php8.3-mbstring php8.3-xml php8.3-zip \
         php8.3-pgsql php8.3-sqlite3 php8.3-mysql \
@@ -168,53 +169,38 @@ RUN add-apt-repository ppa:ondrej/php -y && \
         php8.4 php8.4-cli php8.4-common \
         php8.4-curl php8.4-mbstring php8.4-xml php8.4-zip \
         php8.4-pgsql php8.4-sqlite3 php8.4-mysql \
-        php8.4-bcmath php8.4-gd php8.4-intl php8.4-readline && \
+        php8.4-bcmath php8.4-gd php8.4-intl php8.4-readline \
+        # Java
+        openjdk-8-jdk openjdk-11-jdk openjdk-17-jdk openjdk-21-jdk \
+        # Ruby
+        ruby-full \
+        # Browsers
+        google-chrome-stable firefox \
+        # GitHub CLI
+        gh \
+        # Web servers
+        apache2 nginx && \
+    locale-gen en_US.UTF-8 && \
+    systemctl disable apache2 || true && \
+    systemctl disable nginx || true && \
+    rm -rf /var/lib/apt/lists/*
+
+ENV LANG=en_US.UTF-8
+ENV LANGUAGE=en_US:en
+ENV LC_ALL=en_US.UTF-8
+
+# ── Step 3: Non-apt tools ────────────────────────────────────────────────────
+RUN npm install -g yarn corepack n && corepack enable && n 22 && \
     curl -sS https://getcomposer.org/installer | php -- --install-dir=/usr/local/bin --filename=composer && \
+    curl -sL https://aka.ms/InstallAzureCLIDeb | bash && \
+    curl -fsSL "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl" \
+        -o /usr/local/bin/kubectl && chmod +x /usr/local/bin/kubectl && \
+    curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash && \
+    gem install fastlane --no-document && \
+    pip3 install --break-system-packages pipx ansible && pipx ensurepath && \
     rm -rf /var/lib/apt/lists/*
 
-# ── Java 8, 11, 17, 21 ──────────────────────────────────────────────────────
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends \
-        openjdk-8-jdk openjdk-11-jdk openjdk-17-jdk openjdk-21-jdk && \
-    rm -rf /var/lib/apt/lists/*
-
-# ── Ruby ─────────────────────────────────────────────────────────────────────
-RUN apt-get update && apt-get install -y ruby-full && rm -rf /var/lib/apt/lists/*
-
-# ── Ninja + Ant ──────────────────────────────────────────────────────────────
-RUN apt-get update && apt-get install -y ninja-build ant && rm -rf /var/lib/apt/lists/*
-
-# ── CLIs (GitHub, Azure, Kubectl, Helm) ──────────────────────────────────────
-RUN (type -p wget >/dev/null || apt-get install wget -y) && \
-    mkdir -p -m 755 /etc/apt/keyrings && \
-    wget -qO- https://cli.github.com/packages/githubcli-archive-keyring.gpg \
-        | tee /etc/apt/keyrings/githubcli-archive-keyring.gpg > /dev/null && \
-    chmod go+r /etc/apt/keyrings/githubcli-archive-keyring.gpg && \
-    echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
-        | tee /etc/apt/sources.list.d/github-cli-stable.list > /dev/null && \
-    apt-get update && apt-get install -y gh && \
-    rm -rf /var/lib/apt/lists/*
-
-RUN curl -sL https://aka.ms/InstallAzureCLIDeb | bash && rm -rf /var/lib/apt/lists/*
-
-RUN curl -fsSL "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl" \
-        -o /usr/local/bin/kubectl && chmod +x /usr/local/bin/kubectl
-
-RUN curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
-
-# ── Fastlane ─────────────────────────────────────────────────────────────────
-RUN gem install fastlane --no-document
-
-# ── Browsers ─────────────────────────────────────────────────────────────────
-RUN curl -fsSL https://dl.google.com/linux/linux_signing_key.pub \
-        | gpg --dearmor -o /etc/apt/keyrings/google-chrome.gpg && \
-    echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/google-chrome.gpg] https://dl.google.com/linux/chrome/deb/ stable main" \
-        | tee /etc/apt/sources.list.d/google-chrome.list > /dev/null && \
-    apt-get update && \
-    apt-get install -y google-chrome-stable firefox && \
-    rm -rf /var/lib/apt/lists/*
-
-# ChromeDriver (matching installed Chrome)
+# ── ChromeDriver (matching installed Chrome) ─────────────────────────────────
 RUN CHROME_VERSION=$(google-chrome --version | grep -oP '\d+\.\d+\.\d+') && \
     DRIVER_URL=$(curl -s "https://googlechromelabs.github.io/chrome-for-testing/LATEST_RELEASE_${CHROME_VERSION%%.*}") && \
     curl -fsSL "https://storage.googleapis.com/chrome-for-testing-public/${DRIVER_URL}/linux64/chromedriver-linux64.zip" \
@@ -223,16 +209,6 @@ RUN CHROME_VERSION=$(google-chrome --version | grep -oP '\d+\.\d+\.\d+') && \
     mv /tmp/chromedriver-linux64/chromedriver /usr/local/bin/chromedriver && \
     chmod +x /usr/local/bin/chromedriver && \
     rm -rf /tmp/chromedriver.zip /tmp/chromedriver-linux64
-
-# ── Web servers ──────────────────────────────────────────────────────────────
-RUN apt-get update && \
-    apt-get install -y apache2 nginx && \
-    systemctl disable apache2 || true && \
-    systemctl disable nginx || true && \
-    rm -rf /var/lib/apt/lists/*
-
-# ── Python extras ────────────────────────────────────────────────────────────
-RUN pip3 install --break-system-packages pipx ansible && pipx ensurepath
 
 # =============================================================================
 # FINAL STAGE — merge base + all parallel downloads
@@ -297,7 +273,7 @@ COPY --from=stage-geckodriver /opt/geckodriver /usr/local/bin/geckodriver
 ENV CHROMEWEBDRIVER=/usr/local/bin
 ENV GECKOWEBDRIVER=/usr/local/bin
 
-# ── Android SDK (needs Java from base, so built in final) ────────────────────
+# ── Android SDK (needs Java from base) ───────────────────────────────────────
 ENV ANDROID_HOME=/usr/local/lib/android/sdk
 ENV ANDROID_SDK_ROOT=${ANDROID_HOME}
 ENV PATH="${PATH}:${ANDROID_HOME}/cmdline-tools/latest/bin:${ANDROID_HOME}/platform-tools:${ANDROID_HOME}/build-tools/35.0.0"
