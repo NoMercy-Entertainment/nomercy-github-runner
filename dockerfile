@@ -1,55 +1,130 @@
+# syntax=docker/dockerfile:1
 # =============================================================================
 # NoMercy Self-Hosted GitHub Actions Runner
-# Mirrors the GitHub-hosted ubuntu-24.04 runner image as closely as possible.
+# Mirrors the GitHub-hosted ubuntu-24.04 runner image.
+# Multi-stage build — BuildKit runs download stages in parallel.
 # =============================================================================
-FROM ubuntu:24.04
 
 ARG RUNNER_VERSION=2.322.0
-ARG TARGETARCH=x64
+ARG GO_VERSION=1.24.13
+ARG CMAKE_VERSION=3.31.6
+ARG GRADLE_VERSION=9.4
+ARG MAVEN_VERSION=3.9.13
+ARG GECKODRIVER_VERSION=0.36.0
+
+# =============================================================================
+# PARALLEL DOWNLOAD STAGES — these all run concurrently
+# =============================================================================
+
+# ── Go ──────────────────────────────────────────────────────────────────────
+FROM ubuntu:24.04 AS stage-go
+ARG GO_VERSION
+RUN apt-get update && apt-get install -y curl && \
+    curl -fsSL "https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz" | tar -C /opt -xz && \
+    mkdir -p /opt/go-cache/1.23.12 && \
+    curl -fsSL "https://go.dev/dl/go1.23.12.linux-amd64.tar.gz" | tar -C /opt/go-cache/1.23.12 --strip-components=1 -xz
+
+# ── .NET SDK ────────────────────────────────────────────────────────────────
+FROM ubuntu:24.04 AS stage-dotnet
+RUN apt-get update && apt-get install -y curl && \
+    curl -fsSL https://dot.net/v1/dotnet-install.sh -o /tmp/dotnet-install.sh && \
+    chmod +x /tmp/dotnet-install.sh && \
+    /tmp/dotnet-install.sh --channel 8.0 --install-dir /opt/dotnet && \
+    /tmp/dotnet-install.sh --channel 9.0 --install-dir /opt/dotnet && \
+    /tmp/dotnet-install.sh --channel 10.0 --install-dir /opt/dotnet
+
+# ── Java 25 (Adoptium) ─────────────────────────────────────────────────────
+FROM ubuntu:24.04 AS stage-java25
+RUN apt-get update && apt-get install -y curl && \
+    mkdir -p /opt/jdk25 && \
+    curl -fsSL "https://api.adoptium.net/v3/binary/latest/25/ga/linux/x64/jdk/hotspot/normal/eclipse" \
+        | tar -C /opt/jdk25 --strip-components=1 -xz
+
+# ── Rust ────────────────────────────────────────────────────────────────────
+FROM ubuntu:24.04 AS stage-rust
+RUN apt-get update && apt-get install -y curl gcc && \
+    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable
+# Outputs to /root/.cargo and /root/.rustup
+
+# ── CMake ───────────────────────────────────────────────────────────────────
+FROM ubuntu:24.04 AS stage-cmake
+ARG CMAKE_VERSION
+RUN apt-get update && apt-get install -y curl && \
+    mkdir -p /opt/cmake && \
+    curl -fsSL "https://github.com/Kitware/CMake/releases/download/v${CMAKE_VERSION}/cmake-${CMAKE_VERSION}-linux-x86_64.tar.gz" \
+        | tar -C /opt/cmake --strip-components=1 -xz
+
+# ── Gradle ──────────────────────────────────────────────────────────────────
+FROM ubuntu:24.04 AS stage-gradle
+ARG GRADLE_VERSION
+RUN apt-get update && apt-get install -y curl unzip && \
+    curl -fsSL "https://services.gradle.org/distributions/gradle-${GRADLE_VERSION}-bin.zip" -o /tmp/gradle.zip && \
+    unzip -q /tmp/gradle.zip -d /opt
+
+# ── Maven ───────────────────────────────────────────────────────────────────
+FROM ubuntu:24.04 AS stage-maven
+ARG MAVEN_VERSION
+RUN apt-get update && apt-get install -y curl && \
+    curl -fsSL "https://dlcdn.apache.org/maven/maven-3/${MAVEN_VERSION}/binaries/apache-maven-${MAVEN_VERSION}-bin.tar.gz" \
+        | tar -C /opt -xz
+
+# ── AWS CLI v2 ──────────────────────────────────────────────────────────────
+FROM ubuntu:24.04 AS stage-aws
+RUN apt-get update && apt-get install -y curl unzip && \
+    curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o /tmp/awscli.zip && \
+    unzip -q /tmp/awscli.zip -d /tmp && \
+    /tmp/aws/install --install-dir /opt/aws-cli --bin-dir /opt/aws-bin
+
+# ── Packer ──────────────────────────────────────────────────────────────────
+FROM ubuntu:24.04 AS stage-packer
+RUN apt-get update && apt-get install -y curl unzip && \
+    curl -fsSL https://releases.hashicorp.com/packer/1.15.0/packer_1.15.0_linux_amd64.zip -o /tmp/packer.zip && \
+    unzip -q /tmp/packer.zip -d /opt
+
+# ── Geckodriver ─────────────────────────────────────────────────────────────
+FROM ubuntu:24.04 AS stage-geckodriver
+ARG GECKODRIVER_VERSION
+RUN apt-get update && apt-get install -y curl && \
+    curl -fsSL "https://github.com/mozilla/geckodriver/releases/download/v${GECKODRIVER_VERSION}/geckodriver-v${GECKODRIVER_VERSION}-linux64.tar.gz" \
+        | tar -C /opt -xz
+
+# ── GitHub Actions runner ──────────────────────────────────────────────────
+FROM ubuntu:24.04 AS stage-runner
+ARG RUNNER_VERSION
+RUN apt-get update && apt-get install -y curl && \
+    mkdir -p /opt/actions-runner && cd /opt/actions-runner && \
+    curl -fsSL "https://github.com/actions/runner/releases/download/v${RUNNER_VERSION}/actions-runner-linux-x64-${RUNNER_VERSION}.tar.gz" \
+        | tar -xz
+
+# =============================================================================
+# BASE STAGE — all apt-based installs (runs in parallel with downloads above)
+# =============================================================================
+FROM ubuntu:24.04 AS base
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV ImageOS=ubuntu24
 
-LABEL Author="Stoney_Eagle"
-LABEL Email="stoney@nomercy.tv"
-LABEL GitHub="https://github.com/StoneyEagle"
-LABEL BaseImage="ubuntu:24.04"
-LABEL RunnerVersion=${RUNNER_VERSION}
-
 WORKDIR /root
 
-# =============================================================================
-# 1. Base system packages
-# =============================================================================
+# ── System packages ─────────────────────────────────────────────────────────
 RUN apt-get update && apt-get upgrade -y && \
     apt-get install -y --no-install-recommends \
-        # Core utilities
         ca-certificates curl wget git git-lfs gnupg sudo lsb-release \
         software-properties-common apt-transport-https \
         openssh-client locales tzdata \
-        # Build essentials
         build-essential gcc g++ gfortran make autoconf automake \
         libtool bison flex pkg-config gettext \
-        # Compression
         zip unzip p7zip-full p7zip-rar tar zstd pigz aria2 \
-        # Text / data tools
-        vim jq rsync parallel patchelf \
-        shellcheck yamllint \
-        # Libs commonly needed by builds
+        vim jq rsync parallel patchelf shellcheck yamllint \
         libssl-dev libffi-dev libcurl4-openssl-dev libxml2-dev \
         libsqlite3-dev libpq-dev libmysqlclient-dev \
         libreadline-dev libyaml-dev libgdbm-dev libncurses5-dev \
         libz-dev libbz2-dev liblzma-dev libgmp-dev \
         libgd-dev libzip-dev libonig-dev libicu-dev \
-        # Media / misc
         mediainfo imagemagick fakeroot rpm xvfb \
-        # Python
         python3 python3-venv python3-dev python3-pip python3-setuptools \
-        # Networking
         net-tools dnsutils iproute2 iputils-ping telnet \
-        # Database clients
         sqlite3 postgresql-client mysql-client && \
-    # Generate locale
     locale-gen en_US.UTF-8 && \
     rm -rf /var/lib/apt/lists/*
 
@@ -57,16 +132,12 @@ ENV LANG=en_US.UTF-8
 ENV LANGUAGE=en_US:en
 ENV LC_ALL=en_US.UTF-8
 
-# =============================================================================
-# 2. Git (latest from PPA)
-# =============================================================================
+# ── Git (latest PPA) ────────────────────────────────────────────────────────
 RUN add-apt-repository ppa:git-core/ppa -y && \
     apt-get update && apt-get install -y git && \
     rm -rf /var/lib/apt/lists/*
 
-# =============================================================================
-# 3. Docker CE + Compose + Buildx
-# =============================================================================
+# ── Docker CE ────────────────────────────────────────────────────────────────
 RUN install -m 0755 -d /etc/apt/keyrings && \
     curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor -o /etc/apt/keyrings/docker.gpg && \
     chmod a+r /etc/apt/keyrings/docker.gpg && \
@@ -75,17 +146,10 @@ RUN install -m 0755 -d /etc/apt/keyrings && \
         | tee /etc/apt/sources.list.d/docker.list > /dev/null && \
     apt-get update && \
     apt-get install -y docker-ce docker-ce-cli containerd.io \
-        docker-buildx-plugin docker-compose-plugin && \
+        docker-buildx-plugin docker-compose-plugin buildah podman skopeo && \
     rm -rf /var/lib/apt/lists/*
 
-# Container tools (buildah, podman, skopeo)
-RUN apt-get update && \
-    apt-get install -y buildah podman skopeo && \
-    rm -rf /var/lib/apt/lists/*
-
-# =============================================================================
-# 4. Node.js 20 + 22 via NodeSource
-# =============================================================================
+# ── Node.js 20 + 22 ─────────────────────────────────────────────────────────
 RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && \
     apt-get install -y nodejs && \
     npm install -g yarn corepack n && \
@@ -93,9 +157,7 @@ RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && \
     n 22 && \
     rm -rf /var/lib/apt/lists/*
 
-# =============================================================================
-# 5. PHP 8.3 + Composer + PHPUnit
-# =============================================================================
+# ── PHP 8.3 + 8.4 ───────────────────────────────────────────────────────────
 RUN add-apt-repository ppa:ondrej/php -y && \
     apt-get update && \
     apt-get install -y --no-install-recommends \
@@ -110,24 +172,95 @@ RUN add-apt-repository ppa:ondrej/php -y && \
     curl -sS https://getcomposer.org/installer | php -- --install-dir=/usr/local/bin --filename=composer && \
     rm -rf /var/lib/apt/lists/*
 
-# =============================================================================
-# 6. Java (8, 11, 17, 21)
-# =============================================================================
+# ── Java 8, 11, 17, 21 ──────────────────────────────────────────────────────
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
-        openjdk-8-jdk \
-        openjdk-11-jdk \
-        openjdk-17-jdk \
-        openjdk-21-jdk && \
+        openjdk-8-jdk openjdk-11-jdk openjdk-17-jdk openjdk-21-jdk && \
     rm -rf /var/lib/apt/lists/*
 
-# Java 25 via Adoptium (not in Ubuntu apt yet)
-RUN curl -fsSL "https://api.adoptium.net/v3/binary/latest/25/ga/linux/x64/jdk/hotspot/normal/eclipse" \
-        -o /tmp/jdk25.tar.gz && \
-    mkdir -p /usr/lib/jvm/java-25-temurin-amd64 && \
-    tar -C /usr/lib/jvm/java-25-temurin-amd64 --strip-components=1 -xzf /tmp/jdk25.tar.gz && \
-    rm /tmp/jdk25.tar.gz
+# ── Ruby ─────────────────────────────────────────────────────────────────────
+RUN apt-get update && apt-get install -y ruby-full && rm -rf /var/lib/apt/lists/*
 
+# ── Ninja + Ant ──────────────────────────────────────────────────────────────
+RUN apt-get update && apt-get install -y ninja-build ant && rm -rf /var/lib/apt/lists/*
+
+# ── CLIs (GitHub, Azure, Kubectl, Helm) ──────────────────────────────────────
+RUN (type -p wget >/dev/null || apt-get install wget -y) && \
+    mkdir -p -m 755 /etc/apt/keyrings && \
+    wget -qO- https://cli.github.com/packages/githubcli-archive-keyring.gpg \
+        | tee /etc/apt/keyrings/githubcli-archive-keyring.gpg > /dev/null && \
+    chmod go+r /etc/apt/keyrings/githubcli-archive-keyring.gpg && \
+    echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
+        | tee /etc/apt/sources.list.d/github-cli-stable.list > /dev/null && \
+    apt-get update && apt-get install -y gh && \
+    rm -rf /var/lib/apt/lists/*
+
+RUN curl -sL https://aka.ms/InstallAzureCLIDeb | bash && rm -rf /var/lib/apt/lists/*
+
+RUN curl -fsSL "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl" \
+        -o /usr/local/bin/kubectl && chmod +x /usr/local/bin/kubectl
+
+RUN curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+
+# ── Fastlane ─────────────────────────────────────────────────────────────────
+RUN gem install fastlane --no-document
+
+# ── Browsers ─────────────────────────────────────────────────────────────────
+RUN curl -fsSL https://dl.google.com/linux/linux_signing_key.pub \
+        | gpg --dearmor -o /etc/apt/keyrings/google-chrome.gpg && \
+    echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/google-chrome.gpg] https://dl.google.com/linux/chrome/deb/ stable main" \
+        | tee /etc/apt/sources.list.d/google-chrome.list > /dev/null && \
+    apt-get update && \
+    apt-get install -y google-chrome-stable firefox && \
+    rm -rf /var/lib/apt/lists/*
+
+# ChromeDriver (matching installed Chrome)
+RUN CHROME_VERSION=$(google-chrome --version | grep -oP '\d+\.\d+\.\d+') && \
+    DRIVER_URL=$(curl -s "https://googlechromelabs.github.io/chrome-for-testing/LATEST_RELEASE_${CHROME_VERSION%%.*}") && \
+    curl -fsSL "https://storage.googleapis.com/chrome-for-testing-public/${DRIVER_URL}/linux64/chromedriver-linux64.zip" \
+        -o /tmp/chromedriver.zip && \
+    unzip -q /tmp/chromedriver.zip -d /tmp && \
+    mv /tmp/chromedriver-linux64/chromedriver /usr/local/bin/chromedriver && \
+    chmod +x /usr/local/bin/chromedriver && \
+    rm -rf /tmp/chromedriver.zip /tmp/chromedriver-linux64
+
+# ── Web servers ──────────────────────────────────────────────────────────────
+RUN apt-get update && \
+    apt-get install -y apache2 nginx && \
+    systemctl disable apache2 || true && \
+    systemctl disable nginx || true && \
+    rm -rf /var/lib/apt/lists/*
+
+# ── Python extras ────────────────────────────────────────────────────────────
+RUN pip3 install --break-system-packages pipx ansible && pipx ensurepath
+
+# =============================================================================
+# FINAL STAGE — merge base + all parallel downloads
+# =============================================================================
+FROM base AS final
+
+ARG GRADLE_VERSION=9.4
+ARG MAVEN_VERSION=3.9.13
+
+LABEL Author="Stoney_Eagle"
+LABEL Email="stoney@nomercy.tv"
+LABEL GitHub="https://github.com/StoneyEagle"
+LABEL BaseImage="ubuntu:24.04"
+
+# ── Go ───────────────────────────────────────────────────────────────────────
+COPY --from=stage-go /opt/go /usr/local/go
+COPY --from=stage-go /opt/go-cache /opt/hostedtoolcache/go
+ENV GOROOT=/usr/local/go
+ENV GOPATH=/root/go
+ENV PATH="${PATH}:${GOROOT}/bin:${GOPATH}/bin"
+
+# ── .NET ─────────────────────────────────────────────────────────────────────
+COPY --from=stage-dotnet /opt/dotnet /usr/share/dotnet
+RUN ln -sf /usr/share/dotnet/dotnet /usr/local/bin/dotnet
+ENV DOTNET_ROOT=/usr/share/dotnet
+
+# ── Java 25 ──────────────────────────────────────────────────────────────────
+COPY --from=stage-java25 /opt/jdk25 /usr/lib/jvm/java-25-temurin-amd64
 ENV JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64
 ENV JAVA_HOME_8_X64=/usr/lib/jvm/java-8-openjdk-amd64
 ENV JAVA_HOME_11_X64=/usr/lib/jvm/java-11-openjdk-amd64
@@ -135,81 +268,35 @@ ENV JAVA_HOME_17_X64=/usr/lib/jvm/java-17-openjdk-amd64
 ENV JAVA_HOME_21_X64=/usr/lib/jvm/java-21-openjdk-amd64
 ENV JAVA_HOME_25_X64=/usr/lib/jvm/java-25-temurin-amd64
 
-# =============================================================================
-# 7. .NET SDK (8 + 9)
-# =============================================================================
-RUN curl -fsSL https://dot.net/v1/dotnet-install.sh -o /tmp/dotnet-install.sh && \
-    chmod +x /tmp/dotnet-install.sh && \
-    /tmp/dotnet-install.sh --channel 8.0 --install-dir /usr/share/dotnet && \
-    /tmp/dotnet-install.sh --channel 9.0 --install-dir /usr/share/dotnet && \
-    /tmp/dotnet-install.sh --channel 10.0 --install-dir /usr/share/dotnet && \
-    ln -sf /usr/share/dotnet/dotnet /usr/local/bin/dotnet && \
-    rm /tmp/dotnet-install.sh
-
-ENV DOTNET_ROOT=/usr/share/dotnet
-
-# =============================================================================
-# 8. Go
-# =============================================================================
-ARG GO_VERSION=1.24.13
-RUN curl -fsSL "https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz" -o /tmp/go.tar.gz && \
-    tar -C /usr/local -xzf /tmp/go.tar.gz && \
-    rm /tmp/go.tar.gz
-
-# Cache older Go versions for actions/setup-go
-RUN mkdir -p /opt/hostedtoolcache/go && \
-    curl -fsSL "https://go.dev/dl/go1.23.12.linux-amd64.tar.gz" -o /tmp/go123.tar.gz && \
-    mkdir -p /opt/hostedtoolcache/go/1.23.12/x64 && \
-    tar -C /opt/hostedtoolcache/go/1.23.12/x64 --strip-components=1 -xzf /tmp/go123.tar.gz && \
-    rm /tmp/go123.tar.gz
-
-ENV GOROOT=/usr/local/go
-ENV GOPATH=/root/go
-ENV PATH="${PATH}:${GOROOT}/bin:${GOPATH}/bin"
-
-# =============================================================================
-# 9. Ruby
-# =============================================================================
-RUN apt-get update && \
-    apt-get install -y ruby-full && \
-    rm -rf /var/lib/apt/lists/*
-
-# =============================================================================
-# 10. Rust
-# =============================================================================
-RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable
+# ── Rust ─────────────────────────────────────────────────────────────────────
+COPY --from=stage-rust /root/.cargo /root/.cargo
+COPY --from=stage-rust /root/.rustup /root/.rustup
 ENV PATH="/root/.cargo/bin:${PATH}"
 
-# =============================================================================
-# 11. Build tools (CMake, Ninja, Gradle, Maven, Ant)
-# =============================================================================
-ARG CMAKE_VERSION=3.31.6
-RUN curl -fsSL "https://github.com/Kitware/CMake/releases/download/v${CMAKE_VERSION}/cmake-${CMAKE_VERSION}-linux-x86_64.tar.gz" \
-        -o /tmp/cmake.tar.gz && \
-    tar -C /usr/local --strip-components=1 -xzf /tmp/cmake.tar.gz && \
-    rm /tmp/cmake.tar.gz
+# ── CMake ────────────────────────────────────────────────────────────────────
+COPY --from=stage-cmake /opt/cmake /usr/local
 
-RUN apt-get update && \
-    apt-get install -y ninja-build ant && \
-    rm -rf /var/lib/apt/lists/*
+# ── Gradle ───────────────────────────────────────────────────────────────────
+COPY --from=stage-gradle /opt/gradle-${GRADLE_VERSION} /opt/gradle-${GRADLE_VERSION}
+RUN ln -s /opt/gradle-${GRADLE_VERSION}/bin/gradle /usr/local/bin/gradle
 
-ARG GRADLE_VERSION=9.4
-RUN curl -fsSL "https://services.gradle.org/distributions/gradle-${GRADLE_VERSION}-bin.zip" \
-        -o /tmp/gradle.zip && \
-    unzip -q /tmp/gradle.zip -d /opt && \
-    ln -s "/opt/gradle-${GRADLE_VERSION}/bin/gradle" /usr/local/bin/gradle && \
-    rm /tmp/gradle.zip
+# ── Maven ────────────────────────────────────────────────────────────────────
+COPY --from=stage-maven /opt/apache-maven-${MAVEN_VERSION} /opt/apache-maven-${MAVEN_VERSION}
+RUN ln -s /opt/apache-maven-${MAVEN_VERSION}/bin/mvn /usr/local/bin/mvn
 
-ARG MAVEN_VERSION=3.9.13
-RUN curl -fsSL "https://dlcdn.apache.org/maven/maven-3/${MAVEN_VERSION}/binaries/apache-maven-${MAVEN_VERSION}-bin.tar.gz" \
-        -o /tmp/maven.tar.gz && \
-    tar -C /opt -xzf /tmp/maven.tar.gz && \
-    ln -s "/opt/apache-maven-${MAVEN_VERSION}/bin/mvn" /usr/local/bin/mvn && \
-    rm /tmp/maven.tar.gz
+# ── AWS CLI ──────────────────────────────────────────────────────────────────
+COPY --from=stage-aws /opt/aws-cli /usr/local/aws-cli
+COPY --from=stage-aws /opt/aws-bin /usr/local/bin
 
-# =============================================================================
-# 12. Android SDK
-# =============================================================================
+# ── Packer ───────────────────────────────────────────────────────────────────
+COPY --from=stage-packer /opt/packer /usr/local/bin/packer
+
+# ── Geckodriver ──────────────────────────────────────────────────────────────
+COPY --from=stage-geckodriver /opt/geckodriver /usr/local/bin/geckodriver
+ENV CHROMEWEBDRIVER=/usr/local/bin
+ENV GECKOWEBDRIVER=/usr/local/bin
+
+# ── Android SDK (needs Java from base, so built in final) ────────────────────
 ENV ANDROID_HOME=/usr/local/lib/android/sdk
 ENV ANDROID_SDK_ROOT=${ANDROID_HOME}
 ENV PATH="${PATH}:${ANDROID_HOME}/cmdline-tools/latest/bin:${ANDROID_HOME}/platform-tools:${ANDROID_HOME}/build-tools/35.0.0"
@@ -239,115 +326,12 @@ RUN mkdir -p "${ANDROID_HOME}/cmdline-tools" && \
 ENV NDK_HOME="${ANDROID_HOME}/ndk/29.0.14206865"
 ENV NDK_LATEST_HOME="${ANDROID_HOME}/ndk/29.0.14206865"
 
-# =============================================================================
-# 13. CLI tools
-# =============================================================================
-
-# GitHub CLI
-RUN (type -p wget >/dev/null || apt-get install wget -y) && \
-    mkdir -p -m 755 /etc/apt/keyrings && \
-    wget -qO- https://cli.github.com/packages/githubcli-archive-keyring.gpg \
-        | tee /etc/apt/keyrings/githubcli-archive-keyring.gpg > /dev/null && \
-    chmod go+r /etc/apt/keyrings/githubcli-archive-keyring.gpg && \
-    echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
-        | tee /etc/apt/sources.list.d/github-cli-stable.list > /dev/null && \
-    apt-get update && apt-get install -y gh && \
-    rm -rf /var/lib/apt/lists/*
-
-# Azure CLI (already has install script)
-RUN curl -sL https://aka.ms/InstallAzureCLIDeb | bash && \
-    rm -rf /var/lib/apt/lists/*
-
-# AWS CLI v2
-RUN curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o /tmp/awscli.zip && \
-    unzip -q /tmp/awscli.zip -d /tmp && \
-    /tmp/aws/install && \
-    rm -rf /tmp/awscli.zip /tmp/aws
-
-# Kubectl
-RUN curl -fsSL "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl" \
-        -o /usr/local/bin/kubectl && \
-    chmod +x /usr/local/bin/kubectl
-
-# Helm
-RUN curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
-
-# Packer
-RUN curl -fsSL https://releases.hashicorp.com/packer/1.15.0/packer_1.15.0_linux_amd64.zip \
-        -o /tmp/packer.zip && \
-    unzip -q /tmp/packer.zip -d /usr/local/bin && \
-    rm /tmp/packer.zip
-
-# Fastlane (for mobile CI)
-RUN gem install fastlane --no-document
-
-# =============================================================================
-# 14. Browsers + Drivers (for E2E testing)
-# =============================================================================
-
-# Google Chrome
-RUN curl -fsSL https://dl.google.com/linux/linux_signing_key.pub \
-        | gpg --dearmor -o /etc/apt/keyrings/google-chrome.gpg && \
-    echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/google-chrome.gpg] https://dl.google.com/linux/chrome/deb/ stable main" \
-        | tee /etc/apt/sources.list.d/google-chrome.list > /dev/null && \
-    apt-get update && \
-    apt-get install -y google-chrome-stable && \
-    rm -rf /var/lib/apt/lists/*
-
-# ChromeDriver (matching Chrome version)
-RUN CHROME_VERSION=$(google-chrome --version | grep -oP '\d+\.\d+\.\d+') && \
-    DRIVER_URL=$(curl -s "https://googlechromelabs.github.io/chrome-for-testing/LATEST_RELEASE_${CHROME_VERSION%%.*}") && \
-    curl -fsSL "https://storage.googleapis.com/chrome-for-testing-public/${DRIVER_URL}/linux64/chromedriver-linux64.zip" \
-        -o /tmp/chromedriver.zip && \
-    unzip -q /tmp/chromedriver.zip -d /tmp && \
-    mv /tmp/chromedriver-linux64/chromedriver /usr/local/bin/chromedriver && \
-    chmod +x /usr/local/bin/chromedriver && \
-    rm -rf /tmp/chromedriver.zip /tmp/chromedriver-linux64
-
-ENV CHROMEWEBDRIVER=/usr/local/bin
-
-# Firefox + Geckodriver
-RUN apt-get update && \
-    apt-get install -y firefox && \
-    rm -rf /var/lib/apt/lists/*
-
-ARG GECKODRIVER_VERSION=0.36.0
-RUN curl -fsSL "https://github.com/mozilla/geckodriver/releases/download/v${GECKODRIVER_VERSION}/geckodriver-v${GECKODRIVER_VERSION}-linux64.tar.gz" \
-        -o /tmp/geckodriver.tar.gz && \
-    tar -C /usr/local/bin -xzf /tmp/geckodriver.tar.gz && \
-    chmod +x /usr/local/bin/geckodriver && \
-    rm /tmp/geckodriver.tar.gz
-
-ENV GECKOWEBDRIVER=/usr/local/bin
-
-# =============================================================================
-# 15. Web servers (disabled by default, workflows can start them)
-# =============================================================================
-RUN apt-get update && \
-    apt-get install -y apache2 nginx && \
-    systemctl disable apache2 || true && \
-    systemctl disable nginx || true && \
-    rm -rf /var/lib/apt/lists/*
-
-# =============================================================================
-# 16. Python extras (pipx, common tools)
-# =============================================================================
-RUN pip3 install --break-system-packages pipx ansible && \
-    pipx ensurepath
-
-# =============================================================================
-# 17. GitHub Actions runner
-# =============================================================================
-RUN mkdir -p actions-runner && cd actions-runner \
-    && curl -O -L "https://github.com/actions/runner/releases/download/v${RUNNER_VERSION}/actions-runner-linux-x64-${RUNNER_VERSION}.tar.gz" \
-    && tar xzf "./actions-runner-linux-x64-${RUNNER_VERSION}.tar.gz" \
-    && rm "./actions-runner-linux-x64-${RUNNER_VERSION}.tar.gz"
-
-# Install runner dependencies
+# ── GitHub Actions runner ────────────────────────────────────────────────────
+COPY --from=stage-runner /opt/actions-runner /root/actions-runner
 RUN chmod +x actions-runner/bin/installdependencies.sh && \
     actions-runner/bin/installdependencies.sh
 
-# Add the start script
+# ── Entrypoint ───────────────────────────────────────────────────────────────
 ADD scripts/start.sh /root/start.sh
 RUN chmod +x /root/start.sh
 
