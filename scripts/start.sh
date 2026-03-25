@@ -7,9 +7,6 @@ cd /root/actions-runner
 
 export RUNNER_ALLOW_RUNASROOT=1
 
-# Start cron for scheduled cleanup
-cron
-
 # ── Register ────────────────────────────────────────────────────────────────
 register() {
   echo "Registering runner ${RUNNER_NAME}..."
