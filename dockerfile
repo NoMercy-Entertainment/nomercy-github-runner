@@ -9,7 +9,7 @@ ARG RUNNER_VERSION=2.322.0
 ARG GO_VERSION=1.24.13
 ARG CMAKE_VERSION=3.31.6
 ARG GRADLE_VERSION=8.14
-ARG MAVEN_VERSION=3.9.13
+ARG MAVEN_VERSION=3.9.14
 ARG GECKODRIVER_VERSION=0.36.0
 
 # =============================================================================
@@ -240,7 +240,7 @@ RUN pip3 install --break-system-packages pipx ansible && pipx ensurepath
 FROM base AS final
 
 ARG GRADLE_VERSION=8.14
-ARG MAVEN_VERSION=3.9.13
+ARG MAVEN_VERSION=3.9.14
 
 LABEL Author="Stoney_Eagle"
 LABEL Email="stoney@nomercy.tv"
