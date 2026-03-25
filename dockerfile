@@ -5,7 +5,7 @@
 # Multi-stage build — BuildKit runs download stages in parallel.
 # =============================================================================
 
-ARG RUNNER_VERSION=2.322.0
+ARG RUNNER_VERSION=2.333.0
 ARG GO_VERSION=1.24.13
 ARG CMAKE_VERSION=3.31.6
 ARG GRADLE_VERSION=8.14
@@ -274,7 +274,8 @@ COPY --from=stage-rust /root/.rustup /root/.rustup
 ENV PATH="/root/.cargo/bin:${PATH}"
 
 # ── CMake ────────────────────────────────────────────────────────────────────
-COPY --from=stage-cmake /opt/cmake /usr/local
+COPY --from=stage-cmake /opt/cmake/bin/ /usr/local/bin/
+COPY --from=stage-cmake /opt/cmake/share/ /usr/local/share/
 
 # ── Gradle ───────────────────────────────────────────────────────────────────
 COPY --from=stage-gradle /opt/gradle-${GRADLE_VERSION} /opt/gradle-${GRADLE_VERSION}
