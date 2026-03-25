@@ -121,11 +121,19 @@ RUN apt-get update && \
         openjdk-21-jdk && \
     rm -rf /var/lib/apt/lists/*
 
+# Java 25 via Adoptium (not in Ubuntu apt yet)
+RUN curl -fsSL "https://api.adoptium.net/v3/binary/latest/25/ga/linux/x64/jdk/hotspot/normal/eclipse" \
+        -o /tmp/jdk25.tar.gz && \
+    mkdir -p /usr/lib/jvm/java-25-temurin-amd64 && \
+    tar -C /usr/lib/jvm/java-25-temurin-amd64 --strip-components=1 -xzf /tmp/jdk25.tar.gz && \
+    rm /tmp/jdk25.tar.gz
+
 ENV JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64
 ENV JAVA_HOME_8_X64=/usr/lib/jvm/java-8-openjdk-amd64
 ENV JAVA_HOME_11_X64=/usr/lib/jvm/java-11-openjdk-amd64
 ENV JAVA_HOME_17_X64=/usr/lib/jvm/java-17-openjdk-amd64
 ENV JAVA_HOME_21_X64=/usr/lib/jvm/java-21-openjdk-amd64
+ENV JAVA_HOME_25_X64=/usr/lib/jvm/java-25-temurin-amd64
 
 # =============================================================================
 # 7. .NET SDK (8 + 9)
@@ -143,10 +151,17 @@ ENV DOTNET_ROOT=/usr/share/dotnet
 # =============================================================================
 # 8. Go
 # =============================================================================
-ARG GO_VERSION=1.23.12
+ARG GO_VERSION=1.24.13
 RUN curl -fsSL "https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz" -o /tmp/go.tar.gz && \
     tar -C /usr/local -xzf /tmp/go.tar.gz && \
     rm /tmp/go.tar.gz
+
+# Cache older Go versions for actions/setup-go
+RUN mkdir -p /opt/hostedtoolcache/go && \
+    curl -fsSL "https://go.dev/dl/go1.23.12.linux-amd64.tar.gz" -o /tmp/go123.tar.gz && \
+    mkdir -p /opt/hostedtoolcache/go/1.23.12/x64 && \
+    tar -C /opt/hostedtoolcache/go/1.23.12/x64 --strip-components=1 -xzf /tmp/go123.tar.gz && \
+    rm /tmp/go123.tar.gz
 
 ENV GOROOT=/usr/local/go
 ENV GOPATH=/root/go
@@ -210,13 +225,19 @@ RUN mkdir -p "${ANDROID_HOME}/cmdline-tools" && \
         "platform-tools" \
         "platforms;android-34" \
         "platforms;android-35" \
+        "platforms;android-36" \
         "build-tools;34.0.0" \
         "build-tools;35.0.0" \
         "build-tools;35.0.1" \
-        "ndk;27.3.13750724" && \
+        "build-tools;36.0.0" \
+        "build-tools;36.1.0" \
+        "ndk;27.3.13750724" \
+        "ndk;28.2.13676358" \
+        "ndk;29.0.14206865" && \
     rm -rf "${ANDROID_HOME}/.temp"
 
-ENV NDK_HOME="${ANDROID_HOME}/ndk/27.3.13750724"
+ENV NDK_HOME="${ANDROID_HOME}/ndk/29.0.14206865"
+ENV NDK_LATEST_HOME="${ANDROID_HOME}/ndk/29.0.14206865"
 
 # =============================================================================
 # 13. CLI tools
