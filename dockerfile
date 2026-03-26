@@ -51,7 +51,8 @@ ARG CMAKE_VERSION
 RUN apt-get update && apt-get install -y curl && \
     mkdir -p /opt/cmake && \
     curl -fsSL "https://github.com/Kitware/CMake/releases/download/v${CMAKE_VERSION}/cmake-${CMAKE_VERSION}-linux-x86_64.tar.gz" \
-        | tar -C /opt/cmake --strip-components=1 -xz
+    | tar -C /opt/cmake --strip-components=1 -xz && \
+    rm -rf /opt/cmake/man
 
 # ── Gradle ──────────────────────────────────────────────────────────────────
 FROM ubuntu:24.04 AS stage-gradle
