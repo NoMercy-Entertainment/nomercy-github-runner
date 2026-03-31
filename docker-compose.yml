@@ -1,5 +1,6 @@
 services:
   github-runner:
+    image: ghcr.io/nomercy-entertainment/nomercy-github-runner:latest
     deploy:
       replicas: ${RUNNER_REPLICAS:-1}
       resources:
@@ -7,11 +8,6 @@ services:
           cpus: "${RUNNER_CPU_LIMIT:-0}"
           memory: "${RUNNER_MEM_LIMIT:-0}"
     restart: unless-stopped
-    build:
-      context: .
-      dockerfile: dockerfile
-      args:
-        BUILDKIT_INLINE_CACHE: 1
     environment:
       GH_TOKEN: ${GH_TOKEN}
       GITHUB_ORG: ${GITHUB_ORG:-NoMercy-Entertainment}

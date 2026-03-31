@@ -1,0 +1,49 @@
+name: Build Runner Image
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - 'dockerfile'
+      - 'scripts/**'
+      - '.github/workflows/build-image.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build:
+    runs-on: self-hosted
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Log in to GHCR
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+
+      - name: Set image metadata
+        id: meta
+        run: |
+          IMAGE=ghcr.io/${{ github.repository }}
+          # Lowercase the image name (GHCR requires it)
+          IMAGE=$(echo "$IMAGE" | tr '[:upper:]' '[:lower:]')
+          SHA_SHORT=$(git rev-parse --short HEAD)
+          echo "image=${IMAGE}" >> $GITHUB_OUTPUT
+          echo "sha=${SHA_SHORT}" >> $GITHUB_OUTPUT
+
+      - name: Build and push image
+        run: |
+          IMAGE="${{ steps.meta.outputs.image }}"
+          SHA="${{ steps.meta.outputs.sha }}"
+
+          docker buildx build \
+            --tag "${IMAGE}:latest" \
+            --tag "${IMAGE}:${SHA}" \
+            --push \
+            .
+
+      - name: Verify image
+        run: |
+          docker pull "${{ steps.meta.outputs.image }}:latest"
+          echo "Image pushed and verified."
