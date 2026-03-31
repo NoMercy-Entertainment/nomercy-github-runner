@@ -211,9 +211,11 @@ RUN curl -fsSL https://nodejs.org/dist/v22.22.2/node-v22.22.2-linux-x64.tar.gz \
     # bomutils + xar for macOS .pkg building (not in Ubuntu 24.04 repos)
     cd /tmp && git clone https://github.com/hogliux/bomutils.git && \
     cd bomutils && make && make install && cd / && rm -rf /tmp/bomutils && \
-    cd /tmp && git clone https://github.com/AnyOldName3/xar.git && \
-    cd xar/xar && ./autogen.sh --noconfigure && ./configure --with-lzma=/usr && make && make install && \
-    ldconfig && cd / && rm -rf /tmp/xar && \
+    curl -fsSL https://github.com/mackyle/xar/archive/refs/heads/master.tar.gz | tar -xz -C /tmp && \
+    cd /tmp/xar-master/xar && \
+    sed -i 's/OpenSSL_add_all_ciphers/OPENSSL_init_crypto/' configure.ac && \
+    ./autogen.sh --noconfigure && ./configure && make && make install && \
+    ldconfig && cd / && rm -rf /tmp/xar-master && \
     curl -fsSL "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl" \
         -o /usr/local/bin/kubectl && chmod +x /usr/local/bin/kubectl && \
     curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash && \
