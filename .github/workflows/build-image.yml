@@ -9,6 +9,10 @@ on:
       - '.github/workflows/build-image.yml'
   workflow_dispatch:
 
+concurrency:
+  group: build-runner-image
+  cancel-in-progress: true
+
 permissions:
   contents: read
   packages: write
