@@ -106,6 +106,8 @@ cleanup() {
 # The loop re-registers and picks up the next job.
 # If the container is killed, Docker restart policy brings it back.
 while true; do
+  # Remove stale config from previous ephemeral run
+  ./config.sh remove --token "$REG_TOKEN" 2>/dev/null || true
   register
   ./run.sh
   echo "Job completed."
