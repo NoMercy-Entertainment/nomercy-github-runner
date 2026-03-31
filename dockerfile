@@ -192,7 +192,7 @@ RUN apt-get update && apt-get upgrade -y && \
         # Wine (for Inno Setup cross-compilation)
         wine64 \
         # macOS pkg building on Linux
-        bomutils xar libxml2-utils cpio && \
+        libxml2-utils cpio && \
     locale-gen en_US.UTF-8 && \
     systemctl disable apache2 || true && \
     systemctl disable nginx || true && \
@@ -208,6 +208,12 @@ RUN curl -fsSL https://nodejs.org/dist/v22.22.2/node-v22.22.2-linux-x64.tar.gz \
         | tar -xz -C /usr/local --strip-components=1 && \
     npm install -g yarn corepack n && corepack enable && \
     curl -sS https://getcomposer.org/installer | php -- --install-dir=/usr/local/bin --filename=composer && \
+    # bomutils + xar for macOS .pkg building (not in Ubuntu 24.04 repos)
+    cd /tmp && git clone https://github.com/hogliux/bomutils.git && \
+    cd bomutils && make && make install && cd / && rm -rf /tmp/bomutils && \
+    cd /tmp && git clone https://github.com/mackyle/xar.git && \
+    cd xar/xar && ./autogen.sh --noconfigure && ./configure && make && make install && \
+    ldconfig && cd / && rm -rf /tmp/xar && \
     curl -fsSL "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl" \
         -o /usr/local/bin/kubectl && chmod +x /usr/local/bin/kubectl && \
     curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash && \
