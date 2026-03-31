@@ -223,16 +223,6 @@ RUN curl -fsSL https://nodejs.org/dist/v22.22.2/node-v22.22.2-linux-x64.tar.gz \
     pip3 install --break-system-packages pipx ansible && pipx ensurepath && \
     rm -rf /var/lib/apt/lists/*
 
-# ── Step 4: Pre-install Inno Setup via Wine ─────────────────────────────────
-RUN WINEARCH=win64 WINEPREFIX=/opt/wine-innosetup wineboot --init 2>/dev/null && \
-    INNO_URL=$(curl -sS "https://api.github.com/repos/jrsoftware/issrc/releases/latest" \
-        | jq -r '.assets[] | select(.name | test("^innosetup-[0-9.]+\\.exe$")) | .browser_download_url') && \
-    curl -fsSL "$INNO_URL" -o /tmp/innosetup.exe && \
-    WINEPREFIX=/opt/wine-innosetup wine64 /tmp/innosetup.exe /VERYSILENT /SUPPRESSMSGBOXES /DIR=C:\\InnoSetup 2>/dev/null && \
-    rm -f /tmp/innosetup.exe && \
-    rm -rf /tmp/.wine-*
-
-ENV WINEPREFIX=/opt/wine-innosetup
 
 # ── ChromeDriver (matching installed Chrome) ─────────────────────────────────
 RUN CHROME_VERSION=$(google-chrome --version | grep -oP '\d+\.\d+\.\d+') && \
