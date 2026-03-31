@@ -118,7 +118,6 @@ RUN apt-get update && \
     echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] \
         https://download.docker.com/linux/ubuntu $(. /etc/os-release && echo $VERSION_CODENAME) stable" \
         | tee /etc/apt/sources.list.d/docker.list > /dev/null && \
-    curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && \
     curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
         | tee /etc/apt/keyrings/githubcli-archive-keyring.gpg > /dev/null && \
     echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] \
@@ -129,6 +128,14 @@ RUN apt-get update && \
     echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/google-chrome.gpg] \
         https://dl.google.com/linux/chrome/deb/ stable main" \
         | tee /etc/apt/sources.list.d/google-chrome.list > /dev/null && \
+    curl -fsSL https://packages.microsoft.com/keys/microsoft.asc \
+        | gpg --dearmor -o /etc/apt/keyrings/microsoft.gpg && \
+    echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/microsoft.gpg] \
+        https://packages.microsoft.com/repos/azure-cli/ $(. /etc/os-release && echo $VERSION_CODENAME) main" \
+        | tee /etc/apt/sources.list.d/azure-cli.list > /dev/null && \
+    echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/microsoft.gpg] \
+        https://packages.microsoft.com/ubuntu/24.04/prod $(. /etc/os-release && echo $VERSION_CODENAME) main" \
+        | tee /etc/apt/sources.list.d/microsoft-prod.list > /dev/null && \
     rm -rf /var/lib/apt/lists/*
 
 # ── Step 2: One single apt install ───────────────────────────────────────────
@@ -160,8 +167,7 @@ RUN apt-get update && apt-get upgrade -y && \
         # Docker
         docker-ce docker-ce-cli containerd.io \
         docker-buildx-plugin docker-compose-plugin buildah podman skopeo \
-        # Node.js
-        nodejs \
+        #
         # PHP 8.3 + 8.4
         php8.3 php8.3-cli php8.3-common \
         php8.3-curl php8.3-mbstring php8.3-xml php8.3-zip \
@@ -180,7 +186,13 @@ RUN apt-get update && apt-get upgrade -y && \
         # GitHub CLI
         gh \
         # Web servers
-        apache2 nginx && \
+        apache2 nginx \
+        # Azure CLI + PowerShell
+        azure-cli powershell \
+        # Wine (for Inno Setup cross-compilation)
+        wine64 \
+        # macOS pkg building on Linux
+        bomutils xar libxml2-utils cpio && \
     locale-gen en_US.UTF-8 && \
     systemctl disable apache2 || true && \
     systemctl disable nginx || true && \
@@ -191,15 +203,28 @@ ENV LANGUAGE=en_US:en
 ENV LC_ALL=en_US.UTF-8
 
 # ── Step 3: Non-apt tools ────────────────────────────────────────────────────
-RUN npm install -g yarn corepack n && corepack enable && n 22 && \
+# Install Node.js directly from official tarball (no nodesource dependency)
+RUN curl -fsSL https://nodejs.org/dist/v22.22.2/node-v22.22.2-linux-x64.tar.gz \
+        | tar -xz -C /usr/local --strip-components=1 && \
+    npm install -g yarn corepack n && corepack enable && \
     curl -sS https://getcomposer.org/installer | php -- --install-dir=/usr/local/bin --filename=composer && \
-    curl -sL https://aka.ms/InstallAzureCLIDeb | bash && \
     curl -fsSL "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl" \
         -o /usr/local/bin/kubectl && chmod +x /usr/local/bin/kubectl && \
     curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash && \
     gem install fastlane --no-document && \
     pip3 install --break-system-packages pipx ansible && pipx ensurepath && \
     rm -rf /var/lib/apt/lists/*
+
+# ── Step 4: Pre-install Inno Setup via Wine ─────────────────────────────────
+RUN WINEARCH=win64 WINEPREFIX=/opt/wine-innosetup wineboot --init 2>/dev/null && \
+    INNO_URL=$(curl -sS "https://api.github.com/repos/jrsoftware/issrc/releases/latest" \
+        | jq -r '.assets[] | select(.name | test("^innosetup-[0-9.]+\\.exe$")) | .browser_download_url') && \
+    curl -fsSL "$INNO_URL" -o /tmp/innosetup.exe && \
+    WINEPREFIX=/opt/wine-innosetup wine64 /tmp/innosetup.exe /VERYSILENT /SUPPRESSMSGBOXES /DIR=C:\\InnoSetup 2>/dev/null && \
+    rm -f /tmp/innosetup.exe && \
+    rm -rf /tmp/.wine-*
+
+ENV WINEPREFIX=/opt/wine-innosetup
 
 # ── ChromeDriver (matching installed Chrome) ─────────────────────────────────
 RUN CHROME_VERSION=$(google-chrome --version | grep -oP '\d+\.\d+\.\d+') && \
@@ -288,21 +313,11 @@ RUN mkdir -p "${ANDROID_HOME}/cmdline-tools" && \
     yes | sdkmanager --licenses > /dev/null 2>&1 && \
     sdkmanager \
         "platform-tools" \
-        "platforms;android-34" \
         "platforms;android-35" \
         "platforms;android-36" \
-        "build-tools;34.0.0" \
         "build-tools;35.0.0" \
-        "build-tools;35.0.1" \
-        "build-tools;36.0.0" \
-        "build-tools;36.1.0" \
-        "ndk;27.3.13750724" \
-        "ndk;28.2.13676358" \
-        "ndk;29.0.14206865" && \
+        "build-tools;36.0.0" && \
     rm -rf "${ANDROID_HOME}/.temp"
-
-ENV NDK_HOME="${ANDROID_HOME}/ndk/29.0.14206865"
-ENV NDK_LATEST_HOME="${ANDROID_HOME}/ndk/29.0.14206865"
 
 # ── GitHub Actions runner ────────────────────────────────────────────────────
 COPY --from=stage-runner /opt/actions-runner /root/actions-runner
