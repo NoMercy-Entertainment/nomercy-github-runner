@@ -28,10 +28,12 @@ register() {
     exit 1
   fi
 
+  # Remove any stale config from a previous run
+  ./config.sh remove --token "$REG_TOKEN" 2>/dev/null || true
+
   local config_cmd=(./config.sh
     --replace
     --unattended
-    --ephemeral
     --token "$REG_TOKEN"
     --url "https://github.com/${GITHUB_ORG}"
     --labels "${RUNNER_LABELS:-self-hosted,Linux,X64}"
@@ -45,10 +47,19 @@ register() {
   "${config_cmd[@]}"
 }
 
-# ── Cleanup on signal ───────────────────────────────────────────────────────
+# ── Deregister on container shutdown ───────────────────────────────────────
 remove() {
-  if [ -n "$REG_TOKEN" ]; then
-    echo "Removing runner ${RUNNER_NAME}..."
+  echo "Container stopping — removing runner ${RUNNER_NAME}..."
+  # Get a fresh token for removal (the original may have expired)
+  local reg_url="https://api.github.com/orgs/${GITHUB_ORG}/actions/runners/registration-token"
+  local auth_response
+  auth_response=$(curl -sS -X POST -H "Authorization: Bearer ${GH_TOKEN}" "$reg_url" 2>/dev/null)
+  local remove_token
+  remove_token=$(echo "$auth_response" | jq -r '.token // empty')
+
+  if [ -n "$remove_token" ]; then
+    ./config.sh remove --token "$remove_token" 2>/dev/null || true
+  elif [ -n "$REG_TOKEN" ]; then
     ./config.sh remove --token "$REG_TOKEN" 2>/dev/null || true
   fi
 }
@@ -57,60 +68,8 @@ trap 'remove; exit 130' INT
 trap 'remove; exit 143' TERM
 trap remove EXIT
 
-# ── Cleanup after each job ─────────────────────────────────────────────────
-cleanup() {
-  echo "Cleaning up workspace and caches..."
-
-  # Runner work directories (artifacts are already uploaded before job exits)
-  rm -rf /root/actions-runner/_work/*
-
-  # .NET intermediate build output and stale NuGet packages (keep last 3 days)
-  rm -rf /root/.nuget/packages
-  rm -rf /root/.dotnet/tools/.store
-
-  # Gradle caches (daemon logs, build cache, wrapper dists)
-  rm -rf /root/.gradle/daemon
-  rm -rf /root/.gradle/caches/build-cache-*
-  rm -rf /root/.gradle/caches/transforms-*
-  rm -rf /root/.gradle/caches/journal-*
-  rm -rf /root/.gradle/wrapper/dists
-
-  # Node / Yarn / npm
-  rm -rf /root/.cache/yarn
-  rm -rf /root/.yarn/berry/cache
-  rm -rf /root/.npm/_cacache
-
-  # Python / pip
-  rm -rf /root/.cache/pip
-
-  # Composer
-  rm -rf /root/.cache/composer
-
-  # Rust build artifacts
-  rm -rf /root/.cargo/registry/cache
-
-  # Docker: prune dangling images + build cache older than 24h
-  # (runs against host daemon via mounted socket)
-  docker image prune -f --filter "until=24h" 2>/dev/null || true
-  docker buildx prune -f --filter "until=24h" 2>/dev/null || true
-  docker container prune -f --filter "until=1h" 2>/dev/null || true
-
-  # APT cache
-  apt-get clean 2>/dev/null || true
-
-  echo "Cleanup complete."
-}
-
-# ── Run loop: register → run one job → cleanup → repeat ───────────────────
-# --ephemeral makes the runner exit after completing one job.
-# The loop re-registers and picks up the next job.
-# If the container is killed, Docker restart policy brings it back.
-while true; do
-  # Remove stale config from previous ephemeral run
-  ./config.sh remove --token "$REG_TOKEN" 2>/dev/null || true
-  register
-  ./run.sh
-  echo "Job completed."
-  cleanup
-  echo "Re-registering for next job..."
-done
+# ── Register once, run continuously ────────────────────────────────────────
+# No --ephemeral: runner stays registered and picks up jobs continuously.
+# Only deregisters when the container is stopped/killed (via trap above).
+register
+exec ./run.sh
