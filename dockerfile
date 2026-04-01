@@ -326,10 +326,14 @@ RUN chmod +x actions-runner/bin/installdependencies.sh && \
 ADD scripts/start.sh /root/start.sh
 RUN chmod +x /root/start.sh
 
-# Wrap bash so umask 0000 is set for every invocation, including
-# GitHub Actions job steps which use "bash --noprofile --norc"
+# Fix file permissions for all shells: Yarn 4 .bin/ shims use #!/bin/sh
+# (dash on Ubuntu) which doesn't inherit bash umask settings.
+# Wrapping both sh and bash ensures umask propagates everywhere.
 RUN mv /usr/bin/bash /usr/bin/bash.real && \
     printf '#!/usr/bin/bash.real\numask 0000\nexec /usr/bin/bash.real "$@"\n' > /usr/bin/bash && \
-    chmod +x /usr/bin/bash
+    chmod +x /usr/bin/bash && \
+    mv /usr/bin/dash /usr/bin/dash.real && \
+    printf '#!/usr/bin/bash.real\numask 0000\nexec /usr/bin/dash.real "$@"\n' > /usr/bin/dash && \
+    chmod +x /usr/bin/dash
 
 ENTRYPOINT ["/root/start.sh"]
