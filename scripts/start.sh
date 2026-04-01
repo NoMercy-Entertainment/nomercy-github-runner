@@ -7,6 +7,10 @@ cd /root/actions-runner
 
 export RUNNER_ALLOW_RUNASROOT=1
 
+# Fix Yarn 4 .bin/ permission issue: ensure all new files are created with
+# execute permission when running as root in Docker
+umask 0000
+
 # ── Register ────────────────────────────────────────────────────────────────
 register() {
   echo "Registering runner ${RUNNER_NAME}..."
