@@ -326,4 +326,9 @@ RUN chmod +x actions-runner/bin/installdependencies.sh && \
 ADD scripts/start.sh /root/start.sh
 RUN chmod +x /root/start.sh
 
+# Create a .env for the runner that sets umask before every job step
+RUN echo 'umask 0000' >> /root/.bashrc && \
+    echo 'umask 0000' >> /root/.profile && \
+    echo 'umask 0000' >> /etc/profile.d/umask.sh
+
 ENTRYPOINT ["/root/start.sh"]
