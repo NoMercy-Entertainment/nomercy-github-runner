@@ -38,6 +38,7 @@ register() {
   local config_cmd=(./config.sh
     --replace
     --unattended
+    --disableupdate
     --token "$REG_TOKEN"
     --url "https://github.com/${GITHUB_ORG}"
     --labels "${RUNNER_LABELS:-self-hosted,Linux,X64}"
