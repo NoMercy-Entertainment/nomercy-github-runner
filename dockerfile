@@ -321,6 +321,7 @@ RUN mkdir -p "${ANDROID_HOME}/cmdline-tools" && \
 COPY --from=stage-runner /opt/actions-runner /root/actions-runner
 RUN chmod +x actions-runner/bin/installdependencies.sh && \
     actions-runner/bin/installdependencies.sh
+ENV RUNNER_VERSION=${RUNNER_VERSION}
 
 # ── Entrypoint ───────────────────────────────────────────────────────────────
 ADD scripts/start.sh /root/start.sh

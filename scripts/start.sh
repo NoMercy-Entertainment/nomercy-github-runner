@@ -11,6 +11,14 @@ export RUNNER_ALLOW_RUNASROOT=1
 # execute permission when running as root in Docker
 umask 0000
 
+# ── Self-heal: restore runner binaries if a botched auto-update wiped them ──
+if [ ! -f ./bin/Runner.Listener ]; then
+  echo "Runner binaries missing — re-extracting runner v${RUNNER_VERSION}..."
+  curl -fsSL "https://github.com/actions/runner/releases/download/v${RUNNER_VERSION}/actions-runner-linux-x64-${RUNNER_VERSION}.tar.gz" \
+    | tar -xz
+  echo "Runner binaries restored."
+fi
+
 # ── Start Docker daemon (Docker-in-Docker) ─────────────────────────────────
 # Each runner runs its own isolated Docker daemon so builds don't share the
 # host's disk via /var/run/docker.sock.
