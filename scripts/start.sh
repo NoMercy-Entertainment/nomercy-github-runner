@@ -11,6 +11,29 @@ export RUNNER_ALLOW_RUNASROOT=1
 # execute permission when running as root in Docker
 umask 0000
 
+# ── Start Docker daemon (Docker-in-Docker) ─────────────────────────────────
+# Each runner runs its own isolated Docker daemon so builds don't share the
+# host's disk via /var/run/docker.sock.
+echo "Starting Docker daemon inside container..."
+dockerd --host=unix:///var/run/docker.sock \
+        --storage-driver=overlay2 \
+        > /var/log/dockerd.log 2>&1 &
+
+# Wait for Docker daemon to be ready
+echo "Waiting for Docker daemon..."
+for i in $(seq 1 30); do
+  if docker info > /dev/null 2>&1; then
+    echo "Docker daemon is ready."
+    break
+  fi
+  if [ "$i" -eq 30 ]; then
+    echo "Error: Docker daemon failed to start. Logs:"
+    cat /var/log/dockerd.log
+    exit 1
+  fi
+  sleep 1
+done
+
 # ── Register ────────────────────────────────────────────────────────────────
 register() {
   echo "Registering runner ${RUNNER_NAME}..."

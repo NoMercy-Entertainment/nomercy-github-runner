@@ -8,6 +8,7 @@ services:
           cpus: "${RUNNER_CPU_LIMIT:-0}"
           memory: "${RUNNER_MEM_LIMIT:-0}"
     restart: unless-stopped
+    privileged: true
     environment:
       GH_TOKEN: ${GH_TOKEN}
       GITHUB_ORG: ${GITHUB_ORG:-NoMercy-Entertainment}
@@ -15,5 +16,3 @@ services:
       RUNNER_GROUP: ${RUNNER_GROUP:-}
     tmpfs:
       - /tmp
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
