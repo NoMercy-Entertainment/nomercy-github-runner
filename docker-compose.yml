@@ -14,5 +14,13 @@ services:
       GITHUB_ORG: ${GITHUB_ORG:-NoMercy-Entertainment}
       RUNNER_LABELS: ${RUNNER_LABELS:-self-hosted,Linux,X64}
       RUNNER_GROUP: ${RUNNER_GROUP:-}
+    volumes:
+      # Shared buildx cache across all runner replicas.
+      # Named volume — works on Windows and Linux, Docker manages storage.
+      # All runners read/write the same cache — one builds, all benefit.
+      - buildx-cache:/var/lib/buildkit
     tmpfs:
       - /tmp
+
+volumes:
+  buildx-cache:
