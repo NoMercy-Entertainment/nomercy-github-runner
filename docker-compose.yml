@@ -16,6 +16,6 @@ services:
       RUNNER_GROUP: ${RUNNER_GROUP:-}
     volumes:
       # Override start.sh until next image rebuild picks up the fix
-      - ./scripts/start.sh:/root/actions-runner/start.sh
+      - ./scripts/start.sh:/root/start.sh
     tmpfs:
       - /tmp
