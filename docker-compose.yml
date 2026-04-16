@@ -14,5 +14,8 @@ services:
       GITHUB_ORG: ${GITHUB_ORG:-NoMercy-Entertainment}
       RUNNER_LABELS: ${RUNNER_LABELS:-self-hosted,Linux,X64}
       RUNNER_GROUP: ${RUNNER_GROUP:-}
+    volumes:
+      # Share host Docker daemon — all runners use one cache, zero network trips
+      - /var/run/docker.sock:/var/run/docker.sock
     tmpfs:
       - /tmp
