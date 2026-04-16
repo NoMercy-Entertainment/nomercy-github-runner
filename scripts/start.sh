@@ -24,7 +24,6 @@ fi
 # host's disk via /var/run/docker.sock.
 echo "Starting Docker daemon inside container..."
 dockerd --host=unix:///var/run/docker.sock \
-        --storage-driver=overlay2 \
         > /var/log/dockerd.log 2>&1 &
 
 # Wait for Docker daemon to be ready
