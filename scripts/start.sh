@@ -23,15 +23,7 @@ fi
 # Each runner runs its own isolated Docker daemon so builds don't share the
 # host's disk via /var/run/docker.sock.
 echo "Starting Docker daemon inside container..."
-# fuse-overlayfs works in nested containers; vfs is the universal fallback
-STORAGE_DRIVER="fuse-overlayfs"
-if ! command -v fuse-overlayfs > /dev/null 2>&1; then
-    STORAGE_DRIVER="vfs"
-fi
-echo "Using storage driver: ${STORAGE_DRIVER}"
-
 dockerd --host=unix:///var/run/docker.sock \
-        --storage-driver=${STORAGE_DRIVER} \
         > /var/log/dockerd.log 2>&1 &
 
 # Wait for Docker daemon to be ready
