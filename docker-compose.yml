@@ -14,5 +14,8 @@ services:
       GITHUB_ORG: ${GITHUB_ORG:-NoMercy-Entertainment}
       RUNNER_LABELS: ${RUNNER_LABELS:-self-hosted,Linux,X64}
       RUNNER_GROUP: ${RUNNER_GROUP:-}
+    volumes:
+      # Override start.sh until next image rebuild picks up the fix
+      - ./scripts/start.sh:/root/actions-runner/start.sh
     tmpfs:
       - /tmp
