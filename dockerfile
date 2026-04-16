@@ -5,6 +5,7 @@
 # Multi-stage build — BuildKit runs download stages in parallel.
 # =============================================================================
 
+ARG UBUNTU_MIRROR=mirror.nl.leaseweb.net
 ARG RUNNER_VERSION=2.333.1
 ARG GO_VERSION=1.24.13
 ARG CMAKE_VERSION=3.31.6
@@ -19,14 +20,16 @@ ARG GECKODRIVER_VERSION=0.36.0
 # ── Go ──────────────────────────────────────────────────────────────────────
 FROM ubuntu:24.04 AS stage-go
 ARG GO_VERSION
-RUN apt-get update && apt-get install -y curl && \
+ARG UBUNTU_MIRROR
+RUN sed -i "s|http://archive.ubuntu.com|http://${UBUNTU_MIRROR}|g" /etc/apt/sources.list.d/ubuntu.sources && apt-get update && apt-get install -y curl && \
     curl -fsSL "https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz" | tar -C /opt -xz && \
     mkdir -p /opt/go-cache/1.23.12 && \
     curl -fsSL "https://go.dev/dl/go1.23.12.linux-amd64.tar.gz" | tar -C /opt/go-cache/1.23.12 --strip-components=1 -xz
 
 # ── .NET SDK ────────────────────────────────────────────────────────────────
 FROM ubuntu:24.04 AS stage-dotnet
-RUN apt-get update && apt-get install -y curl && \
+ARG UBUNTU_MIRROR
+RUN sed -i "s|http://archive.ubuntu.com|http://${UBUNTU_MIRROR}|g" /etc/apt/sources.list.d/ubuntu.sources && apt-get update && apt-get install -y curl && \
     curl -fsSL https://dot.net/v1/dotnet-install.sh -o /tmp/dotnet-install.sh && \
     chmod +x /tmp/dotnet-install.sh && \
     /tmp/dotnet-install.sh --channel 8.0 --install-dir /opt/dotnet && \
@@ -35,20 +38,23 @@ RUN apt-get update && apt-get install -y curl && \
 
 # ── Java 25 (Adoptium) ─────────────────────────────────────────────────────
 FROM ubuntu:24.04 AS stage-java25
-RUN apt-get update && apt-get install -y curl && \
+ARG UBUNTU_MIRROR
+RUN sed -i "s|http://archive.ubuntu.com|http://${UBUNTU_MIRROR}|g" /etc/apt/sources.list.d/ubuntu.sources && apt-get update && apt-get install -y curl && \
     mkdir -p /opt/jdk25 && \
     curl -fsSL "https://api.adoptium.net/v3/binary/latest/25/ga/linux/x64/jdk/hotspot/normal/eclipse" \
         | tar -C /opt/jdk25 --strip-components=1 -xz
 
 # ── Rust ────────────────────────────────────────────────────────────────────
 FROM ubuntu:24.04 AS stage-rust
-RUN apt-get update && apt-get install -y curl gcc && \
+ARG UBUNTU_MIRROR
+RUN sed -i "s|http://archive.ubuntu.com|http://${UBUNTU_MIRROR}|g" /etc/apt/sources.list.d/ubuntu.sources && apt-get update && apt-get install -y curl gcc && \
     curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable
 
 # ── CMake ───────────────────────────────────────────────────────────────────
 FROM ubuntu:24.04 AS stage-cmake
 ARG CMAKE_VERSION
-RUN apt-get update && apt-get install -y curl && \
+ARG UBUNTU_MIRROR
+RUN sed -i "s|http://archive.ubuntu.com|http://${UBUNTU_MIRROR}|g" /etc/apt/sources.list.d/ubuntu.sources && apt-get update && apt-get install -y curl && \
     mkdir -p /opt/cmake && \
     curl -fsSL "https://github.com/Kitware/CMake/releases/download/v${CMAKE_VERSION}/cmake-${CMAKE_VERSION}-linux-x86_64.tar.gz" \
     | tar -C /opt/cmake --strip-components=1 -xz && \
@@ -57,41 +63,47 @@ RUN apt-get update && apt-get install -y curl && \
 # ── Gradle ──────────────────────────────────────────────────────────────────
 FROM ubuntu:24.04 AS stage-gradle
 ARG GRADLE_VERSION
-RUN apt-get update && apt-get install -y curl unzip && \
+ARG UBUNTU_MIRROR
+RUN sed -i "s|http://archive.ubuntu.com|http://${UBUNTU_MIRROR}|g" /etc/apt/sources.list.d/ubuntu.sources && apt-get update && apt-get install -y curl unzip && \
     curl -fsSL "https://services.gradle.org/distributions/gradle-${GRADLE_VERSION}-bin.zip" -o /tmp/gradle.zip && \
     unzip -q /tmp/gradle.zip -d /opt
 
 # ── Maven ───────────────────────────────────────────────────────────────────
 FROM ubuntu:24.04 AS stage-maven
 ARG MAVEN_VERSION
-RUN apt-get update && apt-get install -y curl && \
+ARG UBUNTU_MIRROR
+RUN sed -i "s|http://archive.ubuntu.com|http://${UBUNTU_MIRROR}|g" /etc/apt/sources.list.d/ubuntu.sources && apt-get update && apt-get install -y curl && \
     curl -fsSL "https://dlcdn.apache.org/maven/maven-3/${MAVEN_VERSION}/binaries/apache-maven-${MAVEN_VERSION}-bin.tar.gz" \
         | tar -C /opt -xz
 
 # ── AWS CLI v2 ──────────────────────────────────────────────────────────────
 FROM ubuntu:24.04 AS stage-aws
-RUN apt-get update && apt-get install -y curl unzip && \
+ARG UBUNTU_MIRROR
+RUN sed -i "s|http://archive.ubuntu.com|http://${UBUNTU_MIRROR}|g" /etc/apt/sources.list.d/ubuntu.sources && apt-get update && apt-get install -y curl unzip && \
     curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o /tmp/awscli.zip && \
     unzip -q /tmp/awscli.zip -d /tmp && \
     /tmp/aws/install --install-dir /opt/aws-cli --bin-dir /opt/aws-bin
 
 # ── Packer ──────────────────────────────────────────────────────────────────
 FROM ubuntu:24.04 AS stage-packer
-RUN apt-get update && apt-get install -y curl unzip && \
+ARG UBUNTU_MIRROR
+RUN sed -i "s|http://archive.ubuntu.com|http://${UBUNTU_MIRROR}|g" /etc/apt/sources.list.d/ubuntu.sources && apt-get update && apt-get install -y curl unzip && \
     curl -fsSL https://releases.hashicorp.com/packer/1.15.0/packer_1.15.0_linux_amd64.zip -o /tmp/packer.zip && \
     unzip -q /tmp/packer.zip -d /opt
 
 # ── Geckodriver ─────────────────────────────────────────────────────────────
 FROM ubuntu:24.04 AS stage-geckodriver
 ARG GECKODRIVER_VERSION
-RUN apt-get update && apt-get install -y curl && \
+ARG UBUNTU_MIRROR
+RUN sed -i "s|http://archive.ubuntu.com|http://${UBUNTU_MIRROR}|g" /etc/apt/sources.list.d/ubuntu.sources && apt-get update && apt-get install -y curl && \
     curl -fsSL "https://github.com/mozilla/geckodriver/releases/download/v${GECKODRIVER_VERSION}/geckodriver-v${GECKODRIVER_VERSION}-linux64.tar.gz" \
         | tar -C /opt -xz
 
 # ── GitHub Actions runner ──────────────────────────────────────────────────
 FROM ubuntu:24.04 AS stage-runner
 ARG RUNNER_VERSION
-RUN apt-get update && apt-get install -y curl && \
+ARG UBUNTU_MIRROR
+RUN sed -i "s|http://archive.ubuntu.com|http://${UBUNTU_MIRROR}|g" /etc/apt/sources.list.d/ubuntu.sources && apt-get update && apt-get install -y curl && \
     mkdir -p /opt/actions-runner && cd /opt/actions-runner && \
     curl -fsSL "https://github.com/actions/runner/releases/download/v${RUNNER_VERSION}/actions-runner-linux-x64-${RUNNER_VERSION}.tar.gz" \
         | tar -xz
@@ -107,7 +119,8 @@ ENV ImageOS=ubuntu24
 WORKDIR /root
 
 # ── Step 1: Add all third-party repos ────────────────────────────────────────
-RUN apt-get update && \
+ARG UBUNTU_MIRROR
+RUN sed -i "s|http://archive.ubuntu.com|http://${UBUNTU_MIRROR}|g" /etc/apt/sources.list.d/ubuntu.sources && apt-get update && \
     apt-get install -y --no-install-recommends \
         ca-certificates curl wget gnupg lsb-release software-properties-common && \
     add-apt-repository ppa:git-core/ppa -y && \
@@ -139,7 +152,8 @@ RUN apt-get update && \
     rm -rf /var/lib/apt/lists/*
 
 # ── Step 2: One single apt install ───────────────────────────────────────────
-RUN apt-get update && apt-get upgrade -y && \
+ARG UBUNTU_MIRROR
+RUN sed -i "s|http://archive.ubuntu.com|http://${UBUNTU_MIRROR}|g" /etc/apt/sources.list.d/ubuntu.sources && apt-get update && apt-get upgrade -y && \
     apt-get install -y \
         # Core
         git git-lfs sudo openssh-client locales tzdata apt-transport-https \
