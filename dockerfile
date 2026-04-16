@@ -181,6 +181,8 @@ RUN sed -i "s|http://archive.ubuntu.com|http://${UBUNTU_MIRROR}|g" /etc/apt/sour
         # Docker
         docker-ce docker-ce-cli containerd.io \
         docker-buildx-plugin docker-compose-plugin buildah podman skopeo \
+        # fuse-overlayfs for nested Docker (overlay-on-overlay)
+        fuse-overlayfs fuse3 \
         #
         # PHP 8.3 + 8.4
         php8.3 php8.3-cli php8.3-common \

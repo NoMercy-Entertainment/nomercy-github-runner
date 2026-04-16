@@ -22,7 +22,23 @@ fi
 # ── Start Docker daemon (Docker-in-Docker) ─────────────────────────────────
 # Each runner runs its own isolated Docker daemon so builds don't share the
 # host's disk via /var/run/docker.sock.
-echo "Starting Docker daemon inside container..."
+#
+# Storage driver: fuse-overlayfs (userspace overlay) — required because the
+# kernel cannot stack native overlay2 on top of the host's overlay FS (the
+# DinD container is itself an overlay mount). BuildKit cachemounts also break
+# with overlay2 in nested containers, so we disable the containerd snapshotter
+# to route BuildKit through the daemon's fuse-overlayfs snapshotter.
+mkdir -p /etc/docker
+cat > /etc/docker/daemon.json <<'EOF'
+{
+  "storage-driver": "fuse-overlayfs",
+  "features": {
+    "containerd-snapshotter": false
+  }
+}
+EOF
+
+echo "Starting Docker daemon inside container (storage-driver=fuse-overlayfs)..."
 dockerd --host=unix:///var/run/docker.sock \
         > /var/log/dockerd.log 2>&1 &
 
