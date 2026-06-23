@@ -6,7 +6,7 @@
 # =============================================================================
 
 ARG UBUNTU_MIRROR=mirror.nl.leaseweb.net
-ARG RUNNER_VERSION=2.333.1
+ARG RUNNER_VERSION=2.335.1
 ARG GO_VERSION=1.24.13
 ARG CMAKE_VERSION=3.31.6
 ARG GRADLE_VERSION=8.14
@@ -336,7 +336,8 @@ RUN mkdir -p "${ANDROID_HOME}/cmdline-tools" && \
 # ── GitHub Actions runner ────────────────────────────────────────────────────
 COPY --from=stage-runner /opt/actions-runner /root/actions-runner
 RUN chmod +x actions-runner/bin/installdependencies.sh && \
-    actions-runner/bin/installdependencies.sh
+    actions-runner/bin/installdependencies.sh && \
+    echo "${RUNNER_VERSION}" > /root/actions-runner/.runner_version
 ENV RUNNER_VERSION=${RUNNER_VERSION}
 
 # ── Entrypoint ───────────────────────────────────────────────────────────────

@@ -11,12 +11,23 @@ export RUNNER_ALLOW_RUNASROOT=1
 # execute permission when running as root in Docker
 umask 0000
 
-# ── Self-heal: restore runner binaries if a botched auto-update wiped them ──
-if [ ! -f ./bin/Runner.Listener ]; then
-  echo "Runner binaries missing — re-extracting runner v${RUNNER_VERSION}..."
+# ── Runner version ───────────────────────────────────────────────────────────
+# GitHub deprecates old runner versions and refuses to deliver jobs to them:
+#   "Runner version vX is deprecated and cannot receive messages"
+# Pin a current version here and bump it when GitHub deprecates it again.
+# Keep this in sync with ARG/ENV RUNNER_VERSION in the dockerfile.
+RUNNER_VERSION="2.335.1"
+
+# ── Self-heal / upgrade: (re)install runner binaries ─────────────────────────
+# Re-extract when the binaries are missing (a botched auto-update wiped them)
+# OR the installed version differs from the target above (e.g. the baked image
+# still ships a now-deprecated runner). Idempotent: a matching install is a no-op.
+if [ ! -f ./bin/Runner.Listener ] || [ "$(cat ./.runner_version 2>/dev/null)" != "$RUNNER_VERSION" ]; then
+  echo "Installing GitHub Actions runner v${RUNNER_VERSION}..."
   curl -fsSL "https://github.com/actions/runner/releases/download/v${RUNNER_VERSION}/actions-runner-linux-x64-${RUNNER_VERSION}.tar.gz" \
     | tar -xz
-  echo "Runner binaries restored."
+  echo "$RUNNER_VERSION" > ./.runner_version
+  echo "Runner v${RUNNER_VERSION} installed."
 fi
 
 # ── Start Docker daemon (Docker-in-Docker) ─────────────────────────────────
@@ -37,6 +48,18 @@ cat > /etc/docker/daemon.json <<'EOF'
   }
 }
 EOF
+
+# ── Clean up stale Docker state from a previous container start ───────────────
+# With `restart: unless-stopped`, the container's writable layer survives a
+# restart, so a leftover /var/run/docker.pid makes dockerd abort with:
+#   "failed to start daemon, ensure docker is not running or delete
+#    /var/run/docker.pid: process with PID N is still running"
+# (the recorded PID frequently collides with an unrelated process in the new
+# boot). Kill any lingering daemon and clear stale pidfiles before starting.
+pkill -9 dockerd 2>/dev/null || true
+pkill -9 containerd 2>/dev/null || true
+rm -f /var/run/docker.pid /run/docker.pid \
+      /var/run/docker/containerd/containerd.pid 2>/dev/null || true
 
 echo "Starting Docker daemon inside container (storage-driver=fuse-overlayfs)..."
 dockerd --host=unix:///var/run/docker.sock \
