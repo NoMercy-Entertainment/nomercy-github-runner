@@ -1,7 +1,7 @@
 # Runner Disk Containment — Design
 
 **Date:** 2026-07-26
-**Status:** Approved (design); implementation pending
+**Status:** Phase A deployed to all six runners 2026-07-26; Phase B pending a 24-48h measurement window
 **Scope:** `D:\docker-compose\GithubRunners` only. BeastStack is out of scope and must not be touched.
 
 ## Problem
@@ -200,6 +200,75 @@ No manual re-registration is required. Preconditions before any recreation:
 - Confirm no orphaned registrations accumulate in the org runner list.
 - Scope every command explicitly to this compose project. Never
   `--remove-orphans`.
+
+## Measured outcome
+
+Deployment: all six runners migrated 2026-07-26 via `docker restart` only. No
+container was recreated, no writable layer was dropped, no registration was
+lost. All 22 containers (6 runners + 16 BeastStack) were confirmed running
+throughout, verified by name census and `docker inspect` timestamps.
+
+### Immediate results
+
+- Host disk free: 29 GB (98% used) at baseline → 273 GB (72% used) after
+  rollout. Measured as `1007G total, 684G used, 273G avail, 72%`.
+- Approximately 244 GB reclaimed with zero destructive action — BuildKit GC
+  alone.
+- Fleet build cache: ~941 GB at baseline → ~192 GB and still falling.
+- Per-runner build cache immediately after rollout: runner-1 21.98 GB,
+  runner-2 31 GB, runner-3 35.93 GB, runner-4 31.45 GB, runner-5 36.33 GB,
+  runner-6 35.24 GB. Runner-1 is furthest converged because it restarted
+  first.
+- Runner-1's trend, which is the direct evidence the GC policy enforces:
+  68.59 GB (baseline, 528 cache records) → 42.71 GB (~6 min after restart) →
+  21.98 GB (470 records), converging on the 20 GB `maxUsedSpace` cap.
+
+### Validation finding
+
+`dockerd --validate` returns `configuration OK` even for entirely fabricated
+field names — Go's JSON unmarshal silently ignores unknown keys. Config
+validation alone therefore proves nothing about whether a policy is active.
+This nearly caused a false-confidence failure. Enforcement was confirmed only
+by measuring build cache falling over time. The `builder.gc.policy[].maxUsedSpace`
+key was separately confirmed genuine against moby's `daemon/config/builder.go`
+(`BuilderGCRule.MaxUsedSpace`, a bare `json:",omitempty"` tag matched via Go's
+case-insensitive unmarshal) and containerd's `filters.ParseAll` (documented:
+"If no filters are provided, the filter will match anything"), which confirms
+a filterless single-entry policy does select cache records rather than being
+inert.
+
+### Other findings
+
+- The abandoned `actions_github_pages_*` directories are at `/root/`, NOT
+  under `/root/actions-runner/_work` as the design originally assumed. They
+  are fleet-wide: runner-1: 3, runner-2: 3, runner-3: 2, runner-4: 4,
+  runner-5: 3, runner-6: 0. The janitor was extended with a dedicated
+  `-maxdepth 1` sweep for them.
+- The janitor's first sweep runs 6 hours after each container start; at time
+  of writing it had not yet run, so the 25-27 GB of dead images per runner is
+  still outstanding and expected to be reclaimed on that schedule.
+
+### Phase B assessment
+
+**Likely unnecessary, pending confirmation.** Phase A alone recovered 244 GB
+and capped growth, without the complexity, 9p performance cost, or unclean-
+shutdown risk of the ext4-loopback approach. The decision should be made on
+the 24-48h measurement, not now.
+
+## Known issues
+
+**Pre-existing, not introduced by this work.** `scripts/start.sh` line ~158
+runs `./config.sh remove --token "$REG_TOKEN" 2>/dev/null || true`, swallowing
+failures. When removal fails, the subsequent `--replace` config aborts with
+"Cannot configure the runner because it is already configured" and `run.sh`
+falls back to the existing registration. Observed on runner-6, which
+self-healed in ~30s and reused its existing identity (no duplicate
+registration created). Traced via git history to commit `7998be3`
+(1 April 2026). Residual risk: a ~30s window where the container reports `Up`
+and the daemon is healthy but the runner cannot receive work, invisible to
+container-level health checks. Suggested fix, not applied here as it is out
+of scope for a disk-containment change: make the removal failure non-silent,
+or fall back to deleting the local `.runner`/`.credentials` files.
 
 ## Rejected alternatives
 
