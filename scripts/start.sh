@@ -42,7 +42,9 @@ fi
 # Build-cache GC: six independent daemons each hoarded every layer forever,
 # reaching ~149 GB of /var/lib/docker/fuse-overlayfs per runner and filling the
 # Docker VM disk shared with the BeastStack production stack. The policy below
-# caps build cache at ~20 GB per runner and drops week-old entries aggressively.
+# is a single filterless rule capping total build cache at 20 GB per runner.
+# There is no time-based rule: BuildKit evicts by its own least-recently-used
+# ordering once the 20 GB ceiling is crossed, and by nothing else.
 mkdir -p /etc/docker
 cat > /etc/docker/daemon.json <<'EOF'
 {
@@ -104,17 +106,32 @@ janitor() {
   while true; do
     echo "[janitor] $(date -u +%FT%TZ) sweep starting"
 
-    # Dead images in this runner's own daemon. The 72h floor deliberately
-    # preserves recently-used base images so ordinary builds keep a warm cache.
+    # Dead images in this runner's own daemon. `until=72h` filters on the
+    # image's *Created* time, not on when it was last used — an old-but-hot
+    # base image is removed just the same. Concretely: runner-4 holds four
+    # 23.8 GB `ffmpeg-base` images built two weeks ago, and this sweep drops
+    # them, so the next ffmpeg build starts cold. That is accepted: the images
+    # are unreferenced (0 active across the fleet) and dominate disk. The
+    # filter only spares images built in the last 72h, i.e. the current day's
+    # in-flight work.
     docker image prune -af --filter until=72h 2>&1 | tail -2
 
-    # Abandoned job workspaces. An active job touches its workspace
-    # continuously, so a 14-day mtime is a safe discriminator against live work.
+    # Abandoned job workspaces. A directory's own mtime only changes when its
+    # entry list changes, so `_work/<repo>` records its first checkout and
+    # never updates again — the runner writes into `<repo>/<repo>` beneath it.
+    # Testing the parent's mtime would therefore delete actively-used
+    # workspaces. Recurse instead and keep the workspace if *any* file or
+    # directory inside it is newer than 14 days.
     # Underscore-prefixed dirs (_tool, _temp, _actions) are runner-internal and
     # are left alone here.
     if [ -d /root/actions-runner/_work ]; then
       find /root/actions-runner/_work -mindepth 1 -maxdepth 1 -type d \
-           ! -name '_*' -mtime +14 -print -exec rm -rf {} + 2>/dev/null || true
+           ! -name '_*' -print0 2>/dev/null |
+      while IFS= read -r -d '' d; do
+        [ -n "$(find "$d" -newermt '-14 days' -print -quit 2>/dev/null)" ] && continue
+        echo "[janitor] removing stale workspace $d"
+        rm -rf -- "$d" 2>/dev/null || true
+      done
     fi
 
     # Runner diagnostic logs.

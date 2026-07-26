@@ -55,8 +55,8 @@ reported figures are a floor, not the true footprint.
 ## Root cause
 
 Each runner runs its own Docker daemon, started at
-[`scripts/start.sh:65`](../../../scripts/start.sh#L65), with a `daemon.json`
-generated at [`scripts/start.sh:43-50`](../../../scripts/start.sh#L43-L50)
+[`scripts/start.sh:79`](../../../scripts/start.sh#L79), with a `daemon.json`
+generated at [`scripts/start.sh:49-64`](../../../scripts/start.sh#L49-L64)
 containing no garbage-collection policy. Nothing anywhere prunes. Six
 independent daemons build the same projects and each hoard a private copy of
 every layer forever.
@@ -101,7 +101,7 @@ recreation. Two changes, both in `scripts/start.sh` (already bind-mounted to
 
 ### A1. BuildKit GC policy
 
-Extend the `daemon.json` heredoc at `scripts/start.sh:43-50` with a `builder.gc`
+Extend the `daemon.json` heredoc at `scripts/start.sh:49-64` with a `builder.gc`
 block targeting ~20 GB of build cache per runner. This is the load-bearing
 change: it converts unbounded growth into a self-limiting steady state.
 
@@ -117,13 +117,24 @@ A background loop started before `exec ./run.sh`, covering what BuildKit GC does
 not:
 
 - `docker image prune -af --filter until=72h` against the inner daemon — the
-  25-27 GB of dead images each runner holds. The 72h floor deliberately
-  preserves recently-used base images so ordinary builds keep their warm cache.
-- Sweep `_work/*` directories untouched for 14+ days, clearing abandoned
-  workspaces such as the three `actions_github_pages_*` found on runner-1. An
-  active job touches its workspace continuously, so mtime is a safe
-  discriminator against deleting live work.
-- Trim `_diag` logs.
+  25-27 GB of dead images each runner holds. Note that `until` filters on the
+  image's **Created** time, not on when it was last used: an old image that is
+  still built against every day is removed all the same. Concretely, runner-4
+  holds four 23.8 GB `ffmpeg-base` images created two weeks ago, so the first
+  sweep drops ~95 GB there and the next ffmpeg build starts cold. Accepted —
+  the images are unreferenced (0 active fleet-wide) and dominate the runner's
+  disk; only images built in the last 72h (the current day's in-flight work)
+  are spared.
+- Sweep `_work/*` directories with no content newer than 14 days, clearing
+  abandoned workspaces. The test must be **recursive**: a directory's own
+  mtime changes only when its entry list changes, so `_work/<repo>` records
+  its first checkout and never updates again while the runner writes into
+  `<repo>/<repo>` beneath it. Testing the parent's mtime would delete live
+  workspaces. The three `actions_github_pages_*` directories found on runner-1
+  are one-shot drops where parent mtime does equal newest content, and get
+  their own sweep (see "Other findings").
+- Trim `_diag` logs (per-file `-type f -mtime +14`, which is a correct
+  liveness test for files).
 
 Runs every **6 hours** via a backgrounded shell loop rather than a cron daemon,
 keeping the container self-contained. The first pass is delayed rather than run
@@ -190,14 +201,26 @@ If recreation is still needed, it is **safe for registration** — verified in
 `scripts/start.sh`:
 
 - `start.sh:3-4` generates a fresh random runner name on every start.
-- `start.sh:148` registers unattended with `--replace` on every boot.
-- `start.sh:141-143` traps `EXIT`/`TERM` and deregisters cleanly on shutdown.
+- `start.sh:177-185` builds the config command with `--replace --unattended`;
+  `start.sh:218` invokes `register` on every boot.
+- `start.sh:211-213` installs `remove` on `INT`/`TERM`/`EXIT` — but these traps
+  **do not fire on a normal shutdown**. The script ends in `exec ./run.sh`
+  (`start.sh:222`), and `exec` replaces the shell image entirely; the traps
+  belong to the destroyed shell and are gone before the container ever receives
+  a signal. Deregistration on stop therefore does not happen.
 
-No manual re-registration is required. Preconditions before any recreation:
+Re-registration is still automatic on the next boot, because each start picks a
+fresh random name and configures with `--replace`. The cost of the dead traps is
+one-directional: **a full recreate leaves the old `nomercy-*` registration
+behind as an orphaned "offline" runner in the GitHub org, and it must be deleted
+manually.** Budget for that cleanup in any recreation plan.
+
+Preconditions before any recreation:
 
 - Drain first — runners were observed executing `jvm-android` jobs; do not kill
   mid-job.
-- Confirm no orphaned registrations accumulate in the org runner list.
+- Expect one orphaned offline registration per recreated runner; remove them
+  from the org runner list afterwards.
 - Scope every command explicitly to this compose project. Never
   `--remove-orphans`.
 
@@ -210,11 +233,25 @@ throughout, verified by name census and `docker inspect` timestamps.
 
 ### Immediate results
 
-- Host disk free: 29 GB (98% used) at baseline → 273 GB (72% used) after
-  rollout. Measured as `1007G total, 684G used, 273G avail, 72%`.
+- Host disk free: **29 GB (98% used) at baseline → 273 GB (72% used)** after
+  rollout. Measured as `1007G total, 684G used, 273G avail, 72%`. Both ends are
+  evidenced in-repo by the `df -h /` lines in
+  `docs/superpowers/plans/baseline-2026-07-26.txt` and
+  `docs/superpowers/plans/after-phase-a-2026-07-26.txt` (the latter re-measured
+  slightly later at `685G used, 272G avail, 72%` — the fleet is live and the
+  figure drifts by ~1 GB between reads).
 - Approximately 244 GB reclaimed with zero destructive action — BuildKit GC
   alone.
-- Fleet build cache: ~941 GB at baseline → ~192 GB and still falling.
+- Fleet build cache: **454 GB at baseline → 192 GB** and still falling. Both
+  figures are the sum of the `Build Cache` rows in
+  `docs/superpowers/plans/baseline-2026-07-26.txt`
+  (68.59 + 83.98 + 76.06 + 101.2 + 80.33 + 44.31 = 454.47 GB) and
+  `docs/superpowers/plans/after-phase-a-2026-07-26.txt`
+  (21.98 + 31 + 35.93 + 31.45 + 36.33 + 35.24 = 191.93 GB).
+  The ~911-941 GB figure quoted elsewhere is the **writable-layer** total from
+  `docker ps -s`, a different and larger quantity (it includes extracted
+  fuse-overlayfs diffs and images, not just BuildKit's cache accounting). Do
+  not conflate the two.
 - Per-runner build cache immediately after rollout: runner-1 21.98 GB,
   runner-2 31 GB, runner-3 35.93 GB, runner-4 31.45 GB, runner-5 36.33 GB,
   runner-6 35.24 GB. Runner-1 is furthest converged because it restarted
@@ -257,7 +294,7 @@ the 24-48h measurement, not now.
 
 ## Known issues
 
-**Pre-existing, not introduced by this work.** `scripts/start.sh` line ~158
+**Pre-existing, not introduced by this work.** `scripts/start.sh` line 175
 runs `./config.sh remove --token "$REG_TOKEN" 2>/dev/null || true`, swallowing
 failures. When removal fails, the subsequent `--replace` config aborts with
 "Cannot configure the runner because it is already configured" and `run.sh`

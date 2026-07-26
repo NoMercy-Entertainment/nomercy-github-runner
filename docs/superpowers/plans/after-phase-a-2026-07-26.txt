@@ -34,3 +34,6 @@ Images          5         0         24.91GB   24.9GB (99%)
 Containers      0         0         0B        0B
 Local Volumes   0         0         0B        0B
 Build Cache     354       0         35.24GB   20.57GB
+=== host disk (df -h / inside runner-1) ===
+Filesystem      Size  Used Avail Use% Mounted on
+overlay        1007G  685G  272G  72% /
