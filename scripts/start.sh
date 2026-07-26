@@ -151,17 +151,32 @@ janitor() {
 }
 
 # ── Shutdown budget ─────────────────────────────────────────────────────────
-# `docker stop` sends SIGTERM and SIGKILLs 10s later, so every network call and
-# CLI invocation on the shutdown path is individually bounded and their sum has
-# to stay comfortably under 10s. Startup is under no such pressure and uses
-# looser bounds.
+# `docker stop` sends SIGTERM and SIGKILLs after the container's StopTimeout.
+# That is documented as 10s, but this host runs Docker Engine 29.5.3, which has
+# a regression (moby/moby#52775) creating containers with StopTimeout=1 —
+# verified: `docker inspect -f '{{.Config.StopTimeout}}'` returns 1 for all six
+# runners. Nothing in compose or the image sets it, and fixing it in compose
+# would require a container recreate, which is gated separately.
+#
+# Two consequences, both handled below:
+#   1. The shutdown path is ordered so the work that MUST complete
+#      (deregistration) runs first and gets whatever budget exists.
+#   2. Every network/CLI call is still individually bounded, so the path is
+#      safe under an explicit `docker stop -t 30` — which is how the runners
+#      are expected to be stopped until the Engine bug is resolved.
 GH_API_MAX_TIME=10          # curl --max-time, startup
 CONFIG_REMOVE_TIMEOUT=30    # hard timeout for ./config.sh remove, startup
 
 SHUTDOWN_API_MAX_TIME=3     # curl --max-time, shutdown
-SHUTDOWN_CONFIG_TIMEOUT=3   # hard timeout for ./config.sh remove, shutdown
-SHUTDOWN_CHILD_TIMEOUT=2    # how long to wait for run.sh after forwarding TERM
-# Worst case shutdown: 2 + 3 + 3 = 8s, ~2s of headroom inside the grace period.
+SHUTDOWN_CONFIG_TIMEOUT=5   # hard timeout for ./config.sh remove, shutdown
+SHUTDOWN_CHILD_TIMEOUT=0    # do not wait on run.sh; see stop_runner()
+# Worst case shutdown: 3 (curl) + 5+1 (timeout -k 1) + 0 (child) = 9s.
+#
+# SHUTDOWN_CONFIG_TIMEOUT is 5 rather than 3 because config.sh runs
+# `ldconfig -NXv` in its preamble before Runner.Listener starts; measured on
+# live runner-1 that takes ~1s warm but up to ~7.8s on a cold page cache, which
+# is the state a real `docker stop` hits hours into uptime. 5s covers the warm
+# case with margin without pushing the total past the documented 10s default.
 
 # ── GitHub API token helper ─────────────────────────────────────────────────
 # The runner needs two *different*, non-interchangeable credentials:
@@ -179,14 +194,19 @@ gh_token() {
   local url="https://api.github.com/orgs/${GITHUB_ORG}/actions/runners/${kind}"
   local response token message rc=0
 
+  # curl's stderr is deliberately NOT merged into $response and $response is
+  # never echoed: on exit 28 (--max-time hit mid-transfer) the captured body is
+  # a partial JSON document that can contain part of `"token":"..."`, and
+  # logging it would leak a credential into the container log. curl's own
+  # diagnostics (-sS) go straight to stderr, which is token-free.
   response=$(curl -sS -X POST \
     --max-time "$max_time" \
     -H "Authorization: Bearer ${GH_TOKEN}" \
     -H "Accept: application/vnd.github+json" \
-    "$url" 2>&1) || rc=$?
+    "$url") || rc=$?
 
   if [ "$rc" -ne 0 ]; then
-    echo "Error: ${kind} request failed (curl exit ${rc}): ${response}" >&2
+    echo "Error: ${kind} request failed (curl exit ${rc})." >&2
     return 1
   fi
 
@@ -204,6 +224,21 @@ gh_token() {
 # ── Server-side deregistration ──────────────────────────────────────────────
 # Always uses a *removal* token, and never silences the outcome.
 #   $1 = curl --max-time, $2 = hard timeout for ./config.sh remove
+#
+# `timeout -k 1` matters: plain `timeout N` sends TERM and then keeps waiting
+# on the child, so it only returns promptly if that child actually dies on
+# TERM. Measured in-container, `timeout 2 bash -c 'trap "" TERM; sleep 20'`
+# returned after 20s while `timeout -k 1 2 ...` returned after 3s. config.sh is
+# plain bash with no TERM trap so the bound happens to hold today; -k 1 makes
+# it guaranteed rather than incidental.
+#
+# Caveat on the startup path: when the timeout fires, config.sh's
+# Runner.Listener grandchild is orphaned rather than killed. A straggling
+# `remove` could in principle still be running when the subsequent `--replace`
+# writes .runner/.credentials and then delete them, producing exactly the
+# registered-but-unconfigured state this fix exists to prevent. The startup
+# timeout is 30s precisely so this effectively never fires; the retry loop in
+# register() is the backstop if it ever does.
 github_remove_runner() {
   local api_max_time="$1" config_timeout="$2"
   local rm_token rc=0
@@ -213,7 +248,7 @@ github_remove_runner() {
     return 1
   fi
 
-  timeout "$config_timeout" ./config.sh remove --token "$rm_token" || rc=$?
+  timeout -k 1 "$config_timeout" ./config.sh remove --token "$rm_token" || rc=$?
   if [ "$rc" -eq 0 ]; then
     echo "Server-side removal of ${RUNNER_NAME} succeeded."
     return 0
@@ -231,8 +266,7 @@ register() {
   echo "Registering runner ${RUNNER_NAME}..."
 
   if ! REG_TOKEN=$(gh_token registration-token "$GH_API_MAX_TIME"); then
-    echo "Error: could not obtain a registration token — aborting."
-    exit 1
+    fatal "could not obtain a registration token"
   fi
 
   # Clear any stale registration left behind by a previous container start.
@@ -259,7 +293,32 @@ register() {
     config_cmd+=(--runnergroup "$RUNNER_GROUP")
   fi
 
-  "${config_cmd[@]}"
+  # config.sh's exit status MUST be checked. There is no `set -e`, so the old
+  # bare invocation let a failed registration fall through to `./run.sh`, and
+  # the upstream scripts then laundered the failure into a zero exit:
+  # run-helper.sh maps Runner.Listener codes 0/1/5/unknown to `exit 0`, and
+  # run.sh maps everything except 2 (and 7, gated behind an env var that is not
+  # set here) to `exit 0`. An unconfigured runner therefore reported
+  # "exited with status 0" and restart-looped invisibly.
+  #
+  # This is not hypothetical: RUNNER_GROUP is set to a real group. If that group
+  # is renamed or deleted org-side, `--runnergroup` fails deterministically on
+  # every runner at once — each would wipe its local config, fail to register,
+  # and exit 0 forever. Retry a few times to ride out transient API errors,
+  # then exit non-zero so the container's restart policy and any exit-code
+  # monitoring actually see the failure.
+  local attempt
+  for attempt in 1 2 3; do
+    if "${config_cmd[@]}"; then
+      echo "Runner ${RUNNER_NAME} registered."
+      return 0
+    fi
+    echo "Error: config.sh failed (attempt ${attempt}/3)."
+    rm -f .runner .credentials .credentials_rsaparams
+    sleep 10
+  done
+
+  fatal "registration failed after 3 attempts — exiting for container restart"
 }
 
 # ── Deregister on container shutdown ───────────────────────────────────────
@@ -275,6 +334,16 @@ remove() {
   github_remove_runner "$SHUTDOWN_API_MAX_TIME" "$SHUTDOWN_CONFIG_TIMEOUT" || true
 }
 
+# Abort without letting the EXIT trap run a full deregistration. Registration
+# failures happen before this boot's RUNNER_NAME exists server-side, so `remove`
+# would spend a token fetch and a config.sh invocation on a name GitHub has
+# never heard of — twice per iteration of a six-container crash loop.
+fatal() {
+  echo "Error: $1"
+  RUNNER_REMOVED=1
+  exit 1
+}
+
 JANITOR_PID=""
 RUNNER_PID=""
 
@@ -285,11 +354,14 @@ stop_janitor() {
   fi
 }
 
-# Forward SIGTERM to run.sh and wait for it, but only up to
-# SHUTDOWN_CHILD_TIMEOUT. The bound is deliberate: upstream run.sh only
-# forwards signals to Runner.Listener when RUNNER_MANUALLY_TRAP_SIG is set, so
-# it can easily outlive the 10s grace period. Deregistration must not be
-# starved waiting for it.
+# Best-effort only, and deliberately last in the shutdown sequence.
+# RUNNER_MANUALLY_TRAP_SIG is empty in this image (verified), so upstream run.sh
+# takes its no-trap branch and never forwards TERM to Runner.Listener. Any time
+# spent waiting here is therefore guaranteed to be wasted, and with
+# StopTimeout=1 on this host it is time deregistration cannot spare — hence
+# SHUTDOWN_CHILD_TIMEOUT=0: signal the child, do not wait, let Docker's SIGKILL
+# finish the job. The loop is retained so the wait can be re-enabled by raising
+# the constant if RUNNER_MANUALLY_TRAP_SIG is ever set.
 stop_runner() {
   [ -n "$RUNNER_PID" ] || return 0
   kill -TERM "$RUNNER_PID" 2>/dev/null || true
@@ -297,7 +369,8 @@ stop_runner() {
   local waited=0
   while kill -0 "$RUNNER_PID" 2>/dev/null; do
     if [ "$waited" -ge "$SHUTDOWN_CHILD_TIMEOUT" ]; then
-      echo "run.sh still alive after ${SHUTDOWN_CHILD_TIMEOUT}s — deregistering anyway."
+      [ "$SHUTDOWN_CHILD_TIMEOUT" -gt 0 ] &&
+        echo "run.sh still alive after ${SHUTDOWN_CHILD_TIMEOUT}s — leaving it to SIGKILL."
       return 1
     fi
     sleep 1
@@ -308,12 +381,18 @@ stop_runner() {
   return 0
 }
 
+# Order matters more than anything else here. With StopTimeout=1 on this host
+# there is roughly one second between SIGTERM and SIGKILL, so whatever runs
+# first is the only thing that can run at all. Deregistration is the work that
+# must complete — stopping the child is what SIGKILL does for free — so
+# `remove` goes ahead of `stop_runner`. Under `docker stop -t 30` both complete;
+# under the current 1s default at least the right call is the one in flight.
 shutdown_handler() {
   local signame="$1" code="$2"
   echo "Received SIG${signame} — shutting down runner ${RUNNER_NAME}..."
   stop_janitor
-  stop_runner
   remove
+  stop_runner
   exit "$code"
 }
 
@@ -329,10 +408,16 @@ trap 'stop_janitor; remove' EXIT
 # along with it and deregistration never ran. Keeping this shell alive as PID 1
 # is what makes those handlers reachable; it deregisters on signal and on the
 # runner exiting by itself.
-register
+register || exit 1
 
 janitor &
 JANITOR_PID=$!
+
+# Job control on. Without it bash adds SIGINT to a background child's ignore
+# mask (measured: SigIgn 0x4 in the foreground vs 0x6 backgrounded, and 0x0
+# with `set -m`), so run.sh would silently stop being interruptible the moment
+# it moved off the foreground. Upstream's own runWithManualTrap does the same.
+set -m
 
 echo "Starting runner ${RUNNER_NAME}..."
 ./run.sh &
@@ -341,6 +426,10 @@ RUNNER_PID=$!
 wait "$RUNNER_PID"
 RUNNER_STATUS=$?
 
+# Note: upstream launders almost every Runner.Listener failure into exit 0
+# (see the comment in register()), so a non-zero status here is rare by
+# construction. Registration failures are caught in register() instead, which
+# is where the meaningful non-zero exit comes from.
 echo "run.sh exited with status ${RUNNER_STATUS}."
 stop_janitor
 remove
