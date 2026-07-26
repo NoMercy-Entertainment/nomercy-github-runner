@@ -150,29 +150,100 @@ janitor() {
   done
 }
 
+# ── Shutdown budget ─────────────────────────────────────────────────────────
+# `docker stop` sends SIGTERM and SIGKILLs 10s later, so every network call and
+# CLI invocation on the shutdown path is individually bounded and their sum has
+# to stay comfortably under 10s. Startup is under no such pressure and uses
+# looser bounds.
+GH_API_MAX_TIME=10          # curl --max-time, startup
+CONFIG_REMOVE_TIMEOUT=30    # hard timeout for ./config.sh remove, startup
+
+SHUTDOWN_API_MAX_TIME=3     # curl --max-time, shutdown
+SHUTDOWN_CONFIG_TIMEOUT=3   # hard timeout for ./config.sh remove, shutdown
+SHUTDOWN_CHILD_TIMEOUT=2    # how long to wait for run.sh after forwarding TERM
+# Worst case shutdown: 2 + 3 + 3 = 8s, ~2s of headroom inside the grace period.
+
+# ── GitHub API token helper ─────────────────────────────────────────────────
+# The runner needs two *different*, non-interchangeable credentials:
+#   registration-token  → ./config.sh          (register)
+#   remove-token        → ./config.sh remove   (deregister)
+# Handing a registration token to `config.sh remove` fails every time. This
+# helper exists so the two endpoints can no longer be conflated.
+#
+#   $1 = "registration-token" | "remove-token"
+#   $2 = curl --max-time in seconds
+# Prints the token on stdout; on failure logs a diagnostic to stderr and
+# returns non-zero.
+gh_token() {
+  local kind="$1" max_time="$2"
+  local url="https://api.github.com/orgs/${GITHUB_ORG}/actions/runners/${kind}"
+  local response token message rc=0
+
+  response=$(curl -sS -X POST \
+    --max-time "$max_time" \
+    -H "Authorization: Bearer ${GH_TOKEN}" \
+    -H "Accept: application/vnd.github+json" \
+    "$url" 2>&1) || rc=$?
+
+  if [ "$rc" -ne 0 ]; then
+    echo "Error: ${kind} request failed (curl exit ${rc}): ${response}" >&2
+    return 1
+  fi
+
+  message=$(printf '%s' "$response" | jq -r '.message // empty' 2>/dev/null)
+  token=$(printf '%s' "$response" | jq -r '.token // empty' 2>/dev/null)
+
+  if [ -z "$token" ]; then
+    echo "Error: no ${kind} in API response${message:+ (${message})}" >&2
+    return 1
+  fi
+
+  printf '%s' "$token"
+}
+
+# ── Server-side deregistration ──────────────────────────────────────────────
+# Always uses a *removal* token, and never silences the outcome.
+#   $1 = curl --max-time, $2 = hard timeout for ./config.sh remove
+github_remove_runner() {
+  local api_max_time="$1" config_timeout="$2"
+  local rm_token rc=0
+
+  if ! rm_token=$(gh_token remove-token "$api_max_time"); then
+    echo "Warning: no removal token — server-side removal skipped."
+    return 1
+  fi
+
+  timeout "$config_timeout" ./config.sh remove --token "$rm_token" || rc=$?
+  if [ "$rc" -eq 0 ]; then
+    echo "Server-side removal of ${RUNNER_NAME} succeeded."
+    return 0
+  fi
+  if [ "$rc" -eq 124 ]; then
+    echo "Warning: './config.sh remove' timed out after ${config_timeout}s."
+  else
+    echo "Warning: './config.sh remove' failed (exit ${rc})."
+  fi
+  return 1
+}
+
 # ── Register ────────────────────────────────────────────────────────────────
 register() {
   echo "Registering runner ${RUNNER_NAME}..."
 
-  local reg_url="https://api.github.com/orgs/${GITHUB_ORG}/actions/runners/registration-token"
-  local auth_response
-  auth_response=$(curl -sS -X POST -H "Authorization: Bearer ${GH_TOKEN}" "$reg_url")
-
-  local message
-  message=$(echo "$auth_response" | jq -r '.message // empty')
-  if [ "$message" = "Bad credentials" ]; then
-    echo "Error: Bad credentials"
+  if ! REG_TOKEN=$(gh_token registration-token "$GH_API_MAX_TIME"); then
+    echo "Error: could not obtain a registration token — aborting."
     exit 1
   fi
 
-  REG_TOKEN=$(echo "$auth_response" | jq -r '.token')
-  if [ "$REG_TOKEN" = "null" ] || [ -z "$REG_TOKEN" ]; then
-    echo "Error: No registration token"
-    exit 1
-  fi
-
-  # Remove any stale config from a previous run
-  ./config.sh remove --token "$REG_TOKEN" 2>/dev/null || true
+  # Clear any stale registration left behind by a previous container start.
+  # Server-side removal is attempted and its outcome logged either way, but the
+  # local state files are deleted *unconditionally*: with them gone, the
+  # `--replace` below cannot abort with "Cannot configure the runner because it
+  # is already configured", whether or not the removal call succeeded.
+  echo "Clearing stale registration state..."
+  github_remove_runner "$GH_API_MAX_TIME" "$CONFIG_REMOVE_TIMEOUT" || true
+  rm -f .runner .credentials .credentials_rsaparams
+  echo "Local runner state cleared (.runner, .credentials, .credentials_rsaparams)."
 
   local config_cmd=(./config.sh
     --replace
@@ -192,31 +263,85 @@ register() {
 }
 
 # ── Deregister on container shutdown ───────────────────────────────────────
+# Guarded: an explicit call and the EXIT trap must not both do the work.
+RUNNER_REMOVED=0
 remove() {
-  echo "Container stopping — removing runner ${RUNNER_NAME}..."
-  # Get a fresh token for removal (the original may have expired)
-  local reg_url="https://api.github.com/orgs/${GITHUB_ORG}/actions/runners/registration-token"
-  local auth_response
-  auth_response=$(curl -sS -X POST -H "Authorization: Bearer ${GH_TOKEN}" "$reg_url" 2>/dev/null)
-  local remove_token
-  remove_token=$(echo "$auth_response" | jq -r '.token // empty')
+  if [ "$RUNNER_REMOVED" -eq 1 ]; then
+    return 0
+  fi
+  RUNNER_REMOVED=1
 
-  if [ -n "$remove_token" ]; then
-    ./config.sh remove --token "$remove_token" 2>/dev/null || true
-  elif [ -n "$REG_TOKEN" ]; then
-    ./config.sh remove --token "$REG_TOKEN" 2>/dev/null || true
+  echo "Container stopping — removing runner ${RUNNER_NAME}..."
+  github_remove_runner "$SHUTDOWN_API_MAX_TIME" "$SHUTDOWN_CONFIG_TIMEOUT" || true
+}
+
+JANITOR_PID=""
+RUNNER_PID=""
+
+stop_janitor() {
+  if [ -n "$JANITOR_PID" ]; then
+    kill "$JANITOR_PID" 2>/dev/null || true
+    JANITOR_PID=""
   fi
 }
 
-trap 'remove; exit 130' INT
-trap 'remove; exit 143' TERM
-trap remove EXIT
+# Forward SIGTERM to run.sh and wait for it, but only up to
+# SHUTDOWN_CHILD_TIMEOUT. The bound is deliberate: upstream run.sh only
+# forwards signals to Runner.Listener when RUNNER_MANUALLY_TRAP_SIG is set, so
+# it can easily outlive the 10s grace period. Deregistration must not be
+# starved waiting for it.
+stop_runner() {
+  [ -n "$RUNNER_PID" ] || return 0
+  kill -TERM "$RUNNER_PID" 2>/dev/null || true
+
+  local waited=0
+  while kill -0 "$RUNNER_PID" 2>/dev/null; do
+    if [ "$waited" -ge "$SHUTDOWN_CHILD_TIMEOUT" ]; then
+      echo "run.sh still alive after ${SHUTDOWN_CHILD_TIMEOUT}s — deregistering anyway."
+      return 1
+    fi
+    sleep 1
+    waited=$((waited + 1))
+  done
+
+  wait "$RUNNER_PID" 2>/dev/null || true
+  return 0
+}
+
+shutdown_handler() {
+  local signame="$1" code="$2"
+  echo "Received SIG${signame} — shutting down runner ${RUNNER_NAME}..."
+  stop_janitor
+  stop_runner
+  remove
+  exit "$code"
+}
+
+trap 'shutdown_handler INT 130' INT
+trap 'shutdown_handler TERM 143' TERM
+trap 'stop_janitor; remove' EXIT
 
 # ── Register once, run continuously ────────────────────────────────────────
-# No --ephemeral: runner stays registered and picks up jobs continuously.
-# Only deregisters when the container is stopped/killed (via trap above).
+# No --ephemeral: the runner stays registered and picks up jobs continuously.
+#
+# run.sh is started as a background child and waited on rather than exec'd.
+# `exec` replaced this shell, so the INT/TERM/EXIT traps above ceased to exist
+# along with it and deregistration never ran. Keeping this shell alive as PID 1
+# is what makes those handlers reachable; it deregisters on signal and on the
+# runner exiting by itself.
 register
 
 janitor &
+JANITOR_PID=$!
 
-exec ./run.sh
+echo "Starting runner ${RUNNER_NAME}..."
+./run.sh &
+RUNNER_PID=$!
+
+wait "$RUNNER_PID"
+RUNNER_STATUS=$?
+
+echo "run.sh exited with status ${RUNNER_STATUS}."
+stop_janitor
+remove
+exit "$RUNNER_STATUS"
