@@ -1,0 +1,287 @@
+{% extends "base.html" %}
+{% block title %}NoMercy Runners{% endblock %}
+
+{% block style %}
+.grid{display:grid;gap:12px;grid-template-columns:repeat(auto-fill,minmax(330px,1fr))}
+.card{background:var(--bg-panel);border:1px solid var(--rule);padding:14px 15px 13px;
+  position:relative;overflow:hidden;animation:rise .45s cubic-bezier(.2,.7,.3,1) backwards}
+@keyframes rise{from{opacity:0;transform:translateY(9px)}to{opacity:1;transform:none}}
+.card::before{content:"";position:absolute;left:0;top:0;bottom:0;width:2px;background:var(--rule-hot)}
+.card.busy::before{background:var(--busy)}
+.card.idle::before{background:var(--signal-dk)}
+.card.draining::before{background:var(--drain)}
+.card.stopped::before{background:var(--alert-dk)}
+.card.stopped{opacity:.72}
+.chead{display:flex;align-items:baseline;gap:9px;margin-bottom:3px}
+.cname{font-family:var(--label);font-size:15px;font-weight:600;letter-spacing:.09em;
+  text-transform:uppercase}
+.badge{margin-left:auto;font-size:9px;letter-spacing:.16em;text-transform:uppercase;
+  padding:2px 7px;border:1px solid currentColor}
+.badge.idle{color:var(--text-dim)}
+.badge.busy{color:var(--busy);animation:breathe 2s ease-in-out infinite}
+.badge.draining{color:var(--drain);animation:breathe 2s ease-in-out infinite}
+.badge.stopped{color:var(--alert)}
+@keyframes breathe{0%,100%{opacity:1}50%{opacity:.5}}
+.creg{font-size:11px;color:var(--text-faint)}
+.cjob{margin:9px 0 11px;font-size:11.5px;color:var(--busy);
+  border-left:2px solid var(--busy-dk);padding-left:8px;white-space:nowrap;
+  overflow:hidden;text-overflow:ellipsis}
+.cjob.none{color:var(--text-faint);border-color:var(--rule)}
+.meter{margin-top:9px}
+.mrow{display:flex;justify-content:space-between;align-items:baseline;font-size:9.5px;
+  letter-spacing:.15em;text-transform:uppercase;color:var(--text-faint);margin-bottom:4px}
+.mval{color:var(--text-dim);font-size:10.5px;font-variant-numeric:tabular-nums;
+  text-transform:none;letter-spacing:.02em}
+.track{position:relative;height:7px;background:var(--bg-inset);border:1px solid var(--rule);
+  overflow:hidden}
+.fill{height:100%;width:0;transition:width .6s cubic-bezier(.2,.7,.3,1);background:var(--signal)}
+.fill.warn{background:var(--busy)} .fill.crit{background:var(--alert)}
+.track::after{content:"";position:absolute;inset:0;pointer-events:none;
+  background:repeating-linear-gradient(90deg,transparent 0 4px,var(--bg-panel) 4px 5px);opacity:.85}
+.actions{display:flex;flex-wrap:wrap;gap:6px;margin-top:13px;padding-top:12px;
+  border-top:1px solid var(--rule)}
+.actions button{padding:5px 9px;font-size:9px}
+.disk{margin-top:20px;border:1px solid var(--rule);background:var(--bg-panel);padding:15px 16px}
+.disk .mrow{font-size:10px} .disk .track{height:11px}
+.diskpath{font-size:10px;color:var(--text-faint);margin-top:9px}
+.skel{color:var(--text-faint);padding:34px 0;text-align:center;letter-spacing:.2em;
+  text-transform:uppercase;font-size:11px}
+#toast{position:fixed;right:18px;bottom:18px;max-width:380px;background:var(--bg-panel);
+  border:1px solid var(--rule);border-left:3px solid var(--signal);padding:11px 14px;
+  font-size:11.5px;display:none;z-index:9}
+#toast.show{display:block;animation:slip .25s ease-out}
+#toast.bad{border-left-color:var(--alert);color:var(--alert)}
+@keyframes slip{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
+{% endblock %}
+
+{% block body %}
+<header>
+  <div class="brand">
+    <h1>NoMercy Runners</h1>
+    <div class="sub">Isolated engine &middot; github-runners</div>
+  </div>
+  <div class="stat"><div class="n ok" id="s-online">&mdash;</div><div class="k">Running</div></div>
+  <div class="stat"><div class="n work" id="s-busy">&mdash;</div><div class="k">Busy</div></div>
+  <div class="stat"><div class="live" id="live"><span class="dot"></span><span id="live-txt">Connecting</span></div></div>
+  <nav>
+    <a href="/" class="on">Fleet</a>
+    <a href="/settings">Settings</a>
+    <a href="/logout">Sign out</a>
+  </nav>
+</header>
+
+<div style="display:flex;gap:8px;margin-bottom:16px;flex-wrap:wrap">
+  <button id="btn-add" class="primary">+ Add runner</button>
+  <button id="btn-recreate" class="warn">Recreate fleet</button>
+  <span class="hint" style="align-self:center">Recreate applies saved settings changes.</span>
+</div>
+
+<div class="grid" id="grid"><div class="skel">Awaiting telemetry</div></div>
+
+<div class="disk">
+  <div class="mrow"><span>Runner volume</span><span class="mval" id="disk-val">&mdash;</span></div>
+  <div class="track"><div class="fill" id="disk-fill"></div></div>
+  <div class="diskpath">D:\Docker\GithubRunners\Data\ext4.vhdx</div>
+</div>
+
+<footer>
+  <span id="f-gen">Updated &mdash;</span>
+  <span id="f-count">&mdash; runners</span>
+  <span>Build cache cap {{ 40 }} GB / runner</span>
+</footer>
+
+<div id="toast"></div>
+
+<script>
+const CACHE_CAP_GB = 40;
+const STALE_MS = 25000;
+let lastGood = 0;
+const $ = id => document.getElementById(id);
+
+function toast(msg, bad) {
+  const t = $('toast');
+  t.textContent = msg;
+  t.className = 'show' + (bad ? ' bad' : '');
+  clearTimeout(t._h);
+  t._h = setTimeout(() => { t.className = ''; }, 6000);
+}
+
+function toBytes(s) {
+  if (!s) return 0;
+  const m = String(s).trim().match(/^([\d.]+)\s*([KMGTP]?i?B)?$/i);
+  if (!m) return 0;
+  const n = parseFloat(m[1]); if (isNaN(n)) return 0;
+  const u = (m[2] || 'B').toUpperCase().replace('I', '');
+  return n * ({B:1,KB:1e3,MB:1e6,GB:1e9,TB:1e12,PB:1e15}[u] || 1);
+}
+const gbNum = b => b / 1e9;
+const fmtGB = b => gbNum(b) < 10 ? gbNum(b).toFixed(2) + ' GB' : Math.round(gbNum(b)) + ' GB';
+const level = p => p >= 90 ? 'crit' : p >= 70 ? 'warn' : '';
+
+async function act(action, name, btn) {
+  if (btn) btn.disabled = true;
+  try {
+    const url = action === 'add' ? '/api/runner/add'
+              : action === 'recreate' ? '/api/recreate'
+              : '/api/runner/' + action;
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(name ? {name} : {})
+    });
+    const d = await res.json().catch(() => ({}));
+    if (!res.ok || d.ok === false) throw new Error(d.error || ('HTTP ' + res.status));
+    toast(d.note || ((name || d.name || 'fleet') + ': ' + action + ' ok'));
+    tick();
+  } catch (e) {
+    toast((name || 'fleet') + ': ' + action + ' failed - ' + e.message, true);
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+function meterHTML(key, label) {
+  return `<div class="meter" data-m="${key}">
+    <div class="mrow"><span>${label}</span><span class="mval"></span></div>
+    <div class="track"><div class="fill"></div></div></div>`;
+}
+function setMeter(card, key, valText, pct) {
+  const m = card.querySelector(`[data-m="${key}"]`);
+  const v = m.querySelector('.mval'), f = m.querySelector('.fill');
+  const p = Math.max(0, Math.min(100, pct));
+  if (v.textContent !== valText) v.textContent = valText;
+  const cls = 'fill ' + level(p);
+  if (f.className !== cls) f.className = cls;
+  f.style.width = p + '%';
+}
+
+// Cards are created once and patched. Rebuilding innerHTML each poll replayed
+// the entrance animation and made the page flash.
+const cards = new Map();
+
+function makeCard(r, i) {
+  const el = document.createElement('article');
+  el.style.animationDelay = (i * 45) + 'ms';
+  el.innerHTML =
+    `<div class="chead">
+       <span class="cname">${r.name.replace('github-runner-', 'Runner ')}</span>
+       <span class="badge"></span>
+     </div>
+     <div class="creg"></div>
+     <div class="cjob"></div>` +
+    meterHTML('cpu', 'CPU') + meterHTML('mem', 'Memory') + meterHTML('cache', 'Build cache') +
+    `<div class="actions">
+       <button data-a="drain"       class="warn">Drain</button>
+       <button data-a="canceldrain" class="warn">Cancel drain</button>
+       <button data-a="stop"        class="danger">Stop</button>
+       <button data-a="start">Start</button>
+       <button data-a="restart">Restart</button>
+       <button data-a="remove"      class="danger">Remove</button>
+     </div>`;
+  el.querySelectorAll('.actions button').forEach(b => {
+    b.addEventListener('click', () => {
+      const a = b.dataset.a;
+      if (a === 'remove' && !confirm(`Remove ${r.name}? It is deregistered and deleted.`)) return;
+      if (a === 'stop' && !confirm(`Stop ${r.name} now? A running job would be killed.`)) return;
+      act(a, r.name, b);
+    });
+  });
+  return el;
+}
+
+function render(d) {
+  const rs = d.runners || [];
+  const running = rs.filter(r => r.state !== 'stopped').length;
+  $('s-online').textContent = running;
+  $('s-busy').textContent = rs.filter(r => r.state === 'busy').length;
+  $('f-count').textContent = rs.length + ' runners';
+  $('f-gen').textContent = 'Updated ' + (d.generated || '').replace('T', ' ').replace('Z', ' UTC');
+
+  const grid = $('grid');
+  const skel = grid.querySelector('.skel');
+  if (rs.length && skel) skel.remove();
+  if (!rs.length && !skel) grid.innerHTML = '<div class="skel">No runners</div>';
+
+  rs.forEach((r, i) => {
+    let card = cards.get(r.name);
+    if (!card) { card = makeCard(r, i); cards.set(r.name, card); grid.appendChild(card); }
+
+    const cls = 'card ' + r.state;
+    if (card.className !== cls) card.className = cls;
+
+    const badge = card.querySelector('.badge');
+    if (badge.textContent !== r.state) { badge.textContent = r.state; badge.className = 'badge ' + r.state; }
+
+    const reg = `${r.registration} · ${r.uptime || '?'}`;
+    const regEl = card.querySelector('.creg');
+    if (regEl.textContent !== reg) regEl.textContent = reg;
+
+    const jobEl = card.querySelector('.cjob');
+    const jt = r.state === 'draining' && !r.job ? 'draining - waiting for idle'
+             : (r.job || 'no active job');
+    if (jobEl.textContent !== jt) jobEl.textContent = jt;
+    const jc = 'cjob' + (r.job ? '' : ' none');
+    if (jobEl.className !== jc) jobEl.className = jc;
+
+    const cpu = Math.max(0, Math.min(100, Number(r.cpu_percent) || 0));
+    const mu = toBytes(r.mem_used), ml = toBytes(r.mem_limit);
+    const cache = toBytes(r.build_cache);
+    setMeter(card, 'cpu', cpu.toFixed(1) + '%', cpu);
+    setMeter(card, 'mem', (r.mem_used || '0B') + ' / ' + (r.mem_limit || '?'),
+             ml > 0 ? (mu / ml) * 100 : 0);
+    setMeter(card, 'cache', fmtGB(cache) + ' / ' + CACHE_CAP_GB + ' GB',
+             (cache / (CACHE_CAP_GB * 1e9)) * 100);
+
+    // Only offer what makes sense for the current state.
+    const stopped = r.state === 'stopped', draining = r.state === 'draining';
+    const set = (a, show) => {
+      const b = card.querySelector(`[data-a="${a}"]`);
+      b.style.display = show ? '' : 'none';
+    };
+    set('drain', !stopped && !draining);
+    set('canceldrain', draining);
+    set('stop', !stopped);
+    set('start', stopped);
+    set('restart', !stopped);
+    set('remove', true);
+  });
+
+  for (const [name, el] of cards) {
+    if (!rs.some(r => r.name === name)) { el.remove(); cards.delete(name); }
+  }
+
+  const dk = d.disk || {}, dp = Number(dk.percent) || 0;
+  $('disk-val').textContent = fmtGB(dk.used_bytes || 0) + ' / ' + fmtGB(dk.total_bytes || 0) + '  (' + dp + '%)';
+  const df = $('disk-fill');
+  df.style.width = Math.min(100, dp) + '%';
+  df.className = 'fill ' + level(dp);
+}
+
+function setStale(on) {
+  $('live').classList.toggle('stale', on);
+  $('live-txt').textContent = on ? 'Stale' : 'Live';
+}
+
+async function tick() {
+  try {
+    const res = await fetch('/api/status?t=' + Date.now(), {cache: 'no-store'});
+    if (res.status === 401) { location.href = '/login'; return; }
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    render(await res.json());
+    lastGood = Date.now();
+    setStale(false);
+  } catch (e) {
+    if (!lastGood || Date.now() - lastGood > STALE_MS) setStale(true);
+  }
+}
+
+$('btn-add').addEventListener('click', e => act('add', null, e.target));
+$('btn-recreate').addEventListener('click', e => {
+  if (!confirm('Recreate every runner? Each is removed and rebuilt with current settings. Running jobs will be lost.')) return;
+  act('recreate', null, e.target);
+});
+
+tick();
+setInterval(tick, 5000);
+</script>
+{% endblock %}

@@ -74,19 +74,24 @@ services:
   # Docker Desktop's. So the dashboard can inspect the runners and structurally
   # cannot see, let alone touch, BeastStack.
   dashboard:
-    image: python:3.12-alpine
+    build: ./dashboard
+    image: nomercy/runner-dashboard:local
     container_name: runner-dashboard
     restart: unless-stopped
+    environment:
+      # Path to the repo AS THE DAEMON SEES IT. Bind mounts for runners the
+      # dashboard creates are resolved by the daemon, not by this container,
+      # so a container-local path would silently mount an empty directory.
+      REPO_HOST_PATH: /mnt/d/docker-compose/GithubRunners
+      ENV_PATH: /repo/.env
     volumes:
-      - /var/run/docker.sock:/var/run/docker.sock:ro
-      - ./dashboard:/app:ro
+      # Read-WRITE: the dashboard starts, stops, creates and removes runners.
+      - /var/run/docker.sock:/var/run/docker.sock
+      # Read-WRITE: the settings page edits .env.
+      - ./:/repo
       - dashboard-data:/data
     ports:
       - "9200:9200"
-    working_dir: /app
-    command: >
-      sh -c "apk add --no-cache docker-cli jq bash coreutils >/dev/null &&
-             exec bash /app/serve.sh"
 
 volumes:
   dashboard-data:

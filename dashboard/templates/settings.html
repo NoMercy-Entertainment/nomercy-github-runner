@@ -1,0 +1,150 @@
+{% extends "base.html" %}
+{% block title %}Settings - NoMercy Runners{% endblock %}
+
+{% block style %}
+.two{display:grid;gap:0 18px;grid-template-columns:repeat(auto-fit,minmax(260px,1fr))}
+#toast{position:fixed;right:18px;bottom:18px;max-width:380px;background:var(--bg-panel);
+  border:1px solid var(--rule);border-left:3px solid var(--signal);padding:11px 14px;
+  font-size:11.5px;display:none;z-index:9}
+#toast.show{display:block}
+#toast.bad{border-left-color:var(--alert);color:var(--alert)}
+code{background:var(--bg-inset);padding:1px 5px;border:1px solid var(--rule);font-size:11px}
+{% endblock %}
+
+{% block body %}
+<header>
+  <div class="brand">
+    <h1>Settings</h1>
+    <div class="sub">{{ env_path }}</div>
+  </div>
+  <nav>
+    <a href="/">Fleet</a>
+    <a href="/settings" class="on">Settings</a>
+    <a href="/logout">Sign out</a>
+  </nav>
+</header>
+
+<div class="notice">
+  <b>Changes apply on recreate.</b> A container's environment is fixed when it
+  is created, so saving here does not alter a running runner. Save, then use
+  <b>Recreate fleet</b> on the Fleet page.
+</div>
+
+<div class="panel">
+  <h2>GitHub</h2>
+  <div class="two">
+    <div class="field">
+      <label for="GITHUB_ORG">Organisation</label>
+      <input type="text" id="GITHUB_ORG" value="{{ env.get('GITHUB_ORG','') }}">
+      <div class="hint">Runners register against this org.</div>
+    </div>
+    <div class="field">
+      <label for="GH_TOKEN">Personal access token</label>
+      <input type="password" id="GH_TOKEN" placeholder="{{ token_mask or 'not set' }}" autocomplete="new-password">
+      <div class="hint">
+        Currently <code>{{ token_mask or 'not set' }}</code>. The real value is
+        never sent to this page. Leave blank to keep it; type a new one to replace it.
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="panel">
+  <h2>Runner identity</h2>
+  <div class="two">
+    <div class="field">
+      <label for="RUNNER_LABELS">Labels</label>
+      <input type="text" id="RUNNER_LABELS" value="{{ env.get('RUNNER_LABELS','') }}">
+      <div class="hint">Comma-separated. Workflows target these with <code>runs-on</code>.</div>
+    </div>
+    <div class="field">
+      <label for="RUNNER_GROUP">Runner group</label>
+      <input type="text" id="RUNNER_GROUP" value="{{ env.get('RUNNER_GROUP','') }}">
+      <div class="hint">Blank for the org default. A group that does not exist makes registration fail.</div>
+    </div>
+  </div>
+</div>
+
+<div class="panel">
+  <h2>Resource limits</h2>
+  <div class="two">
+    <div class="field">
+      <label for="RUNNER_CPU_LIMIT">CPU limit</label>
+      <input type="text" id="RUNNER_CPU_LIMIT" value="{{ env.get('RUNNER_CPU_LIMIT','0') }}">
+      <div class="hint">Cores, e.g. <code>4</code>. <code>0</code> means unlimited.</div>
+    </div>
+    <div class="field">
+      <label for="RUNNER_MEM_LIMIT">Memory limit</label>
+      <input type="text" id="RUNNER_MEM_LIMIT" value="{{ env.get('RUNNER_MEM_LIMIT','0') }}">
+      <div class="hint">e.g. <code>8192M</code> or <code>16G</code>. <code>0</code> means unlimited.</div>
+    </div>
+  </div>
+</div>
+
+<div style="display:flex;gap:8px;flex-wrap:wrap">
+  <button id="save" class="primary">Save settings</button>
+  <button id="save-recreate" class="warn">Save &amp; recreate fleet</button>
+</div>
+
+<div class="notice" style="margin-top:16px">
+  <b>Plain HTTP over your LAN.</b> Anything typed here, including the token,
+  crosses the network unencrypted.
+</div>
+
+<footer><span>Build cache cap is set in scripts/start.sh</span></footer>
+<div id="toast"></div>
+
+<script>
+const FIELDS = ['GITHUB_ORG','GH_TOKEN','RUNNER_LABELS','RUNNER_GROUP',
+                'RUNNER_CPU_LIMIT','RUNNER_MEM_LIMIT'];
+const $ = id => document.getElementById(id);
+
+function toast(msg, bad) {
+  const t = $('toast');
+  t.textContent = msg;
+  t.className = 'show' + (bad ? ' bad' : '');
+  clearTimeout(t._h);
+  t._h = setTimeout(() => { t.className = ''; }, 7000);
+}
+
+async function save() {
+  const body = {};
+  FIELDS.forEach(f => { body[f] = $(f).value; });
+  const res = await fetch('/api/settings', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify(body)
+  });
+  const d = await res.json().catch(() => ({}));
+  if (!res.ok || d.ok === false) throw new Error(d.error || ('HTTP ' + res.status));
+  // Clear the token box so a new value is not left sitting in the DOM.
+  $('GH_TOKEN').value = '';
+  return d;
+}
+
+$('save').addEventListener('click', async e => {
+  e.target.disabled = true;
+  try { const d = await save(); toast(d.note || 'Saved.'); }
+  catch (err) { toast('Save failed - ' + err.message, true); }
+  finally { e.target.disabled = false; }
+});
+
+$('save-recreate').addEventListener('click', async e => {
+  if (!confirm('Save settings and recreate every runner? Running jobs will be lost.')) return;
+  e.target.disabled = true;
+  try {
+    await save();
+    toast('Saved. Recreating fleet...');
+    const res = await fetch('/api/recreate', {method: 'POST'});
+    const d = await res.json().catch(() => ({}));
+    if (!res.ok || d.ok === false) {
+      const bad = (d.results || []).filter(r => !r.ok).map(r => r.name).join(', ');
+      throw new Error(bad ? ('failed: ' + bad) : (d.error || 'HTTP ' + res.status));
+    }
+    toast('Fleet recreated with the new settings.');
+  } catch (err) {
+    toast('Recreate failed - ' + err.message, true);
+  } finally { e.target.disabled = false; }
+});
+</script>
+{% endblock %}

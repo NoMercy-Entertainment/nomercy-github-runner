@@ -1,0 +1,116 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{% block title %}NoMercy Runners{% endblock %}</title>
+<style>
+:root {
+  --bg:#0b0d0f; --bg-panel:#121619; --bg-inset:#0e1113;
+  --rule:#1e262b; --rule-hot:#2b373e;
+  --text:#d5dde2; --text-dim:#6b7a84; --text-faint:#3d4a52;
+  --signal:#5ee6a0; --signal-dk:#1d5c40;
+  --busy:#ffb340; --busy-dk:#5c4118;
+  --drain:#7aa7ff; --drain-dk:#22406e;
+  --alert:#ff5f56; --alert-dk:#5c1f1c;
+  --grid:rgba(255,255,255,.022);
+  --label:"Bahnschrift","DIN Alternate","Roboto Condensed",system-ui,sans-serif;
+  --mono:"Cascadia Mono","Cascadia Code",ui-monospace,"JetBrains Mono",Menlo,Consolas,monospace;
+}
+@media (prefers-color-scheme: light) {
+  :root {
+    --bg:#e9e6df; --bg-panel:#f5f3ee; --bg-inset:#dedad1;
+    --rule:#c9c3b6; --rule-hot:#a89f8d;
+    --text:#1d2226; --text-dim:#5d6670; --text-faint:#9aa2aa;
+    --signal:#0d7a4d; --signal-dk:#a9dcc3;
+    --busy:#a1610a; --busy-dk:#f0d9ae;
+    --drain:#2b5bb5; --drain-dk:#c3d5f2;
+    --alert:#b3241c; --alert-dk:#f0c0bd;
+    --grid:rgba(0,0,0,.03);
+  }
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{
+  background:
+    linear-gradient(var(--grid) 1px,transparent 1px) 0 0/100% 3px,
+    radial-gradient(120% 80% at 50% -10%,rgba(94,230,160,.05),transparent 60%),
+    var(--bg);
+  color:var(--text); font-family:var(--mono); font-size:13px; line-height:1.45;
+  min-height:100vh; padding:clamp(14px,3vw,32px);
+}
+a{color:inherit}
+header{
+  display:flex;flex-wrap:wrap;align-items:flex-end;gap:clamp(14px,3vw,36px);
+  border-bottom:1px solid var(--rule);padding-bottom:16px;margin-bottom:20px;
+}
+.brand{margin-right:auto}
+.brand h1{font-family:var(--label);font-weight:600;font-size:clamp(19px,3.2vw,28px);
+  letter-spacing:.14em;text-transform:uppercase;line-height:1}
+.brand .sub{font-size:10.5px;letter-spacing:.2em;text-transform:uppercase;
+  color:var(--text-faint);margin-top:6px}
+nav{display:flex;gap:8px;align-items:center}
+nav a{font-size:10px;letter-spacing:.16em;text-transform:uppercase;
+  padding:6px 11px;border:1px solid var(--rule);text-decoration:none;color:var(--text-dim)}
+nav a:hover{border-color:var(--rule-hot);color:var(--text)}
+nav a.on{color:var(--signal);border-color:var(--signal-dk)}
+.stat{text-align:right}
+.stat .n{font-family:var(--label);font-size:clamp(20px,3.2vw,30px);font-weight:600;
+  line-height:1;font-variant-numeric:tabular-nums}
+.stat .k{font-size:9.5px;letter-spacing:.2em;text-transform:uppercase;
+  color:var(--text-faint);margin-top:5px}
+.n.ok{color:var(--signal)} .n.work{color:var(--busy)}
+
+.live{display:inline-flex;align-items:center;gap:7px;font-size:10px;
+  letter-spacing:.18em;text-transform:uppercase;color:var(--text-dim);
+  border:1px solid var(--rule);padding:4px 9px}
+.dot{width:6px;height:6px;border-radius:50%;background:var(--signal);
+  animation:ping 2.4s ease-out infinite}
+@keyframes ping{0%{box-shadow:0 0 0 0 rgba(94,230,160,.55)}
+  70%{box-shadow:0 0 0 7px rgba(94,230,160,0)}100%{box-shadow:0 0 0 0 rgba(94,230,160,0)}}
+.stale .dot{background:var(--alert);animation:none}
+.stale{color:var(--alert);border-color:var(--alert-dk)}
+
+.notice{border:1px solid var(--rule);border-left:3px solid var(--busy);
+  background:var(--bg-panel);padding:10px 13px;margin-bottom:16px;font-size:11.5px;
+  color:var(--text-dim)}
+.notice b{color:var(--busy)}
+.err{border-left-color:var(--alert);color:var(--alert)}
+.err b{color:var(--alert)}
+.ok-msg{border-left-color:var(--signal);color:var(--signal)}
+
+.panel{background:var(--bg-panel);border:1px solid var(--rule);padding:16px 17px;
+  margin-bottom:14px}
+.panel h2{font-family:var(--label);font-size:12px;letter-spacing:.18em;
+  text-transform:uppercase;color:var(--text-dim);margin-bottom:14px;font-weight:600}
+
+label{display:block;font-size:9.5px;letter-spacing:.15em;text-transform:uppercase;
+  color:var(--text-faint);margin-bottom:5px}
+input[type=text],input[type=password]{
+  width:100%;background:var(--bg-inset);border:1px solid var(--rule);color:var(--text);
+  font-family:var(--mono);font-size:12.5px;padding:8px 10px;outline:none}
+input:focus{border-color:var(--signal-dk)}
+.field{margin-bottom:14px}
+.hint{font-size:10.5px;color:var(--text-faint);margin-top:5px}
+
+button,.btn{font-family:var(--label);font-size:10px;letter-spacing:.15em;
+  text-transform:uppercase;padding:7px 12px;background:transparent;
+  border:1px solid var(--rule-hot);color:var(--text-dim);cursor:pointer;
+  transition:border-color .15s,color .15s}
+button:hover:not(:disabled){border-color:var(--signal);color:var(--signal)}
+button:disabled{opacity:.35;cursor:not-allowed}
+button.warn:hover:not(:disabled){border-color:var(--busy);color:var(--busy)}
+button.danger:hover:not(:disabled){border-color:var(--alert);color:var(--alert)}
+button.primary{border-color:var(--signal-dk);color:var(--signal)}
+button.primary:hover:not(:disabled){background:var(--signal-dk);color:var(--text)}
+
+footer{margin-top:18px;display:flex;flex-wrap:wrap;gap:10px 20px;font-size:10px;
+  letter-spacing:.12em;text-transform:uppercase;color:var(--text-faint);
+  border-top:1px solid var(--rule);padding-top:12px}
+.center{max-width:380px;margin:12vh auto}
+{% block style %}{% endblock %}
+</style>
+</head>
+<body>
+{% block body %}{% endblock %}
+</body>
+</html>

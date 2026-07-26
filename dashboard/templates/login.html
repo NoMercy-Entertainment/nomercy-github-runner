@@ -1,0 +1,25 @@
+{% extends "base.html" %}
+{% block title %}Sign in - NoMercy Runners{% endblock %}
+{% block body %}
+<div class="center">
+  <div class="brand" style="margin-bottom:22px">
+    <h1>NoMercy Runners</h1>
+    <div class="sub">Control dashboard</div>
+  </div>
+  {% if error %}<div class="notice err"><b>{{ error }}</b></div>{% endif %}
+  <div class="panel">
+    <form method="post">
+      <div class="field">
+        <label for="password">Password</label>
+        <input type="password" id="password" name="password" autofocus autocomplete="current-password">
+      </div>
+      <button type="submit" class="primary">Sign in</button>
+    </form>
+  </div>
+  <div class="notice">
+    <b>Plain HTTP.</b> This dashboard is reachable over your network without
+    TLS, so this password and the GitHub token cross the wire unencrypted.
+    Fine on a trusted LAN; not something to expose beyond it.
+  </div>
+</div>
+{% endblock %}
