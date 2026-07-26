@@ -1,0 +1,231 @@
+{% extends "base.html" %}
+{% block title %}History - NoMercy Runners{% endblock %}
+
+{% block style %}
+.tiles{display:grid;gap:12px;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));margin-bottom:16px}
+.tile{background:var(--bg-panel);border:1px solid var(--rule);padding:13px 14px}
+.tile .n{font-family:var(--label);font-size:24px;font-weight:600;line-height:1;
+  font-variant-numeric:tabular-nums}
+.tile .k{font-size:9.5px;letter-spacing:.18em;text-transform:uppercase;
+  color:var(--text-faint);margin-top:6px}
+.filters{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:14px}
+select{background:var(--bg-inset);border:1px solid var(--rule);color:var(--text);
+  font-family:var(--mono);font-size:11.5px;padding:6px 9px;outline:none}
+select:focus{border-color:var(--signal-dk)}
+table{width:100%;border-collapse:collapse;font-size:11.5px}
+th{text-align:left;font-size:9.5px;letter-spacing:.15em;text-transform:uppercase;
+  color:var(--text-faint);font-weight:400;padding:7px 9px;border-bottom:1px solid var(--rule)}
+td{padding:8px 9px;border-bottom:1px solid var(--rule);vertical-align:top}
+tbody tr{cursor:pointer}
+tbody tr:hover{background:var(--bg-inset)}
+.res{display:inline-block;padding:1px 7px;font-size:9px;letter-spacing:.14em;
+  text-transform:uppercase;border:1px solid currentColor}
+.res.Succeeded{color:var(--signal)} .res.Failed{color:var(--alert)}
+.res.Canceled{color:var(--text-dim)} .res.running{color:var(--busy)}
+.num{font-variant-numeric:tabular-nums;color:var(--text-dim)}
+.ctx{color:var(--text-faint);font-size:10.5px}
+.ctx a{color:var(--drain);text-decoration:none} .ctx a:hover{text-decoration:underline}
+.wrap{background:var(--bg-panel);border:1px solid var(--rule);padding:4px 6px 8px;overflow-x:auto}
+.empty{color:var(--text-faint);padding:30px;text-align:center;letter-spacing:.18em;
+  text-transform:uppercase;font-size:11px}
+/* detail overlay */
+#ov{position:fixed;inset:0;background:rgba(0,0,0,.62);display:none;z-index:20;
+  padding:clamp(12px,4vh,50px);overflow:auto}
+#ov.show{display:block}
+.sheet{max-width:860px;margin:0 auto;background:var(--bg-panel);
+  border:1px solid var(--rule-hot);padding:20px 22px}
+.sheet h3{font-family:var(--label);font-size:17px;letter-spacing:.1em;
+  text-transform:uppercase;margin-bottom:3px}
+.kv{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:11px 18px;
+  margin:16px 0}
+.kv div span{display:block}
+.kv .k{font-size:9px;letter-spacing:.16em;text-transform:uppercase;color:var(--text-faint)}
+.kv .v{font-size:12.5px;margin-top:3px;word-break:break-word}
+.close{float:right}
+svg{display:block;width:100%;height:150px;background:var(--bg-inset);
+  border:1px solid var(--rule)}
+.legend{display:flex;gap:16px;font-size:9.5px;letter-spacing:.14em;
+  text-transform:uppercase;color:var(--text-faint);margin:8px 0 4px}
+.legend i{display:inline-block;width:9px;height:2px;vertical-align:middle;margin-right:5px}
+{% endblock %}
+
+{% block body %}
+<header>
+  <div class="brand">
+    <h1>Run history</h1>
+    <div class="sub">Every job, every runner</div>
+  </div>
+  <nav>
+    <a href="/">Fleet</a>
+    <a href="/history" class="on">History</a>
+    <a href="/settings">Settings</a>
+    <a href="/logout">Sign out</a>
+  </nav>
+</header>
+
+<div class="tiles" id="tiles"></div>
+
+<div class="filters">
+  <select id="f-runner"><option value="">All runners</option>
+    {% for r in runners %}<option>{{ r }}</option>{% endfor %}</select>
+  <select id="f-job"><option value="">All jobs</option>
+    {% for j in jobs %}<option>{{ j }}</option>{% endfor %}</select>
+  <select id="f-result"><option value="">Any result</option>
+    <option>Succeeded</option><option>Failed</option><option>Canceled</option></select>
+  <button id="refresh">Refresh</button>
+  <span class="hint" style="align-self:center">Click a row for resource graphs.</span>
+</div>
+
+<div class="wrap">
+  <table>
+    <thead><tr>
+      <th>Started</th><th>Job</th><th>Runner</th><th>Duration</th>
+      <th>CPU peak<br><span style="text-transform:none;letter-spacing:0">100% = 1 core</span></th><th>Mem peak</th><th>Result</th><th>Context</th>
+    </tr></thead>
+    <tbody id="rows"><tr><td colspan="8" class="empty">Loading</td></tr></tbody>
+  </table>
+</div>
+
+<footer><span id="count">&mdash;</span><span>Retained indefinitely</span></footer>
+
+<div id="ov"><div class="sheet" id="sheet"></div></div>
+
+<script>
+const $ = id => document.getElementById(id);
+const esc = s => String(s ?? '').replace(/[&<>"]/g, c =>
+  ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+
+const fmtDur = s => {
+  if (s == null) return '-';
+  if (s < 60) return s + 's';
+  const m = Math.floor(s / 60), r = s % 60;
+  return m < 60 ? `${m}m ${r}s` : `${Math.floor(m/60)}h ${m%60}m`;
+};
+const fmtMem = b => !b ? '-' : b >= 1e9 ? (b/1e9).toFixed(1) + ' GB'
+                                        : Math.round(b/1e6) + ' MB';
+const fmtTime = t => !t ? '-' : t.replace('T', ' ').replace('Z', '');
+
+async function loadSummary() {
+  const d = await (await fetch('/api/history/summary')).json();
+  const t = d.totals || {};
+  const rate = t.runs ? Math.round((t.ok || 0) * 100 / t.runs) : 0;
+  $('tiles').innerHTML = `
+    <div class="tile"><div class="n">${t.runs || 0}</div><div class="k">Total runs</div></div>
+    <div class="tile"><div class="n" style="color:var(--signal)">${t.ok || 0}</div><div class="k">Succeeded</div></div>
+    <div class="tile"><div class="n" style="color:var(--alert)">${t.failed || 0}</div><div class="k">Failed</div></div>
+    <div class="tile"><div class="n">${rate}%</div><div class="k">Success rate</div></div>
+    <div class="tile"><div class="n">${fmtDur(t.total_s || 0)}</div><div class="k">Compute time</div></div>`;
+}
+
+async function loadRuns() {
+  const p = new URLSearchParams({
+    runner: $('f-runner').value, job: $('f-job').value,
+    result: $('f-result').value, limit: 200
+  });
+  const d = await (await fetch('/api/history?' + p)).json();
+  const rs = d.runs || [];
+  $('count').textContent = rs.length + ' runs shown';
+
+  if (!rs.length) {
+    $('rows').innerHTML = '<tr><td colspan="8" class="empty">No runs recorded yet</td></tr>';
+    return;
+  }
+
+  $('rows').innerHTML = rs.map(r => {
+    const running = !r.ended_at;
+    const res = running ? 'running' : (r.result || 'unknown');
+    let ctx = '<span class="ctx">-</span>';
+    if (r.gh_repo) {
+      const bits = [esc(r.gh_repo)];
+      if (r.gh_branch) bits.push(esc(r.gh_branch));
+      if (r.gh_sha) bits.push(esc(r.gh_sha));
+      const txt = bits.join(' · ');
+      ctx = r.gh_url ? `<span class="ctx"><a href="${esc(r.gh_url)}" target="_blank" rel="noopener">${txt}</a></span>`
+                     : `<span class="ctx">${txt}</span>`;
+    }
+    return `<tr data-id="${r.id}">
+      <td class="num">${fmtTime(r.started_at)}</td>
+      <td>${esc(r.job_name)}</td>
+      <td class="num">${esc(r.runner.replace('github-runner-', '#'))}</td>
+      <td class="num">${running ? 'running' : fmtDur(r.duration_s)}</td>
+      <td class="num">${r.cpu_max != null ? r.cpu_max.toFixed(0) + '%' : '-'}</td>
+      <td class="num">${fmtMem(r.mem_max)}</td>
+      <td><span class="res ${esc(res)}">${esc(res)}</span></td>
+      <td>${ctx}</td>
+    </tr>`;
+  }).join('');
+
+  $('rows').querySelectorAll('tr[data-id]').forEach(tr => {
+    tr.addEventListener('click', e => {
+      if (e.target.tagName === 'A') return;   // let the GitHub link through
+      openRun(tr.dataset.id);
+    });
+  });
+}
+
+// Plot samples as an SVG polyline. No chart library: this is two series over
+// time, and a dependency would be more code than the maths.
+function spark(samples, key, colour, max) {
+  if (samples.length < 2) return '<div class="empty">Too short to graph</div>';
+  const W = 800, H = 150, pad = 4;
+  const vals = samples.map(s => Number(s[key]) || 0);
+  const top = max || Math.max(...vals, 1);
+  const pts = vals.map((v, i) => {
+    const x = pad + (i / (vals.length - 1)) * (W - pad * 2);
+    const y = H - pad - (v / top) * (H - pad * 2);
+    return `${x.toFixed(1)},${y.toFixed(1)}`;
+  }).join(' ');
+  return `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none">
+    <polyline points="${pts}" fill="none" stroke="${colour}" stroke-width="1.6"/>
+  </svg>`;
+}
+
+async function openRun(id) {
+  const r = await (await fetch('/api/history/run/' + id)).json();
+  const s = r.samples_data || [];
+  const memMax = Math.max(...s.map(x => x.mem || 0), 1);
+  const cpuMax = Math.max(...s.map(x => x.cpu || 0), 100);
+
+  $('sheet').innerHTML = `
+    <button class="close" onclick="document.getElementById('ov').classList.remove('show')">Close</button>
+    <h3>${esc(r.job_name)}</h3>
+    <div class="ctx">${esc(r.runner)} · ${esc(r.registration || '-')}</div>
+    <div class="kv">
+      <div><span class="k">Started</span><span class="v">${fmtTime(r.started_at)}</span></div>
+      <div><span class="k">Ended</span><span class="v">${fmtTime(r.ended_at)}</span></div>
+      <div><span class="k">Duration</span><span class="v">${fmtDur(r.duration_s)}</span></div>
+      <div><span class="k">Result</span><span class="v"><span class="res ${esc(r.result || 'running')}">${esc(r.result || 'running')}</span></span></div>
+      <div><span class="k">CPU min / avg / max</span><span class="v">${
+        r.cpu_min != null ? `${r.cpu_min.toFixed(1)}% / ${r.cpu_avg.toFixed(1)}% / ${r.cpu_max.toFixed(1)}%` : '-'}</span></div>
+      <div><span class="k">Mem min / avg / max</span><span class="v">${
+        r.mem_min != null ? `${fmtMem(r.mem_min)} / ${fmtMem(r.mem_avg)} / ${fmtMem(r.mem_max)}` : '-'}</span></div>
+      <div><span class="k">Samples</span><span class="v">${r.samples || 0}</span></div>
+      <div><span class="k">Repository</span><span class="v">${
+        r.gh_repo ? (r.gh_url ? `<a href="${esc(r.gh_url)}" target="_blank" rel="noopener" style="color:var(--drain)">${esc(r.gh_repo)}</a>` : esc(r.gh_repo)) : 'not matched'}</span></div>
+      <div><span class="k">Workflow</span><span class="v">${esc(r.gh_workflow || '-')}</span></div>
+      <div><span class="k">Branch</span><span class="v">${esc(r.gh_branch || '-')}</span></div>
+      <div><span class="k">Commit</span><span class="v">${esc(r.gh_sha || '-')}</span></div>
+      <div><span class="k">Triggered by</span><span class="v">${esc(r.gh_actor || '-')}</span></div>
+    </div>
+    <div class="legend"><span><i style="background:var(--signal)"></i>CPU &middot; peak ${cpuMax.toFixed(0)}% (100% = one core)</span></div>
+    ${spark(s, 'cpu', 'var(--signal)', cpuMax)}
+    <div class="legend"><span><i style="background:var(--drain)"></i>Memory · peak ${fmtMem(memMax)}</span></div>
+    ${spark(s, 'mem', 'var(--drain)', memMax)}`;
+  $('ov').classList.add('show');
+}
+
+$('ov').addEventListener('click', e => {
+  if (e.target.id === 'ov') $('ov').classList.remove('show');
+});
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape') $('ov').classList.remove('show');
+});
+['f-runner', 'f-job', 'f-result'].forEach(i =>
+  $(i).addEventListener('change', loadRuns));
+$('refresh').addEventListener('click', () => { loadSummary(); loadRuns(); });
+
+loadSummary();
+loadRuns();
+setInterval(() => { loadSummary(); loadRuns(); }, 30000);
+</script>
+{% endblock %}

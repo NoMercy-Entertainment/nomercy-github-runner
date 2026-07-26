@@ -25,6 +25,8 @@ from flask import (Flask, jsonify, redirect, render_template, request,
                    session, url_for)
 
 import docker_ops as ops
+import github_api
+import history
 
 DATA = os.environ.get("DASH_DATA", "/data")
 PORT = int(os.environ.get("DASH_PORT", "9200"))
@@ -186,9 +188,97 @@ def _collector():
             s = ops.collect()
             with _status_lock:
                 _status = s
+            _record_history(s)
         except Exception as e:  # noqa: BLE001
             print(f"[collector] {e}")
         time.sleep(5)
+
+
+def _record_history(status):
+    """Turn each poll into history: job events from the log, plus a sample.
+
+    Events come from the log rather than from watching state flip idle->busy:
+    the log carries the runner's own timestamps, so start and end times are
+    exact instead of rounded to whenever a poll happened to notice, and a
+    dashboard restart does not lose the jobs that ran while it was down.
+    """
+    now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+    for r in status.get("runners", []):
+        name = r["name"]
+        if r["state"] == "stopped":
+            continue
+
+        try:
+            for kind, when, job, result in history.parse_events(
+                    ops.logs_since(name, 45)):
+                if kind == "start":
+                    history.open_run(name, r.get("registration"), job, when)
+                else:
+                    history.close_run(name, job, when, result)
+        except Exception as e:  # noqa: BLE001
+            print(f"[history:{name}] {e}")
+
+        # Samples attach to whichever run is open, so an idle runner records
+        # nothing and the graph covers exactly the job's duration.
+        if r["state"] in ("busy", "draining"):
+            try:
+                history.add_sample(name, r.get("cpu_percent") or 0,
+                                   ops.parse_size(r.get("mem_used")), now)
+            except Exception as e:  # noqa: BLE001
+                print(f"[sample:{name}] {e}")
+
+
+def _backfill():
+    """One deep pass over existing logs at startup.
+
+    The steady-state collector only looks back 45s, so without this the
+    history would start empty even though the runners' logs already hold
+    every job they have run since their last restart. Re-runs are harmless:
+    (runner, job, started_at) is UNIQUE.
+
+    Resource samples cannot be recovered - those only exist if we were
+    watching - so backfilled runs show timing and result but no graph.
+    """
+    try:
+        for name in ops.list_runner_names():
+            events = history.parse_events(ops.logs_since(name, 7 * 24 * 3600))
+            for kind, when, job, result in events:
+                if kind == "start":
+                    history.open_run(name, None, job, when)
+                else:
+                    history.close_run(name, job, when, result)
+            if events:
+                print(f"[backfill] {name}: {len(events)} events")
+    except Exception as e:  # noqa: BLE001
+        print(f"[backfill] {e}")
+
+
+def _enricher():
+    """Fill in repo / workflow / branch / commit from the GitHub API.
+
+    Separate from the collector: an API sweep can take seconds and must not
+    delay telemetry. Best-effort throughout - an unmatched run keeps its
+    log-only data rather than being dropped.
+    """
+    while True:
+        try:
+            env = read_env()
+            token, org = env.get("GH_TOKEN"), env.get("GITHUB_ORG")
+            if token and org:
+                gh = github_api.GitHub(token, org)
+                for run in history.pending_enrichment(limit=10):
+                    found = gh.find_job(run.get("registration"),
+                                        run.get("job_name"),
+                                        run.get("started_at"),
+                                        run.get("ended_at"))
+                    if found:
+                        history.apply_enrichment(run["id"], found)
+                    else:
+                        history.mark_unmatched(run["id"])
+        except Exception as e:  # noqa: BLE001
+            print(f"[enricher] {e}")
+        time.sleep(90)
 
 
 def _drain_watcher():
@@ -259,6 +349,37 @@ def logout():
 @app.route("/")
 def index():
     return render_template("index.html")
+
+
+@app.route("/history")
+def history_page():
+    return render_template(
+        "history.html",
+        runners=history.distinct("runner"),
+        jobs=history.distinct("job_name"),
+    )
+
+
+@app.route("/api/history")
+def api_history():
+    return jsonify(runs=history.list_runs(
+        runner=request.args.get("runner") or None,
+        job=request.args.get("job") or None,
+        result=request.args.get("result") or None,
+        limit=min(int(request.args.get("limit", 100)), 500),
+        offset=int(request.args.get("offset", 0)),
+    ))
+
+
+@app.route("/api/history/summary")
+def api_history_summary():
+    return jsonify(history.summary())
+
+
+@app.route("/api/history/run/<int:run_id>")
+def api_history_run(run_id):
+    run = history.get_run(run_id)
+    return (jsonify(run), 200) if run else (jsonify(error="not found"), 404)
 
 
 @app.route("/settings")
@@ -375,7 +496,10 @@ def api_recreate():
 
 
 if __name__ == "__main__":
+    history.init()
+    threading.Thread(target=_backfill, daemon=True).start()
     threading.Thread(target=_collector, daemon=True).start()
+    threading.Thread(target=_enricher, daemon=True).start()
     threading.Thread(target=_drain_watcher, daemon=True).start()
     app.permanent_session_lifetime = 60 * 60 * 24 * 14
     app.run(host="0.0.0.0", port=PORT, threaded=True)

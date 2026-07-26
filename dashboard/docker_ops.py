@@ -300,3 +300,32 @@ def create(index, env):
 def is_idle(name):
     state, _ = _job_state(name)
     return state == "idle"
+
+
+def logs_since(name, seconds=45):
+    """Recent log output, for history event extraction.
+
+    `--since` rather than `--tail N`: a verbose build can push thousands of
+    lines between polls, and a fixed tail would scroll the "Running job" line
+    out of view and lose the run entirely. Bounding by time cannot miss
+    anything as long as the window exceeds the poll interval.
+    """
+    ok, out, _ = _docker("logs", "--since", f"{seconds}s", name, timeout=20)
+    return out if ok else ""
+
+
+_UNITS = {"B": 1, "KB": 10**3, "MB": 10**6, "GB": 10**9, "TB": 10**12,
+          "KIB": 1024, "MIB": 1024**2, "GIB": 1024**3, "TIB": 1024**4}
+
+
+def parse_size(s):
+    """'1.41GiB' -> bytes. Returns 0 on anything unparseable."""
+    if not s:
+        return 0
+    m = re.match(r"^\s*([\d.]+)\s*([KMGT]?i?B)\s*$", str(s), re.I)
+    if not m:
+        return 0
+    try:
+        return int(float(m.group(1)) * _UNITS.get(m.group(2).upper(), 1))
+    except ValueError:
+        return 0
