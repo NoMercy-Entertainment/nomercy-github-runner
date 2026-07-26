@@ -28,20 +28,12 @@ x-runner: &runner
     RUNNER_LABELS: ${RUNNER_LABELS:-self-hosted,Linux,X64}
     RUNNER_GROUP: ${RUNNER_GROUP:-}
   volumes:
-    # start.sh MUST come from the distro's native ext4, never from /mnt/d.
-    #
-    # Mounting it from the 9p mount (/mnt/d, the Windows D: drive) puts the
-    # container into a register -> SIGTERM -> restart loop roughly every 20s.
-    # Measured 2026-07-26: 9p source gave 6+ registrations and 6+ SIGTERMs in
-    # 100s with StartedAt advancing each time; the identical file (same md5) on
-    # native ext4 gave 1 registration, 0 SIGTERMs, and reached "Listening for
-    # Jobs". Bash reads a script incrementally by file offset and 9p does not
-    # give it the read consistency that needs.
-    #
-    # scripts/deploy-runners.sh syncs this file from the repo before deploying,
-    # so the repo remains the source of truth.
+    # Bound straight from the repo on D: (9p) — verified fine. An earlier
+    # theory blamed 9p for a restart loop; that was wrong. The loop was WSL
+    # shutting the distro down when idle, which stops docker.service and
+    # SIGTERMs every container. See scripts/keepalive-distro.ps1.
     # Read-only: start.sh is executed, never written to.
-    - /opt/github-runners/scripts/start.sh:/root/start.sh:ro
+    - ./scripts/start.sh:/root/start.sh:ro
   tmpfs:
     - /tmp
   # Docker Engine 29.x creates containers with StopTimeout=1 instead of the
