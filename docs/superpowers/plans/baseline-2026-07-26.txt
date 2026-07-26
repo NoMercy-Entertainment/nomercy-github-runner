@@ -1,0 +1,38 @@
+Filesystem      Size  Used Avail Use% Mounted on
+overlay        1007G  928G   29G  98% /
+=== runner-1 ===
+TYPE            TOTAL     ACTIVE    SIZE      RECLAIMABLE
+Images          7         0         1.44GB    1.432GB (99%)
+Containers      0         0         0B        0B
+Local Volumes   0         0         0B        0B
+Build Cache     528       0         68.59GB   67.16GB
+=== runner-2 ===
+TYPE            TOTAL     ACTIVE    SIZE      RECLAIMABLE
+Images          11        0         25.75GB   25.74GB (99%)
+Containers      0         0         0B        0B
+Local Volumes   0         0         0B        0B
+Build Cache     590       0         83.98GB   69.22GB
+=== runner-3 ===
+TYPE            TOTAL     ACTIVE    SIZE      RECLAIMABLE
+Images          15        0         26.43GB   26.42GB (99%)
+Containers      0         0         0B        0B
+Local Volumes   0         0         0B        0B
+Build Cache     606       0         76.06GB   61.4GB
+=== runner-4 ===
+TYPE            TOTAL     ACTIVE    SIZE      RECLAIMABLE
+Images          18        0         27.13GB   27.12GB (99%)
+Containers      0         0         0B        0B
+Local Volumes   0         0         0B        0B
+Build Cache     607       0         101.2GB   86.01GB
+=== runner-5 ===
+TYPE            TOTAL     ACTIVE    SIZE      RECLAIMABLE
+Images          18        0         27.05GB   27.04GB (99%)
+Containers      0         0         0B        0B
+Local Volumes   0         0         0B        0B
+Build Cache     613       0         80.33GB   65.42GB
+=== runner-6 ===
+TYPE            TOTAL     ACTIVE    SIZE      RECLAIMABLE
+Images          5         0         24.91GB   24.9GB (99%)
+Containers      0         0         0B        0B
+Local Volumes   0         0         0B        0B
+Build Cache     376       0         44.31GB   29.63GB
