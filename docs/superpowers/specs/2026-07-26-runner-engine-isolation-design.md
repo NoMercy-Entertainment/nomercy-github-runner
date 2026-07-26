@@ -125,13 +125,29 @@ holds ~118 GB the inner daemon does not account for. The gap was visible at
 diagnosis too (runner-1: daemon reported 70 GB, `du` measured 149 GB) and has
 grown from 53% of the layer to ~99%.
 
-The strong hypothesis is orphaned `fuse-overlayfs` diff directories — layer data
-the daemon has lost track of. If so it is unreachable by any prune, because the
-daemon does not know it exists. **Recreating the containers is the only way to
-reclaim it**, which the migration does as a side effect.
+**Confirmed** by a `du` breakdown inside runner-1 (2026-07-26):
 
-This is confirmed pending a `du` breakdown inside a runner; the recommendation
-does not depend on it, since migration recreates the containers regardless.
+```
+/                                   128.3 GB
+  /var                              102.8 GB
+    /var/lib/docker/fuse-overlayfs  102.5 GB   <-- orphaned
+  /root                              14.0 GB   (.gradle 8.2, actions-runner 2.2,
+                                                .rustup 1.4, .konan 0.85, .cache 0.73)
+  /usr                                9.8 GB
+  /opt                                1.7 GB
+
+fuse-overlayfs directories on disk:  471
+images the daemon knows about:         4
+build cache records:                   1
+```
+
+~467 orphaned diff directories holding ~102 GB the daemon has no record of.
+Unreachable by any prune, because the daemon does not know they exist. Only
+~26 GB of the writable layer is legitimate (OS plus toolchain caches).
+
+Across six runners this is roughly **610 GB of unreachable garbage**.
+**Recreating the containers is the only way to reclaim it**, which the migration
+does as a side effect.
 
 ## Rejected alternatives
 
