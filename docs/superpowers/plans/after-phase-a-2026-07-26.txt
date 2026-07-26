@@ -1,0 +1,36 @@
+=== runner-1 ===
+TYPE            TOTAL     ACTIVE    SIZE      RECLAIMABLE
+Images          7         0         1.44GB    1.432GB (99%)
+Containers      0         0         0B        0B
+Local Volumes   0         0         0B        0B
+Build Cache     470       0         21.98GB   20.55GB
+=== runner-2 ===
+TYPE            TOTAL     ACTIVE    SIZE      RECLAIMABLE
+Images          11        0         25.75GB   25.74GB (99%)
+Containers      0         0         0B        0B
+Local Volumes   0         0         0B        0B
+Build Cache     534       0         31GB      16.25GB
+=== runner-3 ===
+TYPE            TOTAL     ACTIVE    SIZE      RECLAIMABLE
+Images          15        0         26.43GB   26.42GB (99%)
+Containers      0         0         0B        0B
+Local Volumes   0         0         0B        0B
+Build Cache     546       0         35.93GB   21.28GB
+=== runner-4 ===
+TYPE            TOTAL     ACTIVE    SIZE      RECLAIMABLE
+Images          18        0         27.13GB   27.12GB (99%)
+Containers      0         0         0B        0B
+Local Volumes   0         0         0B        0B
+Build Cache     545       0         31.45GB   16.24GB
+=== runner-5 ===
+TYPE            TOTAL     ACTIVE    SIZE      RECLAIMABLE
+Images          18        0         27.05GB   27.04GB (99%)
+Containers      0         0         0B        0B
+Local Volumes   0         0         0B        0B
+Build Cache     537       0         36.33GB   21.42GB
+=== runner-6 ===
+TYPE            TOTAL     ACTIVE    SIZE      RECLAIMABLE
+Images          5         0         24.91GB   24.9GB (99%)
+Containers      0         0         0B        0B
+Local Volumes   0         0         0B        0B
+Build Cache     354       0         35.24GB   20.57GB
