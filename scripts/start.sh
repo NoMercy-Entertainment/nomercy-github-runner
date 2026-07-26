@@ -56,7 +56,7 @@ cat > /etc/docker/daemon.json <<'EOF'
     "gc": {
       "enabled": true,
       "policy": [
-        { "maxUsedSpace": "20GB" }
+        { "maxUsedSpace": "40GB" }
       ]
     }
   }

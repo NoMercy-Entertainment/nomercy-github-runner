@@ -221,11 +221,12 @@ footer {
 <footer>
   <span id="f-gen">Updated &mdash;</span>
   <span id="f-count">&mdash; runners</span>
-  <span>Build cache cap 20 GB / runner</span>
+  <span>Build cache cap 40 GB / runner</span>
 </footer>
 
 <script>
 const STALE_MS = 25000;
+const CACHE_CAP_GB = 40;   // keep in sync with builder.gc maxUsedSpace in scripts/start.sh
 let lastGood = 0;
 
 const $ = id => document.getElementById(id);
@@ -244,14 +245,48 @@ function toBytes(s) {
 const gb = b => (b / 1e9);
 const fmtGB = b => gb(b) < 10 ? gb(b).toFixed(2) + ' GB' : Math.round(gb(b)) + ' GB';
 
-function meter(label, valText, pct, cls) {
-  const p = Math.max(0, Math.min(100, pct));
-  return `<div class="meter">
-    <div class="mrow"><span>${label}</span><span class="mval">${valText}</span></div>
-    <div class="track"><div class="fill ${cls}" style="width:${p}%"></div></div>
+function meterHTML(key, label) {
+  return `<div class="meter" data-m="${key}">
+    <div class="mrow"><span>${label}</span><span class="mval"></span></div>
+    <div class="track"><div class="fill"></div></div>
   </div>`;
 }
 const level = p => p >= 90 ? 'crit' : p >= 70 ? 'warn' : '';
+
+function setMeter(card, key, valText, pct) {
+  const m = card.querySelector(`[data-m="${key}"]`);
+  const v = m.querySelector('.mval');
+  const f = m.querySelector('.fill');
+  const p = Math.max(0, Math.min(100, pct));
+  // Assign only on change: touching textContent every tick is harmless, but
+  // re-setting className restarts CSS transitions and makes bars stutter.
+  if (v.textContent !== valText) v.textContent = valText;
+  const cls = 'fill ' + level(p);
+  if (f.className !== cls) f.className = cls;
+  f.style.width = p + '%';
+}
+
+// Cards are built ONCE and then patched. Rebuilding the grid's innerHTML each
+// tick destroyed and recreated every card, which replayed their entrance
+// animation and made the whole page flash on every refresh.
+const cards = new Map();
+
+function makeCard(r, i) {
+  const el = document.createElement('article');
+  el.className = 'card ' + r.state;
+  el.style.animationDelay = (i * 45) + 'ms';
+  el.innerHTML =
+    `<div class="chead">
+       <span class="cname">${r.name.replace('github-runner-', 'Runner ')}</span>
+       <span class="badge"></span>
+     </div>
+     <div class="creg"></div>
+     <div class="cjob"></div>` +
+    meterHTML('cpu', 'CPU') +
+    meterHTML('mem', 'Memory') +
+    meterHTML('cache', 'Build cache');
+  return el;
+}
 
 function render(d) {
   const rs = d.runners || [];
@@ -261,24 +296,52 @@ function render(d) {
   $('f-count').textContent = rs.length + ' runners';
   $('f-gen').textContent = 'Updated ' + (d.generated || '').replace('T', ' ').replace('Z', ' UTC');
 
-  $('grid').innerHTML = rs.map((r, i) => {
-    const cpu = Math.max(0, Math.min(100, Number(r.cpu_percent) || 0));
-    const mu = toBytes(r.mem_used), ml = toBytes(r.mem_limit);
-    const memPct = ml > 0 ? (mu / ml) * 100 : 0;
-    const cache = toBytes(r.build_cache);
-    const cachePct = (cache / 20e9) * 100;   // against the 20 GB GC cap
-    return `<article class="card ${r.state}" style="animation-delay:${i * 45}ms">
-      <div class="chead">
-        <span class="cname">${r.name.replace('github-runner-', 'Runner ')}</span>
-        <span class="badge ${r.state}">${r.state}</span>
-      </div>
-      <div class="creg">${r.registration} &middot; up ${r.uptime || '?'}</div>
-      <div class="cjob ${r.job ? '' : 'none'}">${r.job || 'no active job'}</div>
-      ${meter('CPU', cpu.toFixed(1) + '%', cpu, level(cpu))}
-      ${meter('Memory', (r.mem_used || '0B') + ' / ' + (r.mem_limit || '?'), memPct, level(memPct))}
-      ${meter('Build cache', fmtGB(cache) + ' / 20 GB', cachePct, level(cachePct))}
-    </article>`;
-  }).join('') || '<div class="skel">No runners reporting</div>';
+  const grid = $('grid');
+  if (!rs.length) {
+    if (!grid.querySelector('.skel')) grid.innerHTML = '<div class="skel">No runners reporting</div>';
+    cards.clear();
+  } else {
+    const skel = grid.querySelector('.skel');
+    if (skel) skel.remove();
+
+    rs.forEach((r, i) => {
+      let card = cards.get(r.name);
+      if (!card) { card = makeCard(r, i); cards.set(r.name, card); grid.appendChild(card); }
+
+      const stateCls = 'card ' + r.state;
+      if (card.className !== stateCls) card.className = stateCls;
+
+      const badge = card.querySelector('.badge');
+      if (badge.textContent !== r.state) {
+        badge.textContent = r.state;
+        badge.className = 'badge ' + r.state;
+      }
+
+      const reg = `${r.registration} · up ${r.uptime || '?'}`;
+      const regEl = card.querySelector('.creg');
+      if (regEl.textContent !== reg) regEl.textContent = reg;
+
+      const jobEl = card.querySelector('.cjob');
+      const jobTxt = r.job || 'no active job';
+      if (jobEl.textContent !== jobTxt) jobEl.textContent = jobTxt;
+      const jobCls = 'cjob' + (r.job ? '' : ' none');
+      if (jobEl.className !== jobCls) jobEl.className = jobCls;
+
+      const cpu = Math.max(0, Math.min(100, Number(r.cpu_percent) || 0));
+      const mu = toBytes(r.mem_used), ml = toBytes(r.mem_limit);
+      const cache = toBytes(r.build_cache);
+      setMeter(card, 'cpu', cpu.toFixed(1) + '%', cpu);
+      setMeter(card, 'mem', (r.mem_used || '0B') + ' / ' + (r.mem_limit || '?'),
+               ml > 0 ? (mu / ml) * 100 : 0);
+      setMeter(card, 'cache', fmtGB(cache) + ' / ' + CACHE_CAP_GB + ' GB',
+               (cache / (CACHE_CAP_GB * 1e9)) * 100);
+    });
+
+    // Drop cards for runners that have gone away.
+    for (const [name, el] of cards) {
+      if (!rs.some(r => r.name === name)) { el.remove(); cards.delete(name); }
+    }
+  }
 
   const dk = d.disk || {};
   const dpct = Number(dk.percent) || 0;
