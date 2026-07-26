@@ -1,7 +1,7 @@
 # Runner Engine Isolation — Design
 
 **Date:** 2026-07-26
-**Status:** Design, pending approval
+**Status:** Implemented and verified 2026-07-26
 **Scope:** `D:\docker-compose\GithubRunners` and a new WSL distro. BeastStack is
 read-only context — nothing under `D:\docker-compose\BeastStack\` changes.
 
@@ -241,10 +241,33 @@ completely stable. The false fix was reverted rather than left in place.
   only once someone logs into Windows. The machine auto-logs-in, so this is
   expected to work, but **the reboot has not been tested** - the user
   explicitly prohibited rebooting.
-- **No real CI job has run on the new engine yet.** The synthetic DinD build
-  above exercises the same machinery, but a genuine workflow has not been
-  dispatched. Do not tear down the old fleet until one has.
+- ~~No real CI job has run on the new engine yet.~~ **Resolved 2026-07-26:**
+  real workflows now run on the isolated engine, including
+  `jvm-android` completing with result Succeeded on runner-3. The `documents`
+  workflow fails, but it failed identically on the old engine before any of
+  this work - pre-existing, not caused by the migration.
 - The dashboard's stale-data banner is correct by inspection but has not been
   observed rendering; forcing the failure would need a browser.
-- ~673 GB remains locked in the stopped old containers, of which ~610 GB is
-  orphaned overlay data no prune can reach. Reclaimed only by removing them.
+- ~~673 GB remains locked in the stopped old containers.~~ **Reclaimed
+  2026-07-26.** Removing them took the BeastStack disk from 678 GB used /
+  279 GB free to **51 GB used / 906 GB free (6%)**. Removal ran at roughly
+  2 GB/min for ~90 minutes - unlinking ~470 orphaned overlay directories per
+  runner is inherently slow. The containers entered `Dead` state during it,
+  Docker's own removal having failed partway on layers that size.
+
+### Final state (2026-07-26)
+
+Two stacks, two disks, each with ~905 GB free:
+
+```
+BeastStack  (Docker Desktop)   1007G   51G used   906G free   6%
+Runners     (github-runners)   1007G   52G used   905G free   6%
+```
+
+16 BeastStack containers running. Six runners plus the dashboard on the
+isolated engine, actively executing real workflows. Build cache capped at
+40 GB per runner. Dashboard live on :9200.
+
+Compared with the state that started this work - 978 GB used, 29 GB free, 98%
+full, with BeastStack failing on ENOSPC - the shared disk now sits at 6%, and
+the runners physically cannot consume it.
