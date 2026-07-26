@@ -39,12 +39,24 @@ fi
 # DinD container is itself an overlay mount). BuildKit cachemounts also break
 # with overlay2 in nested containers, so we disable the containerd snapshotter
 # to route BuildKit through the daemon's fuse-overlayfs snapshotter.
+# Build-cache GC: six independent daemons each hoarded every layer forever,
+# reaching ~149 GB of /var/lib/docker/fuse-overlayfs per runner and filling the
+# Docker VM disk shared with the BeastStack production stack. The policy below
+# caps build cache at ~20 GB per runner and drops week-old entries aggressively.
 mkdir -p /etc/docker
 cat > /etc/docker/daemon.json <<'EOF'
 {
   "storage-driver": "fuse-overlayfs",
   "features": {
     "containerd-snapshotter": false
+  },
+  "builder": {
+    "gc": {
+      "enabled": true,
+      "policy": [
+        { "maxUsedSpace": "20GB" }
+      ]
+    }
   }
 }
 EOF
