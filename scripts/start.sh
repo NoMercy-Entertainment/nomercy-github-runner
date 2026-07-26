@@ -120,6 +120,14 @@ janitor() {
     # Runner diagnostic logs.
     find /root/actions-runner/_diag -type f -mtime +14 -delete 2>/dev/null || true
 
+    # Abandoned actions/github-pages deploy workspaces. These land directly
+    # under /root (not under _work — a separate action, separate landing
+    # spot), so they need their own clause rather than folding into the
+    # _work sweep above. maxdepth 1 keeps this from ever descending into
+    # unrelated /root dirs (actions-runner, .gradle, .rustup, .cache, ...).
+    find /root -maxdepth 1 -type d -name 'actions_github_pages_*' \
+         -mtime +14 -print -exec rm -rf {} + 2>/dev/null || true
+
     echo "[janitor] $(date -u +%FT%TZ) sweep complete"
     sleep "$JANITOR_INTERVAL"
   done
