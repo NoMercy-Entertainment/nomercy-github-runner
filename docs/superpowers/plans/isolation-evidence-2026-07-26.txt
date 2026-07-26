@@ -1,0 +1,36 @@
+Runner engine isolation — evidence
+Captured 2026-07-26 on WSL 2.7.11.0 / Docker Desktop Engine 29.5.3
+
+== Two engines, two disks ==
+new engine (github-runners):  /dev/sde   1007G  2.1G used  954G free   1%
+docker desktop (BeastStack):  overlay    1007G  678G used  279G free  71%
+
+Different block devices. The new engine's disk is
+D:\Docker\GithubRunners\Data\ext4.vhdx; Docker Desktop's is
+D:\Docker\DockerDesktopWSL\disk\docker_data.vhdx.
+
+== New engine sees nothing of Docker Desktop's ==
+containers on new engine: 0
+images on new engine:     0
+volumes on new engine:    0
+docker desktop containers: 22 (6 runners + 16 BeastStack)
+
+== dockerd autostarts after distro terminate ==
+"dockerd up after 1s"  — no manual start, which is what makes the boot task viable.
+server=29.6.2 storage=overlayfs root=/var/lib/docker
+docker compose v5.3.1
+
+== FILL TEST — the decisive proof ==
+Allocated a 20G file on the new engine's disk and watched both.
+
+  new engine   before:    /dev/sde  1007G  2.1G  954G   1%
+  new engine   allocated: /dev/sde  1007G   23G  934G   3%
+  new engine   after rm:  /dev/sde  1007G  2.1G  954G   1%
+
+  docker desktop before:  overlay   1007G  678G  279G  71%
+  docker desktop after:   overlay   1007G  678G  279G  71%   <-- UNCHANGED
+
+Docker Desktop's free space did not move while 20G was allocated on the
+runners' disk. All 22 containers remained running throughout.
+
+Requirement demonstrated: the runners cannot consume BeastStack's disk.
