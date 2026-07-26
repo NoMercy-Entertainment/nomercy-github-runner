@@ -92,6 +92,39 @@ for i in $(seq 1 30); do
   sleep 1
 done
 
+# ── Janitor: keep disk usage bounded ────────────────────────────────────────
+# BuildKit's GC policy (daemon.json above) caps build cache. This covers what
+# GC does not: dead images, abandoned job workspaces, and runner diag logs.
+# Runs every 6h. The first pass is delayed so a runner restarting into a queued
+# job is not competing with the janitor for I/O.
+JANITOR_INTERVAL=21600
+
+janitor() {
+  sleep "$JANITOR_INTERVAL"
+  while true; do
+    echo "[janitor] $(date -u +%FT%TZ) sweep starting"
+
+    # Dead images in this runner's own daemon. The 72h floor deliberately
+    # preserves recently-used base images so ordinary builds keep a warm cache.
+    docker image prune -af --filter until=72h 2>&1 | tail -2
+
+    # Abandoned job workspaces. An active job touches its workspace
+    # continuously, so a 14-day mtime is a safe discriminator against live work.
+    # Underscore-prefixed dirs (_tool, _temp, _actions) are runner-internal and
+    # are left alone here.
+    if [ -d /root/actions-runner/_work ]; then
+      find /root/actions-runner/_work -mindepth 1 -maxdepth 1 -type d \
+           ! -name '_*' -mtime +14 -print -exec rm -rf {} + 2>/dev/null || true
+    fi
+
+    # Runner diagnostic logs.
+    find /root/actions-runner/_diag -type f -mtime +14 -delete 2>/dev/null || true
+
+    echo "[janitor] $(date -u +%FT%TZ) sweep complete"
+    sleep "$JANITOR_INTERVAL"
+  done
+}
+
 # ── Register ────────────────────────────────────────────────────────────────
 register() {
   echo "Registering runner ${RUNNER_NAME}..."
@@ -158,4 +191,7 @@ trap remove EXIT
 # No --ephemeral: runner stays registered and picks up jobs continuously.
 # Only deregisters when the container is stopped/killed (via trap above).
 register
+
+janitor &
+
 exec ./run.sh
