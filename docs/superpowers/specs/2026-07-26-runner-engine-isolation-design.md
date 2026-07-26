@@ -187,3 +187,64 @@ final teardown step.
   be six more things that can fail to mount.
 - The `RUNNER_MANUALLY_TRAP_SIG` change that would let deregistration succeed
   mid-job (tracked separately).
+
+## Measured outcome
+
+Migration completed 2026-07-26. Six runners plus a dashboard now run on the
+`github-runners` engine; BeastStack is untouched on Docker Desktop.
+
+### Isolation, demonstrated
+
+```
+runners engine:   /dev/sde   1007G   24G used   934G free    2%
+docker desktop:   overlay    1007G  678G used   279G free   71%
+```
+
+Fill test: allocating a 20 GB file on the runners' disk left Docker Desktop's
+free space at exactly 279 GB before and after, with all containers running
+throughout. The new engine reports zero of BeastStack's containers, images or
+volumes.
+
+### Verified working
+
+- Six runners registered and `Listening for Jobs`; org shows exactly 7
+  registrations (six plus the unrelated `nomercy-mac-mini`), no orphans.
+- **Nested Docker-in-Docker builds work.** A real multi-layer build inside a
+  runner (WSL distro -> container -> inner dockerd on fuse-overlayfs ->
+  BuildKit) completed, the resulting image ran, and build cache accounting
+  moved 0B -> 1.209MB. This was the highest-risk assumption in the design.
+- Phase A carried over intact: GC cap present, janitor running.
+- Deregistration fix carried over: old fleet stopped with exit 143 via the
+  SIGTERM handler.
+- Dashboard live on :9200 reading the runners' own socket read-only.
+
+### The bug that nearly sank it
+
+Runners entered a register -> SIGTERM -> restart loop every ~20s. Root cause:
+**WSL shuts down an idle distro**, stopping docker.service, whose shutdown
+SIGTERMs every container; the next command boots the distro again and the cycle
+repeats. `journalctl -u docker.service` showed a deliberate "Stopping
+docker.service" with NRestarts=0 and Result=success - not a crash.
+
+Enabling systemd is NOT sufficient; dockerd running as a systemd service does
+not keep the distro alive. WSL needs a live session holding it open, which is
+what the keepalive scheduled task provides.
+
+A first diagnosis blamed the 9p mount of start.sh and was **wrong**. That test
+was confounded: it ran a 100s loop inside the distro, incidentally holding it
+open. Re-tested with the confounder controlled, a 9p-mounted start.sh is
+completely stable. The false fix was reverted rather than left in place.
+
+### Known limitations
+
+- **The keepalive is logon-triggered**, so the runners return after a reboot
+  only once someone logs into Windows. The machine auto-logs-in, so this is
+  expected to work, but **the reboot has not been tested** - the user
+  explicitly prohibited rebooting.
+- **No real CI job has run on the new engine yet.** The synthetic DinD build
+  above exercises the same machinery, but a genuine workflow has not been
+  dispatched. Do not tear down the old fleet until one has.
+- The dashboard's stale-data banner is correct by inspection but has not been
+  observed rendering; forcing the failure would need a browser.
+- ~673 GB remains locked in the stopped old containers, of which ~610 GB is
+  orphaned overlay data no prune can reach. Reclaimed only by removing them.
