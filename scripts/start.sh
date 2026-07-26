@@ -224,6 +224,12 @@ gh_token() {
 # ── Server-side deregistration ──────────────────────────────────────────────
 # Always uses a *removal* token, and never silences the outcome.
 #   $1 = curl --max-time, $2 = hard timeout for ./config.sh remove
+#   $3 = what is being removed, for the log only
+#
+# $3 exists because `config.sh remove` takes no runner name — it acts on
+# whatever identity is recorded in ./.runner. On the shutdown path that is this
+# boot's RUNNER_NAME, but on the startup path it is the *previous* boot's
+# runner, so a message naming $RUNNER_NAME there would name the wrong one.
 #
 # `timeout -k 1` matters: plain `timeout N` sends TERM and then keeps waiting
 # on the child, so it only returns promptly if that child actually dies on
@@ -240,23 +246,23 @@ gh_token() {
 # timeout is 30s precisely so this effectively never fires; the retry loop in
 # register() is the backstop if it ever does.
 github_remove_runner() {
-  local api_max_time="$1" config_timeout="$2"
+  local api_max_time="$1" config_timeout="$2" what="$3"
   local rm_token rc=0
 
   if ! rm_token=$(gh_token remove-token "$api_max_time"); then
-    echo "Warning: no removal token — server-side removal skipped."
+    echo "Warning: no removal token — server-side removal of ${what} skipped."
     return 1
   fi
 
   timeout -k 1 "$config_timeout" ./config.sh remove --token "$rm_token" || rc=$?
   if [ "$rc" -eq 0 ]; then
-    echo "Server-side removal of ${RUNNER_NAME} succeeded."
+    echo "Server-side removal of ${what} succeeded."
     return 0
   fi
   if [ "$rc" -eq 124 ]; then
-    echo "Warning: './config.sh remove' timed out after ${config_timeout}s."
+    echo "Warning: './config.sh remove' timed out after ${config_timeout}s (${what})."
   else
-    echo "Warning: './config.sh remove' failed (exit ${rc})."
+    echo "Warning: './config.sh remove' failed (exit ${rc}) (${what})."
   fi
   return 1
 }
@@ -275,7 +281,8 @@ register() {
   # `--replace` below cannot abort with "Cannot configure the runner because it
   # is already configured", whether or not the removal call succeeded.
   echo "Clearing stale registration state..."
-  github_remove_runner "$GH_API_MAX_TIME" "$CONFIG_REMOVE_TIMEOUT" || true
+  github_remove_runner "$GH_API_MAX_TIME" "$CONFIG_REMOVE_TIMEOUT" \
+    "the previous boot's registration" || true
   rm -f .runner .credentials .credentials_rsaparams
   echo "Local runner state cleared (.runner, .credentials, .credentials_rsaparams)."
 
@@ -331,7 +338,8 @@ remove() {
   RUNNER_REMOVED=1
 
   echo "Container stopping — removing runner ${RUNNER_NAME}..."
-  github_remove_runner "$SHUTDOWN_API_MAX_TIME" "$SHUTDOWN_CONFIG_TIMEOUT" || true
+  github_remove_runner "$SHUTDOWN_API_MAX_TIME" "$SHUTDOWN_CONFIG_TIMEOUT" \
+    "runner ${RUNNER_NAME}" || true
 }
 
 # Abort without letting the EXIT trap run a full deregistration. Registration
@@ -356,12 +364,15 @@ stop_janitor() {
 
 # Best-effort only, and deliberately last in the shutdown sequence.
 # RUNNER_MANUALLY_TRAP_SIG is empty in this image (verified), so upstream run.sh
-# takes its no-trap branch and never forwards TERM to Runner.Listener. Any time
-# spent waiting here is therefore guaranteed to be wasted, and with
-# StopTimeout=1 on this host it is time deregistration cannot spare — hence
-# SHUTDOWN_CHILD_TIMEOUT=0: signal the child, do not wait, let Docker's SIGKILL
-# finish the job. The loop is retained so the wait can be re-enabled by raising
-# the constant if RUNNER_MANUALLY_TRAP_SIG is ever set.
+# takes its `run()` branch, which installs no TERM trap at all. run.sh itself
+# therefore dies on TERM immediately — what survives is Runner.Listener, its
+# grandchild, which is never signalled and is left for Docker's SIGKILL.
+# Waiting here would only be waiting for a process that is already gone while
+# the one that matters ignores us, and with StopTimeout=1 on this host it is
+# time deregistration cannot spare — hence SHUTDOWN_CHILD_TIMEOUT=0: signal,
+# do not wait. The loop is retained so the wait can be re-enabled by raising
+# the constant if RUNNER_MANUALLY_TRAP_SIG is ever set, which is what would
+# make run.sh forward the signal on to the listener.
 stop_runner() {
   [ -n "$RUNNER_PID" ] || return 0
   kill -TERM "$RUNNER_PID" 2>/dev/null || true
@@ -423,8 +434,25 @@ echo "Starting runner ${RUNNER_NAME}..."
 ./run.sh &
 RUNNER_PID=$!
 
-wait "$RUNNER_PID"
-RUNNER_STATUS=$?
+# `wait` is looped rather than called once, and the loop must not be
+# "simplified" back to a bare `wait`. With job control on (`set -m` above)
+# bash's `wait` returns when the child changes *state*, not only when it exits:
+# a `kill -STOP` on run.sh makes it return 128+SIGSTOP while the process is
+# merely paused. A single `wait` would then fall straight through to `remove`
+# and deregister a perfectly healthy runner, exiting non-zero to bounce the
+# container, over a child that is still alive. Re-checking that the pid exists
+# means only a real exit ends the loop.
+#
+# The `sleep 1` is not decorative: `wait` on an already-reported stopped job
+# returns immediately, so without it a stopped child spins this loop at full
+# CPU (measured: ~50k iterations in 4s). Polling once a second costs nothing
+# and cannot spin.
+RUNNER_STATUS=0
+while kill -0 "$RUNNER_PID" 2>/dev/null; do
+  wait "$RUNNER_PID"
+  RUNNER_STATUS=$?
+  kill -0 "$RUNNER_PID" 2>/dev/null && sleep 1
+done
 
 # Note: upstream launders almost every Runner.Listener failure into exit 0
 # (see the comment in register()), so a non-zero status here is rare by
