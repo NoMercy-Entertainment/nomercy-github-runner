@@ -1,0 +1,66 @@
+# GitHub Actions runners — isolated engine
+#
+# This stack runs on the dedicated `github-runners` WSL distro, NOT on Docker
+# Desktop. That distro has its own dockerd and its own virtual disk at
+# D:\Docker\GithubRunners\Data\ext4.vhdx, so these containers share no disk,
+# image store, volume namespace or socket with the BeastStack production stack.
+# A runner filling its disk cannot starve Immich, MinIO or Forgejo.
+#
+#   wsl -d github-runners -u root -- bash -lc \
+#     "cd /mnt/d/docker-compose/GithubRunners && docker compose -f docker-compose.runners.yml up -d"
+#
+# Six explicit services rather than `deploy.replicas: 6`: replicas all receive
+# identical mounts, and six Docker-in-Docker daemons sharing one data root
+# corrupt each other within minutes.
+
+x-runner: &runner
+  image: ghcr.io/nomercy-entertainment/nomercy-github-runner:latest
+  restart: unless-stopped
+  privileged: true
+  deploy:
+    resources:
+      limits:
+        cpus: "${RUNNER_CPU_LIMIT:-0}"
+        memory: "${RUNNER_MEM_LIMIT:-0}"
+  environment:
+    GH_TOKEN: ${GH_TOKEN}
+    GITHUB_ORG: ${GITHUB_ORG:-NoMercy-Entertainment}
+    RUNNER_LABELS: ${RUNNER_LABELS:-self-hosted,Linux,X64}
+    RUNNER_GROUP: ${RUNNER_GROUP:-}
+  volumes:
+    # Read-only: start.sh is executed, never written to. The old stack mounted
+    # it read-write for no reason.
+    - ./scripts/start.sh:/root/start.sh:ro
+  tmpfs:
+    - /tmp
+  # Docker Engine 29.x creates containers with StopTimeout=1 instead of the
+  # documented 10 (moby/moby#52775). start.sh deregisters the runner from
+  # GitHub on SIGTERM and needs ~3s to do it; at 1s it is SIGKILLed mid-flight
+  # and the registration is orphaned. Without this line the deregistration fix
+  # silently stops working.
+  stop_grace_period: 60s
+
+services:
+  github-runner-1:
+    <<: *runner
+    container_name: github-runner-1
+
+  github-runner-2:
+    <<: *runner
+    container_name: github-runner-2
+
+  github-runner-3:
+    <<: *runner
+    container_name: github-runner-3
+
+  github-runner-4:
+    <<: *runner
+    container_name: github-runner-4
+
+  github-runner-5:
+    <<: *runner
+    container_name: github-runner-5
+
+  github-runner-6:
+    <<: *runner
+    container_name: github-runner-6
