@@ -35,6 +35,16 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
+# Trim every text parameter before anything looks at it. A value of " " for
+# the runner group is not blank - it reaches config.sh as a real group name,
+# which fails with "Could not find any self-hosted runner group named ' '"
+# and leaves the container restart-looping. Whitespace is never meaningful in
+# any of these values, so normalise it once here rather than at each use.
+foreach ($p in 'Org','Token','DataPath','RunnerGroup','Labels','CpuLimit','MemLimit','DistroName') {
+    $v = (Get-Variable -Name $p -ValueOnly -ErrorAction SilentlyContinue)
+    if ($v -is [string]) { Set-Variable -Name $p -Value $v.Trim() }
+}
+
 # --------------------------------------------------------------------------
 # constants
 # --------------------------------------------------------------------------
@@ -47,6 +57,7 @@ $DEFAULT_COUNT    = 2
 $DEFAULT_CEILING  = 250
 $DEFAULT_PORT     = 9200
 $RUNNER_IMAGE     = 'ghcr.io/nomercy-entertainment/nomercy-github-runner:latest'
+$script:ReadyCount = 0
 
 # --------------------------------------------------------------------------
 # output helpers
@@ -73,8 +84,19 @@ function Fail($text, $hint) {
 # text with a NUL between every character, so every -match silently fails.
 function Invoke-Wsl {
     param([string[]] $WslArgs)
-    $raw = (& wsl.exe @WslArgs 2>&1 | Out-String)
-    return ($raw -replace "`0", '')
+    # Anything a native command writes to stderr becomes a terminating error
+    # while ErrorActionPreference is Stop. WSL writes warnings there as a
+    # matter of course - an unrecognised key in .wslconfig, for example - so
+    # without this the install aborts over something entirely harmless.
+    # Real failures are caught by checking $LASTEXITCODE at the call sites.
+    $prev = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        $raw = (& wsl.exe @WslArgs 2>&1 | Out-String)
+        return ($raw -replace "`0", '')
+    } finally {
+        $ErrorActionPreference = $prev
+    }
 }
 
 # --------------------------------------------------------------------------
@@ -385,6 +407,303 @@ function Show-Summary {
 }
 
 # --------------------------------------------------------------------------
+# install actions
+# --------------------------------------------------------------------------
+
+# C:\Users\me\Temp\x.sh -> /mnt/c/Users/me/Temp/x.sh
+function ConvertTo-WslPath {
+    param([string] $WinPath)
+    $full = [System.IO.Path]::GetFullPath($WinPath)
+    $drive = $full.Substring(0,1).ToLower()
+    return '/mnt/' + $drive + ($full.Substring(2) -replace '\\','/')
+}
+
+# Run a bash script inside the distro by handing it over as a FILE.
+# Piping a script through PowerShell into wsl.exe mangles $(...) and
+# redirections; and the file lives on a Windows filesystem, so CRLF must be
+# stripped or the kernel cannot find the interpreter from the shebang.
+function Invoke-WslScript {
+    param([string] $Body, [string] $Label)
+    $tmp = Join-Path $env:TEMP ("nomercy-" + [guid]::NewGuid().ToString('N') + '.sh')
+    try {
+        # ASCII + LF: this file is read by bash, not PowerShell.
+        [System.IO.File]::WriteAllText($tmp, ($Body -replace "`r`n","`n"), [System.Text.Encoding]::ASCII)
+        $wslTmp = ConvertTo-WslPath $tmp
+        $out = Invoke-Wsl @('-d', $DistroName, '-u', 'root', '--', 'bash', '-c',
+                            "tr -d '\r' < $wslTmp > /tmp/run.sh && bash /tmp/run.sh")
+        if ($LASTEXITCODE -ne 0) { Fail "$Label failed." $out.Trim() }
+        return $out
+    } finally { Remove-Item $tmp -ErrorAction SilentlyContinue }
+}
+
+function Install-Distro {
+    Write-Head 'Creating the runner environment'
+
+    New-Item -ItemType Directory -Force $script:DataPath | Out-Null
+    Write-Info "Downloading and installing $DISTRO_IMAGE. This takes a few minutes."
+
+    $out = Invoke-Wsl @('--install', $DISTRO_IMAGE, '--name', $DistroName,
+                        '--location', $script:DataPath, '--no-launch')
+    if ($LASTEXITCODE -ne 0) { Fail 'Could not create the WSL distribution.' $out.Trim() }
+
+    # The whole point of this installer is that storage lands where the
+    # operator asked. If it did not, stop rather than build on a wrong base.
+    $vhdx = Get-ChildItem $script:DataPath -Filter *.vhdx -Recurse -ErrorAction SilentlyContinue |
+            Select-Object -First 1
+    if (-not $vhdx) {
+        Fail "No virtual disk was created under $script:DataPath." `
+             "The distribution did not install where it was told to, so the storage would not be isolated."
+    }
+    Write-Ok "Virtual disk: $($vhdx.FullName)"
+
+    Write-Info 'Enabling systemd...'
+    Invoke-Wsl @('-d', $DistroName, '-u', 'root', '--', 'bash', '-c',
+                 "printf '[boot]\nsystemd=true\n' > /etc/wsl.conf") | Out-Null
+    Invoke-Wsl @('--terminate', $DistroName) | Out-Null
+    Start-Sleep -Seconds 3
+    Invoke-Wsl @('-d', $DistroName, '-u', 'root', '--', 'systemctl', 'is-system-running', '--wait') | Out-Null
+    Write-Ok 'systemd is running'
+}
+
+function Install-Engine {
+    Write-Head 'Installing the isolated Docker engine'
+    Write-Info 'This engine is only for the runners. Your own Docker is untouched.'
+
+    $script = @'
+set -euo pipefail
+export DEBIAN_FRONTEND=noninteractive
+apt-get update -qq
+apt-get install -y -qq ca-certificates curl git >/dev/null
+install -m 0755 -d /etc/apt/keyrings
+if [ ! -f /etc/apt/keyrings/docker.asc ]; then
+  curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
+  chmod a+r /etc/apt/keyrings/docker.asc
+fi
+. /etc/os-release
+echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu ${VERSION_CODENAME} stable" > /etc/apt/sources.list.d/docker.list
+apt-get update -qq
+apt-get install -y -qq docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin >/dev/null
+systemctl enable --now docker
+docker info --format 'engine={{.ServerVersion}} storage={{.Driver}}'
+'@
+    $r = Invoke-WslScript -Body $script -Label 'Docker installation'
+    Write-Ok ($r.Trim() -split "`n" | Select-Object -Last 1)
+
+    # Prove the daemon comes back on its own. If it does not, the keepalive
+    # task cannot bring the runners back after a reboot and the operator would
+    # only find out the next time the machine restarts.
+    Write-Info 'Checking the engine restarts on its own...'
+    Invoke-Wsl @('--terminate', $DistroName) | Out-Null
+    Start-Sleep -Seconds 3
+    $check = Invoke-WslScript -Body @'
+for i in $(seq 1 40); do
+  if docker info >/dev/null 2>&1; then echo "up after ${i}s"; exit 0; fi
+  sleep 1
+done
+echo "docker did not start"; exit 1
+'@ -Label 'Engine restart check'
+    Write-Ok ("Engine " + $check.Trim())
+
+    Write-Info 'Fetching runner sources...'
+    $clone = @"
+set -euo pipefail
+rm -rf /opt/nomercy-runners
+mkdir -p /opt/nomercy-runners
+git clone --depth 1 https://github.com/NoMercy-Entertainment/nomercy-github-runner.git /opt/nomercy-runners/repo >/dev/null 2>&1
+# start.sh must live on the distro's own filesystem, not a /mnt path.
+install -m 0755 /opt/nomercy-runners/repo/scripts/start.sh /opt/nomercy-runners/start.sh
+echo ok
+"@
+    Invoke-WslScript -Body $clone -Label 'Fetching runner sources' | Out-Null
+    Write-Ok 'Runner sources in place'
+}
+
+function Install-Keepalive {
+    Write-Head 'Keeping the environment running'
+
+    # WSL shuts down an idle distribution, which stops Docker and kills every
+    # runner. Enabling systemd is NOT enough - WSL needs a live session
+    # holding the distro open. Without this the runners enter a
+    # register/stop/restart loop roughly every 20 seconds.
+    $keepDir = Join-Path $env:LOCALAPPDATA 'NoMercyRunners'
+    New-Item -ItemType Directory -Force $keepDir | Out-Null
+    $keepScript = Join-Path $keepDir 'keepalive.ps1'
+    $logPath    = Join-Path $keepDir 'keepalive.log'
+
+    $body = @"
+`$distro = '$DistroName'
+`$log    = '$logPath'
+function Note(`$m) {
+  try {
+    if ((Test-Path `$log) -and ((Get-Item `$log).Length -gt 512KB)) { Remove-Item `$log -Force }
+    Add-Content -Path `$log -Value ("{0:yyyy-MM-dd HH:mm:ss}  {1}" -f (Get-Date), `$m)
+  } catch { }
+}
+Note "keepalive starting for `$distro"
+while (`$true) {
+  try {
+    & wsl.exe -d `$distro -u root -- systemctl start docker 2>&1 | Out-Null
+    Note 'holding distro open'
+    & wsl.exe -d `$distro -u root -- sleep infinity 2>&1 | Out-Null
+    Note 'hold dropped - re-establishing'
+  } catch { Note "error: `$(`$_.Exception.Message)" }
+  Start-Sleep -Seconds 5
+}
+"@
+    [System.IO.File]::WriteAllText($keepScript, ($body -replace "`r`n","`n"), [System.Text.Encoding]::ASCII)
+
+    $taskName = "NoMercy Runners - Keep $DistroName Alive"
+    # Absolute path: scheduled tasks do not inherit PATH, and a bare
+    # powershell.exe fails with 0x80070002.
+    $pwsh = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+    $action = New-ScheduledTaskAction -Execute $pwsh `
+        -Argument "-NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$keepScript`""
+    # Logon trigger, running as this user: WSL distributions are per-user, so
+    # a task running as SYSTEM cannot see this one at all.
+    $trigger   = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
+    $principal = New-ScheduledTaskPrincipal -UserId "$env:USERDOMAIN\$env:USERNAME" -LogonType Interactive
+    $settings  = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
+                    -DontStopOnIdleEnd -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1) `
+                    -MultipleInstances IgnoreNew
+    # Runs forever by design; without this Windows kills it after 3 days and
+    # the runners quietly die.
+    $settings.ExecutionTimeLimit = 'PT0S'
+
+    Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger `
+        -Principal $principal -Settings $settings -Force | Out-Null
+    Start-ScheduledTask -TaskName $taskName
+    Start-Sleep -Seconds 6
+    Write-Ok "Scheduled task registered: $taskName"
+    Write-Info "Log: $logPath"
+    Write-Warn 'Runners return after a reboot once you log in (logon-triggered).'
+}
+
+function New-Runners {
+    Write-Head "Creating $script:RunnerCount runner(s)"
+    Write-Info 'Pulling the runner image. This is large and takes a while.'
+
+    Invoke-WslScript -Body "docker pull $RUNNER_IMAGE >/dev/null 2>&1 && echo pulled" `
+                     -Label 'Pulling the runner image' | Out-Null
+    Write-Ok 'Runner image pulled'
+
+    $limits = ''
+    if ($script:CpuLimit -ne '0') { $limits += " --cpus $script:CpuLimit" }
+    if ($script:MemLimit -ne '0') { $limits += " --memory $script:MemLimit" }
+
+    for ($i = 1; $i -le $script:RunnerCount; $i++) {
+        $name = "nomercy-runner-$i"
+        # --stop-timeout 60: Engine 29.x creates containers with StopTimeout=1
+        # (moby/moby#52775), which kills runner deregistration mid-flight and
+        # leaves orphaned registrations in the organisation.
+        $create = @"
+docker rm -f $name >/dev/null 2>&1 || true
+docker run -d --name $name \
+  --privileged --restart unless-stopped --stop-timeout 60 \
+  --label nomercy.runner=true \
+  --tmpfs /tmp \
+  -v /opt/nomercy-runners/start.sh:/root/start.sh:ro \
+  -e GH_TOKEN='$script:Token' \
+  -e GITHUB_ORG='$script:Org' \
+  -e RUNNER_LABELS='$script:Labels' \
+  -e RUNNER_GROUP='$script:RunnerGroup'$limits \
+  $RUNNER_IMAGE >/dev/null
+echo created
+"@
+        Invoke-WslScript -Body $create -Label "Creating $name" | Out-Null
+        Write-Ok "Created $name"
+    }
+
+    Write-Info 'Waiting for the runners to register with GitHub...'
+    $ready = 0
+    for ($t = 0; $t -lt 40; $t++) {
+        Start-Sleep -Seconds 6
+        $r = Invoke-WslScript -Body @"
+n=0
+for c in `$(docker ps --format '{{.Names}}' | grep '^nomercy-runner-'); do
+  if docker logs --tail 40 "`$c" 2>&1 | grep -q 'Listening for Jobs'; then n=`$((n+1)); fi
+done
+echo `$n
+"@ -Label 'Registration check'
+        $ready = [int]($r.Trim() -split "`n" | Select-Object -Last 1)
+        Write-Host "    $ready of $script:RunnerCount ready" -ForegroundColor DarkGray
+        if ($ready -ge $script:RunnerCount) { break }
+    }
+
+    $script:ReadyCount = $ready
+
+    if ($ready -lt $script:RunnerCount) {
+        Write-Warn "$ready of $script:RunnerCount runners registered."
+        # Surface the runner's own complaint. Without this the operator sees a
+        # timeout and has to go digging, when the container usually says
+        # exactly what is wrong - a bad runner group, a rejected token.
+        $err = Invoke-WslScript -Body @'
+docker logs --tail 40 nomercy-runner-1 2>&1 |
+  grep -iE "error|could not|denied|not found|invalid" | tail -4
+'@ -Label 'Reading runner log'
+        if ($err.Trim()) {
+            Write-Host ''
+            Write-Host '  The runner reported:' -ForegroundColor Yellow
+            foreach ($line in ($err.Trim() -split "`n")) {
+                Write-Host "    $($line.Trim())" -ForegroundColor Red
+            }
+        }
+        Write-Host ''
+        Write-Info "Full log:  wsl -d $DistroName -u root -- docker logs nomercy-runner-1"
+    } else {
+        Write-Ok "All $script:RunnerCount runners are listening for jobs"
+    }
+}
+
+function Install-Dashboard {
+    Write-Head 'Installing the dashboard'
+    $build = @"
+set -euo pipefail
+cd /opt/nomercy-runners/repo/dashboard
+docker build -t nomercy/runner-dashboard:local . >/dev/null 2>&1
+docker rm -f nomercy-runner-dashboard >/dev/null 2>&1 || true
+docker run -d --name nomercy-runner-dashboard \
+  --restart unless-stopped \
+  -p $($script:DashboardPort):9200 \
+  -v /var/run/docker.sock:/var/run/docker.sock \
+  -v /opt/nomercy-runners:/repo \
+  -v nomercy-dashboard-data:/data \
+  nomercy/runner-dashboard:local >/dev/null
+echo started
+"@
+    Invoke-WslScript -Body $build -Label 'Dashboard install' | Out-Null
+    Write-Ok "Dashboard running on http://localhost:$($script:DashboardPort)"
+    Write-Info 'It will ask you to set a password the first time you open it.'
+}
+
+function Show-NextSteps {
+    $ok = ($script:ReadyCount -ge $script:RunnerCount)
+    if ($ok) { Write-Head 'Done' } else { Write-Head 'Finished with problems' }
+
+    Write-Host ''
+    if ($ok) {
+        Write-Host "  Runners      $script:RunnerCount, registered to $script:Org" -ForegroundColor Green
+    } else {
+        Write-Host "  Runners      $script:ReadyCount of $script:RunnerCount registered to $script:Org" -ForegroundColor Red
+        Write-Host "               The environment is installed; the runners are not all up." -ForegroundColor Red
+    }
+    Write-Host "  Storage      $script:DataPath" -ForegroundColor Green
+    Write-Host "  Isolation    own Docker engine in WSL distro '$DistroName'" -ForegroundColor Green
+    if ($script:WantDashboard) {
+        Write-Host "  Dashboard    http://localhost:$($script:DashboardPort)" -ForegroundColor Green
+    }
+    Write-Host ''
+    Write-Host '  Useful commands' -ForegroundColor Yellow
+    Write-Host "    See the runners     wsl -d $DistroName -u root -- docker ps"
+    Write-Host "    Follow one runner   wsl -d $DistroName -u root -- docker logs -f nomercy-runner-1"
+    Write-Host "    Stop one            wsl -d $DistroName -u root -- docker stop -t 60 nomercy-runner-1"
+    Write-Host "    Remove everything   .\nomercy-github-runners-uninstall.ps1"
+    Write-Host ''
+    Write-Host '  Your own Docker was not touched. These runners use a separate' -ForegroundColor DarkGray
+    Write-Host '  engine and a separate disk, so they cannot fill your storage.' -ForegroundColor DarkGray
+    Write-Host ''
+}
+
+# --------------------------------------------------------------------------
 # main
 # --------------------------------------------------------------------------
 
@@ -402,10 +721,10 @@ if (-not (Read-YesNo 'Proceed with the install' $true)) {
     exit 0
 }
 
-# Install actions are added in the next task. Stopping here keeps this script
-# honest: it either does the whole job or it does nothing, never half.
-Write-Host ''
-Write-Warn 'This build of the installer stops here (wizard only).'
-Write-Info 'The install actions land in the next revision of this script.'
-Write-Host ''
+Install-Distro
+Install-Engine
+Install-Keepalive
+New-Runners
+if ($script:WantDashboard) { Install-Dashboard }
+Show-NextSteps
 exit 0
