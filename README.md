@@ -30,12 +30,34 @@ docker compose up --build -d
 #### To scale runners:
 
 ```sh
-docker compose up -d --scale github-runner=5
+docker compose -f docker-compose.runners.yml up -d
 ```
+
+Runners are defined as six explicit services rather than `deploy.replicas`.
+Replicas all receive identical mounts, and several Docker-in-Docker daemons
+sharing one data root corrupt each other.
+
+## Setting up runners on another machine
+
+To add runners from a different machine, use the guided installers in
+[`install/`](install/README.md) rather than this compose file. They work on
+Windows, Linux and macOS, and give the runners their own storage separate from
+whatever Docker that machine already runs.
 
 ### 3. Docker-in-Docker (DinD)
 
-The container mounts the host Docker socket (`/var/run/docker.sock`) so your jobs can run Docker commands inside the runner.
+Each runner starts its **own** Docker daemon inside the container. The host's
+Docker socket is **not** mounted, so a job cannot see or touch containers
+outside its own runner.
+
+The inner daemon uses the `fuse-overlayfs` storage driver: the kernel cannot
+stack native `overlay2` on top of the host's overlay filesystem when the
+container is itself an overlay mount.
+
+Build cache in that inner daemon is capped by a `builder.gc` policy in
+`scripts/start.sh`, and a janitor loop sweeps dead images, stale workspaces and
+old diagnostic logs every six hours. Without those the daemons grow without
+limit - this is not theoretical, they once filled a 1 TB disk.
 
 ## Environment Variables
 
@@ -66,5 +88,5 @@ curl -L -X POST \
 
 ## Notes
 - The runner name is randomized per instance.
-- The container must run as root to access Docker socket.
+- The container runs as root and `privileged`, which its own Docker daemon requires.
 - For repository-level runners, adjust the API endpoint and variables accordingly.
