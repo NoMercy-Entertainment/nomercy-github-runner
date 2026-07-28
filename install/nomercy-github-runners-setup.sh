@@ -88,6 +88,11 @@ fi
 
 ORG=''; TOKEN=''; DATA_PATH=''; RUNNER_GROUP=''; LABELS=''
 RUNNER_COUNT=0; CPU_LIMIT=''; MEM_LIMIT=''; DASH_PORT=0
+# The dashboard holds the runners' Docker socket, so reaching it is equivalent
+# to running anything on this host. It is published to loopback, matching the
+# URL the installer prints. --dashboard-bind 0.0.0.0 is there for anyone who
+# deliberately wants it on the network, which is a decision worth typing out.
+DASH_BIND='127.0.0.1'
 # Tracked separately from its value: '--group ""' means "the org default,
 # deliberately", which is a different statement from not passing --group at
 # all. Testing the value alone made an explicit empty group fall through to
@@ -111,6 +116,7 @@ while [ $# -gt 0 ]; do
     --cpu)          CPU_LIMIT="$2"; shift 2 ;;
     --mem)          MEM_LIMIT="$2"; shift 2 ;;
     --dashboard-port) DASH_PORT="$2"; shift 2 ;;
+    --dashboard-bind) DASH_BIND="$2"; shift 2 ;;
     --no-dashboard) WANT_DASHBOARD=0; shift ;;
     --min-free)     MIN_FREE_GB="$2"; shift 2 ;;
     --skip-space-check) SKIP_SPACE_CHECK=1; shift ;;
@@ -661,13 +667,22 @@ install_dashboard_linux_() {
   docker -H "unix://${DOCKER_SOCK}" rm -f nomercy-runner-dashboard >/dev/null 2>&1 || true
   docker -H "unix://${DOCKER_SOCK}" run -d \
     --name nomercy-runner-dashboard --restart unless-stopped \
-    -p "${DASH_PORT}:9200" \
+    -p "${DASH_BIND}:${DASH_PORT}:9200" \
     -v "${DOCKER_SOCK}:/var/run/docker.sock" \
     -v "${DATA_PATH}:/repo" \
     -v nomercy-dashboard-data:/data \
     nomercy/runner-dashboard:local >/dev/null 2>&1 || {
       warn_ 'Could not start the dashboard. Skipping it.'; return 0; }
-  ok_ "Dashboard running on http://localhost:${DASH_PORT}"
+  if [ "$DASH_BIND" = '127.0.0.1' ]; then
+    ok_ "Dashboard running on http://localhost:${DASH_PORT}"
+    info_ 'Reachable from this machine only. It holds the runners Docker socket,'
+    info_ 'so anyone who reaches it can run anything here.'
+  else
+    ok_ "Dashboard running on http://${DASH_BIND}:${DASH_PORT}"
+    warn_ "Published on ${DASH_BIND}, so it is reachable from the network."
+    info_ 'It holds the runners Docker socket, so anyone who reaches it and'
+    info_ 'has the password can run anything on this machine.'
+  fi
   info_ 'It will ask you to set a password the first time you open it.'
 }
 
