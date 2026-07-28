@@ -91,6 +91,8 @@ Useful flags when scripting it (`--non-interactive`):
 | `--min-free N` | Lower the free-space floor from the default 40 GB |
 | `--skip-space-check` | Proceed regardless. Interactive runs can already answer "use it anyway"; this is the same escape hatch for unattended ones |
 | `--group ""` | The org default, stated deliberately. Distinct from omitting the flag, which prompts |
+| `-MinFree N` / `-SkipSpaceCheck` (Windows) | The same two escape hatches as the shell installer |
+| `-RunnerGroup ""` (Windows) | The org default, stated deliberately, same as `--group ""` |
 | `--auto-login` / `--no-auto-login` | macOS. Answer the reboot question without a prompt |
 | `--login-password-stdin` | macOS. Reads the login password from stdin for `--auto-login`. There is deliberately no `--password` flag: `argv` is readable through `ps` by any local user and lands in shell history |
 

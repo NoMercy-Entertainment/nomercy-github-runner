@@ -219,6 +219,18 @@ if ($task) {
     Write-Info 'No keepalive task found.'
 }
 
+# The script and its log outlived the task. Named per distro, so removing them
+# leaves any other installation's alone.
+$keepDir = Join-Path $env:LOCALAPPDATA 'NoMercyRunners'
+foreach ($leftover in @("keepalive-$DistroName.ps1", "keepalive-$DistroName.log")) {
+    $p = Join-Path $keepDir $leftover
+    if (Test-Path $p) { Remove-Item $p -Force -ErrorAction SilentlyContinue }
+}
+# Only if this was the last one - the directory is shared between installations.
+if ((Test-Path $keepDir) -and -not (Get-ChildItem $keepDir -Force)) {
+    Remove-Item $keepDir -Force -ErrorAction SilentlyContinue
+}
+
 # --------------------------------------------------------------------------
 # 4. the distribution (this removes the virtual disk with it)
 # --------------------------------------------------------------------------

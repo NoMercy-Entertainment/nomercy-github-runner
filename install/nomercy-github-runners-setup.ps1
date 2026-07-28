@@ -30,6 +30,8 @@ param(
     [string] $DistroName = 'nomercy-runners',
     [int]    $DashboardPort = 0,
     [switch] $NoDashboard,
+    [int]    $MinFree = 0,
+    [switch] $SkipSpaceCheck,
     [switch] $NonInteractive
 )
 
@@ -52,6 +54,13 @@ foreach ($p in 'Org','Token','DataPath','RunnerGroup','Labels','CpuLimit','MemLi
 $RUNNER_VERSION   = '2.336.0'
 $DISTRO_IMAGE     = 'Ubuntu-24.04'
 $MIN_FREE_GB      = 40
+if ($MinFree -gt 0) { $MIN_FREE_GB = $MinFree }
+
+# '-RunnerGroup ""' means "the org default, deliberately", which is a different
+# statement from not passing it at all. Testing the value alone made an
+# explicitly empty group fall through to the prompt, so a fully-parameterised
+# call still blocked waiting for input.
+$GroupSet = $PSBoundParameters.ContainsKey('RunnerGroup')
 $DEFAULT_LABELS   = 'self-hosted,Linux,X64'
 $DEFAULT_COUNT    = 2
 $DEFAULT_CEILING  = 250
@@ -282,7 +291,7 @@ function Invoke-Wizard {
         $script:Token = $null   # ask again
     }
 
-    if (-not $script:RunnerGroup) {
+    if (-not $GroupSet -and -not $script:RunnerGroup) {
         $script:RunnerGroup = Read-Answer -Prompt 'Runner group (blank for the org default)' -Default ' '
         if ($script:RunnerGroup -eq ' ') { $script:RunnerGroup = '' }
     }
@@ -335,9 +344,15 @@ function Invoke-Wizard {
         Write-Info "  path : $script:DataPath"
         Write-Info "  free : $free GB"
 
-        if ($free -lt $MIN_FREE_GB) {
+        if ($free -lt $MIN_FREE_GB -and -not $SkipSpaceCheck) {
             Write-Warn "That volume has $free GB free. At least $MIN_FREE_GB GB is recommended."
-            if ($NonInteractive) { Fail 'Not enough free space.' "$free GB available, $MIN_FREE_GB GB needed." }
+            # Interactive callers can always answer "use it anyway", so an
+            # unattended one needs the same escape hatch or the floor is simply
+            # fatal. A machine with less space is a judgement call, not an error.
+            if ($NonInteractive) {
+                Fail 'Not enough free space.' `
+                     "$free GB available, $MIN_FREE_GB GB wanted. Use -MinFree N or -SkipSpaceCheck to proceed anyway."
+            }
             if (-not (Read-YesNo 'Use it anyway' $false)) { $script:DataPath = $null; continue }
         }
         break
@@ -527,8 +542,12 @@ function Install-Keepalive {
     # register/stop/restart loop roughly every 20 seconds.
     $keepDir = Join-Path $env:LOCALAPPDATA 'NoMercyRunners'
     New-Item -ItemType Directory -Force $keepDir | Out-Null
-    $keepScript = Join-Path $keepDir 'keepalive.ps1'
-    $logPath    = Join-Path $keepDir 'keepalive.log'
+    # Named per distro. The scheduled task already is, but the script it points
+    # at was not: a second install under a different -DistroName overwrote the
+    # first one's script, and the first task then held the wrong distro open
+    # while its own went idle and took its runners down with it.
+    $keepScript = Join-Path $keepDir "keepalive-$DistroName.ps1"
+    $logPath    = Join-Path $keepDir "keepalive-$DistroName.log"
 
     $body = @"
 `$distro = '$DistroName'
@@ -696,7 +715,13 @@ function Show-NextSteps {
     Write-Host "    See the runners     wsl -d $DistroName -u root -- docker ps"
     Write-Host "    Follow one runner   wsl -d $DistroName -u root -- docker logs -f nomercy-runner-1"
     Write-Host "    Stop one            wsl -d $DistroName -u root -- docker stop -t 60 nomercy-runner-1"
-    Write-Host "    Remove everything   .\nomercy-github-runners-uninstall.ps1"
+    # Carry the distro name into the hint when it is not the default. The
+    # uninstaller defaults to 'nomercy-runners', so the bare command against a
+    # custom distro finds nothing to remove - and "nothing found" reads exactly
+    # like "removed cleanly".
+    $removeCmd = '    Remove everything   .\nomercy-github-runners-uninstall.ps1'
+    if ($DistroName -ne 'nomercy-runners') { $removeCmd += " -DistroName $DistroName" }
+    Write-Host $removeCmd
     Write-Host ''
     Write-Host '  Your own Docker was not touched. These runners use a separate' -ForegroundColor DarkGray
     Write-Host '  engine and a separate disk, so they cannot fill your storage.' -ForegroundColor DarkGray
