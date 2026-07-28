@@ -244,6 +244,18 @@ separate data root, runner registration, and complete removal. Isolation was
 verified by observing two containers with the *same name* on the two daemons,
 holding different IDs and separate layer stores.
 
+Independently re-run on 2026-07-28 on a second machine (Ubuntu 24.04, Docker
+already installed, runners given their own 60 GB volume). Two runners
+registered, a real job ran, and isolation was measured rather than inferred:
+20 GB allocated inside the runners' pool moved the system Docker's free space
+by nothing, and after a job had been through it the two roots held 25 GB and
+212 KB respectively.
+
+That run is also what turned up the `grep -q` inversion described under
+[Known issues](#known-issues-and-things-to-watch): the uninstaller reported
+"No systemd service to remove" and left the isolated `dockerd` running against
+a data root it had just deleted.
+
 **macOS — tested by @StoneyEagle on 2026-07-28** (Mac mini, Apple M4, macOS
 26.5.2, arm64). Install, registration, real job execution and teardown all
 work. The workspace landed under the chosen storage path, two runners installed
