@@ -93,6 +93,16 @@ Useful flags when scripting it (`--non-interactive`):
 | `--group ""` | The org default, stated deliberately. Distinct from omitting the flag, which prompts |
 | `-MinFree N` / `-SkipSpaceCheck` (Windows) | The same two escape hatches as the shell installer |
 | `-RunnerGroup ""` (Windows) | The org default, stated deliberately, same as `--group ""` |
+
+One PowerShell trap when scripting it: `powershell.exe -File script.ps1 -RunnerGroup ''`
+drops the empty argument during native argument parsing, so the parameter binds
+to whatever follows it, or errors as missing. Use `-Command` with a splat, which
+PowerShell parses itself:
+
+```powershell
+$p = @{ Org = 'YourOrg'; Token = $pat; RunnerGroup = ''; NonInteractive = $true }
+& .\nomercy-github-runners-setup.ps1 @p
+```
 | `--auto-login` / `--no-auto-login` | macOS. Answer the reboot question without a prompt |
 | `--login-password-stdin` | macOS. Reads the login password from stdin for `--auto-login`. There is deliberately no `--password` flag: `argv` is readable through `ps` by any local user and lands in shell history |
 
