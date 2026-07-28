@@ -12,7 +12,8 @@ and your own containers keep working. That failure is the reason these exist.
 | Runners run as | containers | containers | native processes |
 | Storage isolation | own WSL distro + own Docker engine | second Docker daemon, own data root | **none** (see below) |
 | Managed by | scheduled task | systemd | launchd |
-| Needs admin/root | no | **yes** | no |
+| Needs admin/root | no | **yes** | only if you enable auto-login |
+| Survives an unattended reboot | no | yes | only with auto-login |
 | Dashboard | optional | optional | not available |
 
 ---
@@ -55,6 +56,13 @@ lives wherever you choose, but if a workflow uses Docker it will use whatever
 Docker is installed on the machine and share its storage. Xcode-based workflows
 are unaffected. The installer says this again before it does anything.
 
+**Reboots are a question the installer asks you.** The launchd service the
+runner installs is a user LaunchAgent, and those load at login rather than at
+boot, so a Mac that reboots with nobody logged in comes back with no runners.
+Answer yes to the auto-login question and it comes back on its own; answer no
+and it does not. Either way the installer tells you which you chose, at the
+summary and again at the end. See [Reboots on macOS](#reboots-on-macos).
+
 ---
 
 ## What it asks you
@@ -71,6 +79,8 @@ are unaffected. The installer says this again before it does anything.
   wrong drive is the exact problem this installer exists to prevent.
 - **Disk ceiling** (Windows and Linux).
 - Whether to install the **dashboard**, and on which port.
+- **Whether to enable auto-login** (macOS), so the runners return after an
+  unattended reboot. Defaults to no, and it explains the trade before asking.
 
 Nothing is created until you confirm the summary.
 
@@ -81,6 +91,8 @@ Useful flags when scripting it (`--non-interactive`):
 | `--min-free N` | Lower the free-space floor from the default 40 GB |
 | `--skip-space-check` | Proceed regardless. Interactive runs can already answer "use it anyway"; this is the same escape hatch for unattended ones |
 | `--group ""` | The org default, stated deliberately. Distinct from omitting the flag, which prompts |
+| `--auto-login` / `--no-auto-login` | macOS. Answer the reboot question without a prompt |
+| `--login-password-stdin` | macOS. Reads the login password from stdin for `--auto-login`. There is deliberately no `--password` flag: `argv` is readable through `ps` by any local user and lands in shell history |
 
 Re-running the installer over an existing install is safe: runners that are
 already configured are left alone, so raising `--count` adds capacity rather
@@ -97,7 +109,10 @@ Docker daemon with its data root under your chosen path, and your runner
 containers on it.
 
 **macOS** — a runner installation per runner under your chosen path, each
-registered as a launchd service.
+registered as a launchd service. With auto-login enabled, also a watchdog
+LaunchAgent (`tv.nomercy.runner-watchdog`, script under your chosen path) and a
+root LaunchDaemon (`tv.nomercy.autologin-health`) that reports when auto-login
+has stopped being able to work.
 
 ## Removing it
 
@@ -141,10 +156,73 @@ separate but the disk is not, and a runaway build could still fill it. The
 installer warns you at the time; choose a path on another volume for real
 isolation.
 
-**macOS: runners do not survive an unattended reboot.** `svc.sh` only produces
-a user LaunchAgent, which loads at login rather than at boot. Confirmed on
-hardware. NoMercy-Entertainment/nomercy-ci#1 has a working fix (auto-login plus
-a watchdog) that has not yet been ported here.
+**macOS: reboots are covered only if you asked for it.** `svc.sh` produces a
+user LaunchAgent, which loads at login rather than at boot, so a Mac that
+reboots with nobody logged in comes back with no runners. The installer offers
+auto-login to fix that and defaults to no. See the section below for what it
+does and what it costs.
+
+---
+
+## Reboots on macOS
+
+A LaunchAgent loads at user login. A Mac that reboots unattended therefore comes
+back with every runner down and nothing in any log saying why, because the thing
+that would log it did not start either.
+
+A LaunchDaemon is the obvious fix and the wrong one. The runner requires
+`runsvc.sh` as its entry point, and a daemon runs outside the GUI session, so it
+loses the keychain, code-signing identities and simulators an Xcode runner needs.
+It would look installed and quietly fail the work.
+
+So the installer offers to make the login happen instead:
+
+```bash
+./nomercy-github-runners-setup.sh --auto-login
+# or, unattended:
+./nomercy-github-runners-setup.sh --auto-login --login-password-stdin <<<"$pw"
+```
+
+Say yes and three things are installed:
+
+| | What it does |
+|---|---|
+| Auto-login | The Mac logs itself in at boot, so the LaunchAgents load exactly as they would for a human |
+| `tv.nomercy.runner-watchdog` | A LaunchAgent, every 5 minutes, that starts any runner agent that is not loaded. It only ever starts things and finds them by globbing, so it is safe beside runners it did not install and covers ones added later |
+| `tv.nomercy.autologin-health` | A root LaunchDaemon that checks auto-login is still able to work and reports when it is not |
+
+**Auto-login is a real security decision.** Anyone who can power-cycle the
+machine gets a logged-in session. It also requires FileVault to be **off** — the
+installer checks and refuses rather than leaving you believing reboots are
+covered. Say no and everything else still installs; the runners simply stay down
+after a reboot until somebody logs in.
+
+**Why the health daemon exists.** The watchdog is a LaunchAgent, so it needs the
+session auto-login exists to create. If auto-login itself breaks — a macOS update
+clearing the preference, someone turning FileVault on — the watchdog is not
+running to notice. The daemon runs at boot outside any session, writes an hourly
+heartbeat, and logs loudly when any of the three preconditions is gone:
+
+```bash
+tail /var/log/nomercy-autologin-health.log
+/usr/bin/log show --predicate 'eventMessage BEGINSWITH "nomercy-autologin:"' --last 1d
+```
+
+Spell out `/usr/bin/log`: `log` is a zsh builtin that takes no arguments, so the
+bare command fails with `too many arguments` in the default macOS shell.
+
+It never repairs anything. Repairing auto-login needs the login password, and a
+root daemon holding one would be worse than the fault it reports.
+
+**`sysadminctl -autologin` is broken on macOS 26.** It sets the user preference
+and then fails the credential with `SACSetAutoLoginPassword error:22`, so
+auto-login looks configured and does not work. The installer checks both halves —
+the preference and `/etc/kcpassword` — and writes the credential itself when
+`sysadminctl` did not.
+
+The uninstaller removes the watchdog and the health daemon. It leaves auto-login
+alone deliberately, since that is a machine-level setting you may want for other
+reasons, and prints the two commands that undo it.
 
 ---
 
@@ -173,12 +251,40 @@ registrations across two runs.
 Four bugs came out of that run and are now fixed: `config.sh` failures were
 swallowed, re-running to add runners aborted instead of scaling, the free-space
 floor was fatal in `--non-interactive` with no override, and `--group ""` could
-not be told apart from omitting it. **Those fixes have not themselves been
-re-run on macOS** — they are covered by tests on Linux where the code is
-shared, but the macOS-specific paths (`config.sh` output capture, the
-already-configured skip) are unexercised on Darwin.
+not be told apart from omitting it.
 
-Known and not fixed here: `svc.sh` produces a user **LaunchAgent**, so runners
-do not return after a reboot until someone logs in. See
-NoMercy-Entertainment/nomercy-ci#1 for a working approach (auto-login plus a
-watchdog) and the traps involved.
+**The two macOS-specific fixes were re-run on that Mac on 2026-07-28.** Pointing
+the installer at a group that does not exist surfaced the real reason from
+`config.sh` rather than telling anyone to re-run it by hand:
+
+```
+  config.sh reported:
+    √ Connected to GitHub
+    Could not find any self-hosted runner group named "no-such-group".
+[FAIL] Could not configure Mac-mini-van-Stoney-runner-1.
+```
+
+and re-running with `--count 2` over a single existing runner added capacity
+instead of aborting:
+
+```
+  1 runner(s) already configured here - leaving them alone.
+  [ ok ] runner-1 already configured, skipped
+  [ ok ] Installed and started Mac-mini-van-Stoney-runner-2
+```
+
+**Auto-login and the reboot pieces were tested on the same Mac**, by rebooting
+it. Auto-login took (`/dev/console` owned by the user), all four runner agents
+on the machine loaded — the two the installer created and two it had never
+touched — the health daemon ran at boot with exit 0, and a real job then ran on
+a runner that had come back on its own:
+
+```
+runner name : Mac-mini-van-Stoney-runner-1
+workspace   : /Users/stoney/RunnerInstallerTest/runner-1/_work/nomercy-ci/nomercy-ci
+uptime      : up 6 mins, 1 user
+console     : crw--w--w-  1 stoney  staff  0 Jul 28 04:24 /dev/console
+```
+
+Teardown removed both runners, the watchdog and the health daemon, and left no
+orphaned registrations in the organisation.

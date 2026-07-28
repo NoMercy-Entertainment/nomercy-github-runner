@@ -94,6 +94,11 @@ RUNNER_COUNT=0; CPU_LIMIT=''; MEM_LIMIT=''; DASH_PORT=0
 # an interactive prompt, so a fully-flagged script still blocked.
 GROUP_SET=0; SKIP_SPACE_CHECK=0
 WANT_DASHBOARD=''; NON_INTERACTIVE=0
+# macOS only. Auto-login is a security decision on someone else's machine, so
+# it is never a default - the wizard asks, and this flag is the scripted way to
+# say yes. The password is never an option value: argv is readable through ps
+# by any local user and lands in shell history.
+WANT_AUTOLOGIN=''; LOGIN_PASSWORD=''; PASSWORD_FROM_STDIN=0
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -110,6 +115,9 @@ while [ $# -gt 0 ]; do
     --min-free)     MIN_FREE_GB="$2"; shift 2 ;;
     --skip-space-check) SKIP_SPACE_CHECK=1; shift ;;
     --non-interactive) NON_INTERACTIVE=1; shift ;;
+    --auto-login)   WANT_AUTOLOGIN=1; shift ;;
+    --no-auto-login) WANT_AUTOLOGIN=0; shift ;;
+    --login-password-stdin) PASSWORD_FROM_STDIN=1; shift ;;
     -h|--help)
       sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'
       exit 0 ;;
@@ -387,6 +395,51 @@ wizard_() {
     fi
   fi
 
+  # A LaunchAgent loads at user login, not at boot, so a Mac that reboots with
+  # nobody logged in comes back with no runners and no error anywhere. Whichever
+  # way this is answered, the operator has been told - the one outcome to avoid
+  # is somebody assuming reboots are covered when they are not.
+  if [ "$PLATFORM" = macos ]; then
+    head_ 'Surviving a reboot'
+    info_ 'The launchd service the runner installs is a user LaunchAgent, and'
+    info_ 'those load at LOGIN, not at boot. If this Mac reboots with nobody'
+    info_ 'logged in, every runner on it stays down until someone logs in.'
+    printf "\n"
+    info_ 'Auto-login solves it: the Mac logs itself in at boot and the agents'
+    info_ 'load exactly as they would for a human. That is a real security'
+    info_ 'decision - anyone who can power-cycle this machine gets a logged-in'
+    info_ 'session - and it needs FileVault to be off.'
+    printf "\n"
+    info_ 'Say no and everything still installs. Runners will simply not come'
+    info_ 'back on their own after a reboot.'
+
+    [ -n "$WANT_AUTOLOGIN" ] || WANT_AUTOLOGIN="$(ask_yn_ \
+        'Enable auto-login so the runners come back after a reboot' n)"
+
+    if [ "$WANT_AUTOLOGIN" = 1 ]; then
+      # `fdesetup status` is localised, so matching its sentence would refuse to
+      # run on a non-English Mac. `isactive` prints true/false everywhere.
+      if [ "$(fdesetup isactive 2>/dev/null)" = 'true' ]; then
+        warn_ 'FileVault is on, so auto-login cannot work on this Mac.'
+        info_ 'Refusing it rather than leaving you believing reboots are covered.'
+        info_ 'The runners will still install.'
+        WANT_AUTOLOGIN=0
+      elif [ "$PASSWORD_FROM_STDIN" = 1 ]; then
+        IFS= read -r LOGIN_PASSWORD
+      elif [ "$NON_INTERACTIVE" = 1 ]; then
+        fail_ 'Auto-login needs the login password and there is no prompt.' \
+              'Pass it on stdin: --auto-login --login-password-stdin <<<"$pw"'
+      else
+        LOGIN_PASSWORD="$(ask_secret_ \
+            "Login password for ${USER:-$(id -un)} (input hidden, never stored)")"
+      fi
+      if [ "$WANT_AUTOLOGIN" = 1 ] && [ -z "$LOGIN_PASSWORD" ]; then
+        warn_ 'No password given, so auto-login will not be configured.'
+        WANT_AUTOLOGIN=0
+      fi
+    fi
+  fi
+
   if [ "$PLATFORM" = linux ]; then
     head_ 'Dashboard'
     [ -n "$WANT_DASHBOARD" ] || WANT_DASHBOARD="$(ask_yn_ 'Install the web dashboard for managing these runners' y)"
@@ -440,6 +493,11 @@ summary_() {
   else
     printf "    Runner form     native processes under launchd\n"
     printf "    Isolation       none for Docker (see the note below)\n"
+    if [ "$WANT_AUTOLOGIN" = 1 ]; then
+      printf "    After a reboot  runners return (auto-login will be enabled)\n"
+    else
+      printf "    After a reboot  runners stay DOWN until someone logs in\n"
+    fi
   fi
 
   if [ "$PLATFORM" = macos ]; then
@@ -681,7 +739,7 @@ install_macos_() {
       printf "\n  ${C_YELLOW}config.sh reported:${C_RESET}\n"
       # Drop the ASCII-art banner and blank lines; keep the sentences.
       printf '%s\n' "$_out" \
-        | grep -vE '^[[:space:]]*$|^[[:space:]]*[|_/\\]|Self-hosted runner registration|^[[:space:]]*#' \
+        | grep -vE '^[[:space:]]*$|^[[:space:]]*[|_/\\]|^[[:space:]]*-{5,}[[:space:]]*$|Self-hosted runner registration|^[[:space:]]*#' \
         | tail -6 \
         | while IFS= read -r _l; do printf "    ${C_RED}%s${C_RESET}\n" "$_l"; done
       fail_ "Could not configure ${_name}." \
@@ -698,6 +756,237 @@ install_macos_() {
     READY_COUNT=$((READY_COUNT + 1))
     _n=$((_n + 1))
   done
+}
+
+# --------------------------------------------------------------------------
+# install - macos reboot survival
+# --------------------------------------------------------------------------
+
+# Runs sudo without a tty. The installer does not otherwise need root on macOS,
+# so this is the only place privileges are used, and only when the operator
+# asked for auto-login.
+sudo_() { printf '%s\n' "$LOGIN_PASSWORD" | sudo -S -p '' "$@"; }
+
+install_macos_autostart_() {
+  head_ 'Reboot survival'
+
+  _agents="$HOME/Library/LaunchAgents"
+  _watchdog="${DATA_PATH}/bin/nomercy-runner-watchdog.sh"
+  _wd_label='tv.nomercy.runner-watchdog'
+  _health_label='tv.nomercy.autologin-health'
+
+  mkdir -p "$_agents" "${DATA_PATH}/bin" || fail_ "Could not create ${DATA_PATH}/bin."
+
+  # Anything derived from the login password is written under this.
+  umask 077
+
+  if ! sudo_ true 2>/dev/null; then
+    warn_ 'That password was not accepted by sudo, or this account is not an admin.'
+    info_ 'Auto-login was not configured. The runners are installed and running,'
+    info_ 'but they will not come back on their own after a reboot.'
+    WANT_AUTOLOGIN=0; LOGIN_PASSWORD=''
+    return 0
+  fi
+
+  # sysadminctl is the supported route and it is broken on macOS 26: it sets the
+  # user preference, fails the credential with "SACSetAutoLoginPassword
+  # error:22", and leaves auto-login looking configured while the login window
+  # still appears at boot. Try it, then verify both halves and write the
+  # credential directly if it did not.
+  sudo_ sysadminctl -autologin set -userName "${USER:-$(id -un)}" \
+      -password "$LOGIN_PASSWORD" >/dev/null 2>&1 || true
+
+  if ! sudo_ test -f /etc/kcpassword; then
+    # mktemp gives an unpredictable name at mode 600, and the trap covers the
+    # failure paths: until install runs, this file is the login password behind
+    # a fixed XOR key, which is no protection at all.
+    _kcp="$(mktemp "${TMPDIR:-/tmp}/nomercy-kcp.XXXXXXXX")" || fail_ 'Could not create a temp file.'
+    trap 'rm -f "$_kcp"' EXIT
+    if ! LOGIN_PASSWORD="$LOGIN_PASSWORD" python3 -c '
+import os, sys
+key = bytes([0x7D,0x89,0x52,0x23,0xD2,0xBC,0xDD,0xEA,0xA3,0xB9,0x1F])
+raw = bytearray(os.environ["LOGIN_PASSWORD"].encode("utf-8"))
+pad = 12 - (len(raw) % 12)
+raw += b"\x00" * pad
+sys.stdout.buffer.write(bytes(c ^ key[i % len(key)] for i, c in enumerate(raw)))
+' >"$_kcp" 2>/dev/null; then
+      rm -f "$_kcp"
+      warn_ 'Could not write the auto-login credential (python3 not available).'
+      info_ 'The runners are installed; reboots are not covered.'
+      WANT_AUTOLOGIN=0; LOGIN_PASSWORD=''
+      return 0
+    fi
+    sudo_ install -m 600 -o root -g wheel "$_kcp" /etc/kcpassword
+    rm -f "$_kcp"
+  fi
+
+  sudo_ defaults write /Library/Preferences/com.apple.loginwindow \
+      autoLoginUser "${USER:-$(id -un)}" >/dev/null 2>&1
+
+  # Verify BOTH halves. The preference alone is what makes this look configured
+  # while the login window still appears at boot.
+  _who="$(defaults read /Library/Preferences/com.apple.loginwindow autoLoginUser 2>/dev/null)"
+  if [ "$_who" != "${USER:-$(id -un)}" ] || ! sudo_ test -f /etc/kcpassword; then
+    warn_ 'Auto-login did not take, so reboots are not covered.'
+    info_ "autoLoginUser is '${_who:-unset}' and /etc/kcpassword may be missing."
+    WANT_AUTOLOGIN=0; LOGIN_PASSWORD=''
+    return 0
+  fi
+  ok_ "Auto-login enabled for ${USER:-$(id -un)} (preference and credential both present)"
+
+  # ---- watchdog -----------------------------------------------------------
+  # Only ever starts things, and finds runners by globbing, so it is safe next
+  # to runners this installer did not create and covers any added later.
+  cat >"$_watchdog" <<'WATCHDOG'
+#!/bin/bash
+# Starts any GitHub Actions runner agent on this Mac that is not loaded.
+# Never stops or reconfigures anything, so it is safe beside runners it does
+# not own, and it discovers them by globbing so a later one needs no edit here.
+set -uo pipefail
+
+LOG="${LOG:-$HOME/Library/Logs/nomercy-runner-watchdog.log}"
+mkdir -p "$(dirname "$LOG")"
+say_() { printf '%s %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$1" >>"$LOG"; }
+
+for _svc in "$HOME"/Library/LaunchAgents/actions.runner.*.plist; do
+	[ -e "$_svc" ] || continue
+	_label="$(basename "$_svc" .plist)"
+	launchctl print "gui/$(id -u)/${_label}" >/dev/null 2>&1 && continue
+	say_ "${_label} is not loaded, bootstrapping it"
+	if launchctl bootstrap "gui/$(id -u)" "$_svc" >>"$LOG" 2>&1; then
+		say_ "${_label} bootstrapped"
+	else
+		say_ "${_label} FAILED to bootstrap"
+	fi
+done
+
+if [ -f "$LOG" ] && [ "$(wc -l <"$LOG")" -gt 2000 ]; then
+	tail -500 "$LOG" >"${LOG}.tmp" && mv "${LOG}.tmp" "$LOG"
+fi
+WATCHDOG
+  chmod 755 "$_watchdog"
+
+  # The plist has to live in ~/Library/LaunchAgents - launchd only reads user
+  # agents from there. Everything it runs lives under the chosen path.
+  cat >"${_agents}/${_wd_label}.plist" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key><string>${_wd_label}</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>${_watchdog}</string>
+    </array>
+    <key>RunAtLoad</key><true/>
+    <key>StartInterval</key><integer>300</integer>
+    <key>ProcessType</key><string>Background</string>
+    <key>StandardErrorPath</key><string>${HOME}/Library/Logs/nomercy-runner-watchdog.err</string>
+</dict>
+</plist>
+PLIST
+  chmod 644 "${_agents}/${_wd_label}.plist"
+  launchctl bootout "gui/$(id -u)/${_wd_label}" >/dev/null 2>&1 || true
+  launchctl bootstrap "gui/$(id -u)" "${_agents}/${_wd_label}.plist" >/dev/null 2>&1 \
+    || warn_ "Could not load ${_wd_label}."
+  ok_ 'Watchdog installed, checking every 5 minutes'
+
+  # ---- auto-login health daemon -------------------------------------------
+  # The watchdog is a LaunchAgent, so it needs the session auto-login exists to
+  # create. If auto-login breaks - an OS update clearing the preference, someone
+  # turning FileVault on - the watchdog is not running to notice. This daemon
+  # runs at boot outside any session and does nothing but report. It cannot
+  # repair: that needs the login password, and a root daemon holding one would
+  # be worse than the fault it reports.
+  _health="$(mktemp "${TMPDIR:-/tmp}/nomercy-health.XXXXXXXX")"
+  cat >"$_health" <<'HEALTH'
+#!/bin/bash
+# Reports when macOS auto-login has stopped being able to work. Report only -
+# repairing it needs the login password, which this must never hold.
+set -uo pipefail
+
+EXPECTED_USER="${1:-}"
+LOG="/var/log/nomercy-autologin-health.log"
+
+# The unified log records `logger` as the process and drops the tag, so the
+# marker has to be in the message itself for anything to be searchable later.
+say_() {
+	printf '%s %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$1" >>"$LOG"
+	logger -t nomercy-autologin "nomercy-autologin: $1"
+}
+
+problems=0
+who="$(defaults read /Library/Preferences/com.apple.loginwindow autoLoginUser 2>/dev/null)"
+if [ -z "$who" ]; then
+	say_ "BROKEN: autoLoginUser is unset. Runners will not come back from a reboot."
+	problems=$((problems + 1))
+elif [ -n "$EXPECTED_USER" ] && [ "$who" != "$EXPECTED_USER" ]; then
+	say_ "BROKEN: autoLoginUser is '${who}', expected '${EXPECTED_USER}'."
+	problems=$((problems + 1))
+fi
+if [ ! -f /etc/kcpassword ]; then
+	say_ "BROKEN: /etc/kcpassword is missing. The login window will appear at boot."
+	problems=$((problems + 1))
+fi
+if [ "$(fdesetup isactive 2>/dev/null)" = "true" ]; then
+	say_ "BROKEN: FileVault is on, so auto-login cannot work regardless of the settings above."
+	problems=$((problems + 1))
+fi
+
+rotate_() {
+	if [ -f "$LOG" ] && [ "$(wc -l <"$LOG")" -gt 2000 ]; then
+		tail -500 "$LOG" >"${LOG}.tmp" && mv "${LOG}.tmp" "$LOG"
+	fi
+}
+
+if [ "$problems" -eq 0 ]; then
+	# Writes every run, including the one at boot. An hourly heartbeat is what
+	# separates "running and fine" from "stopped running"; a silent log answers
+	# neither.
+	printf '%s %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "ok: auto-login intact for ${who}" >>"$LOG"
+	rotate_
+	exit 0
+fi
+say_ "Re-run the installer with --auto-login to fix it."
+rotate_
+exit 1
+HEALTH
+
+  # /usr/local/bin does not exist on a clean Apple Silicon Mac - Homebrew lives
+  # in /opt/homebrew and nothing else creates it.
+  sudo_ install -d -m 755 -o root -g wheel /usr/local/bin
+  sudo_ install -m 755 -o root -g wheel "$_health" /usr/local/bin/nomercy-autologin-healthcheck.sh
+  rm -f "$_health"
+
+  _hplist="$(mktemp "${TMPDIR:-/tmp}/nomercy-hplist.XXXXXXXX")"
+  cat >"$_hplist" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key><string>${_health_label}</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>/usr/local/bin/nomercy-autologin-healthcheck.sh</string>
+        <string>${USER:-$(id -un)}</string>
+    </array>
+    <key>RunAtLoad</key><true/>
+    <key>StartInterval</key><integer>3600</integer>
+    <key>ProcessType</key><string>Background</string>
+</dict>
+</plist>
+PLIST
+  sudo_ install -m 644 -o root -g wheel "$_hplist" "/Library/LaunchDaemons/${_health_label}.plist"
+  rm -f "$_hplist"
+  sudo_ launchctl bootout "system/${_health_label}" >/dev/null 2>&1 || true
+  sudo_ launchctl bootstrap system "/Library/LaunchDaemons/${_health_label}.plist" >/dev/null 2>&1 \
+    || warn_ "Could not load ${_health_label}."
+  ok_ 'Auto-login health daemon installed'
+
+  # Held only as long as it takes to use it.
+  LOGIN_PASSWORD=''
 }
 
 # --------------------------------------------------------------------------
@@ -733,6 +1022,15 @@ next_steps_() {
     printf "    Status              cd %s/runner-1 && ./svc.sh status\n" "$DATA_PATH"
     printf "    Stop one            cd %s/runner-1 && ./svc.sh stop\n" "$DATA_PATH"
     printf "    Remove everything   ./nomercy-github-runners-uninstall.sh\n"
+    if [ "$WANT_AUTOLOGIN" = 1 ]; then
+      printf "    Auto-login health   tail /var/log/nomercy-autologin-health.log\n"
+      printf "\n  ${C_GREY}After a reboot this Mac logs itself in and the runners return.${C_RESET}\n"
+      printf "  ${C_GREY}Turn it off with: sudo defaults delete /Library/Preferences/com.apple.loginwindow autoLoginUser${C_RESET}\n"
+    else
+      printf "\n  ${C_YELLOW}After a reboot the runners stay DOWN until someone logs in.${C_RESET}\n"
+      printf "  ${C_GREY}The launchd service is a user LaunchAgent, which loads at login,${C_RESET}\n"
+      printf "  ${C_GREY}not at boot. Re-run with --auto-login to cover that.${C_RESET}\n"
+    fi
     printf "\n  ${C_GREY}Reminder: macOS runners share whatever Docker is installed here.${C_RESET}\n"
   fi
   printf "\n"
@@ -758,6 +1056,7 @@ if [ "$PLATFORM" = linux ]; then
   install_linux_
 else
   install_macos_
+  [ "$WANT_AUTOLOGIN" = 1 ] && install_macos_autostart_
 fi
 next_steps_
 exit 0
