@@ -164,6 +164,18 @@ function Read-YesNo {
     }
 }
 
+# `wsl --manage <d> --resize` arrived in WSL 2.5. On anything older the ceiling
+# cannot be applied at all, and the installer must say so rather than print a
+# number it never enforces. Matched on the literal option token: wsl's help text
+# is localised, but the flags themselves are not.
+$script:WslResizeSupport = $null
+function Test-WslCanResize {
+    if ($null -ne $script:WslResizeSupport) { return $script:WslResizeSupport }
+    $help = (& wsl.exe --help 2>&1 | Out-String) -replace "`0", ''
+    $script:WslResizeSupport = $help -match '--resize'
+    return $script:WslResizeSupport
+}
+
 function Get-FreeGb {
     param([string] $Path)
     try {
@@ -364,6 +376,12 @@ function Invoke-Wizard {
             -Validate { param($v) ($v -match '^\d+$') -and ([int]$v -ge 20) } `
             -ValidationHint 'Enter a whole number of GB, at least 20.')
         Write-Info 'This is a ceiling, not a reservation. The disk grows as used.'
+        if (-not (Test-WslCanResize)) {
+            Write-Warn 'This WSL cannot set a maximum size on a distribution disk.'
+            Write-Info 'The value is recorded but NOT enforced - WSL gives the disk its'
+            Write-Info 'own default maximum. Isolation still holds, because that disk is'
+            Write-Info 'separate from your own Docker. Run "wsl --update" for enforcement.'
+        }
     }
 
     Write-Head 'Dashboard'
@@ -392,7 +410,11 @@ function Show-Summary {
     Write-Host '  STORAGE' -ForegroundColor Yellow
     Write-Host "    Location        $script:DataPath"
     Write-Host "    Free on volume  $free GB"
-    Write-Host "    Disk ceiling    $script:DiskCeilingGb GB"
+    if (Test-WslCanResize) {
+        Write-Host "    Disk ceiling    $script:DiskCeilingGb GB"
+    } else {
+        Write-Host "    Disk ceiling    $script:DiskCeilingGb GB (NOT enforced - this WSL cannot set one)"
+    }
     Write-Host ''
     Write-Host '  GITHUB' -ForegroundColor Yellow
     Write-Host "    Organisation    $script:Org"
@@ -470,6 +492,22 @@ function Install-Distro {
              "The distribution did not install where it was told to, so the storage would not be isolated."
     }
     Write-Ok "Virtual disk: $($vhdx.FullName)"
+
+    # Apply the ceiling the operator was asked for. Nothing did this before, so
+    # the summary promised a limit that WSL's own default silently replaced.
+    if (Test-WslCanResize) {
+        $r = Invoke-Wsl @('--manage', $DistroName, '--resize', "$($script:DiskCeilingGb)GB")
+        if ($LASTEXITCODE -eq 0) {
+            Write-Ok "Disk ceiling set to $($script:DiskCeilingGb) GB"
+        } else {
+            Write-Warn "Could not apply the $($script:DiskCeilingGb) GB ceiling: $($r.Trim())"
+            Write-Info 'The disk keeps WSL default maximum. Isolation is unaffected.'
+        }
+    } else {
+        Write-Warn "Disk ceiling of $($script:DiskCeilingGb) GB is NOT enforced on this WSL."
+        Write-Info 'It needs WSL 2.5 or later. Isolation still holds - this disk is'
+        Write-Info 'separate from your own Docker - but nothing caps its growth.'
+    }
 
     Write-Info 'Enabling systemd...'
     Invoke-Wsl @('-d', $DistroName, '-u', 'root', '--', 'bash', '-c',
