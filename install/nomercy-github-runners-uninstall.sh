@@ -17,6 +17,10 @@ DATA_PATH=''
 DELETE_DATA=''
 NON_INTERACTIVE=0
 ORG=''
+# macOS only. --auto-login installs one root-owned LaunchDaemon, so removing it
+# needs root even though nothing else here does. Kept as a password read from a
+# prompt or stdin rather than argv, exactly like the installer.
+SUDO_PASSWORD=''; SUDO_PASSWORD_FROM_STDIN=0
 
 if [ -t 1 ]; then
   C_RESET='\033[0m'; C_CYAN='\033[36m'; C_GREEN='\033[32m'
@@ -44,6 +48,7 @@ while [ $# -gt 0 ]; do
     --delete-data) DELETE_DATA=1; shift ;;
     --keep-data)   DELETE_DATA=0; shift ;;
     --non-interactive) NON_INTERACTIVE=1; shift ;;
+    --sudo-password-stdin) SUDO_PASSWORD_FROM_STDIN=1; shift ;;
     -h|--help) sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) printf "Unknown option: %s\n" "$1"; exit 1 ;;
   esac
@@ -235,6 +240,66 @@ if [ "$PLATFORM" = linux ]; then
 else
   head_ 'Removing runner services'
   ok_ 'launchd services stopped and uninstalled'
+
+  # The reboot-survival pieces, if --auto-login installed them. Both are removed
+  # because both exist only to keep these runners up.
+  _wd_label='tv.nomercy.runner-watchdog'
+  _health_label='tv.nomercy.autologin-health'
+
+  if [ -f "$HOME/Library/LaunchAgents/${_wd_label}.plist" ]; then
+    launchctl bootout "gui/$(id -u)/${_wd_label}" >/dev/null 2>&1 || true
+    rm -f "$HOME/Library/LaunchAgents/${_wd_label}.plist"
+    ok_ 'Removed the runner watchdog'
+  fi
+
+  if [ -f "/Library/LaunchDaemons/${_health_label}.plist" ]; then
+    # The installer took a password to create this, so the uninstaller takes one
+    # to remove it. Leaving a root LaunchDaemon behind on someone's machine and
+    # printing two commands is not a clean uninstall.
+    _can_root=0
+    if [ "$(id -u)" -eq 0 ] || sudo -n true 2>/dev/null; then
+      _can_root=1
+      root_() { sudo "$@"; }
+    else
+      if [ "$SUDO_PASSWORD_FROM_STDIN" = 1 ]; then
+        IFS= read -r SUDO_PASSWORD
+      elif [ "$NON_INTERACTIVE" != 1 ]; then
+        info_ 'The auto-login health daemon runs as root, so removing it needs your'
+        info_ 'login password. Nothing else here does.'
+        printf "\n  ${C_WHITE}Login password (input hidden)${C_RESET}\n  > "
+        read -r -s SUDO_PASSWORD
+        printf "\n"
+      fi
+      if [ -n "$SUDO_PASSWORD" ]; then
+        root_() { printf '%s\n' "$SUDO_PASSWORD" | sudo -S -p '' "$@"; }
+        root_ true 2>/dev/null && _can_root=1
+      fi
+    fi
+
+    if [ "$_can_root" = 1 ]; then
+      root_ launchctl bootout "system/${_health_label}" >/dev/null 2>&1 || true
+      root_ rm -f "/Library/LaunchDaemons/${_health_label}.plist" \
+                  /usr/local/bin/nomercy-autologin-healthcheck.sh
+      SUDO_PASSWORD=''
+      ok_ 'Removed the auto-login health daemon'
+    else
+      SUDO_PASSWORD=''
+      warn_ 'The auto-login health daemon needs root to remove. Left in place.'
+      info_ "  sudo launchctl bootout system/${_health_label}"
+      info_ "  sudo rm /Library/LaunchDaemons/${_health_label}.plist /usr/local/bin/nomercy-autologin-healthcheck.sh"
+    fi
+  fi
+
+  # Auto-login is deliberately NOT undone. It is a machine-level setting the
+  # operator opted into, they may want it for other reasons, and silently
+  # re-enabling the login window on a headless Mac is its own outage.
+  if [ -n "$(defaults read /Library/Preferences/com.apple.loginwindow autoLoginUser 2>/dev/null)" ]; then
+    printf "\n"
+    info_ 'Auto-login is still enabled. It was left alone deliberately - turning'
+    info_ 'it off is a machine-level change you may not want. To undo it:'
+    info_ '  sudo defaults delete /Library/Preferences/com.apple.loginwindow autoLoginUser'
+    info_ '  sudo rm /etc/kcpassword'
+  fi
 fi
 
 # --------------------------------------------------------------------------
