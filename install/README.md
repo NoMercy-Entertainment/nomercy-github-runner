@@ -162,6 +162,17 @@ every runner. The keepalive task exists solely to prevent this. If runners
 start cycling every 20-30 seconds, check the task is still running:
 `Get-ScheduledTask -TaskName 'NoMercy Runners - Keep nomercy-runners Alive'`.
 
+**Windows: the disk ceiling needs WSL 2.5 or later.** `wsl --manage <distro>
+--resize` does not exist before that, so on an older WSL the number cannot be
+applied to anything. The installer says so at the time rather than printing a
+limit it never sets. Isolation is unaffected either way, since the runners'
+disk is separate from your own Docker regardless; only the cap is missing.
+`wsl --update` gets you the enforced version.
+
+**Uninstalling a custom distro name needs that name.** `-DistroName` is not
+remembered anywhere, so pass it to the uninstaller too. It refuses and lists
+your installed distributions if the name does not match one exactly.
+
 **Linux: a shared filesystem gives only partial isolation.** If the path you
 choose is on the same filesystem as your existing Docker root, the daemons are
 separate but the disk is not, and a runaway build could still fill it. The
@@ -247,6 +258,19 @@ worse than one honestly labelled.
 chosen path, Docker engine install, engine surviving a distro restart,
 keepalive task, runner registration, and complete removal including
 deregistration.
+
+Independently re-run on 2026-07-28 on a second machine (Windows 10 19045, WSL
+2.4.13, Docker Desktop already installed and running, runners given their own
+volume). Two runners registered and a real job ran on one of them. Isolation was
+measured against the install's own 28 GB of work rather than a synthetic
+allocation: the runners' volume dropped by 28.1 GB while the volume holding
+Docker Desktop moved by 0.2 GB of ordinary churn. Teardown removed the runners,
+the task and the distribution, left no orphaned registrations, and returned the
+volume to within 0.4 GB of where it started.
+
+That run produced the uninstaller name-matching bug and the keepalive collision
+described under [Known issues](#known-issues-and-things-to-watch), and showed
+that the disk ceiling was being asked for and never applied.
 
 **Linux — fully tested**, end to end inside a real systemd environment that
 already ran Docker, which is the situation you will be in. Isolated daemon,
