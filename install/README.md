@@ -74,6 +74,18 @@ are unaffected. The installer says this again before it does anything.
 
 Nothing is created until you confirm the summary.
 
+Useful flags when scripting it (`--non-interactive`):
+
+| Flag | Why |
+|---|---|
+| `--min-free N` | Lower the free-space floor from the default 40 GB |
+| `--skip-space-check` | Proceed regardless. Interactive runs can already answer "use it anyway"; this is the same escape hatch for unattended ones |
+| `--group ""` | The org default, stated deliberately. Distinct from omitting the flag, which prompts |
+
+Re-running the installer over an existing install is safe: runners that are
+already configured are left alone, so raising `--count` adds capacity rather
+than failing.
+
 ## What it creates
 
 **Windows** — a WSL distribution (default name `nomercy-runners`) at the path
@@ -129,10 +141,10 @@ separate but the disk is not, and a runaway build could still fill it. The
 installer warns you at the time; choose a path on another volume for real
 isolation.
 
-**Runners installed today do not deregister themselves cleanly.** The installer
-fetches `start.sh` from `master`, which does not yet include the registration
-fixes. The uninstaller compensates via the GitHub API, so this is not visible
-in normal use, but it is why passing the token to the uninstaller matters.
+**macOS: runners do not survive an unattended reboot.** `svc.sh` only produces
+a user LaunchAgent, which loads at login rather than at boot. Confirmed on
+hardware. NoMercy-Entertainment/nomercy-ci#1 has a working fix (auto-login plus
+a watchdog) that has not yet been ported here.
 
 ---
 
@@ -152,8 +164,21 @@ separate data root, runner registration, and complete removal. Isolation was
 verified by observing two containers with the *same name* on the two daemons,
 holding different IDs and separate layer stores.
 
-**macOS — written but never executed.** No Darwin machine was available. The
-logic follows GitHub's documented `svc.sh` path and the script is syntax-clean,
-but the first person to run it is testing it. If you are that person: run it
-with one runner first, and if `config.sh` fails, run it by hand in the runner
-directory to see the real error.
+**macOS — tested by @StoneyEagle on 2026-07-28** (Mac mini, Apple M4, macOS
+26.5.2, arm64). Install, registration, real job execution and teardown all
+work. The workspace landed under the chosen storage path, two runners installed
+side by side without colliding, and the uninstaller left no orphaned
+registrations across two runs.
+
+Four bugs came out of that run and are now fixed: `config.sh` failures were
+swallowed, re-running to add runners aborted instead of scaling, the free-space
+floor was fatal in `--non-interactive` with no override, and `--group ""` could
+not be told apart from omitting it. **Those fixes have not themselves been
+re-run on macOS** — they are covered by tests on Linux where the code is
+shared, but the macOS-specific paths (`config.sh` output capture, the
+already-configured skip) are unexercised on Darwin.
+
+Known and not fixed here: `svc.sh` produces a user **LaunchAgent**, so runners
+do not return after a reboot until someone logs in. See
+NoMercy-Entertainment/nomercy-ci#1 for a working approach (auto-login plus a
+watchdog) and the traps involved.

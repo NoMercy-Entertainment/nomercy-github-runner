@@ -88,6 +88,11 @@ fi
 
 ORG=''; TOKEN=''; DATA_PATH=''; RUNNER_GROUP=''; LABELS=''
 RUNNER_COUNT=0; CPU_LIMIT=''; MEM_LIMIT=''; DASH_PORT=0
+# Tracked separately from its value: '--group ""' means "the org default,
+# deliberately", which is a different statement from not passing --group at
+# all. Testing the value alone made an explicit empty group fall through to
+# an interactive prompt, so a fully-flagged script still blocked.
+GROUP_SET=0; SKIP_SPACE_CHECK=0
 WANT_DASHBOARD=''; NON_INTERACTIVE=0
 
 while [ $# -gt 0 ]; do
@@ -95,13 +100,15 @@ while [ $# -gt 0 ]; do
     --org)          ORG="$2"; shift 2 ;;
     --token)        TOKEN="$2"; shift 2 ;;
     --path)         DATA_PATH="$2"; shift 2 ;;
-    --group)        RUNNER_GROUP="$2"; shift 2 ;;
+    --group)        RUNNER_GROUP="$2"; GROUP_SET=1; shift 2 ;;
     --labels)       LABELS="$2"; shift 2 ;;
     --count)        RUNNER_COUNT="$2"; shift 2 ;;
     --cpu)          CPU_LIMIT="$2"; shift 2 ;;
     --mem)          MEM_LIMIT="$2"; shift 2 ;;
     --dashboard-port) DASH_PORT="$2"; shift 2 ;;
     --no-dashboard) WANT_DASHBOARD=0; shift ;;
+    --min-free)     MIN_FREE_GB="$2"; shift 2 ;;
+    --skip-space-check) SKIP_SPACE_CHECK=1; shift ;;
     --non-interactive) NON_INTERACTIVE=1; shift ;;
     -h|--help)
       sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'
@@ -307,10 +314,10 @@ wizard_() {
     TOKEN=''
   done
 
-  [ -n "$RUNNER_GROUP" ] || {
+  if [ "$GROUP_SET" != 1 ] && [ -z "$RUNNER_GROUP" ]; then
     RUNNER_GROUP="$(ask_ 'Runner group (leave blank for the org default)' 'NONE')"
     [ "$RUNNER_GROUP" = 'NONE' ] && RUNNER_GROUP=''
-  }
+  fi
 
   head_ 'Runners'
 
@@ -346,9 +353,14 @@ wizard_() {
     info_ "free : ${_free} GB"
 
     _enough="$(awk -v a="$_free" -v b="$MIN_FREE_GB" 'BEGIN{print (a>=b)?1:0}')"
-    if [ "$_enough" != 1 ]; then
+    if [ "$_enough" != 1 ] && [ "$SKIP_SPACE_CHECK" != 1 ]; then
       warn_ "That volume has ${_free} GB free. At least ${MIN_FREE_GB} GB is recommended."
-      [ "$NON_INTERACTIVE" = 1 ] && fail_ 'Not enough free space.' "${_free} GB available."
+      # Interactive callers get to say "use it anyway", so an unattended one
+      # needs the same escape hatch or the floor is simply fatal. A machine
+      # with less space is a judgement call, not an error.
+      if [ "$NON_INTERACTIVE" = 1 ]; then
+        fail_ 'Not enough free space.'               "${_free} GB available, ${MIN_FREE_GB} GB wanted. Use --min-free N or --skip-space-check to proceed anyway."
+      fi
       if [ "$(ask_yn_ 'Use it anyway' n)" = 0 ]; then DATA_PATH=''; continue; fi
     fi
     break
@@ -618,10 +630,31 @@ install_macos_() {
   fi
   ok_ 'Runner package ready'
 
+  # Count what is already here, so re-running to add capacity works. This used
+  # to abort on runner-1 with "Cannot configure the runner because it is
+  # already configured" and never reach the new ones, which made growing a
+  # fleet mean uninstall-and-reinstall.
+  _existing=0
+  for _d in "${DATA_PATH}"/runner-*; do
+    [ -f "${_d}/.runner" ] && _existing=$((_existing + 1))
+  done
+  if [ "$_existing" -gt 0 ]; then
+    info_ "${_existing} runner(s) already configured here - leaving them alone."
+    READY_COUNT="$_existing"
+  fi
+
   _n=1
   while [ "$_n" -le "$RUNNER_COUNT" ]; do
     _dir="${DATA_PATH}/runner-${_n}"
     _name="$(hostname -s 2>/dev/null || echo mac)-runner-${_n}"
+
+    # Already configured: skip rather than fail. Re-extracting over a live
+    # runner would also clobber its .runner and credentials.
+    if [ -f "${_dir}/.runner" ]; then
+      ok_ "runner-${_n} already configured, skipped"
+      _n=$((_n + 1))
+      continue
+    fi
 
     mkdir -p "$_dir"
     tar xzf "${DATA_PATH}/${_tar}" -C "$_dir" || fail_ "Could not extract into ${_dir}."
@@ -636,11 +669,24 @@ install_macos_() {
     _grp=''
     [ -n "$RUNNER_GROUP" ] && _grp="--runnergroup $RUNNER_GROUP"
 
+    # Capture config.sh output instead of discarding it. It states the real
+    # reason plainly - "Could not find any self-hosted runner group named 'x'",
+    # "Cannot configure the runner because it is already configured" - and
+    # throwing that away turned a one-second diagnosis into a round trip of
+    # re-running the command by hand.
     # shellcheck disable=SC2086
-    ( cd "$_dir" && ./config.sh --unattended --disableupdate --replace \
+    if ! _out="$( cd "$_dir" && ./config.sh --unattended --disableupdate --replace \
         --url "https://github.com/${ORG}" --token "$_tok" \
-        --name "$_name" --labels "$LABELS" --work "${_dir}/_work" $_grp ) >/dev/null 2>&1 \
-      || fail_ "Could not configure ${_name}." "Try running ./config.sh in ${_dir} by hand to see why."
+        --name "$_name" --labels "$LABELS" --work "${_dir}/_work" $_grp 2>&1 )"; then
+      printf "\n  ${C_YELLOW}config.sh reported:${C_RESET}\n"
+      # Drop the ASCII-art banner and blank lines; keep the sentences.
+      printf '%s\n' "$_out" \
+        | grep -vE '^[[:space:]]*$|^[[:space:]]*[|_/\\]|Self-hosted runner registration|^[[:space:]]*#' \
+        | tail -6 \
+        | while IFS= read -r _l; do printf "    ${C_RED}%s${C_RESET}\n" "$_l"; done
+      fail_ "Could not configure ${_name}." \
+            "The lines above come from config.sh itself."
+    fi
 
     # svc.sh writes and loads the launchd plist. Do not hand-write one: the
     # runner requires runsvc.sh as the entry point, and svc.sh is the
