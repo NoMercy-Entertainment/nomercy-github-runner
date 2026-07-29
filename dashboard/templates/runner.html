@@ -480,6 +480,10 @@ async function pollSeries() {
 }
 
 // -- overview: inspect fields, built once then patched in place -----------
+// start.sh's shutdown budget documents ~9s worst case for its own deregister
+// path (curl + config.sh remove); 30s leaves comfortable margin above that
+// without flagging a deliberately generous value like the current 60s.
+const STOP_TIMEOUT_DANGER_S = 30;
 const FIELDS = [
   ['image', 'Image', v => v || '—'],
   ['digest', 'Digest', v => v || '—'],
@@ -493,8 +497,18 @@ const FIELDS = [
   ['cpu_limit', 'CPU limit', v => (v == null ? 'unlimited' : (Number.isInteger(v) ? v : v.toFixed(2)) + ' cores')],
   ['mem_limit_bytes', 'Memory limit', v => (v == null ? 'unlimited' : fmtGB(v))],
   ['restart_policy', 'Restart policy', v => v || '—'],
+  // The seconds between SIGTERM and SIGKILL on `docker stop`/`restart`.
+  // start.sh needs a few seconds on SIGTERM to deregister from GitHub, so
+  // anything under STOP_TIMEOUT_DANGER_S is the zone where that can be
+  // killed mid-flight and orphan the registration - flagged on the value
+  // itself, not on a specific historical number (a past Docker Engine
+  // regression pinned this at 1s fleet-wide; that has since been fixed by
+  // `stop_grace_period: 60s` in compose, and this must not hardcode "1 is
+  // bad" now that it no longer is).
   ['stop_timeout', 'Stop timeout', v => (v == null ? '—' :
-    v === 1 ? v + 's - ENGINE REGRESSION (moby#52775)' : v + 's')],
+    v < STOP_TIMEOUT_DANGER_S
+      ? `${v}s - too short: deregistration may be killed mid-flight and orphan the GitHub registration`
+      : `${v}s`)],
   ['privileged', 'Privileged', v => (v ? 'yes' : 'no')],
   ['network_mode', 'Network mode', v => v || '—'],
   ['ip', 'IP address', v => v || '—'],
@@ -613,12 +627,16 @@ function renderInspect(d) {
     const text = fmt(d[key]);
     if (el.textContent !== text) el.textContent = text;
   });
-  // StopTimeout=1 is not cosmetic: it is the moby#52775 regression that kills
-  // deregistration mid-flight on stop/restart. A plain "1s" reads as
-  // unremarkable next to "60s", so this is flagged in colour, not just text.
+  // A StopTimeout too low to let start.sh deregister is not cosmetic: it can
+  // orphan the GitHub registration on stop/restart. Flagged by threshold, not
+  // by a specific historical number - a past Docker Engine regression pinned
+  // this at 1s fleet-wide, but that is fixed now (compose sets
+  // stop_grace_period: 60s), and a value that is fine today must not be
+  // flagged just because it once matched a bug that no longer applies.
   const stopEl = document.querySelector('#rd-inspect-panel [data-f="stop_timeout"]');
   if (stopEl) {
-    const cls = 'v' + (d.stop_timeout === 1 ? ' regression' : '');
+    const danger = d.stop_timeout != null && d.stop_timeout < STOP_TIMEOUT_DANGER_S;
+    const cls = 'v' + (danger ? ' regression' : '');
     if (stopEl.className !== cls) stopEl.className = cls;
   }
   renderMounts(d.mounts || []);

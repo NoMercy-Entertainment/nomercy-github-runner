@@ -85,13 +85,16 @@ def inspect(name):
         "cpu_limit": (nano / 1e9) if nano else None,
         "mem_limit_bytes": mem or None,
         "restart_policy": (host.get("RestartPolicy") or {}).get("Name", ""),
-        # Docker Engine 29.5.3 has a verified live regression (moby/moby#52775)
-        # that creates these containers with StopTimeout=1 regardless of the
-        # 60s this app always asks for, which kills GitHub deregistration
-        # mid-flight on `docker stop`/`restart`. Surfaced here, not just
+        # Lives under Config, not HostConfig - `docker inspect -f
+        # '{{.Config.StopTimeout}}'` is how start.sh itself reads it, and
+        # asking HostConfig for this key errors ("map has no entry for key
+        # \"StopTimeout\""). This is the seconds between SIGTERM and SIGKILL
+        # on `docker stop`/`restart`; start.sh needs a few seconds on SIGTERM
+        # to deregister from GitHub, so a value too low here kills that
+        # mid-flight and orphans the registration. Surfaced here, not just
         # documented in start.sh, so an operator looking at one runner can
         # actually catch it.
-        "stop_timeout": host.get("StopTimeout"),
+        "stop_timeout": config.get("StopTimeout"),
         "privileged": bool(host.get("Privileged")),
         "network_mode": host.get("NetworkMode", ""),
         "ip": (c.get("NetworkSettings") or {}).get("IPAddress", ""),

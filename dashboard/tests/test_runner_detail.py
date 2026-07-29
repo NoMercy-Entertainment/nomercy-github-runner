@@ -89,8 +89,12 @@ def test_inspect_reports_unlimited_as_none(monkeypatch):
 
 
 def test_inspect_reports_stop_timeout(monkeypatch):
+    """Lives under Config, not HostConfig - `docker inspect -f
+    '{{.Config.StopTimeout}}'` is how start.sh itself reads it, and asking
+    HostConfig for this key errors ("map has no entry for key
+    \"StopTimeout\"")."""
     payload = json.loads(FAKE_INSPECT)
-    payload[0]["HostConfig"]["StopTimeout"] = 60
+    payload[0]["Config"]["StopTimeout"] = 60
     monkeypatch.setattr(docker_ops, "_docker",
                         _fake_docker((True, json.dumps(payload), "")))
     d = runner_detail.inspect("github-runner-1")["data"]
@@ -98,18 +102,22 @@ def test_inspect_reports_stop_timeout(monkeypatch):
 
 
 def test_inspect_reports_stop_timeout_when_absent(monkeypatch):
+    """FAKE_INSPECT's Config has no StopTimeout key at all - must return
+    None, not raise, for a container inspected without one."""
     monkeypatch.setattr(docker_ops, "_docker",
                         _fake_docker((True, FAKE_INSPECT, "")))
     d = runner_detail.inspect("github-runner-1")["data"]
     assert d["stop_timeout"] is None
 
 
-def test_inspect_surfaces_the_stoptimeout_one_regression(monkeypatch):
-    """StopTimeout=1 is the verified moby/moby#52775 regression, not a normal
-    value - the collector must pass it through untouched so the page can flag
-    it, rather than rounding or dropping it."""
+def test_inspect_passes_through_a_low_stop_timeout_value(monkeypatch):
+    """The collector only reports the raw value from Config.StopTimeout - it
+    is the page's job to judge whether a given number is dangerously low, not
+    this collector's. A one-off Docker Engine regression once pinned this at
+    1s fleet-wide; that is fixed now, so the collector must not treat any
+    particular number specially, only pass it through untouched."""
     payload = json.loads(FAKE_INSPECT)
-    payload[0]["HostConfig"]["StopTimeout"] = 1
+    payload[0]["Config"]["StopTimeout"] = 1
     monkeypatch.setattr(docker_ops, "_docker",
                         _fake_docker((True, json.dumps(payload), "")))
     d = runner_detail.inspect("github-runner-1")["data"]
