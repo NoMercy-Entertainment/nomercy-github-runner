@@ -151,3 +151,11 @@ def test_engine_handles_empty_output(monkeypatch):
     d = runner_detail.engine("github-runner-1")["data"]
     assert d["images"] == []
     assert d["containers"] == []
+
+
+def test_engine_flags_output_it_cannot_parse_at_all(monkeypatch):
+    monkeypatch.setattr(docker_ops, "_docker",
+                        _fake_docker((True, "WARNING: bad\nWARNING: worse\n", "")))
+    d = runner_detail.engine("github-runner-1")["data"]
+    assert "error" in d["images"]
+    assert "2" in d["images"]["error"]

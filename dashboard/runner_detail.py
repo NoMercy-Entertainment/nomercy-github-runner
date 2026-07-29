@@ -98,15 +98,21 @@ def _exec_json_lines(name, args, timeout):
         "exec", name, "docker", *args, timeout=timeout)
     if not ok:
         return {"error": err or out or "command failed"}
-    items = []
+    items, seen = [], 0
     for line in out.splitlines():
         line = line.strip()
         if not line:
             continue
+        seen += 1
         try:
             items.append(json.loads(line))
         except ValueError:
             continue          # one malformed line must not lose the rest
+
+    # ...but if there was output and none of it parsed, the format is broken.
+    # Returning [] here would be indistinguishable from an empty daemon.
+    if seen and not items:
+        return {"error": f"could not parse any of {seen} line(s)"}
     return items
 
 
