@@ -12,6 +12,7 @@ therefore cross the network unencrypted; the UI says so rather than letting it
 be forgotten.
 """
 
+import collections
 import hashlib
 import hmac
 import json
@@ -172,6 +173,42 @@ def write_env(updates):
 _status = {"generated": "", "disk": {}, "runners": []}
 _status_lock = threading.Lock()
 
+# Ten minutes of live history at the 5s collector interval. In memory rather
+# than in SQLite: the samples table is deliberately per-job, and widening it to
+# record continuously would grow the database for data the live view only needs
+# while someone is looking at it.
+SERIES_LEN = 120
+_series = {}
+
+
+def _record_series(status):
+    """Append one point per runner. Called from the collector, which has
+    already computed all three values for the grid - so this costs an append,
+    not a docker call."""
+    live = set()
+    for r in status.get("runners", []):
+        name = r.get("name")
+        if not name:
+            continue
+        live.add(name)
+        ring = _series.get(name)
+        if ring is None:
+            ring = _series[name] = collections.deque(maxlen=SERIES_LEN)
+        ring.append({
+            "t": status.get("generated", ""),
+            "cpu": r.get("cpu_percent", 0),
+            "mem": ops.parse_size(r.get("mem_used")),
+            "cache": ops.parse_size(r.get("build_cache")),
+        })
+    # A removed runner must not keep its ring, or the dict grows for the life
+    # of the process across add/remove cycles.
+    for gone in set(_series) - live:
+        del _series[gone]
+
+
+def _series_for(name):
+    return list(_series.get(name, ()))
+
 
 def _collector():
     global _status
@@ -180,6 +217,7 @@ def _collector():
             s = ops.collect()
             with _status_lock:
                 _status = s
+                _record_series(s)
             _record_history(s)
         except Exception as e:  # noqa: BLE001
             print(f"[collector] {e}")
