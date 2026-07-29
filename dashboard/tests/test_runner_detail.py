@@ -266,3 +266,44 @@ def test_cached_keys_do_not_collide():
     runner_detail.cached("b", 60, lambda: 2)
     assert runner_detail.cached("a", 60, lambda: 99) == 1
     assert runner_detail.cached("b", 60, lambda: 99) == 2
+
+
+def test_cached_does_not_store_a_none_result():
+    """None means the collector could not get an answer at all - caching it
+    would replay a transient outage as though it were the truth."""
+    runner_detail._cache.clear()
+    calls = []
+
+    def fn():
+        calls.append(1)
+        return None
+
+    runner_detail.cached("k", 60, fn)
+    runner_detail.cached("k", 60, fn)
+    assert len(calls) == 2
+
+
+def test_cached_does_not_store_a_failure_result():
+    runner_detail._cache.clear()
+    calls = []
+
+    def fn():
+        calls.append(1)
+        return {"ok": False, "error": "boom"}
+
+    runner_detail.cached("k", 60, fn)
+    runner_detail.cached("k", 60, fn)
+    assert len(calls) == 2
+
+
+def test_cached_still_stores_and_replays_a_successful_result():
+    runner_detail._cache.clear()
+    calls = []
+
+    def fn():
+        calls.append(1)
+        return {"ok": True, "data": "fine"}
+
+    runner_detail.cached("k", 60, fn)
+    runner_detail.cached("k", 60, fn)
+    assert len(calls) == 1

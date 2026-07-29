@@ -116,6 +116,52 @@ def test_series_route_returns_a_list(client, monkeypatch):
     assert len(r.get_json()["data"]) == 1
 
 
+def test_github_route_returns_500_when_runners_api_is_unreachable(client, monkeypatch):
+    """None from runners() means the API call itself failed - the route must
+    say so, not silently render an empty (and misleading) runner list."""
+    import app as dash
+    import github_api
+    monkeypatch.setattr(docker_ops, "list_runner_names", lambda: ["github-runner-1"])
+    monkeypatch.setattr(dash, "read_env",
+                        lambda: {"GH_TOKEN": "x", "GITHUB_ORG": "org"})
+
+    class FakeGH:
+        def __init__(self, token, org):
+            pass
+
+        def runners(self):
+            return None
+
+    monkeypatch.setattr(github_api, "GitHub", FakeGH)
+    r = client.get("/api/runner/github-runner-1/github")
+    assert r.status_code == 500
+    assert r.get_json()["ok"] is False
+
+
+def test_github_route_returns_empty_list_for_a_genuinely_empty_org(client, monkeypatch):
+    """[] must still mean "asked, and there are none" - distinct from the
+    failure case above, which is the whole point of the None/[] split."""
+    import app as dash
+    import github_api
+    monkeypatch.setattr(docker_ops, "list_runner_names", lambda: ["github-runner-1"])
+    monkeypatch.setattr(dash, "read_env",
+                        lambda: {"GH_TOKEN": "x", "GITHUB_ORG": "org"})
+
+    class FakeGH:
+        def __init__(self, token, org):
+            pass
+
+        def runners(self):
+            return []
+
+    monkeypatch.setattr(github_api, "GitHub", FakeGH)
+    r = client.get("/api/runner/github-runner-1/github")
+    assert r.status_code == 200
+    body = r.get_json()
+    assert body["ok"] is True
+    assert body["data"] == []
+
+
 def test_page_renders_for_a_known_runner(client, monkeypatch):
     monkeypatch.setattr(docker_ops, "list_runner_names", lambda: ["github-runner-1"])
     r = client.get("/runner/github-runner-1")

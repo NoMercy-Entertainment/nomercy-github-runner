@@ -510,6 +510,8 @@ def api_runner_github(name):
             f"github:{org}", 60, lambda: github_api.GitHub(token, org).runners())
     except Exception as e:  # noqa: BLE001 - rendered in the panel
         return jsonify(ok=False, error=str(e)), 500
+    if rows is None:
+        return jsonify(ok=False, error="could not reach the GitHub API"), 500
     return jsonify(ok=True, data=rows)
 
 

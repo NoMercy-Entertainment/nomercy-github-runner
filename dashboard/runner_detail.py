@@ -189,18 +189,26 @@ def logs(name, since=""):
 _cache = {}
 
 
+def _is_failure(value):
+    """Whether a collector result represents a failure rather than an answer."""
+    if value is None:
+        return True
+    return isinstance(value, dict) and value.get("ok") is False
+
+
 def cached(key, ttl, fn):
     """Memoise a collector result for `ttl` seconds.
 
-    Stops several browser tabs, or a reopened page, from each triggering the
-    same slow docker exec or the same GitHub request. Deliberately not an HTTP
-    cache header: the frontend sends `cache: no-store` with a cache-buster, as
-    index.html:271 does, so a header would simply be ignored.
+    Failures are deliberately not cached. These collectors never raise - they
+    return an error value - so caching on return alone would replay a transient
+    docker hiccup or GitHub outage as though it were a real answer for the whole
+    TTL, and an empty result is indistinguishable from a genuine one.
     """
     now = time.monotonic()
     hit = _cache.get(key)
     if hit and now - hit[0] < ttl:
         return hit[1]
     value = fn()
-    _cache[key] = (now, value)
+    if not _is_failure(value):
+        _cache[key] = (now, value)
     return value

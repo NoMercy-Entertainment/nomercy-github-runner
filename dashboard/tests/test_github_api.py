@@ -112,8 +112,10 @@ def test_runners_graceful_when_groups_call_fails(monkeypatch):
     assert out[2]["runner_group"] == ""
 
 
-def test_runners_returns_empty_on_runners_api_failure(monkeypatch):
-    """If the runners endpoint itself fails, return empty list."""
+def test_runners_returns_none_on_runners_api_failure(monkeypatch):
+    """If the runners endpoint itself fails, signal it distinctly from an
+    empty org: None means "could not ask", [] must mean "asked, no runners".
+    """
     gh = github_api.GitHub("token", "NoMercy-Entertainment")
     monkeypatch.setattr(gh, "_get", lambda path, params=None: None)
-    assert gh.runners() == []
+    assert gh.runners() is None

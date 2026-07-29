@@ -147,8 +147,10 @@ class GitHub:
         """
         data = self._get(f"/orgs/{self.org}/actions/runners",
                          params={"per_page": 100})
-        if not data:
-            return []
+        if data is None:
+            # The runners call itself failed - distinct from "no runners
+            # exist". Callers must not treat this the same as an empty org.
+            return None
 
         # Build runner_id -> group_name map from group endpoints.
         # This is best-effort: if any group call fails, all runners get
