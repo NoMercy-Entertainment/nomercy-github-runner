@@ -67,6 +67,18 @@ tbody tr[data-id]:hover{background:var(--bg-inset)}
   text-transform:uppercase;color:var(--text-faint);margin:8px 0 4px}
 .legend i{display:inline-block;width:9px;height:2px;vertical-align:middle;margin-right:5px}
 .close{float:right}
+
+/* logs tab */
+#logs-filter{width:240px}
+.logs-container{position:relative}
+#logs-pane{font-family:var(--mono);font-size:11.5px;line-height:1.55;color:var(--text);
+  background:var(--bg-inset);border:1px solid var(--rule);height:480px;overflow-y:auto;
+  padding:9px 11px;white-space:pre-wrap;word-break:break-all}
+.logline{padding:1px 0}
+.logline[hidden]{display:none}
+.logts{color:var(--text-faint);margin-right:9px}
+#logs-jump{position:absolute;right:16px;bottom:16px;background:var(--bg-panel);
+  border:1px solid var(--signal-dk);color:var(--signal);z-index:2}
 {% endblock %}
 
 {% block body %}
@@ -148,7 +160,23 @@ tbody tr[data-id]:hover{background:var(--bg-inset)}
     </div>
   </div>
 </div>
-<div id="tab-logs" hidden></div>
+<div id="tab-logs" hidden>
+  <div class="panel" id="logs-panel">
+    <div class="panel-head">
+      <h2>Terminal output</h2>
+      <div class="panel-actions">
+        <input id="logs-filter" type="text" placeholder="Filter..." autocomplete="off">
+      </div>
+    </div>
+    <div class="skel" id="logs-skel">Loading logs</div>
+    <div id="logs-wrap" hidden>
+      <div class="logs-container">
+        <div id="logs-pane"></div>
+        <button id="logs-jump" hidden>Jump to latest &darr;</button>
+      </div>
+    </div>
+  </div>
+</div>
 <div id="tab-history" hidden>
   <div class="panel" id="hist-gh-panel">
     <h2>GitHub view</h2>
@@ -228,14 +256,15 @@ function toBytes(s) {
 // A one-time transition, not a steady poll: rebuilding innerHTML here does
 // not violate the patch-don't-rebuild rule below, which is about repeated
 // polling of a page that is still alive.
-let statusTimer = null, seriesTimer = null, inspectTimer = null;
+let statusTimer = null, seriesTimer = null, inspectTimer = null, logsTimer = null;
 let engineFetched = false, engineLoading = false;
 let historyFetched = false;
 let currentReg = null;   // registration name from /api/status, used to match the GitHub panel
+let currentTab = 'overview';
 
 function goMissing() {
-  clearInterval(statusTimer); clearInterval(seriesTimer); clearInterval(inspectTimer);
-  statusTimer = seriesTimer = inspectTimer = null;
+  clearInterval(statusTimer); clearInterval(seriesTimer); clearInterval(inspectTimer); clearInterval(logsTimer);
+  statusTimer = seriesTimer = inspectTimer = logsTimer = null;
   const page = $('rd-page');
   if (page) page.outerHTML = `
     <div class="center">
@@ -261,11 +290,19 @@ function showTab(name) {
     const on = b.dataset.tab === name;
     if (b.classList.contains('on') !== on) b.classList.toggle('on', on);
   });
+  currentTab = name;
   if (name === 'overview') {
     if (!inspectTimer) { pollInspect(); inspectTimer = setInterval(pollInspect, 10000); }
   } else if (inspectTimer) {
     clearInterval(inspectTimer);
     inspectTimer = null;
+  }
+  // Logs poll fastest of all, and only while this tab is both open and the
+  // browser tab itself is visible - see the visibilitychange listener below.
+  if (name === 'logs') {
+    startLogsPolling();
+  } else {
+    stopLogsPolling();
   }
   // Engine and history fetch once, on first open - never on a timer. The
   // engine call in particular shells into the runner and can take seconds.
@@ -657,6 +694,132 @@ async function pruneThisRunner() {
 
 $('eng-refresh').addEventListener('click', fetchEngine);
 $('eng-prune').addEventListener('click', pruneThisRunner);
+
+// -- logs tab: live-tail via a cursor, append-only ------------------------
+// The cursor and buffered line count live at module scope, not inside
+// start/stopLogsPolling, so that switching tabs away and back (or the
+// browser tab going background then foreground) resumes exactly where it
+// left off instead of re-fetching the whole 5 minute window.
+let logsCursor = '';
+let logsLoaded = false;
+let logsLineCount = 0;
+let logsFilterValue = '';
+const LOGS_CAP = 2000;
+
+function isPaneAtBottom(pane) {
+  return pane.scrollHeight - pane.scrollTop - pane.clientHeight <= 4;
+}
+
+// docker's own timestamp, trimmed to a clock reading - the full RFC3339
+// value is what drives the cursor, not what belongs on screen.
+function fmtLogTime(t) {
+  const m = /T(\d\d:\d\d:\d\d)/.exec(t || '');
+  return m ? m[1] : (t || '');
+}
+
+function appendLogLines(lines) {
+  if (!lines.length) return;
+  const pane = $('logs-pane');
+  const atBottom = isPaneAtBottom(pane);
+  const frag = document.createDocumentFragment();
+  lines.forEach(l => {
+    const div = document.createElement('div');
+    div.className = 'logline';
+    if (l.t) {
+      const ts = document.createElement('span');
+      ts.className = 'logts';
+      ts.textContent = fmtLogTime(l.t);
+      div.appendChild(ts);
+    }
+    div.appendChild(document.createTextNode(l.text));
+    div.dataset.needle = String(l.text ?? '').toLowerCase();
+    if (logsFilterValue && !div.dataset.needle.includes(logsFilterValue)) div.hidden = true;
+    frag.appendChild(div);
+  });
+  pane.appendChild(frag);
+  logsLineCount += lines.length;
+
+  // Cap the buffer, oldest first. Trimming from the top shifts everything
+  // below it up by the removed height, so when the operator is scrolled
+  // away from the bottom we walk scrollTop back by the same amount -
+  // otherwise trimming alone would silently scroll them.
+  let removedHeight = 0;
+  while (logsLineCount > LOGS_CAP) {
+    const first = pane.firstElementChild;
+    if (!first) break;
+    removedHeight += first.offsetHeight;
+    pane.removeChild(first);
+    logsLineCount--;
+  }
+
+  if (atBottom) {
+    pane.scrollTop = pane.scrollHeight;
+    $('logs-jump').hidden = true;
+  } else {
+    if (removedHeight) pane.scrollTop -= removedHeight;
+    $('logs-jump').hidden = false;
+  }
+}
+
+async function pollLogs() {
+  try {
+    const res = await fetch(`/api/runner/${NAME}/logs?since=` + encodeURIComponent(logsCursor), {cache: 'no-store'});
+    if (res.status === 404) { goMissing(); return; }
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    const body = await res.json();
+    if (!body.ok) throw new Error(body.error || 'logs error');
+    const data = body.data || {};
+    if (!logsLoaded) {
+      $('logs-skel').hidden = true;
+      $('logs-wrap').hidden = false;
+      logsLoaded = true;
+    }
+    appendLogLines(data.lines || []);
+    if (data.cursor != null) logsCursor = data.cursor;
+  } catch (e) {
+    if (!logsLoaded) {
+      $('logs-skel').textContent = 'Could not load logs - ' + e.message;
+      $('logs-skel').hidden = false;
+    }
+    // Once the pane has content, a transient failure just skips a beat -
+    // the existing lines stay exactly as they are.
+  }
+}
+
+function startLogsPolling() {
+  if (logsTimer || document.hidden) return;
+  pollLogs();
+  logsTimer = setInterval(pollLogs, 2000);
+}
+function stopLogsPolling() {
+  clearInterval(logsTimer);
+  logsTimer = null;
+}
+// The other tabs never poll in the background; this one polls fastest of
+// all, so it is the one that most needs to stop when the browser tab itself
+// isn't visible, not just when the operator switches to a different panel.
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) {
+    stopLogsPolling();
+  } else if (currentTab === 'logs') {
+    startLogsPolling();
+  }
+});
+
+$('logs-pane').addEventListener('scroll', () => {
+  $('logs-jump').hidden = isPaneAtBottom($('logs-pane'));
+});
+$('logs-jump').addEventListener('click', () => {
+  const pane = $('logs-pane');
+  pane.scrollTop = pane.scrollHeight;
+  $('logs-jump').hidden = true;
+});
+$('logs-filter').addEventListener('input', () => {
+  logsFilterValue = $('logs-filter').value.trim().toLowerCase();
+  $('logs-pane').querySelectorAll('.logline').forEach(div => {
+    div.hidden = logsFilterValue !== '' && !div.dataset.needle.includes(logsFilterValue);
+  });
+});
 
 // -- history tab: this runner's past runs + GitHub's own view -------------
 async function fetchHistoryRuns() {
