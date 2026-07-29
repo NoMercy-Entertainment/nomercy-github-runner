@@ -27,6 +27,8 @@ from flask import (Flask, jsonify, redirect, render_template, request,
 import docker_ops as ops
 import github_api
 import history
+import runner_detail
+from runner_detail import SECRET_KEYS, mask
 
 DATA = os.environ.get("DASH_DATA", "/data")
 PORT = int(os.environ.get("DASH_PORT", "9200"))
@@ -41,7 +43,6 @@ EDITABLE = {
     "GH_TOKEN", "GITHUB_ORG", "RUNNER_LABELS",
     "RUNNER_GROUP", "RUNNER_CPU_LIMIT", "RUNNER_MEM_LIMIT",
 }
-SECRET_KEYS = {"GH_TOKEN"}
 
 app = Flask(__name__)
 
@@ -162,15 +163,6 @@ def write_env(updates):
     with open(tmp, "w") as fh:
         fh.write("\n".join(out) + "\n")
     os.replace(tmp, ENV_PATH)
-
-
-def mask(value):
-    """Show enough to recognise a token, never enough to use it."""
-    if not value:
-        return ""
-    if len(value) <= 8:
-        return "*" * len(value)
-    return value[:4] + "•" * 8 + value[-4:]
 
 
 # --------------------------------------------------------------------------
