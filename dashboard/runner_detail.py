@@ -90,3 +90,48 @@ def inspect(name):
         } for m in c.get("Mounts") or []],
         "env": _mask_env(config.get("Env")),
     })
+
+
+def _exec_json_lines(name, args, timeout):
+    """Run a docker command inside the runner that emits one JSON object per line."""
+    ok, out, err = docker_ops._docker(
+        "exec", name, "docker", *args, timeout=timeout)
+    if not ok:
+        return {"error": err or out or "command failed"}
+    items = []
+    for line in out.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            items.append(json.loads(line))
+        except ValueError:
+            continue          # one malformed line must not lose the rest
+    return items
+
+
+def engine(name):
+    """What this runner's own Docker daemon is holding.
+
+    Four independent calls. Each is slow enough that this must never be put on
+    a poll loop - _inner_df() allows the df call alone 20 seconds.
+    """
+    ok, out, err = docker_ops._docker(
+        "exec", name, "docker", "system", "df", "--format", "json", timeout=20)
+    if ok and out:
+        try:
+            df = json.loads(out.splitlines()[0])
+        except ValueError:
+            df = {"error": "could not parse df output"}
+    else:
+        df = {"error": err or "command failed"}
+
+    return _ok({
+        "df": df,
+        "images": _exec_json_lines(
+            name, ["images", "--format", "{{json .}}"], 20),
+        "containers": _exec_json_lines(
+            name, ["ps", "-a", "--format", "{{json .}}"], 15),
+        "volumes": _exec_json_lines(
+            name, ["volume", "ls", "--format", "{{json .}}"], 15),
+    })

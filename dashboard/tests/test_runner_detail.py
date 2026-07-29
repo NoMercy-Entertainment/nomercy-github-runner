@@ -101,3 +101,53 @@ def test_inspect_survives_malformed_json(monkeypatch):
                         _fake_docker((True, "not json at all", "")))
     r = runner_detail.inspect("github-runner-1")
     assert r["ok"] is False
+
+
+def test_engine_collects_all_four_sections(monkeypatch):
+    responses = {
+        "system": (True, '{"BuildCache":"12.3GB","Images":"4.1GB",'
+                         '"Containers":"0B","Volumes":"0B"}', ""),
+        "images": (True, '{"Repository":"alpine","Tag":"3.19","Size":"7.8MB"}\n'
+                         '{"Repository":"node","Tag":"20","Size":"1.1GB"}', ""),
+        "ps": (True, '{"Names":"buildx_buildkit","Status":"Up 2 hours"}', ""),
+        "volume": (True, '{"Name":"cache-vol","Driver":"local"}', ""),
+    }
+
+    def fake(*args, **kwargs):
+        joined = " ".join(args)
+        for key, resp in responses.items():
+            if f" {key}" in f" {joined}":
+                return resp
+        return (False, "", "unexpected call: " + joined)
+
+    monkeypatch.setattr(docker_ops, "_docker", fake)
+    r = runner_detail.engine("github-runner-1")
+    assert r["ok"] is True
+    d = r["data"]
+    assert d["df"]["BuildCache"] == "12.3GB"
+    assert len(d["images"]) == 2
+    assert d["images"][1]["Repository"] == "node"
+    assert d["containers"][0]["Names"] == "buildx_buildkit"
+    assert d["volumes"][0]["Name"] == "cache-vol"
+
+
+def test_engine_degrades_one_section_at_a_time(monkeypatch):
+    def fake(*args, **kwargs):
+        joined = " ".join(args)
+        if " images" in f" {joined}":
+            return (False, "", "daemon not responding")
+        if " system" in f" {joined}":
+            return (True, '{"BuildCache":"1GB"}', "")
+        return (True, "", "")
+
+    monkeypatch.setattr(docker_ops, "_docker", fake)
+    d = runner_detail.engine("github-runner-1")["data"]
+    assert d["images"]["error"] == "daemon not responding"
+    assert d["df"]["BuildCache"] == "1GB"      # unaffected
+
+
+def test_engine_handles_empty_output(monkeypatch):
+    monkeypatch.setattr(docker_ops, "_docker", _fake_docker((True, "", "")))
+    d = runner_detail.engine("github-runner-1")["data"]
+    assert d["images"] == []
+    assert d["containers"] == []
