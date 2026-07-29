@@ -64,11 +64,16 @@ def _df(cache, images):
 def test_prune_reports_what_it_freed(monkeypatch):
     """df is measured before and after, so the caller can show a real number."""
     calls, dfs = [], [_df("36.24GB", "24.8GB"), _df("0B", "1.2GB")]
+    # Indexed by df-call count alone, not by len(calls): prune() also calls
+    # is_idle() (its own _docker("logs", ...) call) before the first
+    # measurement, which must not shift which df fixture "before" gets.
+    df_calls = []
 
     def fake(*args, **kwargs):
         joined = " ".join(args)
         if "system" in joined and "df" in joined:
-            return (True, dfs[min(len(calls), 1)], "")
+            df_calls.append(1)
+            return (True, dfs[min(len(df_calls) - 1, 1)], "")
         calls.append(joined)
         return (True, "Total reclaimed space: 35GB", "")
 
@@ -76,6 +81,7 @@ def test_prune_reports_what_it_freed(monkeypatch):
     r = docker_ops.prune("github-runner-1")
     assert r["ok"] is True
     assert r["name"] == "github-runner-1"
+    assert r["measured"] is True
     assert r["before"]["build_cache"] == "36.24GB"
     assert r["after"]["build_cache"] == "0B"
     assert r["freed_bytes"] > 0
@@ -111,3 +117,89 @@ def test_prune_freed_bytes_never_negative(monkeypatch):
 
     monkeypatch.setattr(docker_ops, "_docker", fake)
     assert docker_ops.prune("github-runner-1")["freed_bytes"] == 0
+
+
+def test_prune_stops_after_a_buildx_timeout_and_skips_image_prune(monkeypatch):
+    """A killed exec client does not mean the daemon-side sweep stopped. A
+    second prune now would race it, so it must not be issued."""
+    calls = []
+
+    def fake(*args, **kwargs):
+        joined = " ".join(args)
+        if "system" in joined and "df" in joined:
+            return (True, _df("10GB", "5GB"), "")
+        calls.append(joined)
+        if "buildx" in joined:
+            return (False, "", "timed out after 300s")
+        return (True, "", "")
+
+    monkeypatch.setattr(docker_ops, "_docker", fake)
+    monkeypatch.setattr(docker_ops, "is_idle", lambda n: True)
+    r = docker_ops.prune("github-runner-1")
+    assert r["ok"] is False
+    assert r["measured"] is False
+    assert r["after"] is None
+    assert r["freed_bytes"] is None
+    assert "timed out" in r["error"]
+    assert any("buildx prune" in c for c in calls)
+    assert not any("image prune" in c for c in calls)
+
+
+def test_prune_failed_post_df_does_not_inflate_freed_bytes(monkeypatch):
+    """If the after-measurement fails, "0B" would look like an empty runner
+    and overstate everything that was reclaimed. Report unmeasured instead."""
+    monkeypatch.setattr(docker_ops, "is_idle", lambda n: True)
+    df_calls = []
+
+    def fake(*args, **kwargs):
+        joined = " ".join(args)
+        if "system" in joined and "df" in joined:
+            df_calls.append(1)
+            if len(df_calls) == 1:
+                return (True, _df("10GB", "5GB"), "")
+            return (False, "", "cannot connect to the docker daemon")
+        return (True, "", "")
+
+    monkeypatch.setattr(docker_ops, "_docker", fake)
+    r = docker_ops.prune("github-runner-1")
+    assert r["measured"] is False
+    assert r["freed_bytes"] is None
+    assert r["before"] is not None
+    assert r["after"] is None
+
+
+def test_prune_failed_pre_df_does_not_inflate_freed_bytes(monkeypatch):
+    """Same failure, the other side: an unmeasurable before-state must not be
+    read as "0B" either."""
+    monkeypatch.setattr(docker_ops, "is_idle", lambda n: True)
+    df_calls = []
+
+    def fake(*args, **kwargs):
+        joined = " ".join(args)
+        if "system" in joined and "df" in joined:
+            df_calls.append(1)
+            if len(df_calls) == 1:
+                return (False, "", "cannot connect to the docker daemon")
+            return (True, _df("1GB", "1GB"), "")
+        return (True, "", "")
+
+    monkeypatch.setattr(docker_ops, "_docker", fake)
+    r = docker_ops.prune("github-runner-1")
+    assert r["measured"] is False
+    assert r["freed_bytes"] is None
+    assert r["before"] is None
+
+
+def test_prune_aborts_if_runner_becomes_busy_just_before_pruning(monkeypatch):
+    """The route already checked is_idle once. prune() re-checks immediately
+    before touching docker, narrowing (not closing) the race."""
+    def explode(*a, **k):
+        raise AssertionError("prune must not touch docker once busy")
+
+    monkeypatch.setattr(docker_ops, "is_idle", lambda n: False)
+    monkeypatch.setattr(docker_ops, "_docker", explode)
+    r = docker_ops.prune("github-runner-1")
+    assert r["ok"] is False
+    assert "busy" in r["error"].lower()
+    assert r["measured"] is False
+    assert r["freed_bytes"] is None

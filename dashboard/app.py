@@ -545,8 +545,11 @@ def api_prune_all():
             skipped.append({"name": name, "reason": "busy running a job"})
             continue
         results.append(ops.prune(name))
-    freed = sum(r["freed_bytes"] for r in results)
-    ok = all(r["ok"] for r in results) if results else True
+    # A per-runner failure can leave freed_bytes as None (measurement was not
+    # trustworthy) rather than 0 - treat that as "contributed nothing" to the
+    # fleet total instead of crashing the whole sweep's response.
+    freed = sum(r["freed_bytes"] or 0 for r in results)
+    ok = all(r["ok"] for r in results)
     return jsonify(ok=ok, data={"results": results, "skipped": skipped,
                                 "freed_bytes": freed})
 

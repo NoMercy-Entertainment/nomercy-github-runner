@@ -159,19 +159,17 @@ def _registration(name):
         return "-"
 
 
-def _inner_df(name):
-    """Build cache and image totals from the runner's own daemon.
+def _df_rows(name):
+    """Parsed `docker system df` rows keyed by Type, or None if unmeasurable.
 
-    `docker system df --format json` emits ONE OBJECT PER LINE, one per
-    resource type, keyed by a "Type" field - not a single object with
-    "BuildCache" and "Images" keys. Reading only the first line and looking up
-    those keys is why this reported 0B for every runner regardless of what they
-    were actually holding.
+    _inner_df flattens a failure to ("0B","0B") for the grid, which is fine
+    there. prune() must not: reporting a fabricated empty after-state would
+    overstate what was reclaimed.
     """
     ok, out, _ = _docker("exec", name, "docker", "system", "df",
                          "--format", "json", timeout=20)
     if not ok or not out:
-        return "0B", "0B"
+        return None
     rows = {}
     for line in out.splitlines():
         line = line.strip()
@@ -181,10 +179,23 @@ def _inner_df(name):
             row = json.loads(line)
         except Exception:      # noqa: BLE001 - rendered, not raised
             continue
-        if not isinstance(row, dict):
-            continue           # valid JSON, wrong shape - skip, do not crash
-        if row.get("Type"):
+        if isinstance(row, dict) and row.get("Type"):
             rows[row["Type"]] = row
+    return rows or None
+
+
+def _inner_df(name):
+    """Build cache and image totals from the runner's own daemon.
+
+    `docker system df --format json` emits ONE OBJECT PER LINE, one per
+    resource type, keyed by a "Type" field - not a single object with
+    "BuildCache" and "Images" keys. Reading only the first line and looking up
+    those keys is why this reported 0B for every runner regardless of what they
+    were actually holding.
+    """
+    rows = _df_rows(name)
+    if rows is None:
+        return "0B", "0B"
     return (rows.get("Build Cache", {}).get("Size", "0B"),
             rows.get("Images", {}).get("Size", "0B"))
 
@@ -336,38 +347,89 @@ _UNITS = {"B": 1, "KB": 10**3, "MB": 10**6, "GB": 10**9, "TB": 10**12,
           "KIB": 1024, "MIB": 1024**2, "GIB": 1024**3, "TIB": 1024**4}
 
 
+def _df_sizes(rows):
+    """{"build_cache": ..., "images": ...} from _df_rows(), or None if
+    unmeasurable. Kept distinct from _inner_df's "0B" fallback: prune() must
+    be able to tell "empty" from "could not measure"."""
+    if rows is None:
+        return None
+    return {"build_cache": rows.get("Build Cache", {}).get("Size", "0B"),
+            "images": rows.get("Images", {}).get("Size", "0B")}
+
+
 def prune(name, timeout=300):
     """Reclaim build cache and unused images inside one runner.
 
     Measures `docker system df` either side so the caller can report a real
     number rather than "done". Both prunes are attempted even if the first
     fails - they are independent, and reclaiming one of the two is better than
-    neither.
+    neither - UNLESS the buildx prune itself times out, in which case a
+    second prune is not issued (see below).
+
+    `measured` tells the caller whether "before"/"after"/"freed_bytes" can be
+    trusted. A failed `docker system df` is not read as "0B" here: that would
+    either fabricate an empty after-state (inflating freed_bytes to the whole
+    before-figure) or otherwise misreport what was reclaimed.
 
     Generous timeout: discarding tens of gigabytes of build cache is not fast,
     and a premature kill leaves the daemon mid-sweep.
     """
-    b_cache, b_images = _inner_df(name)
+    # Narrow the check-then-act window the route opened. This cannot close it -
+    # a job can still start between this check and the prune - but BuildKit
+    # will not delete layers an in-flight build holds, so the residual risk is
+    # a slower build, not a broken one.
+    if not is_idle(name):
+        return {"name": name, "ok": False,
+                "error": f"{name} became busy before the prune started",
+                "before": None, "after": None,
+                "freed_bytes": None, "measured": False}
+
+    before = _df_sizes(_df_rows(name))
 
     ok1, _, err1 = _docker("exec", name, "docker", "buildx", "prune", "-af",
                            timeout=timeout)
+    timed_out = not ok1 and "timed out" in (err1 or "")
+    if timed_out:
+        # The exec client was killed; the daemon is very likely still sweeping.
+        # Issuing a second prune now would race it, and measuring df would
+        # report a number that means nothing.
+        return {
+            "name": name, "ok": False,
+            "error": f"buildx prune {err1}; the runner's daemon may still be "
+                     f"pruning. Re-check its usage in a few minutes.",
+            "before": before,
+            "after": None, "freed_bytes": None, "measured": False,
+        }
+
     ok2, _, err2 = _docker("exec", name, "docker", "image", "prune", "-af",
                            timeout=timeout)
 
-    a_cache, a_images = _inner_df(name)
+    after = _df_sizes(_df_rows(name))
 
-    freed = ((parse_size(b_cache) + parse_size(b_images))
-             - (parse_size(a_cache) + parse_size(a_images)))
+    if before is None or after is None:
+        return {
+            "name": name,
+            "ok": ok1 and ok2,
+            "error": (err1 or err2) or None,
+            "before": before,
+            "after": after,
+            "freed_bytes": None,
+            "measured": False,
+        }
+
+    freed = ((parse_size(before["build_cache"]) + parse_size(before["images"]))
+             - (parse_size(after["build_cache"]) + parse_size(after["images"])))
 
     return {
         "name": name,
         "ok": ok1 and ok2,
         "error": (err1 or err2) or None,
-        "before": {"build_cache": b_cache, "images": b_images},
-        "after": {"build_cache": a_cache, "images": a_images},
+        "before": before,
+        "after": after,
         # A build running elsewhere on the same daemon can grow the cache while
         # we prune, which would otherwise report a negative "freed".
         "freed_bytes": max(0, freed),
+        "measured": True,
     }
 
 
