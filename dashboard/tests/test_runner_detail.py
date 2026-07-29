@@ -159,3 +159,59 @@ def test_engine_flags_output_it_cannot_parse_at_all(monkeypatch):
     d = runner_detail.engine("github-runner-1")["data"]
     assert "error" in d["images"]
     assert "2" in d["images"]["error"]
+
+
+LOG_BATCH_1 = (
+    "2026-07-28T10:00:01.100000000Z Runner listening for jobs\n"
+    "2026-07-28T10:00:02.200000000Z Running job: build\n"
+)
+LOG_BATCH_2 = (
+    "2026-07-28T10:00:02.200000000Z Running job: build\n"   # docker --since is
+    "2026-07-28T10:00:03.300000000Z Step 1 of 4\n"          # inclusive: overlap
+)
+
+
+def test_logs_parses_timestamp_and_text(monkeypatch):
+    monkeypatch.setattr(docker_ops, "_docker",
+                        _fake_docker((True, LOG_BATCH_1, "")))
+    d = runner_detail.logs("github-runner-1")["data"]
+    assert len(d["lines"]) == 2
+    assert d["lines"][0]["t"] == "2026-07-28T10:00:01.100000000Z"
+    assert d["lines"][0]["text"] == "Runner listening for jobs"
+    assert d["cursor"] == "2026-07-28T10:00:02.200000000Z"
+
+
+def test_logs_second_call_skips_the_overlap(monkeypatch):
+    monkeypatch.setattr(docker_ops, "_docker",
+                        _fake_docker((True, LOG_BATCH_1, "")))
+    first = runner_detail.logs("github-runner-1")["data"]
+
+    monkeypatch.setattr(docker_ops, "_docker",
+                        _fake_docker((True, LOG_BATCH_2, "")))
+    second = runner_detail.logs("github-runner-1", since=first["cursor"])["data"]
+
+    texts = [ln["text"] for ln in second["lines"]]
+    assert texts == ["Step 1 of 4"]           # no duplicate, nothing skipped
+    assert second["cursor"] == "2026-07-28T10:00:03.300000000Z"
+
+
+def test_logs_keeps_cursor_when_nothing_new(monkeypatch):
+    monkeypatch.setattr(docker_ops, "_docker", _fake_docker((True, "", "")))
+    d = runner_detail.logs("github-runner-1", since="2026-07-28T10:00:05Z")["data"]
+    assert d["lines"] == []
+    assert d["cursor"] == "2026-07-28T10:00:05Z"
+
+
+def test_logs_tolerates_lines_without_a_timestamp(monkeypatch):
+    monkeypatch.setattr(docker_ops, "_docker",
+                        _fake_docker((True, "no timestamp here\n", "")))
+    d = runner_detail.logs("github-runner-1")["data"]
+    assert d["lines"][0]["text"] == "no timestamp here"
+    assert d["lines"][0]["t"] == ""
+
+
+def test_logs_returns_error_not_exception(monkeypatch):
+    monkeypatch.setattr(docker_ops, "_docker",
+                        _fake_docker((False, "", "No such container")))
+    r = runner_detail.logs("github-runner-9")
+    assert r["ok"] is False

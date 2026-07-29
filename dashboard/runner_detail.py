@@ -141,3 +141,39 @@ def engine(name):
         "volumes": _exec_json_lines(
             name, ["volume", "ls", "--format", "{{json .}}"], 15),
     })
+
+
+DEFAULT_LOG_WINDOW = "5m"
+
+
+def logs(name, since=""):
+    """Log lines newer than `since`, with the cursor to use for the next call.
+
+    Bounded by timestamp rather than `--tail N`: a verbose build can emit
+    thousands of lines between two polls, and a fixed tail would silently drop
+    everything above it.
+
+    `docker logs --since` is INCLUSIVE, so the line at the cursor comes back
+    every time. Lines are filtered with a strict `>` and the caller sees each
+    line exactly once.
+    """
+    window = since or DEFAULT_LOG_WINDOW
+    ok, out, err = docker_ops._docker(
+        "logs", "--timestamps", "--since", window, name, timeout=15)
+    if not ok:
+        return _err(err or out)
+
+    lines = []
+    cursor = since
+    for raw in out.splitlines():
+        stamp, sep, text = raw.partition(" ")
+        if not sep or "T" not in stamp:
+            # A line docker did not stamp - keep it, it is still output.
+            lines.append({"t": "", "text": raw})
+            continue
+        if since and stamp <= since:
+            continue                       # the inclusive-boundary overlap
+        lines.append({"t": stamp, "text": text})
+        if stamp > cursor:
+            cursor = stamp
+    return _ok({"lines": lines, "cursor": cursor})
