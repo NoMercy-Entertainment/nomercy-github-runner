@@ -27,6 +27,46 @@ td{padding:7px 8px;border-bottom:1px solid var(--rule);vertical-align:top;word-b
 #toast.show{display:block;animation:slip .25s ease-out}
 #toast.bad{border-left-color:var(--alert);color:var(--alert)}
 @keyframes slip{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
+
+/* engine + history tabs */
+.panel-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:14px}
+.panel-head h2{margin-bottom:0}
+.panel-actions{display:flex;gap:8px}
+.sec-h{font-family:var(--label);font-size:10.5px;letter-spacing:.16em;text-transform:uppercase;
+  color:var(--text-faint);margin:20px 0 8px}
+.sec-h:first-of-type{margin-top:0}
+.wrap{background:var(--bg-inset);border:1px solid var(--rule);padding:2px 4px 4px;overflow-x:auto}
+.res{display:inline-block;padding:1px 7px;font-size:9px;letter-spacing:.14em;
+  text-transform:uppercase;border:1px solid currentColor}
+.res.Succeeded{color:var(--signal)} .res.Failed{color:var(--alert)}
+.res.Canceled{color:var(--text-dim)} .res.running{color:var(--busy)}
+.num{font-variant-numeric:tabular-nums;color:var(--text-dim)}
+.ctx{color:var(--text-faint);font-size:10.5px}
+tbody tr[data-id]{cursor:pointer}
+tbody tr[data-id]:hover{background:var(--bg-inset)}
+.ver-line{font-size:11px;color:var(--text-faint);margin-bottom:12px}
+.ver-num{font-family:var(--label);font-size:20px;font-weight:600;color:var(--text);margin-left:8px}
+.meter{margin-top:11px}
+.mrow{display:flex;justify-content:space-between;align-items:baseline;font-size:9.5px;
+  letter-spacing:.15em;text-transform:uppercase;color:var(--text-faint);margin-bottom:4px}
+.mval{color:var(--text-dim);font-size:10.5px;font-variant-numeric:tabular-nums;
+  text-transform:none;letter-spacing:.02em}
+.track{position:relative;height:7px;background:var(--bg-inset);border:1px solid var(--rule);overflow:hidden}
+.fill{height:100%;width:0;transition:width .4s ease;background:var(--signal)}
+.fill.warn{background:var(--busy)} .fill.crit{background:var(--alert)}
+/* run-detail overlay, reused from the fleet-wide history page */
+#ov{position:fixed;inset:0;background:rgba(0,0,0,.62);display:none;z-index:20;
+  padding:clamp(12px,4vh,50px);overflow:auto}
+#ov.show{display:block}
+.sheet{max-width:860px;margin:0 auto;background:var(--bg-panel);
+  border:1px solid var(--rule-hot);padding:20px 22px}
+.sheet h3{font-family:var(--label);font-size:17px;letter-spacing:.1em;
+  text-transform:uppercase;margin-bottom:3px}
+.sheet svg{display:block;width:100%;height:150px;background:var(--bg-inset);border:1px solid var(--rule)}
+.legend{display:flex;gap:16px;font-size:9.5px;letter-spacing:.14em;
+  text-transform:uppercase;color:var(--text-faint);margin:8px 0 4px}
+.legend i{display:inline-block;width:9px;height:2px;vertical-align:middle;margin-right:5px}
+.close{float:right}
 {% endblock %}
 
 {% block body %}
@@ -82,9 +122,52 @@ td{padding:7px 8px;border-bottom:1px solid var(--rule);vertical-align:top;word-b
   </div>
 </div>
 
-<div id="tab-engine" hidden></div>
+<div id="tab-engine" hidden>
+  <div class="panel" id="eng-panel">
+    <div class="panel-head">
+      <h2>Docker engine</h2>
+      <div class="panel-actions">
+        <button id="eng-refresh">Refresh</button>
+        <button id="eng-prune" class="warn">Clear cache</button>
+      </div>
+    </div>
+    <div class="skel" id="eng-skel">Loading engine data</div>
+    <div id="eng-body" hidden>
+      <h3 class="sec-h">Disk usage</h3>
+      <div class="kv" id="eng-df"></div>
+      <div class="meter" id="eng-cache-meter">
+        <div class="mrow"><span>Build cache</span><span class="mval" id="eng-cache-val">&mdash;</span></div>
+        <div class="track"><div class="fill" id="eng-cache-fill"></div></div>
+      </div>
+      <h3 class="sec-h">Images</h3>
+      <div id="eng-images"></div>
+      <h3 class="sec-h">Containers</h3>
+      <div id="eng-containers"></div>
+      <h3 class="sec-h">Volumes</h3>
+      <div id="eng-volumes"></div>
+    </div>
+  </div>
+</div>
 <div id="tab-logs" hidden></div>
-<div id="tab-history" hidden></div>
+<div id="tab-history" hidden>
+  <div class="panel" id="hist-gh-panel">
+    <h2>GitHub view</h2>
+    <div class="skel" id="hist-gh-skel">Loading GitHub status</div>
+    <div id="hist-gh-body" hidden>
+      <div class="ver-line">Runner version<span class="ver-num" id="hist-ver">&mdash;</span></div>
+      <div class="kv" id="hist-gh-kv"></div>
+    </div>
+  </div>
+  <div class="panel">
+    <h2>Run history</h2>
+    <div class="skel" id="hist-skel">Loading run history</div>
+    <div class="wrap" id="hist-wrap" hidden>
+      <table><thead><tr>
+        <th>Started</th><th>Job</th><th>Result</th><th>Duration</th>
+      </tr></thead><tbody id="hist-rows"></tbody></table>
+    </div>
+  </div>
+</div>
 
 <div id="rd-actions">
   <button data-a="drain" class="warn">Drain</button>
@@ -97,6 +180,7 @@ td{padding:7px 8px;border-bottom:1px solid var(--rule);vertical-align:top;word-b
 </div>
 
 <div id="toast"></div>
+<div id="ov"><div class="sheet" id="sheet"></div></div>
 
 <script>
 const NAME = {{ name|tojson }};
@@ -119,15 +203,35 @@ function setStale(on) {
 
 const gbNum = b => b / 1e9;
 const fmtGB = b => gbNum(b) < 10 ? gbNum(b).toFixed(2) + ' GB' : Math.round(gbNum(b)) + ' GB';
+const fmtMem = b => !b ? '—' : b >= 1e9 ? (b / 1e9).toFixed(1) + ' GB' : Math.round(b / 1e6) + ' MB';
+const fmtDur = s => {
+  if (s == null) return '—';
+  if (s < 60) return s + 's';
+  const m = Math.floor(s / 60), r = s % 60;
+  return m < 60 ? `${m}m ${r}s` : `${Math.floor(m / 60)}h ${m % 60}m`;
+};
 const fmtTime = t => !t ? '—' : String(t).replace('T', ' ').replace('Z', '');
 const esc = s => String(s ?? '').replace(/[&<>"]/g, c =>
   ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+
+// "12.3GB" / "758.8MB (98%)" -> bytes, for sorting and cap-relative bars.
+function toBytes(s) {
+  if (!s) return 0;
+  const m = String(s).trim().match(/^([\d.]+)\s*([KMGTP]?i?B)?/i);
+  if (!m) return 0;
+  const n = parseFloat(m[1]); if (isNaN(n)) return 0;
+  const u = (m[2] || 'B').toUpperCase().replace('I', '');
+  return n * ({B: 1, KB: 1e3, MB: 1e6, GB: 1e9, TB: 1e12, PB: 1e15}[u] || 1);
+}
 
 // -- terminal "gone" state -----------------------------------------------
 // A one-time transition, not a steady poll: rebuilding innerHTML here does
 // not violate the patch-don't-rebuild rule below, which is about repeated
 // polling of a page that is still alive.
 let statusTimer = null, seriesTimer = null, inspectTimer = null;
+let engineFetched = false, engineLoading = false;
+let historyFetched = false;
+let currentReg = null;   // registration name from /api/status, used to match the GitHub panel
 
 function goMissing() {
   clearInterval(statusTimer); clearInterval(seriesTimer); clearInterval(inspectTimer);
@@ -162,6 +266,17 @@ function showTab(name) {
   } else if (inspectTimer) {
     clearInterval(inspectTimer);
     inspectTimer = null;
+  }
+  // Engine and history fetch once, on first open - never on a timer. The
+  // engine call in particular shells into the runner and can take seconds.
+  if (name === 'engine' && !engineFetched) {
+    engineFetched = true;
+    fetchEngine();
+  }
+  if (name === 'history' && !historyFetched) {
+    historyFetched = true;
+    fetchHistoryRuns();
+    fetchHistoryGithub();
   }
 }
 document.querySelectorAll('#rd-tabs button').forEach(b => {
@@ -225,6 +340,7 @@ function renderHeader(r) {
 
   const reg = r.registration || '—';
   if ($('rd-reg').textContent !== reg) $('rd-reg').textContent = reg;
+  currentReg = r.registration || null;
 
   const uptime = r.uptime || '—';
   if ($('rd-uptime').textContent !== uptime) $('rd-uptime').textContent = uptime;
@@ -390,6 +506,291 @@ async function pollInspect() {
     // failure should not blank a panel that was showing good data.
   }
 }
+
+// -- engine tab: docker system df + images/containers/volumes -------------
+// Fetches once on first open and on the explicit refresh button only. The
+// backend call shells into the runner and allows itself 20s, so this must
+// never be put on a poll - see runner_detail.engine().
+const CACHE_CAP_GB = 40;   // matches the buildx maxUsedSpace cap in start.sh
+const DF_LABELS = [
+  ['images', 'Images'], ['containers', 'Containers'],
+  ['volumes', 'Volumes'], ['build_cache', 'Build cache'],
+];
+
+async function fetchEngine() {
+  if (engineLoading) return;
+  engineLoading = true;
+  $('eng-refresh').disabled = true;
+  $('eng-skel').textContent = 'Loading engine data';
+  $('eng-skel').hidden = false;
+  $('eng-body').hidden = true;
+  try {
+    const res = await fetch(`/api/runner/${NAME}/engine`);
+    if (res.status === 404) { goMissing(); return; }
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok || !body.ok) throw new Error(body.error || ('HTTP ' + res.status));
+    renderEngine(body.data || {});
+    $('eng-skel').hidden = true;
+    $('eng-body').hidden = false;
+  } catch (e) {
+    $('eng-skel').textContent = 'Could not load engine data - ' + e.message;
+    $('eng-skel').hidden = false;
+    $('eng-body').hidden = true;
+  } finally {
+    engineLoading = false;
+    $('eng-refresh').disabled = false;
+  }
+}
+
+function renderDf(df) {
+  const kv = $('eng-df');
+  if (df.error) {
+    kv.innerHTML = `<div><span class="k">Disk usage</span>` +
+      `<span class="v" style="color:var(--alert)">${esc(df.error)}</span></div>`;
+    $('eng-cache-meter').hidden = true;
+    return;
+  }
+  $('eng-cache-meter').hidden = false;
+  kv.innerHTML = DF_LABELS.map(([key, label]) => {
+    const s = df[key];
+    const val = s ? `${s.size} · ${s.count} item(s) · ${s.reclaimable} reclaimable` : 'no data';
+    return `<div><span class="k">${label}</span><span class="v">${esc(val)}</span></div>`;
+  }).join('');
+
+  const bc = df.build_cache;
+  const capBytes = CACHE_CAP_GB * 1e9;
+  if (bc && bc.size) {
+    const used = toBytes(bc.size);
+    const pct = Math.max(0, Math.min(100, (used / capBytes) * 100));
+    $('eng-cache-val').textContent = `${bc.size} / ${CACHE_CAP_GB} GB`;
+    $('eng-cache-fill').style.width = pct + '%';
+    $('eng-cache-fill').className = 'fill ' + (pct >= 90 ? 'crit' : pct >= 70 ? 'warn' : '');
+  } else {
+    $('eng-cache-val').textContent = `no data / ${CACHE_CAP_GB} GB`;
+    $('eng-cache-fill').style.width = '0%';
+    $('eng-cache-fill').className = 'fill';
+  }
+}
+
+// A section is either an array of docker JSON objects, or {"error": "..."}.
+// One erroring must not blank the other three - each is rendered independently.
+function renderEngineSection(target, data, cols) {
+  if (data && !Array.isArray(data) && typeof data === 'object' && 'error' in data) {
+    target.innerHTML = `<div class="skel" style="padding:16px 0;color:var(--alert)">${esc(data.error)}</div>`;
+    return;
+  }
+  const rows = Array.isArray(data) ? data : [];
+  if (!rows.length) {
+    target.innerHTML = `<div class="skel" style="padding:16px 0">None</div>`;
+    return;
+  }
+  target.innerHTML = `<div class="wrap"><table><thead><tr>${
+    cols.map(([label]) => `<th>${label}</th>`).join('')
+  }</tr></thead><tbody>${
+    rows.map(r => `<tr>${cols.map(([, get]) => `<td>${esc(get(r))}</td>`).join('')}</tr>`).join('')
+  }</tbody></table></div>`;
+}
+
+function renderEngine(d) {
+  renderDf(d.df || {});
+
+  // The operator is looking for what is big - sort images by size descending.
+  const images = Array.isArray(d.images)
+    ? d.images.slice().sort((a, b) => toBytes(b.Size) - toBytes(a.Size))
+    : d.images;
+  renderEngineSection($('eng-images'), images, [
+    ['Repository', r => r.Repository || '<none>'],
+    ['Tag', r => r.Tag || '<none>'],
+    ['Size', r => r.Size || '-'],
+    ['Created', r => r.CreatedSince || '-'],
+    ['ID', r => (r.ID || '').slice(0, 12) || '-'],
+  ]);
+  renderEngineSection($('eng-containers'), d.containers, [
+    ['Name', r => r.Names || '-'],
+    ['Image', r => r.Image || '-'],
+    ['Status', r => r.Status || '-'],
+    ['State', r => r.State || '-'],
+  ]);
+  renderEngineSection($('eng-volumes'), d.volumes, [
+    ['Name', r => r.Name || '-'],
+    ['Driver', r => r.Driver || '-'],
+  ]);
+}
+
+async function pruneThisRunner() {
+  if (!confirm(`Clear ${NAME}'s build cache and unused images? This deletes them and cannot be undone.`)) return;
+  const btn = $('eng-prune');
+  btn.disabled = true;
+  const label = btn.textContent;
+  btn.textContent = 'Clearing...';
+  try {
+    const res = await fetch('/api/runner/' + NAME + '/prune', {method: 'POST'});
+    const d = await res.json().catch(() => ({}));
+    if (res.status === 409) {
+      // Busy is a normal outcome here, not a failure - the runner was left alone on purpose.
+      toast(NAME + ': busy running a job, not touched');
+      return;
+    }
+    if (!res.ok || d.ok === false) {
+      const err = (d.data && d.data.error) || d.error || ('HTTP ' + res.status);
+      toast(NAME + ': clear cache failed - ' + err, true);
+      return;
+    }
+    const data = d.data || {};
+    let msg;
+    if (data.freed_bytes == null) {
+      // null means measurement genuinely failed, not that nothing was freed.
+      msg = NAME + ': reclaimed, amount unknown';
+      if (data.error) msg += ' - ' + data.error;
+    } else {
+      msg = NAME + ': ' + fmtGB(data.freed_bytes) + ' freed';
+    }
+    toast(msg);
+    fetchEngine();   // the figures just changed - reflect it
+  } catch (e) {
+    toast(NAME + ': clear cache failed - ' + e.message, true);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = label;
+  }
+}
+
+$('eng-refresh').addEventListener('click', fetchEngine);
+$('eng-prune').addEventListener('click', pruneThisRunner);
+
+// -- history tab: this runner's past runs + GitHub's own view -------------
+async function fetchHistoryRuns() {
+  try {
+    const res = await fetch(`/api/runner/${NAME}/history`);
+    if (res.status === 404) { goMissing(); return; }
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok || !body.ok) throw new Error(body.error || ('HTTP ' + res.status));
+    renderHistoryRows(body.data || []);
+  } catch (e) {
+    $('hist-skel').textContent = 'Could not load run history - ' + e.message;
+    $('hist-skel').hidden = false;
+    $('hist-wrap').hidden = true;
+  }
+}
+
+function renderHistoryRows(runs) {
+  if (!runs.length) {
+    $('hist-skel').textContent = 'No runs recorded yet';
+    $('hist-skel').hidden = false;
+    $('hist-wrap').hidden = true;
+    return;
+  }
+  $('hist-rows').innerHTML = runs.map(r => {
+    const running = !r.ended_at;
+    const res = running ? 'running' : (r.result || 'unknown');
+    return `<tr data-id="${r.id}">
+      <td class="num">${fmtTime(r.started_at)}</td>
+      <td>${esc(r.job_name)}</td>
+      <td><span class="res ${esc(res)}">${esc(res)}</span></td>
+      <td class="num">${running ? 'running' : fmtDur(r.duration_s)}</td>
+    </tr>`;
+  }).join('');
+  $('hist-rows').querySelectorAll('tr[data-id]').forEach(tr => {
+    tr.addEventListener('click', () => openRun(tr.dataset.id));
+  });
+  $('hist-skel').hidden = true;
+  $('hist-wrap').hidden = false;
+}
+
+// The GitHub panel erroring must not blank the local run table above - the
+// two fetches are independent and fail independently.
+async function fetchHistoryGithub() {
+  try {
+    const res = await fetch(`/api/runner/${NAME}/github`);
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok || !body.ok) throw new Error(body.error || ('HTTP ' + res.status));
+    const rows = body.data || [];
+    const match = rows.find(r => r.name === currentReg);
+    renderGithubPanel(match, rows.length);
+  } catch (e) {
+    $('hist-gh-skel').textContent = 'GitHub status unavailable - ' + e.message;
+    $('hist-gh-skel').hidden = false;
+    $('hist-gh-body').hidden = true;
+  }
+}
+
+function renderGithubPanel(match, total) {
+  $('hist-gh-skel').hidden = true;
+  $('hist-gh-body').hidden = false;
+  if (!match) {
+    $('hist-ver').textContent = '—';
+    $('hist-gh-kv').innerHTML = `<div><span class="k">GitHub agent</span><span class="v">${
+      currentReg
+        ? `no match for registration "${esc(currentReg)}" (${total} runner(s) on the org)`
+        : 'registration not yet known'
+    }</span></div>`;
+    return;
+  }
+  // This is the early warning for a fleet-wide pinned-version deprecation -
+  // shown big, not buried in the grid below.
+  $('hist-ver').textContent = match.version || '—';
+  const fields = [
+    ['Agent ID', match.id],
+    ['Status', match.status || '—'],
+    ['Busy', match.busy ? 'yes' : 'no'],
+    ['Runner group', match.runner_group || '—'],
+    ['OS', match.os || '—'],
+    ['Labels', (match.labels || []).join(', ') || '—'],
+  ];
+  $('hist-gh-kv').innerHTML = fields.map(([k, v]) =>
+    `<div><span class="k">${k}</span><span class="v">${esc(v)}</span></div>`).join('');
+}
+
+// Plot samples as an SVG polyline, same treatment as the fleet history page.
+function histSpark(samples, key, colour, max) {
+  if (samples.length < 2) return '<div class="skel" style="padding:16px 0">Too short to graph</div>';
+  const W = 800, H = 150, pad = 4;
+  const vals = samples.map(s => Number(s[key]) || 0);
+  const top = max || Math.max(...vals, 1);
+  const pts = vals.map((v, i) => {
+    const x = pad + (i / (vals.length - 1)) * (W - pad * 2);
+    const y = H - pad - (v / top) * (H - pad * 2);
+    return `${x.toFixed(1)},${y.toFixed(1)}`;
+  }).join(' ');
+  return `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none">
+    <polyline points="${pts}" fill="none" stroke="${colour}" stroke-width="1.6"/>
+  </svg>`;
+}
+
+async function openRun(id) {
+  try {
+    const res = await fetch('/api/history/run/' + id);
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    const r = await res.json();
+    const s = r.samples_data || [];
+    const memMax = Math.max(...s.map(x => x.mem || 0), 1);
+    const cpuMax = Math.max(...s.map(x => x.cpu || 0), 100);
+    $('sheet').innerHTML = `
+      <button class="close" onclick="document.getElementById('ov').classList.remove('show')">Close</button>
+      <h3>${esc(r.job_name)}</h3>
+      <div class="ctx">${esc(r.runner)} &middot; ${esc(r.registration || '-')}</div>
+      <div class="kv">
+        <div><span class="k">Started</span><span class="v">${fmtTime(r.started_at)}</span></div>
+        <div><span class="k">Ended</span><span class="v">${fmtTime(r.ended_at)}</span></div>
+        <div><span class="k">Duration</span><span class="v">${fmtDur(r.duration_s)}</span></div>
+        <div><span class="k">Result</span><span class="v"><span class="res ${esc(r.result || 'running')}">${esc(r.result || 'running')}</span></span></div>
+      </div>
+      <div class="legend"><span><i style="background:var(--signal)"></i>CPU &middot; peak ${cpuMax.toFixed(0)}%</span></div>
+      ${histSpark(s, 'cpu', 'var(--signal)', cpuMax)}
+      <div class="legend"><span><i style="background:var(--drain)"></i>Memory &middot; peak ${fmtMem(memMax)}</span></div>
+      ${histSpark(s, 'mem', 'var(--drain)', memMax)}`;
+    $('ov').classList.add('show');
+  } catch (e) {
+    toast('Could not load run details - ' + e.message, true);
+  }
+}
+
+$('ov').addEventListener('click', e => {
+  if (e.target.id === 'ov') $('ov').classList.remove('show');
+});
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape') $('ov').classList.remove('show');
+});
 
 pollStatus();
 pollSeries();
