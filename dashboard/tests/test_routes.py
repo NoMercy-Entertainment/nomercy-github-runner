@@ -1,0 +1,97 @@
+import pytest
+
+import docker_ops
+import runner_detail
+
+
+@pytest.fixture(autouse=True)
+def _clear_cache():
+    """Routes memoise. Without this, one test's monkeypatched collector result
+    is served to the next test and the failure is baffling to debug."""
+    runner_detail._cache.clear()
+    yield
+
+
+ENDPOINTS = ["inspect", "engine", "logs", "series", "github", "history"]
+
+
+def test_all_detail_endpoints_require_auth(anon_client):
+    for ep in ENDPOINTS:
+        r = anon_client.get(f"/api/runner/github-runner-1/{ep}")
+        assert r.status_code == 401, ep
+
+
+def test_page_requires_auth(anon_client):
+    r = anon_client.get("/runner/github-runner-1")
+    assert r.status_code in (301, 302)
+    assert "/login" in r.headers["Location"]
+
+
+def test_bad_name_is_rejected_before_any_docker_call(client, monkeypatch):
+    def explode(*a, **k):
+        raise AssertionError("docker must not be called for an invalid name")
+    monkeypatch.setattr(docker_ops, "_docker", explode)
+    for bad in ["../etc", "github-runner-", "github-runner-1x", "nope"]:
+        r = client.get(f"/api/runner/{bad}/inspect")
+        assert r.status_code == 400, bad
+        assert r.get_json()["ok"] is False
+
+
+def test_unknown_runner_is_404(client, monkeypatch):
+    monkeypatch.setattr(docker_ops, "list_runner_names", lambda: ["github-runner-1"])
+    r = client.get("/api/runner/github-runner-7/inspect")
+    assert r.status_code == 404
+    assert r.get_json()["ok"] is False
+
+
+def test_inspect_route_returns_the_collector_payload(client, monkeypatch):
+    import runner_detail
+    monkeypatch.setattr(docker_ops, "list_runner_names", lambda: ["github-runner-1"])
+    monkeypatch.setattr(runner_detail, "inspect",
+                        lambda n: {"ok": True, "data": {"image": "x"}})
+    r = client.get("/api/runner/github-runner-1/inspect")
+    assert r.status_code == 200
+    assert r.get_json() == {"ok": True, "data": {"image": "x"}}
+
+
+def test_collector_failure_is_500_with_the_error(client, monkeypatch):
+    import runner_detail
+    monkeypatch.setattr(docker_ops, "list_runner_names", lambda: ["github-runner-1"])
+    monkeypatch.setattr(runner_detail, "inspect",
+                        lambda n: {"ok": False, "error": "boom"})
+    r = client.get("/api/runner/github-runner-1/inspect")
+    assert r.status_code == 500
+    assert r.get_json()["error"] == "boom"
+
+
+def test_logs_route_passes_the_cursor_through(client, monkeypatch):
+    import runner_detail
+    seen = {}
+    monkeypatch.setattr(docker_ops, "list_runner_names", lambda: ["github-runner-1"])
+
+    def fake_logs(name, since=""):
+        seen["since"] = since
+        return {"ok": True, "data": {"lines": [], "cursor": since}}
+
+    monkeypatch.setattr(runner_detail, "logs", fake_logs)
+    client.get("/api/runner/github-runner-1/logs?since=2026-07-28T10:00:00Z")
+    assert seen["since"] == "2026-07-28T10:00:00Z"
+
+
+def test_series_route_returns_a_list(client, monkeypatch):
+    import app as dash
+    monkeypatch.setattr(docker_ops, "list_runner_names", lambda: ["github-runner-1"])
+    dash._series.clear()
+    dash._record_series({"generated": "t", "runners": [
+        {"name": "github-runner-1", "cpu_percent": 5,
+         "mem_used": "1GiB", "build_cache": "1GB"}]})
+    r = client.get("/api/runner/github-runner-1/series")
+    assert r.status_code == 200
+    assert len(r.get_json()["data"]) == 1
+
+
+def test_page_renders_for_a_known_runner(client, monkeypatch):
+    monkeypatch.setattr(docker_ops, "list_runner_names", lambda: ["github-runner-1"])
+    r = client.get("/runner/github-runner-1")
+    assert r.status_code == 200
+    assert b"github-runner-1" in r.data

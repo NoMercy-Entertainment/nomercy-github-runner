@@ -433,6 +433,94 @@ def api_status():
         return jsonify(_status)
 
 
+def _detail_target(name):
+    """Validate a runner name from the URL.
+
+    Same rule as _target(), which reads from the JSON body. Checked before any
+    docker call so a crafted name can never reach the command line.
+    """
+    if not re.fullmatch(r"github-runner-\d+", name or ""):
+        return None, (jsonify(ok=False, error="bad runner name"), 400)
+    if name not in ops.list_runner_names():
+        return None, (jsonify(ok=False, error="no such runner"), 404)
+    return name, None
+
+
+def _detail(name, fn, *args, **kwargs):
+    """Run a collector and turn its result into a response."""
+    name, err = _detail_target(name)
+    if err:
+        return err
+    result = fn(name, *args, **kwargs)
+    return jsonify(result), (200 if result.get("ok") else 500)
+
+
+@app.route("/runner/<name>")
+def runner_page(name):
+    if not re.fullmatch(r"github-runner-\d+", name or ""):
+        return render_template("runner.html", name=name, missing=True), 404
+    if name not in ops.list_runner_names():
+        return render_template("runner.html", name=name, missing=True), 404
+    return render_template("runner.html", name=name, missing=False)
+
+
+@app.route("/api/runner/<name>/inspect")
+def api_runner_inspect(name):
+    name, err = _detail_target(name)
+    if err:
+        return err
+    result = runner_detail.cached(
+        f"inspect:{name}", 10, lambda: runner_detail.inspect(name))
+    return jsonify(result), (200 if result.get("ok") else 500)
+
+
+@app.route("/api/runner/<name>/engine")
+def api_runner_engine(name):
+    return _detail(name, runner_detail.engine)
+
+
+@app.route("/api/runner/<name>/logs")
+def api_runner_logs(name):
+    return _detail(name, runner_detail.logs,
+                   since=request.args.get("since", ""))
+
+
+@app.route("/api/runner/<name>/series")
+def api_runner_series(name):
+    name, err = _detail_target(name)
+    if err:
+        return err
+    with _status_lock:
+        return jsonify(ok=True, data=_series_for(name))
+
+
+@app.route("/api/runner/<name>/github")
+def api_runner_github(name):
+    name, err = _detail_target(name)
+    if err:
+        return err
+    env = read_env()
+    token, org = env.get("GH_TOKEN"), env.get("GITHUB_ORG")
+    if not token or not org:
+        return jsonify(ok=False, error="GH_TOKEN or GITHUB_ORG not set"), 500
+    try:
+        # Keyed by org, not by runner: every runner on this page asks the same
+        # question, and GitHub rate-limits.
+        rows = runner_detail.cached(
+            f"github:{org}", 60, lambda: github_api.GitHub(token, org).runners())
+    except Exception as e:  # noqa: BLE001 - rendered in the panel
+        return jsonify(ok=False, error=str(e)), 500
+    return jsonify(ok=True, data=rows)
+
+
+@app.route("/api/runner/<name>/history")
+def api_runner_history(name):
+    name, err = _detail_target(name)
+    if err:
+        return err
+    return jsonify(ok=True, data=history.list_runs(runner=name, limit=100))
+
+
 def _target():
     name = (request.json or {}).get("name", "")
     if not re.fullmatch(r"github-runner-\d+", name or ""):

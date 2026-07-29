@@ -1,0 +1,7 @@
+{% extends "base.html" %}
+{% block title %}{{ name }} - NoMercy Runners{% endblock %}
+
+{% block body %}
+<h1>{{ name }}</h1>
+{% if missing %}<p>This runner does not exist.</p>{% endif %}
+{% endblock %}

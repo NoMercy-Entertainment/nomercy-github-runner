@@ -9,6 +9,7 @@ back from app.py would be a circular import.
 """
 
 import json
+import time
 
 import docker_ops
 
@@ -183,3 +184,23 @@ def logs(name, since=""):
         if stamp > cursor:
             cursor = stamp
     return _ok({"lines": lines, "cursor": cursor})
+
+
+_cache = {}
+
+
+def cached(key, ttl, fn):
+    """Memoise a collector result for `ttl` seconds.
+
+    Stops several browser tabs, or a reopened page, from each triggering the
+    same slow docker exec or the same GitHub request. Deliberately not an HTTP
+    cache header: the frontend sends `cache: no-store` with a cache-buster, as
+    index.html:271 does, so a header would simply be ignored.
+    """
+    now = time.monotonic()
+    hit = _cache.get(key)
+    if hit and now - hit[0] < ttl:
+        return hit[1]
+    value = fn()
+    _cache[key] = (now, value)
+    return value

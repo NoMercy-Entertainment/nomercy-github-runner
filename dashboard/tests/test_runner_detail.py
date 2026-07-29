@@ -227,3 +227,42 @@ def test_logs_does_not_redeliver_an_unstamped_line(monkeypatch):
     # docker --since is inclusive, so the same entry comes back next poll
     second = runner_detail.logs("github-runner-1", since=first["cursor"])["data"]
     assert second["lines"] == []                  # neither line repeats
+
+
+def test_cached_returns_the_same_value_within_ttl():
+    runner_detail._cache.clear()
+    calls = []
+
+    def fn():
+        calls.append(1)
+        return {"ok": True, "data": len(calls)}
+
+    assert runner_detail.cached("k", 60, fn) == runner_detail.cached("k", 60, fn)
+    assert len(calls) == 1
+
+
+def test_cached_refetches_after_ttl(monkeypatch):
+    runner_detail._cache.clear()
+    calls = []
+    clock = [1000.0]
+    monkeypatch.setattr(runner_detail.time, "monotonic", lambda: clock[0])
+
+    def fn():
+        calls.append(1)
+        return len(calls)
+
+    runner_detail.cached("k", 10, fn)
+    clock[0] = 1005.0
+    runner_detail.cached("k", 10, fn)
+    assert len(calls) == 1          # still inside the window
+    clock[0] = 1011.0
+    runner_detail.cached("k", 10, fn)
+    assert len(calls) == 2          # window expired
+
+
+def test_cached_keys_do_not_collide():
+    runner_detail._cache.clear()
+    runner_detail.cached("a", 60, lambda: 1)
+    runner_detail.cached("b", 60, lambda: 2)
+    assert runner_detail.cached("a", 60, lambda: 99) == 1
+    assert runner_detail.cached("b", 60, lambda: 99) == 2
