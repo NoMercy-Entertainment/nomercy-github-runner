@@ -220,6 +220,21 @@ def test_prune_all_skips_busy_and_totals_the_rest(client, monkeypatch):
     assert body["data"]["freed_bytes"] == 20
 
 
+def test_page_has_the_four_tabs_and_the_action_footer(client, monkeypatch):
+    monkeypatch.setattr(docker_ops, "list_runner_names", lambda: ["github-runner-1"])
+    body = client.get("/runner/github-runner-1").data.decode()
+    for anchor in ["rd-header", "rd-tabs", "tab-overview", "tab-engine",
+                   "tab-logs", "tab-history", "rd-actions"]:
+        assert anchor in body, anchor
+
+
+def test_missing_runner_page_says_so(client, monkeypatch):
+    monkeypatch.setattr(docker_ops, "list_runner_names", lambda: [])
+    r = client.get("/runner/github-runner-1")
+    assert r.status_code == 404
+    assert b"no longer exists" in r.data
+
+
 def test_prune_all_still_reports_when_one_runner_fails(client, monkeypatch):
     monkeypatch.setattr(docker_ops, "list_runner_names",
                         lambda: ["github-runner-1", "github-runner-2"])

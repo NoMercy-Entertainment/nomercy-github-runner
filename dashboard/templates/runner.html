@@ -1,7 +1,401 @@
 {% extends "base.html" %}
 {% block title %}{{ name }} - NoMercy Runners{% endblock %}
 
+{% block style %}
+#rd-tabs{display:flex;gap:8px;margin-bottom:16px;border-bottom:1px solid var(--rule);padding-bottom:10px}
+#rd-tabs button.on{color:var(--signal);border-color:var(--signal-dk)}
+.n.drain{color:var(--drain)} .n.stopped{color:var(--alert)}
+#rd-actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:2px;padding-top:14px;border-top:1px solid var(--rule)}
+.skel{color:var(--text-faint);padding:34px 0;text-align:center;letter-spacing:.2em;
+  text-transform:uppercase;font-size:11px}
+.sparkrow{margin-bottom:18px}
+.sparkrow:last-child{margin-bottom:0}
+.sparkrow .legend{display:flex;justify-content:space-between;align-items:center;font-size:9.5px;
+  letter-spacing:.15em;text-transform:uppercase;color:var(--text-faint);margin-bottom:6px}
+.sparkrow .legend i{display:inline-block;width:9px;height:2px;vertical-align:middle;margin-right:5px}
+.sparkrow svg{display:block;width:100%;height:84px;background:var(--bg-inset);border:1px solid var(--rule)}
+.kv{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:11px 18px;margin:2px 0 4px}
+.kv .k{display:block;font-size:9px;letter-spacing:.16em;text-transform:uppercase;color:var(--text-faint)}
+.kv .v{display:block;font-size:12.5px;margin-top:3px;word-break:break-word}
+table{width:100%;border-collapse:collapse;font-size:11.5px}
+th{text-align:left;font-size:9.5px;letter-spacing:.15em;text-transform:uppercase;color:var(--text-faint);
+  font-weight:400;padding:6px 8px;border-bottom:1px solid var(--rule)}
+td{padding:7px 8px;border-bottom:1px solid var(--rule);vertical-align:top;word-break:break-word}
+#toast{position:fixed;right:18px;bottom:18px;max-width:380px;background:var(--bg-panel);
+  border:1px solid var(--rule);border-left:3px solid var(--signal);padding:11px 14px;
+  font-size:11.5px;display:none;z-index:9}
+#toast.show{display:block;animation:slip .25s ease-out}
+#toast.bad{border-left-color:var(--alert);color:var(--alert)}
+@keyframes slip{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
+{% endblock %}
+
 {% block body %}
-<h1>{{ name }}</h1>
-{% if missing %}<p>This runner does not exist.</p>{% endif %}
+{% if missing %}
+<div class="center">
+  <div class="panel">
+    <h2>Runner not found</h2>
+    <p>{{ name }} no longer exists.</p>
+    <p style="margin-top:10px"><a href="/">&larr; Back to the fleet</a></p>
+  </div>
+</div>
+{% else %}
+<div id="rd-page">
+<header id="rd-header">
+  <div class="brand">
+    <h1>{{ name.replace('github-runner-', 'Runner ') }}</h1>
+    <div class="sub"><a href="/">&larr; Fleet</a> &middot; <span id="rd-reg">&mdash;</span></div>
+  </div>
+  <div class="stat"><div class="n" id="rd-state">&mdash;</div><div class="k">State</div></div>
+  <div class="stat"><div class="n" id="rd-uptime">&mdash;</div><div class="k">Uptime</div></div>
+  <div class="stat"><div class="live" id="live"><span class="dot"></span><span id="live-txt">Connecting</span></div></div>
+  <nav>
+    <a href="/">Fleet</a>
+    <a href="/history">History</a>
+    <a href="/settings">Settings</a>
+    <a href="/logout">Sign out</a>
+  </nav>
+</header>
+
+<div id="rd-tabs">
+  <button data-tab="overview" class="on">Overview</button>
+  <button data-tab="engine">Engine</button>
+  <button data-tab="logs">Logs</button>
+  <button data-tab="history">History</button>
+</div>
+
+<div id="tab-overview">
+  <div class="panel" id="rd-spark-panel">
+    <h2>Live telemetry</h2>
+    <div class="skel" id="rd-spark-skel">Awaiting telemetry</div>
+  </div>
+  <div class="panel" id="rd-inspect-panel">
+    <h2>Container</h2>
+    <div class="skel" id="rd-inspect-skel">Loading container details</div>
+  </div>
+  <div class="panel">
+    <h2>Mounts</h2>
+    <div id="rd-mounts" class="skel">Loading container details</div>
+  </div>
+  <div class="panel">
+    <h2>Environment</h2>
+    <div id="rd-env" class="skel">Loading container details</div>
+  </div>
+</div>
+
+<div id="tab-engine" hidden></div>
+<div id="tab-logs" hidden></div>
+<div id="tab-history" hidden></div>
+
+<div id="rd-actions">
+  <button data-a="drain" class="warn">Drain</button>
+  <button data-a="canceldrain" class="warn">Cancel drain</button>
+  <button data-a="stop" class="danger">Stop</button>
+  <button data-a="start">Start</button>
+  <button data-a="restart">Restart</button>
+  <button data-a="remove" class="danger">Remove</button>
+</div>
+</div>
+
+<div id="toast"></div>
+
+<script>
+const NAME = {{ name|tojson }};
+const STALE_MS = 25000;
+let lastGood = 0;
+const $ = id => document.getElementById(id);
+
+function toast(msg, bad) {
+  const t = $('toast');
+  t.textContent = msg;
+  t.className = 'show' + (bad ? ' bad' : '');
+  clearTimeout(t._h);
+  t._h = setTimeout(() => { t.className = ''; }, 6000);
+}
+
+function setStale(on) {
+  $('live').classList.toggle('stale', on);
+  $('live-txt').textContent = on ? 'Stale' : 'Live';
+}
+
+const gbNum = b => b / 1e9;
+const fmtGB = b => gbNum(b) < 10 ? gbNum(b).toFixed(2) + ' GB' : Math.round(gbNum(b)) + ' GB';
+const fmtTime = t => !t ? '—' : String(t).replace('T', ' ').replace('Z', '');
+const esc = s => String(s ?? '').replace(/[&<>"]/g, c =>
+  ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+
+// -- terminal "gone" state -----------------------------------------------
+// A one-time transition, not a steady poll: rebuilding innerHTML here does
+// not violate the patch-don't-rebuild rule below, which is about repeated
+// polling of a page that is still alive.
+let statusTimer = null, seriesTimer = null, inspectTimer = null;
+
+function goMissing() {
+  clearInterval(statusTimer); clearInterval(seriesTimer); clearInterval(inspectTimer);
+  statusTimer = seriesTimer = inspectTimer = null;
+  const page = $('rd-page');
+  if (page) page.outerHTML = `
+    <div class="center">
+      <div class="panel">
+        <h2>Runner not found</h2>
+        <p>${esc(NAME)} no longer exists.</p>
+        <p style="margin-top:10px"><a href="/">&larr; Back to the fleet</a></p>
+      </div>
+    </div>`;
+}
+
+// -- tabs -----------------------------------------------------------------
+// Only the overview tab polls /inspect, and only while it is the one showing.
+const TABS = ['overview', 'engine', 'logs', 'history'];
+
+function showTab(name) {
+  TABS.forEach(t => {
+    const panel = $('tab-' + t);
+    const shouldHide = t !== name;
+    if (panel.hidden !== shouldHide) panel.hidden = shouldHide;
+  });
+  document.querySelectorAll('#rd-tabs button').forEach(b => {
+    const on = b.dataset.tab === name;
+    if (b.classList.contains('on') !== on) b.classList.toggle('on', on);
+  });
+  if (name === 'overview') {
+    if (!inspectTimer) { pollInspect(); inspectTimer = setInterval(pollInspect, 10000); }
+  } else if (inspectTimer) {
+    clearInterval(inspectTimer);
+    inspectTimer = null;
+  }
+}
+document.querySelectorAll('#rd-tabs button').forEach(b => {
+  b.addEventListener('click', () => showTab(b.dataset.tab));
+});
+
+// -- action footer ----------------------------------------------------------
+// Built once in the template; polling only ever toggles visibility/disabled.
+async function act(action, btn) {
+  if (btn) btn.disabled = true;
+  try {
+    const res = await fetch('/api/runner/' + action, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({name: NAME})
+    });
+    const d = await res.json().catch(() => ({}));
+    if (!res.ok || d.ok === false) throw new Error(d.error || ('HTTP ' + res.status));
+    if (action === 'remove') { location.href = '/'; return; }
+    toast(NAME + ': ' + action + ' ok');
+    pollStatus();
+  } catch (e) {
+    toast(NAME + ': ' + action + ' failed - ' + e.message, true);
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+document.querySelectorAll('#rd-actions button').forEach(b => {
+  b.addEventListener('click', () => {
+    const a = b.dataset.a;
+    if (a === 'remove' && !confirm(`Remove ${NAME}? It is deregistered and deleted.`)) return;
+    if (a === 'stop' && !confirm(`Stop ${NAME} now? A running job would be killed.`)) return;
+    act(a, b);
+  });
+});
+
+function setShow(action, show) {
+  const b = document.querySelector(`#rd-actions [data-a="${action}"]`);
+  const val = show ? '' : 'none';
+  if (b.style.display !== val) b.style.display = val;
+}
+function renderActions(r) {
+  const stopped = r.state === 'stopped', draining = r.state === 'draining';
+  setShow('drain', !stopped && !draining);
+  setShow('canceldrain', draining);
+  setShow('stop', !stopped);
+  setShow('start', stopped);
+  setShow('restart', !stopped);
+  setShow('remove', true);
+}
+
+// -- header: name/state/registration/uptime, from the fast fleet status ---
+const STATE_CLASS = {idle: 'ok', busy: 'work', draining: 'drain', stopped: 'stopped'};
+
+function renderHeader(r) {
+  const state = r.state || 'unknown';
+  const stateEl = $('rd-state');
+  if (stateEl.textContent !== state) stateEl.textContent = state;
+  const cls = 'n ' + (STATE_CLASS[state] || '');
+  if (stateEl.className !== cls) stateEl.className = cls;
+
+  const reg = r.registration || '—';
+  if ($('rd-reg').textContent !== reg) $('rd-reg').textContent = reg;
+
+  const uptime = r.uptime || '—';
+  if ($('rd-uptime').textContent !== uptime) $('rd-uptime').textContent = uptime;
+}
+
+async function pollStatus() {
+  try {
+    const res = await fetch('/api/status?t=' + Date.now(), {cache: 'no-store'});
+    if (res.status === 401) { location.href = '/login'; return; }
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    const body = await res.json();
+    const r = (body.runners || []).find(x => x.name === NAME);
+    if (!r) { goMissing(); return; }
+    renderHeader(r);
+    renderActions(r);
+    lastGood = Date.now();
+    setStale(false);
+  } catch (e) {
+    if (!lastGood || Date.now() - lastGood > STALE_MS) setStale(true);
+  }
+}
+
+// -- overview: sparklines, built once then patched in place ---------------
+let sparkBuilt = false;
+function buildSparklines() {
+  const skel = $('rd-spark-skel');
+  if (skel) skel.remove();
+  $('rd-spark-panel').insertAdjacentHTML('beforeend', `
+    <div class="sparkrow" data-s="cpu">
+      <div class="legend"><span><i style="background:var(--signal)"></i>CPU</span><span data-v>&mdash;</span></div>
+      <svg viewBox="0 0 800 84" preserveAspectRatio="none"><polyline fill="none" stroke="var(--signal)" stroke-width="1.6"/></svg>
+    </div>
+    <div class="sparkrow" data-s="mem">
+      <div class="legend"><span><i style="background:var(--drain)"></i>Memory</span><span data-v>&mdash;</span></div>
+      <svg viewBox="0 0 800 84" preserveAspectRatio="none"><polyline fill="none" stroke="var(--drain)" stroke-width="1.6"/></svg>
+    </div>
+    <div class="sparkrow" data-s="cache">
+      <div class="legend"><span><i style="background:var(--busy)"></i>Build cache</span><span data-v>&mdash;</span></div>
+      <svg viewBox="0 0 800 84" preserveAspectRatio="none"><polyline fill="none" stroke="var(--busy)" stroke-width="1.6"/></svg>
+    </div>`);
+  sparkBuilt = true;
+}
+
+// docker stats is per-core, so cpu can run past 100 - scale each sparkline
+// to its own observed peak rather than a fixed ceiling, or busy runners
+// would just draw a flat clipped line.
+function setSpark(key, samples, valText) {
+  const row = document.querySelector(`#rd-spark-panel [data-s="${key}"]`);
+  const v = row.querySelector('[data-v]');
+  if (v.textContent !== valText) v.textContent = valText;
+
+  const vals = samples.map(s => Number(s[key]) || 0);
+  const top = Math.max(...vals, 1);
+  const W = 800, H = 84, pad = 3;
+  const pts = vals.length < 2 ? '' : vals.map((val, i) => {
+    const x = pad + (i / (vals.length - 1)) * (W - pad * 2);
+    const y = H - pad - (val / top) * (H - pad * 2);
+    return `${x.toFixed(1)},${y.toFixed(1)}`;
+  }).join(' ');
+  const poly = row.querySelector('polyline');
+  if (poly.getAttribute('points') !== pts) poly.setAttribute('points', pts);
+}
+
+async function pollSeries() {
+  try {
+    const res = await fetch(`/api/runner/${NAME}/series?t=` + Date.now(), {cache: 'no-store'});
+    if (res.status === 404) { goMissing(); return; }
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    const body = await res.json();
+    if (!body.ok) throw new Error(body.error || 'series error');
+    const samples = body.data || [];
+    if (!sparkBuilt) buildSparklines();
+    const last = samples[samples.length - 1] || {};
+    setSpark('cpu', samples, Math.max(0, Number(last.cpu) || 0).toFixed(0) + '%');
+    setSpark('mem', samples, fmtGB(Number(last.mem) || 0));
+    setSpark('cache', samples, fmtGB(Number(last.cache) || 0));
+  } catch (e) {
+    // Leave the last-drawn sparklines in place; the stale indicator already
+    // covers connectivity loss.
+  }
+}
+
+// -- overview: inspect fields, built once then patched in place -----------
+const FIELDS = [
+  ['image', 'Image', v => v || '—'],
+  ['digest', 'Digest', v => v || '—'],
+  ['created', 'Created', fmtTime],
+  ['restart_count', 'Restarts', v => String(v ?? 0)],
+  ['status', 'Status', v => v || '—'],
+  ['exit_code', 'Exit code', v => (v == null ? '—' : String(v))],
+  ['started_at', 'Started', fmtTime],
+  ['finished_at', 'Finished', fmtTime],
+  ['pid', 'PID', v => (v ? String(v) : '—')],
+  ['cpu_limit', 'CPU limit', v => (v == null ? 'unlimited' : (Number.isInteger(v) ? v : v.toFixed(2)) + ' cores')],
+  ['mem_limit_bytes', 'Memory limit', v => (v == null ? 'unlimited' : fmtGB(v))],
+  ['restart_policy', 'Restart policy', v => v || '—'],
+  ['privileged', 'Privileged', v => (v ? 'yes' : 'no')],
+  ['network_mode', 'Network mode', v => v || '—'],
+  ['ip', 'IP address', v => v || '—'],
+];
+
+let inspectBuilt = false;
+function buildInspectPanel() {
+  const skel = $('rd-inspect-skel');
+  if (skel) skel.remove();
+  const kvHTML = FIELDS.map(([key, label]) =>
+    `<div><span class="k">${label}</span><span class="v" data-f="${key}">—</span></div>`
+  ).join('');
+  $('rd-inspect-panel').insertAdjacentHTML('beforeend', `<div class="kv">${kvHTML}</div>`);
+  inspectBuilt = true;
+}
+
+let lastMountsJSON = null, lastEnvJSON = null;
+
+function renderMounts(mounts) {
+  const json = JSON.stringify(mounts);
+  if (json === lastMountsJSON) return;
+  lastMountsJSON = json;
+  const target = $('rd-mounts');
+  target.className = '';
+  if (!mounts.length) { target.textContent = 'No mounts.'; return; }
+  target.innerHTML = `<table><thead><tr>
+      <th>Source</th><th>Destination</th><th>Mode</th><th>RW</th>
+    </tr></thead><tbody>${mounts.map(m => `<tr>
+      <td>${esc(m.source)}</td><td>${esc(m.destination)}</td>
+      <td>${esc(m.mode)}</td><td>${m.rw ? 'yes' : 'no'}</td></tr>`).join('')}</tbody></table>`;
+}
+
+function renderEnv(env) {
+  const json = JSON.stringify(env);
+  if (json === lastEnvJSON) return;
+  lastEnvJSON = json;
+  const target = $('rd-env');
+  target.className = '';
+  const entries = Object.entries(env || {});
+  if (!entries.length) { target.textContent = 'No environment variables.'; return; }
+  target.innerHTML = `<table><thead><tr><th>Key</th><th>Value</th></tr></thead><tbody>${
+    entries.map(([k, v]) => `<tr><td>${esc(k)}</td><td>${esc(v)}</td></tr>`).join('')
+  }</tbody></table>`;
+}
+
+function renderInspect(d) {
+  if (!inspectBuilt) buildInspectPanel();
+  FIELDS.forEach(([key, , fmt]) => {
+    const el = document.querySelector(`#rd-inspect-panel [data-f="${key}"]`);
+    const text = fmt(d[key]);
+    if (el.textContent !== text) el.textContent = text;
+  });
+  renderMounts(d.mounts || []);
+  renderEnv(d.env || {});
+}
+
+async function pollInspect() {
+  try {
+    const res = await fetch(`/api/runner/${NAME}/inspect?t=` + Date.now(), {cache: 'no-store'});
+    if (res.status === 404) { goMissing(); return; }
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    const body = await res.json();
+    if (!body.ok) throw new Error(body.error || 'inspect error');
+    renderInspect(body.data);
+  } catch (e) {
+    // Keep the last-known values on screen; a transient docker inspect
+    // failure should not blank a panel that was showing good data.
+  }
+}
+
+pollStatus();
+pollSeries();
+statusTimer = setInterval(pollStatus, 5000);
+seriesTimer = setInterval(pollSeries, 5000);
+showTab('overview');
+</script>
+{% endif %}
 {% endblock %}
