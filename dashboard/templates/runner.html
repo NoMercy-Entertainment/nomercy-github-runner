@@ -490,33 +490,99 @@ function buildInspectPanel() {
   inspectBuilt = true;
 }
 
-let lastMountsJSON = null, lastEnvJSON = null;
+// Mounts/env are patched in place, keyed rows, exactly like everything else
+// on this poll path. A running container's mounts/env never change, but the
+// operator can edit Settings and hit "Recreate fleet" while this page is
+// open - the next inspect poll then sees genuinely different content for
+// the same-named container, and an innerHTML rebuild here would violate the
+// no-rebuild-on-a-poll rule the rest of the page follows.
+let mountsInited = false, envInited = false;
+const mountRows = new Map();  // destination -> {tr, source, destination, mode, rw}
+const envRows = new Map();    // key -> {tr, keyEl, valEl}
 
-function renderMounts(mounts) {
-  const json = JSON.stringify(mounts);
-  if (json === lastMountsJSON) return;
-  lastMountsJSON = json;
+function ensureMountsTable() {
+  if (mountsInited) return;
+  mountsInited = true;
   const target = $('rd-mounts');
   target.className = '';
-  if (!mounts.length) { target.textContent = 'No mounts.'; return; }
   target.innerHTML = `<table><thead><tr>
       <th>Source</th><th>Destination</th><th>Mode</th><th>RW</th>
-    </tr></thead><tbody>${mounts.map(m => `<tr>
-      <td>${esc(m.source)}</td><td>${esc(m.destination)}</td>
-      <td>${esc(m.mode)}</td><td>${m.rw ? 'yes' : 'no'}</td></tr>`).join('')}</tbody></table>`;
+    </tr></thead><tbody></tbody></table>`;
+}
+
+function renderMounts(mounts) {
+  const target = $('rd-mounts');
+  if (!mounts.length) {
+    if (mountsInited) { target.innerHTML = ''; mountsInited = false; mountRows.clear(); }
+    target.className = '';
+    if (target.textContent !== 'No mounts.') target.textContent = 'No mounts.';
+    return;
+  }
+  ensureMountsTable();
+  const tbody = target.querySelector('tbody');
+  const seen = new Set();
+  mounts.forEach(m => {
+    const key = m.destination;
+    seen.add(key);
+    let row = mountRows.get(key);
+    if (!row) {
+      const tr = document.createElement('tr');
+      tr.innerHTML = '<td></td><td></td><td></td><td></td>';
+      const [source, destination, mode, rw] = tr.children;
+      row = {tr, source, destination, mode, rw};
+      mountRows.set(key, row);
+      tbody.appendChild(tr);
+    }
+    const srcText = m.source ?? '', destText = m.destination ?? '', modeText = m.mode ?? '';
+    const rwText = m.rw ? 'yes' : 'no';
+    if (row.source.textContent !== srcText) row.source.textContent = srcText;
+    if (row.destination.textContent !== destText) row.destination.textContent = destText;
+    if (row.mode.textContent !== modeText) row.mode.textContent = modeText;
+    if (row.rw.textContent !== rwText) row.rw.textContent = rwText;
+  });
+  for (const [key, row] of mountRows) {
+    if (!seen.has(key)) { row.tr.remove(); mountRows.delete(key); }
+  }
+}
+
+function ensureEnvTable() {
+  if (envInited) return;
+  envInited = true;
+  const target = $('rd-env');
+  target.className = '';
+  target.innerHTML = `<table><thead><tr><th>Key</th><th>Value</th></tr></thead><tbody></tbody></table>`;
 }
 
 function renderEnv(env) {
-  const json = JSON.stringify(env);
-  if (json === lastEnvJSON) return;
-  lastEnvJSON = json;
   const target = $('rd-env');
-  target.className = '';
   const entries = Object.entries(env || {});
-  if (!entries.length) { target.textContent = 'No environment variables.'; return; }
-  target.innerHTML = `<table><thead><tr><th>Key</th><th>Value</th></tr></thead><tbody>${
-    entries.map(([k, v]) => `<tr><td>${esc(k)}</td><td>${esc(v)}</td></tr>`).join('')
-  }</tbody></table>`;
+  if (!entries.length) {
+    if (envInited) { target.innerHTML = ''; envInited = false; envRows.clear(); }
+    target.className = '';
+    if (target.textContent !== 'No environment variables.') target.textContent = 'No environment variables.';
+    return;
+  }
+  ensureEnvTable();
+  const tbody = target.querySelector('tbody');
+  const seen = new Set();
+  entries.forEach(([k, v]) => {
+    seen.add(k);
+    let row = envRows.get(k);
+    if (!row) {
+      const tr = document.createElement('tr');
+      tr.innerHTML = '<td></td><td></td>';
+      const [keyEl, valEl] = tr.children;
+      row = {tr, keyEl, valEl};
+      envRows.set(k, row);
+      tbody.appendChild(tr);
+    }
+    if (row.keyEl.textContent !== k) row.keyEl.textContent = k;
+    const vText = String(v ?? '');
+    if (row.valEl.textContent !== vText) row.valEl.textContent = vText;
+  });
+  for (const [key, row] of envRows) {
+    if (!seen.has(key)) { row.tr.remove(); envRows.delete(key); }
+  }
 }
 
 function renderInspect(d) {
@@ -704,6 +770,7 @@ let logsCursor = '';
 let logsLoaded = false;
 let logsLineCount = 0;
 let logsFilterValue = '';
+let logsInFlight = false;
 const LOGS_CAP = 2000;
 
 function isPaneAtBottom(pane) {
@@ -762,6 +829,14 @@ function appendLogLines(lines) {
 }
 
 async function pollLogs() {
+  // The backend allows this call up to 15s, and the tab-open fetch pulls a
+  // full 5-minute window - both can easily outlast the 2s tick below. Without
+  // this guard, a slow call would still be in flight when the next tick
+  // fires with the same stale logsCursor, and both responses would land,
+  // appending the same lines twice. Released in `finally` so a failed
+  // request can't permanently freeze polling.
+  if (logsInFlight) return;
+  logsInFlight = true;
   try {
     const res = await fetch(`/api/runner/${NAME}/logs?since=` + encodeURIComponent(logsCursor), {cache: 'no-store'});
     if (res.status === 404) { goMissing(); return; }
@@ -783,6 +858,8 @@ async function pollLogs() {
     }
     // Once the pane has content, a transient failure just skips a beat -
     // the existing lines stay exactly as they are.
+  } finally {
+    logsInFlight = false;
   }
 }
 

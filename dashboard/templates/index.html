@@ -194,8 +194,15 @@ async function pruneAll(btn) {
     const results = data.results || [];
     const skipped = data.skipped || [];
     const failed = results.filter(x => !x.ok);
-    let msg = `Cleared ${results.length - failed.length}/${results.length} runner(s), ` +
-              `${fmtGB(data.freed_bytes || 0)} freed total.`;
+    // freed_bytes === null on a successful result means that runner's amount
+    // is genuinely unknown, not zero - the backend folds it into 0 for the
+    // aggregate, so the total here is a floor, not an exact figure, and must
+    // say so rather than print a confident-looking number.
+    const unknownCount = results.filter(x => x.ok && x.freed_bytes == null).length;
+    let msg = `Cleared ${results.length - failed.length}/${results.length} runner(s), `;
+    msg += unknownCount > 0
+      ? `at least ${fmtGB(data.freed_bytes || 0)} freed (${unknownCount} amount unknown).`
+      : `${fmtGB(data.freed_bytes || 0)} freed total.`;
     if (skipped.length) {
       msg += ' Skipped: ' + skipped.map(s => `${s.name} (${s.reason})`).join(', ') + '.';
     }
