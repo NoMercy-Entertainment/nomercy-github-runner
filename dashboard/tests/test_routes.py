@@ -27,14 +27,40 @@ def test_page_requires_auth(anon_client):
     assert "/login" in r.headers["Location"]
 
 
-def test_bad_name_is_rejected_before_any_docker_call(client, monkeypatch):
-    def explode(*a, **k):
-        raise AssertionError("docker must not be called for an invalid name")
-    monkeypatch.setattr(docker_ops, "_docker", explode)
-    for bad in ["../etc", "github-runner-", "github-runner-1x", "nope"]:
+def test_no_crafted_name_can_reach_a_docker_call(client, monkeypatch):
+    """The property that matters: a name from the URL never reaches a command line.
+
+    Two layers enforce it and both are acceptable outcomes. Path-traversal forms
+    never match Flask's <name> converter, so Werkzeug rejects them before any
+    application code runs. Everything else reaches _detail_target() and is
+    rejected there. Asserting one specific status would be testing which layer
+    happened to catch it, not the property itself.
+    """
+    called = []
+    monkeypatch.setattr(docker_ops, "_docker",
+                        lambda *a, **k: called.append(a) or (True, "", ""))
+    monkeypatch.setattr(docker_ops, "list_runner_names",
+                        lambda: ["github-runner-1"])
+    for bad in ["../etc", "..%2fetc", "%2e%2e%2fetc",
+                "github-runner-1/../../x", "github-runner-1;id",
+                "github-runner-1 --privileged", "github-runner-",
+                "github-runner-1x", "nope"]:
+        r = client.get(f"/api/runner/{bad}/inspect")
+        assert r.status_code in (400, 404), (bad, r.status_code)
+        assert not called, f"docker was invoked for {bad!r}"
+
+
+def test_routable_invalid_names_return_the_400_envelope(client, monkeypatch):
+    """Names that do reach the route must come back in the documented shape."""
+    monkeypatch.setattr(docker_ops, "list_runner_names",
+                        lambda: ["github-runner-1"])
+    for bad in ["github-runner-", "github-runner-1x", "nope",
+                "github-runner-1;id"]:
         r = client.get(f"/api/runner/{bad}/inspect")
         assert r.status_code == 400, bad
-        assert r.get_json()["ok"] is False
+        body = r.get_json()
+        assert body["ok"] is False
+        assert body["error"] == "bad runner name"
 
 
 def test_unknown_runner_is_404(client, monkeypatch):
