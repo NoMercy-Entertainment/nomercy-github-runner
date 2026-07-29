@@ -155,7 +155,9 @@ def logs(name, since=""):
 
     `docker logs --since` is INCLUSIVE, so the line at the cursor comes back
     every time. Lines are filtered with a strict `>` and the caller sees each
-    line exactly once.
+    line exactly once. Unstamped lines (from multi-line output) inherit the
+    timestamp of the stamped line above them, so they are also filtered by the
+    same rule and delivered exactly once.
     """
     window = since or DEFAULT_LOG_WINDOW
     ok, out, err = docker_ops._docker(
@@ -163,14 +165,18 @@ def logs(name, since=""):
     if not ok:
         return _err(err or out)
 
-    lines = []
-    cursor = since
+    lines, cursor, last = [], since, since
     for raw in out.splitlines():
         stamp, sep, text = raw.partition(" ")
         if not sep or "T" not in stamp:
-            # A line docker did not stamp - keep it, it is still output.
+            # No stamp of its own: it belongs to the entry above, so it
+            # inherits that entry's time and is filtered by the same rule
+            # instead of bypassing the filter and being redelivered forever.
+            if since and last <= since:
+                continue
             lines.append({"t": "", "text": raw})
             continue
+        last = stamp
         if since and stamp <= since:
             continue                       # the inclusive-boundary overlap
         lines.append({"t": stamp, "text": text})

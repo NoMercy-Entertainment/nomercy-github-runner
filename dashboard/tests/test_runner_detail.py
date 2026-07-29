@@ -215,3 +215,15 @@ def test_logs_returns_error_not_exception(monkeypatch):
                         _fake_docker((False, "", "No such container")))
     r = runner_detail.logs("github-runner-9")
     assert r["ok"] is False
+
+
+def test_logs_does_not_redeliver_an_unstamped_line(monkeypatch):
+    batch = ("2026-07-28T10:00:01.100000000Z Traceback:\n"
+             "    File \"x.py\", line 1\n")
+    monkeypatch.setattr(docker_ops, "_docker", _fake_docker((True, batch, "")))
+    first = runner_detail.logs("github-runner-1")["data"]
+    assert len(first["lines"]) == 2               # both delivered once
+
+    # docker --since is inclusive, so the same entry comes back next poll
+    second = runner_detail.logs("github-runner-1", since=first["cursor"])["data"]
+    assert second["lines"] == []                  # neither line repeats
