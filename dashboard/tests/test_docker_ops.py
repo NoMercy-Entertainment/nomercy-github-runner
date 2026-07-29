@@ -38,3 +38,16 @@ def test_inner_df_tolerates_a_missing_type(monkeypatch):
     cache, images = docker_ops._inner_df("github-runner-1")
     assert cache == "0B"          # an absent type must not raise
     assert images == "5GB"
+
+
+def test_inner_df_survives_scalar_json_lines(monkeypatch):
+    # Bare scalars in JSON output: valid JSON but not dicts
+    mixed = ('42\n'
+             '{"Type":"Build Cache","Size":"10GB","Reclaimable":"2GB","TotalCount":"20"}\n'
+             '"hello"\n'
+             '{"Type":"Images","Size":"5GB","Reclaimable":"1GB","TotalCount":"10"}\n')
+    monkeypatch.setattr(docker_ops, "_docker",
+                        lambda *a, **k: (True, mixed, ""))
+    cache, images = docker_ops._inner_df("github-runner-1")
+    assert cache == "10GB"  # scalar lines are skipped, real objects are parsed
+    assert images == "5GB"

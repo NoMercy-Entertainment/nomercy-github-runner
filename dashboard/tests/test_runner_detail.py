@@ -340,3 +340,39 @@ def test_engine_df_still_reports_command_failure(monkeypatch):
                         _fake_docker((False, "", "daemon gone")))
     df = runner_detail.engine("github-runner-1")["data"]["df"]
     assert "error" in df
+
+
+def test_engine_df_survives_scalar_json_lines(monkeypatch):
+    # Bare scalars in JSON output: valid JSON but not dicts
+    mixed_df = ('42\n'
+                '{"Type":"Build Cache","Size":"10GB","Reclaimable":"2GB","TotalCount":"20"}\n'
+                '"hello"\n'
+                '{"Type":"Images","Size":"5GB","Reclaimable":"1GB","TotalCount":"10"}\n')
+
+    def fake(*args, **kwargs):
+        if " system" in " " + " ".join(args):
+            return (True, mixed_df, "")
+        return (True, "", "")
+    monkeypatch.setattr(docker_ops, "_docker", fake)
+    df = runner_detail.engine("github-runner-1")["data"]["df"]
+    assert df["build_cache"]["size"] == "10GB"  # scalar lines are skipped
+    assert df["images"]["size"] == "5GB"
+
+
+def test_exec_json_lines_survives_scalar_json_lines(monkeypatch):
+    # Bare scalars in JSON output: valid JSON but not dicts
+    mixed_images = ('42\n'
+                    '{"Repository":"alpine","Tag":"3.19","Size":"7.8MB"}\n'
+                    '"hello"\n'
+                    '{"Repository":"node","Tag":"20","Size":"1.1GB"}\n')
+
+    def fake(*args, **kwargs):
+        if " images" in " " + " ".join(args):
+            return (True, mixed_images, "")
+        return (True, "", "")
+    monkeypatch.setattr(docker_ops, "_docker", fake)
+    images = runner_detail.engine("github-runner-1")["data"]["images"]
+    # Scalar lines skipped, only dict objects returned
+    assert len(images) == 2
+    assert images[0]["Repository"] == "alpine"
+    assert images[1]["Repository"] == "node"

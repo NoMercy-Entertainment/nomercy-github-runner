@@ -179,8 +179,10 @@ def _inner_df(name):
             continue
         try:
             row = json.loads(line)
-        except ValueError:
+        except Exception:      # noqa: BLE001 - rendered, not raised
             continue
+        if not isinstance(row, dict):
+            continue           # valid JSON, wrong shape - skip, do not crash
         if row.get("Type"):
             rows[row["Type"]] = row
     return (rows.get("Build Cache", {}).get("Size", "0B"),

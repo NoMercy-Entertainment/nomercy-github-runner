@@ -106,9 +106,12 @@ def _exec_json_lines(name, args, timeout):
             continue
         seen += 1
         try:
-            items.append(json.loads(line))
-        except ValueError:
-            continue          # one malformed line must not lose the rest
+            row = json.loads(line)
+        except Exception:      # noqa: BLE001 - rendered, not raised
+            continue
+        if not isinstance(row, dict):
+            continue           # valid JSON, wrong shape - skip, do not crash
+        items.append(row)
 
     # ...but if there was output and none of it parsed, the format is broken.
     # Returning [] here would be indistinguishable from an empty daemon.
@@ -140,8 +143,10 @@ def engine(name):
                 continue
             try:
                 row = json.loads(line)
-            except ValueError:
+            except Exception:      # noqa: BLE001 - rendered, not raised
                 continue
+            if not isinstance(row, dict):
+                continue           # valid JSON, wrong shape - skip, do not crash
             key = wanted.get(row.get("Type", ""))
             if key:
                 df[key] = {"size": row.get("Size", "0B"),
