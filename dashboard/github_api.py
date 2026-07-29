@@ -136,3 +136,27 @@ class GitHub:
                         "conclusion": j.get("conclusion"),
                     }
         return None
+
+    # ------------------------------------------------------------- runners
+    def runners(self):
+        """Self-hosted runners as GitHub sees them.
+
+        Worth showing beside the local view: a container that is Up while
+        GitHub reports it offline is the visible shape of a registration that
+        broke silently.
+        """
+        data = self._get(f"/orgs/{self.org}/actions/runners",
+                         params={"per_page": 100})
+        if not data:
+            return []
+        out = []
+        for r in data.get("runners", []):
+            out.append({
+                "id": r.get("id"),
+                "name": r.get("name", ""),
+                "status": r.get("status", ""),
+                "busy": bool(r.get("busy")),
+                "labels": [l.get("name", "") for l in r.get("labels", [])],
+                "runner_group": r.get("runner_group_name", ""),
+            })
+        return out
