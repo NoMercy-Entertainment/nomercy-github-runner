@@ -160,15 +160,31 @@ def _registration(name):
 
 
 def _inner_df(name):
+    """Build cache and image totals from the runner's own daemon.
+
+    `docker system df --format json` emits ONE OBJECT PER LINE, one per
+    resource type, keyed by a "Type" field - not a single object with
+    "BuildCache" and "Images" keys. Reading only the first line and looking up
+    those keys is why this reported 0B for every runner regardless of what they
+    were actually holding.
+    """
     ok, out, _ = _docker("exec", name, "docker", "system", "df",
                          "--format", "json", timeout=20)
     if not ok or not out:
         return "0B", "0B"
-    try:
-        d = json.loads(out.splitlines()[0])
-        return d.get("BuildCache", "0B"), d.get("Images", "0B")
-    except Exception:
-        return "0B", "0B"
+    rows = {}
+    for line in out.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            row = json.loads(line)
+        except ValueError:
+            continue
+        if row.get("Type"):
+            rows[row["Type"]] = row
+    return (rows.get("Build Cache", {}).get("Size", "0B"),
+            rows.get("Images", {}).get("Size", "0B"))
 
 
 def collect():

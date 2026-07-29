@@ -105,8 +105,10 @@ def test_inspect_survives_malformed_json(monkeypatch):
 
 def test_engine_collects_all_four_sections(monkeypatch):
     responses = {
-        "system": (True, '{"BuildCache":"12.3GB","Images":"4.1GB",'
-                         '"Containers":"0B","Volumes":"0B"}', ""),
+        "system": (True, '{"Type":"Build Cache","Size":"12.3GB","Reclaimable":"1GB","TotalCount":"5"}\n'
+                         '{"Type":"Images","Size":"4.1GB","Reclaimable":"2GB","TotalCount":"3"}\n'
+                         '{"Type":"Containers","Size":"0B","Reclaimable":"0B","TotalCount":"0"}\n'
+                         '{"Type":"Local Volumes","Size":"0B","Reclaimable":"0B","TotalCount":"0"}', ""),
         "images": (True, '{"Repository":"alpine","Tag":"3.19","Size":"7.8MB"}\n'
                          '{"Repository":"node","Tag":"20","Size":"1.1GB"}', ""),
         "ps": (True, '{"Names":"buildx_buildkit","Status":"Up 2 hours"}', ""),
@@ -124,7 +126,8 @@ def test_engine_collects_all_four_sections(monkeypatch):
     r = runner_detail.engine("github-runner-1")
     assert r["ok"] is True
     d = r["data"]
-    assert d["df"]["BuildCache"] == "12.3GB"
+    assert d["df"]["build_cache"]["size"] == "12.3GB"
+    assert d["df"]["images"]["size"] == "4.1GB"
     assert len(d["images"]) == 2
     assert d["images"][1]["Repository"] == "node"
     assert d["containers"][0]["Names"] == "buildx_buildkit"
@@ -137,13 +140,13 @@ def test_engine_degrades_one_section_at_a_time(monkeypatch):
         if " images" in f" {joined}":
             return (False, "", "daemon not responding")
         if " system" in f" {joined}":
-            return (True, '{"BuildCache":"1GB"}', "")
+            return (True, '{"Type":"Build Cache","Size":"1GB","Reclaimable":"0.1GB","TotalCount":"10"}', "")
         return (True, "", "")
 
     monkeypatch.setattr(docker_ops, "_docker", fake)
     d = runner_detail.engine("github-runner-1")["data"]
     assert d["images"]["error"] == "daemon not responding"
-    assert d["df"]["BuildCache"] == "1GB"      # unaffected
+    assert d["df"]["build_cache"]["size"] == "1GB"      # unaffected
 
 
 def test_engine_handles_empty_output(monkeypatch):
@@ -307,3 +310,33 @@ def test_cached_still_stores_and_replays_a_successful_result():
     runner_detail.cached("k", 60, fn)
     runner_detail.cached("k", 60, fn)
     assert len(calls) == 1
+
+
+REAL_DF_LINES = (
+    '{"Active":"0","Reclaimable":"758.8MB (98%)","Size":"767.2MB","TotalCount":"4","Type":"Images"}\n'
+    '{"Active":"0","Reclaimable":"0B","Size":"0B","TotalCount":"0","Type":"Containers"}\n'
+    '{"Active":"0","Reclaimable":"0B","Size":"0B","TotalCount":"0","Type":"Local Volumes"}\n'
+    '{"Active":"0","Reclaimable":"35.49GB","Size":"36.24GB","TotalCount":"310","Type":"Build Cache"}\n'
+)
+
+
+def test_engine_df_is_keyed_by_resource_type(monkeypatch):
+    def fake(*args, **kwargs):
+        if " system" in " " + " ".join(args):
+            return (True, REAL_DF_LINES, "")
+        return (True, "", "")
+    monkeypatch.setattr(docker_ops, "_docker", fake)
+    df = runner_detail.engine("github-runner-1")["data"]["df"]
+    assert df["build_cache"]["size"] == "36.24GB"
+    assert df["build_cache"]["reclaimable"] == "35.49GB"
+    assert df["build_cache"]["count"] == "310"
+    assert df["images"]["size"] == "767.2MB"
+    assert df["containers"]["size"] == "0B"
+    assert df["volumes"]["size"] == "0B"
+
+
+def test_engine_df_still_reports_command_failure(monkeypatch):
+    monkeypatch.setattr(docker_ops, "_docker",
+                        _fake_docker((False, "", "daemon gone")))
+    df = runner_detail.engine("github-runner-1")["data"]["df"]
+    assert "error" in df

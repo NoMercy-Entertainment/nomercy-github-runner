@@ -125,13 +125,30 @@ def engine(name):
     """
     ok, out, err = docker_ops._docker(
         "exec", name, "docker", "system", "df", "--format", "json", timeout=20)
-    if ok and out:
-        try:
-            df = json.loads(out.splitlines()[0])
-        except ValueError:
-            df = {"error": "could not parse df output"}
-    else:
+    if not ok:
         df = {"error": err or "command failed"}
+    else:
+        # One object per line, keyed by "Type" - see _inner_df for why this
+        # matters. Normalised here so the template carries neither the
+        # "Local Volumes" spelling nor the capitalisation.
+        wanted = {"Images": "images", "Containers": "containers",
+                  "Local Volumes": "volumes", "Build Cache": "build_cache"}
+        df = {}
+        for line in out.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                row = json.loads(line)
+            except ValueError:
+                continue
+            key = wanted.get(row.get("Type", ""))
+            if key:
+                df[key] = {"size": row.get("Size", "0B"),
+                           "reclaimable": row.get("Reclaimable", "0B"),
+                           "count": row.get("TotalCount", "0")}
+        if not df:
+            df = {"error": "could not parse df output"}
 
     return _ok({
         "df": df,
