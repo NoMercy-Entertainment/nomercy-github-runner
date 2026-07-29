@@ -185,8 +185,9 @@ def _record_series(status):
     """Append one point per runner. Called from the collector, which has
     already computed all three values for the grid - so this costs an append,
     not a docker call."""
+    runners = status.get("runners", [])
     live = set()
-    for r in status.get("runners", []):
+    for r in runners:
         name = r.get("name")
         if not name:
             continue
@@ -200,6 +201,16 @@ def _record_series(status):
             "mem": ops.parse_size(r.get("mem_used")),
             "cache": ops.parse_size(r.get("build_cache")),
         })
+
+    # An empty runner list is far more often a transient `docker ps` hiccup or
+    # "Recreate fleet" briefly emptying every runner at once, than every
+    # runner genuinely vanishing in the same instant. Pruning here would wipe
+    # up to ten minutes of history for all six over what is usually a blip -
+    # only prune when the list is non-empty, so a runner missing from a
+    # *live* list still loses its ring, but a wholesale empty poll changes
+    # nothing.
+    if not runners:
+        return
     # A removed runner must not keep its ring, or the dict grows for the life
     # of the process across add/remove cycles.
     for gone in set(_series) - live:
@@ -538,13 +549,20 @@ def api_runner_prune(name):
 
 @app.route("/api/prune-all", methods=["POST"])
 def api_prune_all():
-    """Sweep every idle runner. Busy ones are skipped, never interrupted."""
+    """Sweep every idle runner. Busy ones are skipped, never interrupted.
+
+    Each prune gets 120s rather than the 300s single-runner default: six
+    runners at the full timeout would let one HTTP request run for close to
+    an hour with no client-side timeout. 120s keeps the whole sweep inside
+    something a browser tab will survive; a runner that needs longer than
+    that reports an error here and can still be pruned individually.
+    """
     results, skipped = [], []
     for name in ops.list_runner_names():
         if not ops.is_idle(name):
             skipped.append({"name": name, "reason": "busy running a job"})
             continue
-        results.append(ops.prune(name))
+        results.append(ops.prune(name, timeout=120))
     # A per-runner failure can leave freed_bytes as None (measurement was not
     # trustworthy) rather than 0 - treat that as "contributed nothing" to the
     # fleet total instead of crashing the whole sweep's response.

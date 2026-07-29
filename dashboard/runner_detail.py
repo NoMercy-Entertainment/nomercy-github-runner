@@ -9,11 +9,16 @@ back from app.py would be a circular import.
 """
 
 import json
+import os
 import time
 
 import docker_ops
 
 SECRET_KEYS = {"GH_TOKEN"}
+
+# Same source app.py's read_env() uses. Duplicated rather than imported: app.py
+# already imports this module, so importing app back here would be circular.
+ENV_PATH = os.environ.get("ENV_PATH", "/repo/.env")
 
 
 def mask(value):
@@ -80,6 +85,13 @@ def inspect(name):
         "cpu_limit": (nano / 1e9) if nano else None,
         "mem_limit_bytes": mem or None,
         "restart_policy": (host.get("RestartPolicy") or {}).get("Name", ""),
+        # Docker Engine 29.5.3 has a verified live regression (moby/moby#52775)
+        # that creates these containers with StopTimeout=1 regardless of the
+        # 60s this app always asks for, which kills GitHub deregistration
+        # mid-flight on `docker stop`/`restart`. Surfaced here, not just
+        # documented in start.sh, so an operator looking at one runner can
+        # actually catch it.
+        "stop_timeout": host.get("StopTimeout"),
         "privileged": bool(host.get("Privileged")),
         "network_mode": host.get("NetworkMode", ""),
         "ip": (c.get("NetworkSettings") or {}).get("IPAddress", ""),
@@ -168,28 +180,69 @@ def engine(name):
 
 DEFAULT_LOG_WINDOW = "5m"
 
+# Worst case without this: leave the tab open (or the browser backgrounded)
+# for an hour, come back, and the first poll issues `docker logs --since
+# <1h-ago>` into one `subprocess.run(capture_output=True)` with no line limit.
+# The dashboard container has no memory limit and shares a host with a
+# production stack. `--tail` bounds that regardless of how wide `--since` is.
+LOG_TAIL_CAP = 2000
+
+
+def _gh_token():
+    """Best-effort read of the configured GH_TOKEN, for log redaction below.
+
+    Never raises: an unreadable or absent .env just means there is nothing to
+    redact, not a failure worth surfacing on the logs endpoint.
+    """
+    try:
+        for line in open(ENV_PATH):
+            line = line.strip()
+            if line.startswith("GH_TOKEN="):
+                return line.partition("=")[2].strip()
+    except Exception:      # noqa: BLE001 - absence of a token is not an error
+        pass
+    return ""
+
 
 def logs(name, since=""):
     """Log lines newer than `since`, with the cursor to use for the next call.
 
-    Bounded by timestamp rather than `--tail N`: a verbose build can emit
-    thousands of lines between two polls, and a fixed tail would silently drop
-    everything above it.
+    Bounded by timestamp rather than a bare `--tail N`: a verbose build can
+    emit thousands of lines between two polls, and a fixed tail would silently
+    drop everything above it. `--tail` is still passed alongside `--since` as
+    a hard cap (see LOG_TAIL_CAP) - `--since` alone is unbounded in the worst
+    case, and silent truncation is exactly the failure mode a cap must avoid,
+    so a truncation is surfaced as a line in the response, not swallowed.
 
     `docker logs --since` is INCLUSIVE, so the line at the cursor comes back
     every time. Lines are filtered with a strict `>` and the caller sees each
     line exactly once. Unstamped lines (from multi-line output) inherit the
     timestamp of the stamped line above them, so they are also filtered by the
     same rule and delivered exactly once.
+
+    start.sh deliberately never echoes GH_TOKEN, so this proxies container
+    stdout that in practice never contains it - but that is a convention, not
+    a guarantee, and this is an HTTP response the token must never appear in.
+    Redacted here, structurally, rather than relying on that convention alone.
     """
     window = since or DEFAULT_LOG_WINDOW
     ok, out, err = docker_ops._docker(
-        "logs", "--timestamps", "--since", window, name, timeout=15)
+        "logs", "--timestamps", "--tail", str(LOG_TAIL_CAP), "--since", window,
+        name, timeout=15)
     if not ok:
         return _err(err or out)
 
+    token = _gh_token()
+    if token:
+        out = out.replace(token, mask(token))
+
+    raw_lines = out.splitlines()
+    # Docker never returns more than the requested --tail, so hitting the cap
+    # exactly is the signal that more may have been cut off.
+    truncated = len(raw_lines) >= LOG_TAIL_CAP
+
     lines, cursor, last = [], since, since
-    for raw in out.splitlines():
+    for raw in raw_lines:
         stamp, sep, text = raw.partition(" ")
         if not sep or "T" not in stamp:
             # No stamp of its own: it belongs to the entry above, so it
@@ -205,6 +258,13 @@ def logs(name, since=""):
         lines.append({"t": stamp, "text": text})
         if stamp > cursor:
             cursor = stamp
+
+    if truncated:
+        lines.insert(0, {
+            "t": "",
+            "text": f"... output truncated to the most recent "
+                    f"{LOG_TAIL_CAP} lines ...",
+        })
     return _ok({"lines": lines, "cursor": cursor})
 
 

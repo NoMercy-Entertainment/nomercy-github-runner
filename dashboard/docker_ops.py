@@ -128,15 +128,23 @@ def _stats_map():
 
 
 def _job_state(name):
-    """Derive busy/idle from the runner's log.
+    """Derive busy/idle/unknown from the runner's log.
 
     Takes the LAST job event of either kind. Grepping only for 'Running job'
     reports a finished job as still running whenever its completion line has
     scrolled out of the tail window.
+
+    A failed `docker logs` (including its own 10s timeout) returns "unknown",
+    not "idle". The two are not interchangeable: a runner mid-way through a
+    heavy build is exactly the one whose log read is most likely to time out,
+    so answering "idle" here would tell a destructive caller (prune) it is
+    safe to act precisely when it cannot tell. Callers that need a strict
+    safe/unsafe split (is_idle) already collapse "unknown" into "not idle";
+    callers that show state to an operator (collect) treat it explicitly.
     """
     ok, out, _ = _docker("logs", "--tail", "200", name, timeout=10)
     if not ok:
-        return "idle", ""
+        return "unknown", ""
     last = ""
     for line in out.splitlines():
         if "Running job:" in line or re.search(r"Job .* completed", line):
@@ -221,7 +229,18 @@ def collect():
             continue
 
         job_state, job = _job_state(name)
-        state = "draining" if name in draining else job_state
+        if name in draining:
+            state = "draining"
+        elif job_state == "unknown":
+            # A failed log read correlates with a runner grinding through a
+            # heavy build (see _job_state), so "busy" is the safer guess for
+            # the grid than a bare "unknown" the CSS has no styling for -
+            # and it is more accurate than the old behaviour of silently
+            # showing "idle" here.
+            state = "busy"
+            job = job or "state unknown - could not read logs"
+        else:
+            state = job_state
         cpu_s, mem_s = stats.get(name, ("0%", "0B / 0B"))
         try:
             cpu = float(cpu_s.replace("%", ""))
@@ -327,6 +346,11 @@ def create(index, env):
 
 
 def is_idle(name):
+    """True only for a definite "idle". "busy" and "unknown" both answer
+    False - this gates both the drain watcher (worst case: an early stop,
+    which just restarts) and cache prune (worst case: deleting layers a
+    running job needs), and the two callers cannot be told apart from here.
+    """
     state, _ = _job_state(name)
     return state == "idle"
 

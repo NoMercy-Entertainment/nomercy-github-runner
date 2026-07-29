@@ -53,6 +53,44 @@ def test_inner_df_survives_scalar_json_lines(monkeypatch):
     assert images == "5GB"
 
 
+def test_job_state_is_unknown_when_docker_logs_fails(monkeypatch):
+    """A failed `docker logs` - including its own 10s timeout - must not be
+    read as "idle". Idle is what gates cache deletion; a runner grinding
+    through a heavy build is exactly the one whose log read times out."""
+    monkeypatch.setattr(docker_ops, "_docker",
+                        lambda *a, **k: (False, "", "timed out after 10s"))
+    state, job = docker_ops._job_state("github-runner-1")
+    assert state == "unknown"
+    assert job == ""
+
+
+def test_is_idle_is_false_when_job_state_is_unknown(monkeypatch):
+    monkeypatch.setattr(docker_ops, "_docker",
+                        lambda *a, **k: (False, "", "timed out after 10s"))
+    assert docker_ops.is_idle("github-runner-1") is False
+
+
+def test_prune_refuses_when_docker_logs_fails_and_issues_no_prune_command(monkeypatch):
+    """is_idle() cannot tell "unknown" from "busy" here, and prune() must
+    treat that as busy - refuse, and never touch docker at all."""
+    calls = []
+
+    def fake(*args, **kwargs):
+        joined = " ".join(args)
+        if "logs" in joined:
+            return (False, "", "timed out after 10s")
+        calls.append(joined)   # a real prune (or df) call - must never happen
+        return (True, "", "")
+
+    monkeypatch.setattr(docker_ops, "_docker", fake)
+    r = docker_ops.prune("github-runner-1")
+    assert r["ok"] is False
+    assert r["measured"] is False
+    assert r["freed_bytes"] is None
+    assert "busy" in r["error"].lower()
+    assert calls == [], "prune must not issue any docker command when state is unknown"
+
+
 def _df(cache, images):
     return (
         '{"Active":"0","Reclaimable":"0B","Size":"%s","TotalCount":"1","Type":"Images"}\n'
@@ -91,12 +129,17 @@ def test_prune_reports_what_it_freed(monkeypatch):
 
 
 def test_prune_reports_failure_without_raising(monkeypatch):
+    """Isolates the scenario from is_idle: the runner was confirmed idle
+    already, and it is the prune commands themselves that fail against a
+    broken daemon. A logs-read failure is a different case, covered by
+    test_prune_refuses_when_docker_logs_fails_and_issues_no_prune_command."""
     def fake(*args, **kwargs):
         joined = " ".join(args)
         if "system" in joined and "df" in joined:
             return (True, _df("1GB", "1GB"), "")
         return (False, "", "cannot connect to the docker daemon")
 
+    monkeypatch.setattr(docker_ops, "is_idle", lambda n: True)
     monkeypatch.setattr(docker_ops, "_docker", fake)
     r = docker_ops.prune("github-runner-1")
     assert r["ok"] is False

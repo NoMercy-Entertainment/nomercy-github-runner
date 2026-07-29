@@ -88,6 +88,34 @@ def test_inspect_reports_unlimited_as_none(monkeypatch):
     assert d["mem_limit_bytes"] is None
 
 
+def test_inspect_reports_stop_timeout(monkeypatch):
+    payload = json.loads(FAKE_INSPECT)
+    payload[0]["HostConfig"]["StopTimeout"] = 60
+    monkeypatch.setattr(docker_ops, "_docker",
+                        _fake_docker((True, json.dumps(payload), "")))
+    d = runner_detail.inspect("github-runner-1")["data"]
+    assert d["stop_timeout"] == 60
+
+
+def test_inspect_reports_stop_timeout_when_absent(monkeypatch):
+    monkeypatch.setattr(docker_ops, "_docker",
+                        _fake_docker((True, FAKE_INSPECT, "")))
+    d = runner_detail.inspect("github-runner-1")["data"]
+    assert d["stop_timeout"] is None
+
+
+def test_inspect_surfaces_the_stoptimeout_one_regression(monkeypatch):
+    """StopTimeout=1 is the verified moby/moby#52775 regression, not a normal
+    value - the collector must pass it through untouched so the page can flag
+    it, rather than rounding or dropping it."""
+    payload = json.loads(FAKE_INSPECT)
+    payload[0]["HostConfig"]["StopTimeout"] = 1
+    monkeypatch.setattr(docker_ops, "_docker",
+                        _fake_docker((True, json.dumps(payload), "")))
+    d = runner_detail.inspect("github-runner-1")["data"]
+    assert d["stop_timeout"] == 1
+
+
 def test_inspect_returns_error_not_exception(monkeypatch):
     monkeypatch.setattr(docker_ops, "_docker",
                         _fake_docker((False, "", "No such object")))
@@ -211,6 +239,67 @@ def test_logs_tolerates_lines_without_a_timestamp(monkeypatch):
     d = runner_detail.logs("github-runner-1")["data"]
     assert d["lines"][0]["text"] == "no timestamp here"
     assert d["lines"][0]["t"] == ""
+
+
+def test_logs_passes_a_tail_cap_alongside_since(monkeypatch):
+    """`--since` alone is unbounded in the worst case (an hour-old cursor on a
+    verbose runner, into one uncapped subprocess.run) - `--tail` must always
+    ride along as a hard ceiling."""
+    seen = {}
+
+    def fake(*args, **kwargs):
+        seen["args"] = args
+        return (True, "", "")
+
+    monkeypatch.setattr(docker_ops, "_docker", fake)
+    runner_detail.logs("github-runner-1")
+    args = seen["args"]
+    assert "--tail" in args
+    assert args[args.index("--tail") + 1] == str(runner_detail.LOG_TAIL_CAP)
+
+
+def test_logs_surfaces_truncation_when_the_cap_is_hit(monkeypatch):
+    """Silent truncation is the failure mode the cap must avoid - hitting it
+    has to show up as a visible line, not just fewer lines than expected."""
+    cap = runner_detail.LOG_TAIL_CAP
+    batch = "\n".join(
+        f"2026-07-28T10:00:00.{i:09d}Z line {i}" for i in range(cap)
+    ) + "\n"
+    monkeypatch.setattr(docker_ops, "_docker", _fake_docker((True, batch, "")))
+    d = runner_detail.logs("github-runner-1")["data"]
+    assert "truncat" in d["lines"][0]["text"].lower()
+
+
+def test_logs_does_not_flag_truncation_under_the_cap(monkeypatch):
+    monkeypatch.setattr(docker_ops, "_docker",
+                        _fake_docker((True, LOG_BATCH_1, "")))
+    d = runner_detail.logs("github-runner-1")["data"]
+    assert not any("truncat" in ln["text"].lower() for ln in d["lines"])
+
+
+def test_logs_redacts_the_configured_gh_token(monkeypatch, tmp_path):
+    """logs() proxies container stdout, and start.sh is only convention away
+    from ever echoing the token - this must hold even if that convention
+    breaks (a stray `set -x`, for instance)."""
+    token = "ghp_abcdefghijklmnopqrstuvwxyz1234"
+    env_file = tmp_path / ".env"
+    env_file.write_text(f"GH_TOKEN={token}\nGITHUB_ORG=NoMercy-Entertainment\n")
+    monkeypatch.setattr(runner_detail, "ENV_PATH", str(env_file))
+    line = f"2026-07-28T10:00:01.000000000Z using token {token} to deregister\n"
+    monkeypatch.setattr(docker_ops, "_docker", _fake_docker((True, line, "")))
+    d = runner_detail.logs("github-runner-1")["data"]
+    assert token not in d["lines"][0]["text"]
+    assert token not in json.dumps(d)
+
+
+def test_logs_do_nothing_when_no_token_is_configured(monkeypatch, tmp_path):
+    env_file = tmp_path / ".env"
+    env_file.write_text("GITHUB_ORG=NoMercy-Entertainment\n")
+    monkeypatch.setattr(runner_detail, "ENV_PATH", str(env_file))
+    monkeypatch.setattr(docker_ops, "_docker",
+                        _fake_docker((True, LOG_BATCH_1, "")))
+    d = runner_detail.logs("github-runner-1")["data"]
+    assert d["lines"][0]["text"] == "Runner listening for jobs"
 
 
 def test_logs_returns_error_not_exception(monkeypatch):

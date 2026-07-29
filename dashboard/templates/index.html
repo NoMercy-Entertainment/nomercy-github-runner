@@ -158,12 +158,20 @@ async function pruneOne(name, btn) {
       toast(name + ': busy running a job, not touched');
       return;
     }
+    const data = d.data || {};
     if (!res.ok || d.ok === false) {
-      const err = (d.data && d.data.error) || d.error || ('HTTP ' + res.status);
-      toast(name + ': clear cache failed - ' + err, true);
+      // One prune (buildx/image) can fail while the other succeeded - that
+      // still reclaimed real space, and discarding freed_bytes here just
+      // because ok is false would hide a correct result behind a pure error.
+      const err = data.error || d.error || ('HTTP ' + res.status);
+      let msg = name + ': clear cache failed - ' + err;
+      if (data.freed_bytes != null) {
+        msg += ' (still reclaimed ' + fmtGB(data.freed_bytes) + ')';
+      }
+      toast(msg, true);
+      if (data.freed_bytes) tick();   // partial reclaim changed the figures
       return;
     }
-    const data = d.data || {};
     let msg;
     if (data.freed_bytes == null) {
       msg = name + ': reclaimed, amount unknown';
@@ -182,7 +190,7 @@ async function pruneOne(name, btn) {
 }
 
 async function pruneAll(btn) {
-  if (!confirm('Clear build cache and unused images on every idle runner? Busy runners are skipped and left alone.')) return;
+  if (!confirm('Clear build cache and unused images on every idle runner? Busy runners are skipped and left alone. Each runner gets up to 2 minutes; one that needs longer reports an error and can be retried individually.')) return;
   btn.disabled = true;
   const label = btn.textContent;
   btn.textContent = 'Clearing all...';
