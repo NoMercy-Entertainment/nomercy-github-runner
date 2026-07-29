@@ -523,6 +523,34 @@ def api_runner_history(name):
     return jsonify(ok=True, data=history.list_runs(runner=name, limit=100))
 
 
+@app.route("/api/runner/<name>/prune", methods=["POST"])
+def api_runner_prune(name):
+    name, err = _detail_target(name)
+    if err:
+        return err
+    # Refuse rather than race: clearing the cache under a running job discards
+    # exactly the layers it is about to reuse.
+    if not ops.is_idle(name):
+        return jsonify(ok=False, error=f"{name} is busy running a job"), 409
+    result = ops.prune(name)
+    return jsonify(ok=result["ok"], data=result), (200 if result["ok"] else 500)
+
+
+@app.route("/api/prune-all", methods=["POST"])
+def api_prune_all():
+    """Sweep every idle runner. Busy ones are skipped, never interrupted."""
+    results, skipped = [], []
+    for name in ops.list_runner_names():
+        if not ops.is_idle(name):
+            skipped.append({"name": name, "reason": "busy running a job"})
+            continue
+        results.append(ops.prune(name))
+    freed = sum(r["freed_bytes"] for r in results)
+    ok = all(r["ok"] for r in results) if results else True
+    return jsonify(ok=ok, data={"results": results, "skipped": skipped,
+                                "freed_bytes": freed})
+
+
 def _target():
     name = (request.json or {}).get("name", "")
     if not re.fullmatch(r"github-runner-\d+", name or ""):

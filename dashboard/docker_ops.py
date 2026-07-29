@@ -336,6 +336,41 @@ _UNITS = {"B": 1, "KB": 10**3, "MB": 10**6, "GB": 10**9, "TB": 10**12,
           "KIB": 1024, "MIB": 1024**2, "GIB": 1024**3, "TIB": 1024**4}
 
 
+def prune(name, timeout=300):
+    """Reclaim build cache and unused images inside one runner.
+
+    Measures `docker system df` either side so the caller can report a real
+    number rather than "done". Both prunes are attempted even if the first
+    fails - they are independent, and reclaiming one of the two is better than
+    neither.
+
+    Generous timeout: discarding tens of gigabytes of build cache is not fast,
+    and a premature kill leaves the daemon mid-sweep.
+    """
+    b_cache, b_images = _inner_df(name)
+
+    ok1, _, err1 = _docker("exec", name, "docker", "buildx", "prune", "-af",
+                           timeout=timeout)
+    ok2, _, err2 = _docker("exec", name, "docker", "image", "prune", "-af",
+                           timeout=timeout)
+
+    a_cache, a_images = _inner_df(name)
+
+    freed = ((parse_size(b_cache) + parse_size(b_images))
+             - (parse_size(a_cache) + parse_size(a_images)))
+
+    return {
+        "name": name,
+        "ok": ok1 and ok2,
+        "error": (err1 or err2) or None,
+        "before": {"build_cache": b_cache, "images": b_images},
+        "after": {"build_cache": a_cache, "images": a_images},
+        # A build running elsewhere on the same daemon can grow the cache while
+        # we prune, which would otherwise report a negative "freed".
+        "freed_bytes": max(0, freed),
+    }
+
+
 def parse_size(s):
     """'1.41GiB' -> bytes. Returns 0 on anything unparseable."""
     if not s:

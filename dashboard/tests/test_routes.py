@@ -167,3 +167,72 @@ def test_page_renders_for_a_known_runner(client, monkeypatch):
     r = client.get("/runner/github-runner-1")
     assert r.status_code == 200
     assert b"github-runner-1" in r.data
+
+
+def test_prune_requires_post(client, monkeypatch):
+    monkeypatch.setattr(docker_ops, "list_runner_names", lambda: ["github-runner-1"])
+    assert client.get("/api/runner/github-runner-1/prune").status_code == 405
+
+
+def test_prune_rejects_a_bad_name_before_any_docker_call(client, monkeypatch):
+    def explode(*a, **k):
+        raise AssertionError("docker must not be called for an invalid name")
+    monkeypatch.setattr(docker_ops, "_docker", explode)
+    r = client.post("/api/runner/nope/prune")
+    assert r.status_code == 400
+    assert r.get_json()["ok"] is False
+
+
+def test_prune_skips_a_busy_runner(client, monkeypatch):
+    monkeypatch.setattr(docker_ops, "list_runner_names", lambda: ["github-runner-1"])
+    monkeypatch.setattr(docker_ops, "is_idle", lambda n: False)
+    called = []
+    monkeypatch.setattr(docker_ops, "prune", lambda n, **k: called.append(n))
+    r = client.post("/api/runner/github-runner-1/prune")
+    assert r.status_code == 409
+    assert r.get_json()["ok"] is False
+    assert "busy" in r.get_json()["error"].lower()
+    assert called == [], "a busy runner must not be pruned"
+
+
+def test_prune_runs_on_an_idle_runner(client, monkeypatch):
+    monkeypatch.setattr(docker_ops, "list_runner_names", lambda: ["github-runner-1"])
+    monkeypatch.setattr(docker_ops, "is_idle", lambda n: True)
+    monkeypatch.setattr(docker_ops, "prune",
+                        lambda n, **k: {"name": n, "ok": True, "error": None,
+                                        "before": {}, "after": {}, "freed_bytes": 5})
+    r = client.post("/api/runner/github-runner-1/prune")
+    assert r.status_code == 200
+    assert r.get_json()["data"]["freed_bytes"] == 5
+
+
+def test_prune_all_skips_busy_and_totals_the_rest(client, monkeypatch):
+    monkeypatch.setattr(docker_ops, "list_runner_names",
+                        lambda: ["github-runner-1", "github-runner-2", "github-runner-3"])
+    monkeypatch.setattr(docker_ops, "is_idle", lambda n: n != "github-runner-2")
+    monkeypatch.setattr(docker_ops, "prune",
+                        lambda n, **k: {"name": n, "ok": True, "error": None,
+                                        "before": {}, "after": {}, "freed_bytes": 10})
+    body = client.post("/api/prune-all").get_json()
+    assert body["ok"] is True
+    assert [s["name"] for s in body["data"]["skipped"]] == ["github-runner-2"]
+    assert len(body["data"]["results"]) == 2
+    assert body["data"]["freed_bytes"] == 20
+
+
+def test_prune_all_still_reports_when_one_runner_fails(client, monkeypatch):
+    monkeypatch.setattr(docker_ops, "list_runner_names",
+                        lambda: ["github-runner-1", "github-runner-2"])
+    monkeypatch.setattr(docker_ops, "is_idle", lambda n: True)
+
+    def one_fails(n, **k):
+        ok = n == "github-runner-1"
+        return {"name": n, "ok": ok, "error": None if ok else "boom",
+                "before": {}, "after": {}, "freed_bytes": 10 if ok else 0}
+
+    monkeypatch.setattr(docker_ops, "prune", one_fails)
+    body = client.post("/api/prune-all").get_json()
+    # One failure must not hide the other runner's result or abort the sweep.
+    assert len(body["data"]["results"]) == 2
+    assert body["data"]["freed_bytes"] == 10
+    assert body["ok"] is False

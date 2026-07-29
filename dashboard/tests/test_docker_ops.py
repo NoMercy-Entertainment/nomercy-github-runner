@@ -51,3 +51,63 @@ def test_inner_df_survives_scalar_json_lines(monkeypatch):
     cache, images = docker_ops._inner_df("github-runner-1")
     assert cache == "10GB"  # scalar lines are skipped, real objects are parsed
     assert images == "5GB"
+
+
+def _df(cache, images):
+    return (
+        '{"Active":"0","Reclaimable":"0B","Size":"%s","TotalCount":"1","Type":"Images"}\n'
+        '{"Active":"0","Reclaimable":"0B","Size":"%s","TotalCount":"1","Type":"Build Cache"}\n'
+        % (images, cache)
+    )
+
+
+def test_prune_reports_what_it_freed(monkeypatch):
+    """df is measured before and after, so the caller can show a real number."""
+    calls, dfs = [], [_df("36.24GB", "24.8GB"), _df("0B", "1.2GB")]
+
+    def fake(*args, **kwargs):
+        joined = " ".join(args)
+        if "system" in joined and "df" in joined:
+            return (True, dfs[min(len(calls), 1)], "")
+        calls.append(joined)
+        return (True, "Total reclaimed space: 35GB", "")
+
+    monkeypatch.setattr(docker_ops, "_docker", fake)
+    r = docker_ops.prune("github-runner-1")
+    assert r["ok"] is True
+    assert r["name"] == "github-runner-1"
+    assert r["before"]["build_cache"] == "36.24GB"
+    assert r["after"]["build_cache"] == "0B"
+    assert r["freed_bytes"] > 0
+    # both prunes must actually have been issued
+    assert any("buildx prune" in c for c in calls)
+    assert any("image prune" in c for c in calls)
+
+
+def test_prune_reports_failure_without_raising(monkeypatch):
+    def fake(*args, **kwargs):
+        joined = " ".join(args)
+        if "system" in joined and "df" in joined:
+            return (True, _df("1GB", "1GB"), "")
+        return (False, "", "cannot connect to the docker daemon")
+
+    monkeypatch.setattr(docker_ops, "_docker", fake)
+    r = docker_ops.prune("github-runner-1")
+    assert r["ok"] is False
+    assert "cannot connect" in r["error"]
+
+
+def test_prune_freed_bytes_never_negative(monkeypatch):
+    """A concurrent build can grow the cache mid-prune. Report 0, not a negative."""
+    dfs = [_df("1GB", "1GB"), _df("5GB", "5GB")]
+    seen = []
+
+    def fake(*args, **kwargs):
+        joined = " ".join(args)
+        if "system" in joined and "df" in joined:
+            seen.append(1)
+            return (True, dfs[min(len(seen) - 1, 1)], "")
+        return (True, "", "")
+
+    monkeypatch.setattr(docker_ops, "_docker", fake)
+    assert docker_ops.prune("github-runner-1")["freed_bytes"] == 0
