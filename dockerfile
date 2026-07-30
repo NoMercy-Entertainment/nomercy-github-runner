@@ -6,7 +6,7 @@
 # =============================================================================
 
 ARG UBUNTU_MIRROR=mirror.nl.leaseweb.net
-ARG RUNNER_VERSION=2.335.1
+ARG RUNNER_VERSION=2.336.0
 ARG GO_VERSION=1.24.13
 ARG CMAKE_VERSION=3.31.6
 ARG GRADLE_VERSION=8.14
