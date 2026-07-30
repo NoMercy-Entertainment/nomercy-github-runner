@@ -94,10 +94,22 @@ Useful flags when scripting it (`--non-interactive`):
 | `-MinFree N` / `-SkipSpaceCheck` (Windows) | The same two escape hatches as the shell installer |
 | `-RunnerGroup ""` (Windows) | The org default, stated deliberately, same as `--group ""` |
 
-One PowerShell trap when scripting it: `powershell.exe -File script.ps1 -RunnerGroup ''`
-drops the empty argument during native argument parsing, so the parameter binds
-to whatever follows it, or errors as missing. Use `-Command` with a splat, which
-PowerShell parses itself:
+One trap when scripting it, and it depends on the shell you call from rather than
+on `-File`. Only `cmd.exe` mishandles `''`, where quoting is not a thing it does:
+the child receives two literal apostrophes, so `-RunnerGroup ''` asks for a group
+whose name really is `''` instead of the org default. From `cmd.exe` use `""`.
+From PowerShell or bash, `''` and `""` both arrive genuinely empty and bind:
+
+| Called from | Form | Parameter receives |
+|---|---|---|
+| PowerShell 5.1 / pwsh 7 | `-RunnerGroup ''` | empty, bound |
+| bash / WSL | `-RunnerGroup ''` | empty, bound |
+| `cmd.exe` | `-RunnerGroup ""` | empty, bound |
+| `cmd.exe` | `-RunnerGroup ''` | `''` — two characters, not empty |
+
+The argument is never dropped and never shifts onto the next parameter in any of
+them. A splat sidesteps the `cmd.exe` case entirely if you would rather not think
+about the calling shell:
 
 ```powershell
 $p = @{ Org = 'YourOrg'; Token = $pat; RunnerGroup = ''; NonInteractive = $true }
