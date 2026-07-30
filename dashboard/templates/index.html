@@ -295,6 +295,11 @@ function render(d) {
   if (rs.length && skel) skel.remove();
   if (!rs.length && !skel) grid.innerHTML = '<div class="skel">No runners</div>';
 
+  const host = d.host || {ncpu: 0, mem_total_bytes: 0};
+  const ncpu = Number(host.ncpu) || 0;
+  // Fallback only used when `docker info` failed (ncpu === 0): scale each
+  // bar against the busiest runner in the fleet rather than divide by zero
+  // or claim "of 0 cores".
   const cpuScale = Math.max(100, ...rs.map(x => Number(x.cpu_percent) || 0));
   rs.forEach((r, i) => {
     let card = cards.get(r.name);
@@ -327,10 +332,19 @@ function render(d) {
     const mu = toBytes(r.mem_used), ml = toBytes(r.mem_limit);
     const cache = toBytes(r.build_cache);
     // docker stats is per-core: 400% means four cores busy, not an error.
-    // Scale the bar against the busiest runner so the fleet is comparable.
-    setMeter(card, 'cpu', cpu.toFixed(0) + '%', (cpu / cpuScale) * 100);
-    setMeter(card, 'mem', (r.mem_used || '0B') + ' / ' + (r.mem_limit || '?'),
-             ml > 0 ? (mu / ml) * 100 : 0);
+    // Scaled against the host's real core count so the bar reflects actual
+    // machine load - 1.3/56 cores draws nearly empty, not nearly full. Only
+    // when ncpu is unknown (docker info failed) do we fall back to scaling
+    // against the busiest runner in the fleet.
+    const cpuText = ncpu > 0
+      ? cpu.toFixed(1) + '%  ·  ' + (cpu / 100).toFixed(1) + ' / ' + ncpu + ' cores'
+      : cpu.toFixed(0) + '%';
+    const cpuPct = ncpu > 0 ? (cpu / ncpu) : (cpu / cpuScale) * 100;
+    setMeter(card, 'cpu', cpuText, cpuPct);
+    const memPct = ml > 0 ? (mu / ml) * 100 : 0;
+    const memText = (r.mem_used || '0B') + ' / ' + (r.mem_limit || '?') +
+      (ml > 0 ? '  ·  ' + memPct.toFixed(1) + '%' : '');
+    setMeter(card, 'mem', memText, memPct);
     setMeter(card, 'cache', fmtGB(cache) + ' / ' + CACHE_CAP_GB + ' GB',
              (cache / (CACHE_CAP_GB * 1e9)) * 100);
 

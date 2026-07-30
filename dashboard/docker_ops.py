@@ -208,6 +208,37 @@ def _inner_df(name):
             rows.get("Images", {}).get("Size", "0B"))
 
 
+_host_info_cache = None
+
+
+def host_info():
+    """Core count and total RAM of the engine hosting the runners.
+
+    Cached for the process lifetime: this shells out, and a host does not gain
+    cores while the dashboard runs.
+
+    Needed because `docker stats` reports CPU as a percentage of ONE core, so
+    "70%" on a 56-core box means 1.3 cores, not "nearly full". Without the
+    denominator the number is actively misleading.
+    """
+    global _host_info_cache
+    if _host_info_cache is not None:
+        return _host_info_cache
+    ok, out, _ = _docker("info", "--format", "{{.NCPU}} {{.MemTotal}}",
+                         timeout=15)
+    info = {"ncpu": 0, "mem_total_bytes": 0}
+    if ok and out:
+        parts = out.split()
+        if len(parts) >= 2:
+            try:
+                info = {"ncpu": int(parts[0]),
+                        "mem_total_bytes": int(parts[1])}
+            except ValueError:
+                pass
+    _host_info_cache = info
+    return info
+
+
 def collect():
     stats = _stats_map()
     draining = set(load_state().get("draining", []))
@@ -265,6 +296,7 @@ def collect():
     return {
         "generated": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "disk": _disk(),
+        "host": host_info(),
         "runners": runners,
     }
 

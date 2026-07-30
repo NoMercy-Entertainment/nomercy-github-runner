@@ -122,6 +122,17 @@ tbody tr[data-id]:hover{background:var(--bg-inset)}
     <h2>Live telemetry</h2>
     <div class="skel" id="rd-spark-skel">Awaiting telemetry</div>
   </div>
+  <div class="panel" id="rd-capacity-panel">
+    <h2>Capacity</h2>
+    <div class="kv">
+      <div><span class="k">Host</span><span class="v" id="cap-host">&mdash;</span></div>
+      <div><span class="k">CPU allowance</span><span class="v" id="cap-cpu-allowance">&mdash;</span></div>
+      <div><span class="k">Memory allowance</span><span class="v" id="cap-mem-allowance">&mdash;</span></div>
+      <div><span class="k">Current CPU</span><span class="v" id="cap-cpu-current">&mdash;</span></div>
+      <div><span class="k">Current memory</span><span class="v" id="cap-mem-current">&mdash;</span></div>
+      <div><span class="k">Build cache</span><span class="v" id="cap-cache">&mdash;</span></div>
+    </div>
+  </div>
   <div class="panel" id="rd-inspect-panel">
     <h2>Container</h2>
     <div class="skel" id="rd-inspect-skel">Loading container details</div>
@@ -264,6 +275,17 @@ let historyFetched = false;
 let currentReg = null;   // registration name from /api/status, used to match the GitHub panel
 let currentTab = 'overview';
 
+// Host capacity, plus the three sources the capacity block draws on. Each
+// arrives on its own schedule (status every 5s, inspect every 10s while the
+// overview tab is open, engine df once on first open of that tab) - kept at
+// module scope so renderCapacity() can be called from any of them and always
+// render whatever is currently known, rather than only when all three happen
+// to have landed together.
+let hostInfo = {ncpu: 0, mem_total_bytes: 0};
+let lastStatusRunner = null;
+let lastInspectData = null;
+let lastEngineDf = null;
+
 function goMissing() {
   clearInterval(statusTimer); clearInterval(seriesTimer); clearInterval(inspectTimer); clearInterval(logsTimer);
   statusTimer = seriesTimer = inspectTimer = logsTimer = null;
@@ -390,12 +412,60 @@ function setNotReporting(on) {
   if (note.hidden === on) note.hidden = !on;
 }
 
+// -- overview: capacity block, patched from whichever source last updated --
+function setCap(id, text) {
+  const el = $(id);
+  if (el.textContent !== text) el.textContent = text;
+}
+
+function renderCapacity() {
+  const ncpu = hostInfo.ncpu || 0;
+  const memTotal = hostInfo.mem_total_bytes || 0;
+
+  // ncpu === 0 means the docker info call failed - "—" rather than a
+  // fabricated "of 0 cores".
+  setCap('cap-host', ncpu > 0 ? `${ncpu} cores · ${fmtGB(memTotal)} RAM` : '—');
+
+  if (lastInspectData) {
+    const cpuLimit = lastInspectData.cpu_limit;
+    setCap('cap-cpu-allowance', cpuLimit == null
+      ? (ncpu > 0 ? `unlimited (all ${ncpu} cores)` : 'unlimited')
+      : `${Number.isInteger(cpuLimit) ? cpuLimit : cpuLimit.toFixed(2)} cores` +
+        (ncpu > 0 ? ` of ${ncpu}` : ''));
+
+    const memLimit = lastInspectData.mem_limit_bytes;
+    setCap('cap-mem-allowance', memLimit == null
+      ? (memTotal > 0 ? `unlimited (all ${fmtGB(memTotal)})` : 'unlimited')
+      : fmtGB(memLimit));
+  }
+
+  if (lastStatusRunner) {
+    const r = lastStatusRunner;
+    const cpu = Math.max(0, Number(r.cpu_percent) || 0);
+    setCap('cap-cpu-current', ncpu > 0
+      ? `${cpu.toFixed(1)}% · ${(cpu / 100).toFixed(1)} of ${ncpu} cores`
+      : `${cpu.toFixed(1)}%`);
+
+    const mu = toBytes(r.mem_used), ml = toBytes(r.mem_limit);
+    setCap('cap-mem-current', ml > 0
+      ? `${fmtGB(mu)} · ${((mu / ml) * 100).toFixed(1)}% of ${fmtGB(ml)}`
+      : (r.mem_used || '0B'));
+
+    // Prefer the engine tab's df (reclaimable + entry count) once it has been
+    // loaded; otherwise fall back to the figure the fleet card already has.
+    setCap('cap-cache', lastEngineDf && lastEngineDf.size
+      ? `${lastEngineDf.size} / ${CACHE_CAP_GB} GB · ${lastEngineDf.reclaimable} reclaimable · ${lastEngineDf.count} item(s)`
+      : `${r.build_cache || '0B'} / ${CACHE_CAP_GB} GB`);
+  }
+}
+
 async function pollStatus() {
   try {
     const res = await fetch('/api/status?t=' + Date.now(), {cache: 'no-store'});
     if (res.status === 401) { location.href = '/login'; return; }
     if (!res.ok) throw new Error('HTTP ' + res.status);
     const body = await res.json();
+    hostInfo = body.host || hostInfo;
     const r = (body.runners || []).find(x => x.name === NAME);
     if (!r) {
       // Absence from /api/status is not proof the runner is gone - a
@@ -407,11 +477,14 @@ async function pollStatus() {
       setNotReporting(true);
       lastGood = Date.now();
       setStale(false);
+      renderCapacity();
       return;
     }
     setNotReporting(false);
     renderHeader(r);
     renderActions(r);
+    lastStatusRunner = r;
+    renderCapacity();
     lastGood = Date.now();
     setStale(false);
   } catch (e) {
@@ -442,18 +515,22 @@ function buildSparklines() {
 
 // docker stats is per-core, so cpu can run past 100 - scale each sparkline
 // to its own observed peak rather than a fixed ceiling, or busy runners
-// would just draw a flat clipped line.
-function setSpark(key, samples, valText) {
+// would just draw a flat clipped line. The CPU row is the exception: when
+// the host's core count is known, it scales against ncpu*100 (the real
+// ceiling for this machine) for the same reason the fleet card's bar does -
+// otherwise a runner busy on a couple of cores out of 56 draws a
+// misleadingly "full" line.
+function setSpark(key, samples, valText, maxOverride) {
   const row = document.querySelector(`#rd-spark-panel [data-s="${key}"]`);
   const v = row.querySelector('[data-v]');
   if (v.textContent !== valText) v.textContent = valText;
 
   const vals = samples.map(s => Number(s[key]) || 0);
-  const top = Math.max(...vals, 1);
+  const top = maxOverride || Math.max(...vals, 1);
   const W = 800, H = 84, pad = 3;
   const pts = vals.length < 2 ? '' : vals.map((val, i) => {
     const x = pad + (i / (vals.length - 1)) * (W - pad * 2);
-    const y = H - pad - (val / top) * (H - pad * 2);
+    const y = H - pad - Math.min(1, val / top) * (H - pad * 2);
     return `${x.toFixed(1)},${y.toFixed(1)}`;
   }).join(' ');
   const poly = row.querySelector('polyline');
@@ -470,7 +547,9 @@ async function pollSeries() {
     const samples = body.data || [];
     if (!sparkBuilt) buildSparklines();
     const last = samples[samples.length - 1] || {};
-    setSpark('cpu', samples, Math.max(0, Number(last.cpu) || 0).toFixed(0) + '%');
+    const ncpu = hostInfo.ncpu || 0;
+    setSpark('cpu', samples, Math.max(0, Number(last.cpu) || 0).toFixed(0) + '%',
+              ncpu > 0 ? ncpu * 100 : undefined);
     setSpark('mem', samples, fmtGB(Number(last.mem) || 0));
     setSpark('cache', samples, fmtGB(Number(last.cache) || 0));
   } catch (e) {
@@ -621,6 +700,7 @@ function renderEnv(env) {
 }
 
 function renderInspect(d) {
+  lastInspectData = d;
   if (!inspectBuilt) buildInspectPanel();
   FIELDS.forEach(([key, , fmt]) => {
     const el = document.querySelector(`#rd-inspect-panel [data-f="${key}"]`);
@@ -641,6 +721,7 @@ function renderInspect(d) {
   }
   renderMounts(d.mounts || []);
   renderEnv(d.env || {});
+  renderCapacity();
 }
 
 async function pollInspect() {
@@ -698,6 +779,8 @@ function renderDf(df) {
     kv.innerHTML = `<div><span class="k">Disk usage</span>` +
       `<span class="v" style="color:var(--alert)">${esc(df.error)}</span></div>`;
     $('eng-cache-meter').hidden = true;
+    lastEngineDf = null;
+    renderCapacity();
     return;
   }
   $('eng-cache-meter').hidden = false;
@@ -720,6 +803,11 @@ function renderDf(df) {
     $('eng-cache-fill').style.width = '0%';
     $('eng-cache-fill').className = 'fill';
   }
+  // The engine tab's own df is a richer source (reclaimable + entry count)
+  // than the fleet card's bare size - prefer it in the capacity block once
+  // it has actually been loaded.
+  lastEngineDf = bc || null;
+  renderCapacity();
 }
 
 // A section is either an array of docker JSON objects, or {"error": "..."}.

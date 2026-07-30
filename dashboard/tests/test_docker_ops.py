@@ -246,3 +246,40 @@ def test_prune_aborts_if_runner_becomes_busy_just_before_pruning(monkeypatch):
     assert "busy" in r["error"].lower()
     assert r["measured"] is False
     assert r["freed_bytes"] is None
+
+
+def test_host_info_parses_cores_and_memory(monkeypatch):
+    docker_ops._host_info_cache = None
+    monkeypatch.setattr(docker_ops, "_docker",
+                        lambda *a, **k: (True, "56 134995177472", ""))
+    h = docker_ops.host_info()
+    assert h["ncpu"] == 56
+    assert h["mem_total_bytes"] == 134995177472
+
+
+def test_host_info_is_cached(monkeypatch):
+    docker_ops._host_info_cache = None
+    calls = []
+
+    def fake(*a, **k):
+        calls.append(1)
+        return (True, "56 134995177472", "")
+
+    monkeypatch.setattr(docker_ops, "_docker", fake)
+    docker_ops.host_info()
+    docker_ops.host_info()
+    assert len(calls) == 1, "host_info must not shell out on every call"
+
+
+def test_host_info_returns_zeros_on_failure(monkeypatch):
+    docker_ops._host_info_cache = None
+    monkeypatch.setattr(docker_ops, "_docker",
+                        lambda *a, **k: (False, "", "cannot connect"))
+    assert docker_ops.host_info() == {"ncpu": 0, "mem_total_bytes": 0}
+
+
+def test_host_info_survives_garbage(monkeypatch):
+    docker_ops._host_info_cache = None
+    monkeypatch.setattr(docker_ops, "_docker",
+                        lambda *a, **k: (True, "not numbers at all", ""))
+    assert docker_ops.host_info() == {"ncpu": 0, "mem_total_bytes": 0}
