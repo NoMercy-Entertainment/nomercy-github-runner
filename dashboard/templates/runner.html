@@ -548,10 +548,29 @@ async function pollSeries() {
     if (!sparkBuilt) buildSparklines();
     const last = samples[samples.length - 1] || {};
     const ncpu = hostInfo.ncpu || 0;
-    setSpark('cpu', samples, Math.max(0, Number(last.cpu) || 0).toFixed(0) + '%',
-              ncpu > 0 ? ncpu * 100 : undefined);
-    setSpark('mem', samples, fmtGB(Number(last.mem) || 0));
-    setSpark('cache', samples, fmtGB(Number(last.cache) || 0));
+    const memTotal = hostInfo.mem_total_bytes || 0;
+    const cpuNow = Math.max(0, Number(last.cpu) || 0);
+    const memNow = Number(last.mem) || 0;
+    const cacheNow = Number(last.cache) || 0;
+    // Percentage first on all three, matching the grid card, so the reader is
+    // not hunting for the number in a different position on each row.
+    setSpark('cpu', samples,
+             ncpu > 0
+               ? (cpuNow / ncpu).toFixed(1) + '%  ·  ' + (cpuNow / 100).toFixed(1) +
+                 ' / ' + ncpu + ' cores'
+               : cpuNow.toFixed(0) + '%',
+             ncpu > 0 ? ncpu * 100 : undefined);
+    setSpark('mem', samples,
+             memTotal > 0
+               ? ((memNow / memTotal) * 100).toFixed(1) + '%  ·  ' + fmtGB(memNow) +
+                 ' / ' + fmtGB(memTotal)
+               : fmtGB(memNow),
+             memTotal > 0 ? memTotal : undefined);
+    const cacheCap = CACHE_CAP_GB * 1e9;
+    setSpark('cache', samples,
+             ((cacheNow / cacheCap) * 100).toFixed(1) + '%  ·  ' + fmtGB(cacheNow) +
+               ' / ' + CACHE_CAP_GB + ' GB',
+             cacheCap);
   } catch (e) {
     // Leave the last-drawn sparklines in place; the stale indicator already
     // covers connectivity loss.

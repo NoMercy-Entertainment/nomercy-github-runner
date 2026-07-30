@@ -341,12 +341,16 @@ function render(d) {
       : cpu.toFixed(0) + '%';
     const cpuPct = ncpu > 0 ? (cpu / ncpu) : (cpu / cpuScale) * 100;
     setMeter(card, 'cpu', cpuText, cpuPct);
+    // Percentage first on all three meters, so the eye reads the same shape
+    // down the card instead of hunting for the number in a different position.
     const memPct = ml > 0 ? (mu / ml) * 100 : 0;
-    const memText = (r.mem_used || '0B') + ' / ' + (r.mem_limit || '?') +
-      (ml > 0 ? '  ·  ' + memPct.toFixed(1) + '%' : '');
+    const memText = (ml > 0 ? memPct.toFixed(1) + '%  ·  ' : '') +
+      (r.mem_used || '0B') + ' / ' + (r.mem_limit || '?');
     setMeter(card, 'mem', memText, memPct);
-    setMeter(card, 'cache', fmtGB(cache) + ' / ' + CACHE_CAP_GB + ' GB',
-             (cache / (CACHE_CAP_GB * 1e9)) * 100);
+    const cachePct = (cache / (CACHE_CAP_GB * 1e9)) * 100;
+    setMeter(card, 'cache',
+             cachePct.toFixed(1) + '%  ·  ' + fmtGB(cache) + ' / ' + CACHE_CAP_GB + ' GB',
+             cachePct);
 
     // Only offer what makes sense for the current state.
     const stopped = r.state === 'stopped', draining = r.state === 'draining';
