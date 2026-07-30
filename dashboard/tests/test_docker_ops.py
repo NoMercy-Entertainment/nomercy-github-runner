@@ -283,3 +283,16 @@ def test_host_info_survives_garbage(monkeypatch):
     monkeypatch.setattr(docker_ops, "_docker",
                         lambda *a, **k: (True, "not numbers at all", ""))
     assert docker_ops.host_info() == {"ncpu": 0, "mem_total_bytes": 0}
+
+
+def test_host_info_retries_after_a_failure(monkeypatch):
+    docker_ops._host_info_cache = None
+    results = [(False, "", "cannot connect"), (True, "56 134995177472", "")]
+
+    def fake(*a, **k):
+        return results.pop(0) if results else (True, "56 134995177472", "")
+
+    monkeypatch.setattr(docker_ops, "_docker", fake)
+    assert docker_ops.host_info() == {"ncpu": 0, "mem_total_bytes": 0}
+    # A transient failure must not be cached - the next call asks again.
+    assert docker_ops.host_info() == {"ncpu": 56, "mem_total_bytes": 134995177472}

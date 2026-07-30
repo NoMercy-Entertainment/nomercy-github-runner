@@ -224,6 +224,10 @@ def host_info():
     global _host_info_cache
     if _host_info_cache is not None:
         return _host_info_cache
+    # 15s, not the default 30s: `docker info` talks to the daemon, not a
+    # container, so it should answer fast - but a slow/warming-up daemon can
+    # still hit this boundary, which is exactly the case the caching below
+    # must survive without wedging the feature off for good.
     ok, out, _ = _docker("info", "--format", "{{.NCPU}} {{.MemTotal}}",
                          timeout=15)
     info = {"ncpu": 0, "mem_total_bytes": 0}
@@ -235,7 +239,16 @@ def host_info():
                         "mem_total_bytes": int(parts[1])}
             except ValueError:
                 pass
-    _host_info_cache = info
+    # Only cache on success. A transient failure (daemon warm-up, a timeout
+    # under load, a blip) must not be memoised as though it were the real
+    # answer - runner_detail.cached() already had to fix exactly this bug
+    # shape (a failure stored and replayed for its whole TTL); caching the
+    # zero sentinel here unconditionally would reproduce it, but for the rest
+    # of the process's life instead of a TTL, since nothing ever calls
+    # host_info() with _host_info_cache reset. Leaving the sentinel at None
+    # lets the next call retry.
+    if ok:
+        _host_info_cache = info
     return info
 
 
