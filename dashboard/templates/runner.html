@@ -1,0 +1,1204 @@
+{% extends "base.html" %}
+{% block title %}{{ name }} - NoMercy Runners{% endblock %}
+
+{% block style %}
+#rd-tabs{display:flex;gap:8px;margin-bottom:16px;border-bottom:1px solid var(--rule);padding-bottom:10px}
+#rd-tabs button.on{color:var(--signal);border-color:var(--signal-dk)}
+.n.drain{color:var(--drain)} .n.stopped{color:var(--alert)}
+#rd-actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:2px;padding-top:14px;border-top:1px solid var(--rule)}
+.skel{color:var(--text-faint);padding:34px 0;text-align:center;letter-spacing:.2em;
+  text-transform:uppercase;font-size:11px}
+.sparkrow{margin-bottom:18px}
+.sparkrow:last-child{margin-bottom:0}
+.sparkrow .legend{display:flex;justify-content:space-between;align-items:center;font-size:9.5px;
+  letter-spacing:.15em;text-transform:uppercase;color:var(--text-faint);margin-bottom:6px}
+.sparkrow .legend i{display:inline-block;width:9px;height:2px;vertical-align:middle;margin-right:5px}
+.sparkrow svg{display:block;width:100%;height:84px;background:var(--bg-inset);border:1px solid var(--rule)}
+.kv{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:11px 18px;margin:2px 0 4px}
+.kv .k{display:block;font-size:9px;letter-spacing:.16em;text-transform:uppercase;color:var(--text-faint)}
+.kv .v{display:block;font-size:12.5px;margin-top:3px;word-break:break-word}
+.kv .v.regression{color:var(--alert);font-weight:600}
+table{width:100%;border-collapse:collapse;font-size:11.5px}
+th{text-align:left;font-size:9.5px;letter-spacing:.15em;text-transform:uppercase;color:var(--text-faint);
+  font-weight:400;padding:6px 8px;border-bottom:1px solid var(--rule)}
+td{padding:7px 8px;border-bottom:1px solid var(--rule);vertical-align:top;word-break:break-word}
+#toast{position:fixed;right:18px;bottom:18px;max-width:380px;background:var(--bg-panel);
+  border:1px solid var(--rule);border-left:3px solid var(--signal);padding:11px 14px;
+  font-size:11.5px;display:none;z-index:9}
+#toast.show{display:block;animation:slip .25s ease-out}
+#toast.bad{border-left-color:var(--alert);color:var(--alert)}
+@keyframes slip{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
+
+/* engine + history tabs */
+.panel-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:14px}
+.panel-head h2{margin-bottom:0}
+.panel-actions{display:flex;gap:8px}
+.sec-h{font-family:var(--label);font-size:10.5px;letter-spacing:.16em;text-transform:uppercase;
+  color:var(--text-faint);margin:20px 0 8px}
+.sec-h:first-of-type{margin-top:0}
+.wrap{background:var(--bg-inset);border:1px solid var(--rule);padding:2px 4px 4px;overflow-x:auto}
+.res{display:inline-block;padding:1px 7px;font-size:9px;letter-spacing:.14em;
+  text-transform:uppercase;border:1px solid currentColor}
+.res.Succeeded{color:var(--signal)} .res.Failed{color:var(--alert)}
+.res.Canceled{color:var(--text-dim)} .res.running{color:var(--busy)}
+.num{font-variant-numeric:tabular-nums;color:var(--text-dim)}
+.ctx{color:var(--text-faint);font-size:10.5px}
+tbody tr[data-id]{cursor:pointer}
+tbody tr[data-id]:hover{background:var(--bg-inset)}
+.ver-line{font-size:11px;color:var(--text-faint);margin-bottom:12px}
+.ver-num{font-family:var(--label);font-size:20px;font-weight:600;color:var(--text);margin-left:8px}
+.meter{margin-top:11px}
+.mrow{display:flex;justify-content:space-between;align-items:baseline;font-size:9.5px;
+  letter-spacing:.15em;text-transform:uppercase;color:var(--text-faint);margin-bottom:4px}
+.mval{color:var(--text-dim);font-size:10.5px;font-variant-numeric:tabular-nums;
+  text-transform:none;letter-spacing:.02em}
+.track{position:relative;height:7px;background:var(--bg-inset);border:1px solid var(--rule);overflow:hidden}
+.fill{height:100%;width:0;transition:width .4s ease;background:var(--signal)}
+.fill.warn{background:var(--busy)} .fill.crit{background:var(--alert)}
+/* run-detail overlay, reused from the fleet-wide history page */
+#ov{position:fixed;inset:0;background:rgba(0,0,0,.62);display:none;z-index:20;
+  padding:clamp(12px,4vh,50px);overflow:auto}
+#ov.show{display:block}
+.sheet{max-width:860px;margin:0 auto;background:var(--bg-panel);
+  border:1px solid var(--rule-hot);padding:20px 22px}
+.sheet h3{font-family:var(--label);font-size:17px;letter-spacing:.1em;
+  text-transform:uppercase;margin-bottom:3px}
+.sheet svg{display:block;width:100%;height:150px;background:var(--bg-inset);border:1px solid var(--rule)}
+.legend{display:flex;gap:16px;font-size:9.5px;letter-spacing:.14em;
+  text-transform:uppercase;color:var(--text-faint);margin:8px 0 4px}
+.legend i{display:inline-block;width:9px;height:2px;vertical-align:middle;margin-right:5px}
+.close{float:right}
+
+/* logs tab */
+#logs-filter{width:240px}
+.logs-container{position:relative}
+#logs-pane{font-family:var(--mono);font-size:11.5px;line-height:1.55;color:var(--text);
+  background:var(--bg-inset);border:1px solid var(--rule);height:480px;overflow-y:auto;
+  padding:9px 11px;white-space:pre-wrap;word-break:break-all}
+.logline{padding:1px 0}
+.logline[hidden]{display:none}
+.logts{color:var(--text-faint);margin-right:9px}
+#logs-jump{position:absolute;right:16px;bottom:16px;background:var(--bg-panel);
+  border:1px solid var(--signal-dk);color:var(--signal);z-index:2}
+{% endblock %}
+
+{% block body %}
+{% if missing %}
+<div class="center">
+  <div class="panel">
+    <h2>Runner not found</h2>
+    <p>{{ name }} no longer exists.</p>
+    <p style="margin-top:10px"><a href="/">&larr; Back to the fleet</a></p>
+  </div>
+</div>
+{% else %}
+<div id="rd-page">
+<header id="rd-header">
+  <div class="brand">
+    <h1>{{ name.replace('github-runner-', 'Runner ') }}</h1>
+    <div class="sub"><a href="/">&larr; Fleet</a> &middot; <span id="rd-reg">&mdash;</span>
+      <span id="rd-note" hidden>&middot; not currently reporting</span></div>
+  </div>
+  <div class="stat"><div class="n" id="rd-state">&mdash;</div><div class="k">State</div></div>
+  <div class="stat"><div class="n" id="rd-uptime">&mdash;</div><div class="k">Uptime</div></div>
+  <div class="stat"><div class="live" id="live"><span class="dot"></span><span id="live-txt">Connecting</span></div></div>
+  <nav>
+    <a href="/">Fleet</a>
+    <a href="/history">History</a>
+    <a href="/settings">Settings</a>
+    <a href="/logout">Sign out</a>
+  </nav>
+</header>
+
+<div id="rd-tabs">
+  <button data-tab="overview" class="on">Overview</button>
+  <button data-tab="engine">Engine</button>
+  <button data-tab="logs">Logs</button>
+  <button data-tab="history">History</button>
+</div>
+
+<div id="tab-overview">
+  <div class="panel" id="rd-spark-panel">
+    <h2>Live telemetry</h2>
+    <div class="skel" id="rd-spark-skel">Awaiting telemetry</div>
+  </div>
+  <div class="panel" id="rd-capacity-panel">
+    <h2>Capacity</h2>
+    <div class="kv">
+      <div><span class="k">Host</span><span class="v" id="cap-host">&mdash;</span></div>
+      <div><span class="k">CPU allowance</span><span class="v" id="cap-cpu-allowance">&mdash;</span></div>
+      <div><span class="k">Memory allowance</span><span class="v" id="cap-mem-allowance">&mdash;</span></div>
+      <div><span class="k">Current CPU</span><span class="v" id="cap-cpu-current">&mdash;</span></div>
+      <div><span class="k">Current memory</span><span class="v" id="cap-mem-current">&mdash;</span></div>
+      <div><span class="k">Build cache</span><span class="v" id="cap-cache">&mdash;</span></div>
+    </div>
+  </div>
+  <div class="panel" id="rd-inspect-panel">
+    <h2>Container</h2>
+    <div class="skel" id="rd-inspect-skel">Loading container details</div>
+  </div>
+  <div class="panel">
+    <h2>Mounts</h2>
+    <div id="rd-mounts" class="skel">Loading container details</div>
+  </div>
+  <div class="panel">
+    <h2>Environment</h2>
+    <div id="rd-env" class="skel">Loading container details</div>
+  </div>
+</div>
+
+<div id="tab-engine" hidden>
+  <div class="panel" id="eng-panel">
+    <div class="panel-head">
+      <h2>Docker engine</h2>
+      <div class="panel-actions">
+        <button id="eng-refresh">Refresh</button>
+        <button id="eng-prune" class="warn">Clear cache</button>
+      </div>
+    </div>
+    <div class="skel" id="eng-skel">Loading engine data</div>
+    <div id="eng-body" hidden>
+      <h3 class="sec-h">Disk usage</h3>
+      <div class="kv" id="eng-df"></div>
+      <div class="meter" id="eng-cache-meter">
+        <div class="mrow"><span>Build cache</span><span class="mval" id="eng-cache-val">&mdash;</span></div>
+        <div class="track"><div class="fill" id="eng-cache-fill"></div></div>
+      </div>
+      <h3 class="sec-h">Images</h3>
+      <div id="eng-images"></div>
+      <h3 class="sec-h">Containers</h3>
+      <div id="eng-containers"></div>
+      <h3 class="sec-h">Volumes</h3>
+      <div id="eng-volumes"></div>
+    </div>
+  </div>
+</div>
+<div id="tab-logs" hidden>
+  <div class="panel" id="logs-panel">
+    <div class="panel-head">
+      <h2>Terminal output</h2>
+      <div class="panel-actions">
+        <input id="logs-filter" type="text" placeholder="Filter..." autocomplete="off">
+      </div>
+    </div>
+    <div class="skel" id="logs-skel">Loading logs</div>
+    <div id="logs-wrap" hidden>
+      <div class="logs-container">
+        <div id="logs-pane"></div>
+        <button id="logs-jump" hidden>Jump to latest &darr;</button>
+      </div>
+    </div>
+  </div>
+</div>
+<div id="tab-history" hidden>
+  <div class="panel" id="hist-gh-panel">
+    <h2>GitHub view</h2>
+    <div class="skel" id="hist-gh-skel">Loading GitHub status</div>
+    <div id="hist-gh-body" hidden>
+      <div class="ver-line">Runner version<span class="ver-num" id="hist-ver">&mdash;</span></div>
+      <div class="kv" id="hist-gh-kv"></div>
+    </div>
+  </div>
+  <div class="panel">
+    <h2>Run history</h2>
+    <div class="skel" id="hist-skel">Loading run history</div>
+    <div class="wrap" id="hist-wrap" hidden>
+      <table><thead><tr>
+        <th>Started</th><th>Job</th><th>Result</th><th>Duration</th>
+      </tr></thead><tbody id="hist-rows"></tbody></table>
+    </div>
+  </div>
+</div>
+
+<div id="rd-actions">
+  <button data-a="drain" class="warn">Drain</button>
+  <button data-a="canceldrain" class="warn">Cancel drain</button>
+  <button data-a="stop" class="danger">Stop</button>
+  <button data-a="start">Start</button>
+  <button data-a="restart">Restart</button>
+  <button data-a="remove" class="danger">Remove</button>
+</div>
+</div>
+
+<div id="toast"></div>
+<div id="ov"><div class="sheet" id="sheet"></div></div>
+
+<script>
+const NAME = {{ name|tojson }};
+const STALE_MS = 25000;
+let lastGood = 0;
+const $ = id => document.getElementById(id);
+
+function toast(msg, bad) {
+  const t = $('toast');
+  t.textContent = msg;
+  t.className = 'show' + (bad ? ' bad' : '');
+  clearTimeout(t._h);
+  t._h = setTimeout(() => { t.className = ''; }, 6000);
+}
+
+function setStale(on) {
+  $('live').classList.toggle('stale', on);
+  $('live-txt').textContent = on ? 'Stale' : 'Live';
+}
+
+const gbNum = b => b / 1e9;
+const fmtGB = b => gbNum(b) < 10 ? gbNum(b).toFixed(2) + ' GB' : Math.round(gbNum(b)) + ' GB';
+const fmtMem = b => !b ? '—' : b >= 1e9 ? (b / 1e9).toFixed(1) + ' GB' : Math.round(b / 1e6) + ' MB';
+const fmtDur = s => {
+  if (s == null) return '—';
+  if (s < 60) return s + 's';
+  const m = Math.floor(s / 60), r = s % 60;
+  return m < 60 ? `${m}m ${r}s` : `${Math.floor(m / 60)}h ${m % 60}m`;
+};
+const fmtTime = t => !t ? '—' : String(t).replace('T', ' ').replace('Z', '');
+const esc = s => String(s ?? '').replace(/[&<>"]/g, c =>
+  ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+
+// "12.3GB" / "758.8MB (98%)" -> bytes, for sorting and cap-relative bars.
+function toBytes(s) {
+  if (!s) return 0;
+  const m = String(s).trim().match(/^([\d.]+)\s*([KMGTP]?i?B)?/i);
+  if (!m) return 0;
+  const n = parseFloat(m[1]); if (isNaN(n)) return 0;
+  const u = (m[2] || 'B').toUpperCase().replace('I', '');
+  return n * ({B: 1, KB: 1e3, MB: 1e6, GB: 1e9, TB: 1e12, PB: 1e15}[u] || 1);
+}
+
+// -- terminal "gone" state -----------------------------------------------
+// A one-time transition, not a steady poll: rebuilding innerHTML here does
+// not violate the patch-don't-rebuild rule below, which is about repeated
+// polling of a page that is still alive.
+let statusTimer = null, seriesTimer = null, inspectTimer = null, logsTimer = null;
+let engineFetched = false, engineLoading = false;
+let historyFetched = false;
+let currentReg = null;   // registration name from /api/status, used to match the GitHub panel
+let currentTab = 'overview';
+
+// Host capacity, plus the three sources the capacity block draws on. Each
+// arrives on its own schedule (status every 5s, inspect every 10s while the
+// overview tab is open, engine df once on first open of that tab) - kept at
+// module scope so renderCapacity() can be called from any of them and always
+// render whatever is currently known, rather than only when all three happen
+// to have landed together.
+let hostInfo = {ncpu: 0, mem_total_bytes: 0};
+let lastStatusRunner = null;
+let lastInspectData = null;
+let lastEngineDf = null;
+
+function goMissing() {
+  clearInterval(statusTimer); clearInterval(seriesTimer); clearInterval(inspectTimer); clearInterval(logsTimer);
+  statusTimer = seriesTimer = inspectTimer = logsTimer = null;
+  const page = $('rd-page');
+  if (page) page.outerHTML = `
+    <div class="center">
+      <div class="panel">
+        <h2>Runner not found</h2>
+        <p>${esc(NAME)} no longer exists.</p>
+        <p style="margin-top:10px"><a href="/">&larr; Back to the fleet</a></p>
+      </div>
+    </div>`;
+}
+
+// -- tabs -----------------------------------------------------------------
+// Only the overview tab polls /inspect, and only while it is the one showing.
+const TABS = ['overview', 'engine', 'logs', 'history'];
+
+function showTab(name) {
+  TABS.forEach(t => {
+    const panel = $('tab-' + t);
+    const shouldHide = t !== name;
+    if (panel.hidden !== shouldHide) panel.hidden = shouldHide;
+  });
+  document.querySelectorAll('#rd-tabs button').forEach(b => {
+    const on = b.dataset.tab === name;
+    if (b.classList.contains('on') !== on) b.classList.toggle('on', on);
+  });
+  currentTab = name;
+  if (name === 'overview') {
+    if (!inspectTimer) { pollInspect(); inspectTimer = setInterval(pollInspect, 10000); }
+  } else if (inspectTimer) {
+    clearInterval(inspectTimer);
+    inspectTimer = null;
+  }
+  // Logs poll fastest of all, and only while this tab is both open and the
+  // browser tab itself is visible - see the visibilitychange listener below.
+  if (name === 'logs') {
+    startLogsPolling();
+  } else {
+    stopLogsPolling();
+  }
+  // Engine and history fetch once, on first open - never on a timer. The
+  // engine call in particular shells into the runner and can take seconds.
+  if (name === 'engine' && !engineFetched) {
+    engineFetched = true;
+    fetchEngine();
+  }
+  if (name === 'history' && !historyFetched) {
+    historyFetched = true;
+    fetchHistoryRuns();
+    fetchHistoryGithub();
+  }
+}
+document.querySelectorAll('#rd-tabs button').forEach(b => {
+  b.addEventListener('click', () => showTab(b.dataset.tab));
+});
+
+// -- action footer ----------------------------------------------------------
+// Built once in the template; polling only ever toggles visibility/disabled.
+async function act(action, btn) {
+  if (btn) btn.disabled = true;
+  try {
+    const res = await fetch('/api/runner/' + action, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({name: NAME})
+    });
+    const d = await res.json().catch(() => ({}));
+    if (!res.ok || d.ok === false) throw new Error(d.error || ('HTTP ' + res.status));
+    if (action === 'remove') { location.href = '/'; return; }
+    toast(NAME + ': ' + action + ' ok');
+    pollStatus();
+  } catch (e) {
+    toast(NAME + ': ' + action + ' failed - ' + e.message, true);
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+document.querySelectorAll('#rd-actions button').forEach(b => {
+  b.addEventListener('click', () => {
+    const a = b.dataset.a;
+    if (a === 'remove' && !confirm(`Remove ${NAME}? It is deregistered and deleted.`)) return;
+    if (a === 'stop' && !confirm(`Stop ${NAME} now? A running job would be killed.`)) return;
+    act(a, b);
+  });
+});
+
+function setShow(action, show) {
+  const b = document.querySelector(`#rd-actions [data-a="${action}"]`);
+  const val = show ? '' : 'none';
+  if (b.style.display !== val) b.style.display = val;
+}
+function renderActions(r) {
+  const stopped = r.state === 'stopped', draining = r.state === 'draining';
+  setShow('drain', !stopped && !draining);
+  setShow('canceldrain', draining);
+  setShow('stop', !stopped);
+  setShow('start', stopped);
+  setShow('restart', !stopped);
+  setShow('remove', true);
+}
+
+// -- header: name/state/registration/uptime, from the fast fleet status ---
+const STATE_CLASS = {idle: 'ok', busy: 'work', draining: 'drain', stopped: 'stopped'};
+
+function renderHeader(r) {
+  const state = r.state || 'unknown';
+  const stateEl = $('rd-state');
+  if (stateEl.textContent !== state) stateEl.textContent = state;
+  const cls = 'n ' + (STATE_CLASS[state] || '');
+  if (stateEl.className !== cls) stateEl.className = cls;
+
+  const reg = r.registration || '—';
+  if ($('rd-reg').textContent !== reg) $('rd-reg').textContent = reg;
+  currentReg = r.registration || null;
+
+  const uptime = r.uptime || '—';
+  if ($('rd-uptime').textContent !== uptime) $('rd-uptime').textContent = uptime;
+}
+
+function setNotReporting(on) {
+  const note = $('rd-note');
+  if (note.hidden === on) note.hidden = !on;
+}
+
+// -- overview: capacity block, patched from whichever source last updated --
+function setCap(id, text) {
+  const el = $(id);
+  if (el.textContent !== text) el.textContent = text;
+}
+
+function renderCapacity() {
+  const ncpu = hostInfo.ncpu || 0;
+  const memTotal = hostInfo.mem_total_bytes || 0;
+
+  // ncpu === 0 means the docker info call failed - "—" rather than a
+  // fabricated "of 0 cores".
+  setCap('cap-host', ncpu > 0 ? `${ncpu} cores · ${fmtGB(memTotal)} RAM` : '—');
+
+  if (lastInspectData) {
+    const cpuLimit = lastInspectData.cpu_limit;
+    setCap('cap-cpu-allowance', cpuLimit == null
+      ? (ncpu > 0 ? `unlimited (all ${ncpu} cores)` : 'unlimited')
+      : `${Number.isInteger(cpuLimit) ? cpuLimit : cpuLimit.toFixed(2)} cores` +
+        (ncpu > 0 ? ` of ${ncpu}` : ''));
+
+    const memLimit = lastInspectData.mem_limit_bytes;
+    setCap('cap-mem-allowance', memLimit == null
+      ? (memTotal > 0 ? `unlimited (all ${fmtGB(memTotal)})` : 'unlimited')
+      : fmtGB(memLimit));
+  }
+
+  if (lastStatusRunner) {
+    const r = lastStatusRunner;
+    const cpu = Math.max(0, Number(r.cpu_percent) || 0);
+    setCap('cap-cpu-current', ncpu > 0
+      ? `${cpu.toFixed(1)}% · ${(cpu / 100).toFixed(1)} of ${ncpu} cores`
+      : `${cpu.toFixed(1)}%`);
+
+    const mu = toBytes(r.mem_used), ml = toBytes(r.mem_limit);
+    setCap('cap-mem-current', ml > 0
+      ? `${fmtGB(mu)} · ${((mu / ml) * 100).toFixed(1)}% of ${fmtGB(ml)}`
+      : (r.mem_used || '0B'));
+
+    // Prefer the engine tab's df (reclaimable + entry count) once it has been
+    // loaded; otherwise fall back to the figure the fleet card already has.
+    setCap('cap-cache', lastEngineDf && lastEngineDf.size
+      ? `${lastEngineDf.size} / ${CACHE_CAP_GB} GB · ${lastEngineDf.reclaimable} reclaimable · ${lastEngineDf.count} item(s)`
+      : `${r.build_cache || '0B'} / ${CACHE_CAP_GB} GB`);
+  }
+}
+
+async function pollStatus() {
+  try {
+    const res = await fetch('/api/status?t=' + Date.now(), {cache: 'no-store'});
+    if (res.status === 401) { location.href = '/login'; return; }
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    const body = await res.json();
+    hostInfo = body.host || hostInfo;
+    const r = (body.runners || []).find(x => x.name === NAME);
+    if (!r) {
+      // Absence from /api/status is not proof the runner is gone - a
+      // transient `docker ps` failure returns an empty list, and "Recreate
+      // fleet" legitimately empties it for real seconds before every runner
+      // comes back. Only a genuine 404 (checked by pollInspect/pollSeries/
+      // pollLogs) means the container itself is gone; tearing this page down
+      // here would be irrecoverable for what is usually a blip.
+      setNotReporting(true);
+      lastGood = Date.now();
+      setStale(false);
+      renderCapacity();
+      return;
+    }
+    setNotReporting(false);
+    renderHeader(r);
+    renderActions(r);
+    lastStatusRunner = r;
+    renderCapacity();
+    lastGood = Date.now();
+    setStale(false);
+  } catch (e) {
+    if (!lastGood || Date.now() - lastGood > STALE_MS) setStale(true);
+  }
+}
+
+// -- overview: sparklines, built once then patched in place ---------------
+let sparkBuilt = false;
+function buildSparklines() {
+  const skel = $('rd-spark-skel');
+  if (skel) skel.remove();
+  $('rd-spark-panel').insertAdjacentHTML('beforeend', `
+    <div class="sparkrow" data-s="cpu">
+      <div class="legend"><span><i style="background:var(--signal)"></i>CPU</span><span data-v>&mdash;</span></div>
+      <svg viewBox="0 0 800 84" preserveAspectRatio="none"><polyline fill="none" stroke="var(--signal)" stroke-width="1.6"/></svg>
+    </div>
+    <div class="sparkrow" data-s="mem">
+      <div class="legend"><span><i style="background:var(--drain)"></i>Memory</span><span data-v>&mdash;</span></div>
+      <svg viewBox="0 0 800 84" preserveAspectRatio="none"><polyline fill="none" stroke="var(--drain)" stroke-width="1.6"/></svg>
+    </div>
+    <div class="sparkrow" data-s="cache">
+      <div class="legend"><span><i style="background:var(--busy)"></i>Build cache</span><span data-v>&mdash;</span></div>
+      <svg viewBox="0 0 800 84" preserveAspectRatio="none"><polyline fill="none" stroke="var(--busy)" stroke-width="1.6"/></svg>
+    </div>`);
+  sparkBuilt = true;
+}
+
+// docker stats is per-core, so cpu can run past 100 - scale each sparkline
+// to its own observed peak rather than a fixed ceiling, or busy runners
+// would just draw a flat clipped line. The CPU row is the exception: when
+// the host's core count is known, it scales against ncpu*100 (the real
+// ceiling for this machine) for the same reason the fleet card's bar does -
+// otherwise a runner busy on a couple of cores out of 56 draws a
+// misleadingly "full" line.
+function setSpark(key, samples, valText, maxOverride) {
+  const row = document.querySelector(`#rd-spark-panel [data-s="${key}"]`);
+  const v = row.querySelector('[data-v]');
+  if (v.textContent !== valText) v.textContent = valText;
+
+  const vals = samples.map(s => Number(s[key]) || 0);
+  const top = maxOverride || Math.max(...vals, 1);
+  const W = 800, H = 84, pad = 3;
+  const pts = vals.length < 2 ? '' : vals.map((val, i) => {
+    const x = pad + (i / (vals.length - 1)) * (W - pad * 2);
+    const y = H - pad - Math.min(1, val / top) * (H - pad * 2);
+    return `${x.toFixed(1)},${y.toFixed(1)}`;
+  }).join(' ');
+  const poly = row.querySelector('polyline');
+  if (poly.getAttribute('points') !== pts) poly.setAttribute('points', pts);
+}
+
+async function pollSeries() {
+  try {
+    const res = await fetch(`/api/runner/${NAME}/series?t=` + Date.now(), {cache: 'no-store'});
+    if (res.status === 404) { goMissing(); return; }
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    const body = await res.json();
+    if (!body.ok) throw new Error(body.error || 'series error');
+    const samples = body.data || [];
+    if (!sparkBuilt) buildSparklines();
+    const last = samples[samples.length - 1] || {};
+    const ncpu = hostInfo.ncpu || 0;
+    const memTotal = hostInfo.mem_total_bytes || 0;
+    const cpuNow = Math.max(0, Number(last.cpu) || 0);
+    const memNow = Number(last.mem) || 0;
+    const cacheNow = Number(last.cache) || 0;
+    // Percentage first on all three, matching the grid card, so the reader is
+    // not hunting for the number in a different position on each row.
+    setSpark('cpu', samples,
+             ncpu > 0
+               ? (cpuNow / ncpu).toFixed(1) + '%  ·  ' + (cpuNow / 100).toFixed(1) +
+                 ' / ' + ncpu + ' cores'
+               : cpuNow.toFixed(0) + '%',
+             ncpu > 0 ? ncpu * 100 : undefined);
+    setSpark('mem', samples,
+             memTotal > 0
+               ? ((memNow / memTotal) * 100).toFixed(1) + '%  ·  ' + fmtGB(memNow) +
+                 ' / ' + fmtGB(memTotal)
+               : fmtGB(memNow),
+             memTotal > 0 ? memTotal : undefined);
+    const cacheCap = CACHE_CAP_GB * 1e9;
+    setSpark('cache', samples,
+             ((cacheNow / cacheCap) * 100).toFixed(1) + '%  ·  ' + fmtGB(cacheNow) +
+               ' / ' + CACHE_CAP_GB + ' GB',
+             cacheCap);
+  } catch (e) {
+    // Leave the last-drawn sparklines in place; the stale indicator already
+    // covers connectivity loss.
+  }
+}
+
+// -- overview: inspect fields, built once then patched in place -----------
+// start.sh's shutdown budget documents ~9s worst case for its own deregister
+// path (curl + config.sh remove); 30s leaves comfortable margin above that
+// without flagging a deliberately generous value like the current 60s.
+const STOP_TIMEOUT_DANGER_S = 30;
+const FIELDS = [
+  ['image', 'Image', v => v || '—'],
+  ['digest', 'Digest', v => v || '—'],
+  ['created', 'Created', fmtTime],
+  ['restart_count', 'Restarts', v => String(v ?? 0)],
+  ['status', 'Status', v => v || '—'],
+  ['exit_code', 'Exit code', v => (v == null ? '—' : String(v))],
+  ['started_at', 'Started', fmtTime],
+  ['finished_at', 'Finished', fmtTime],
+  ['pid', 'PID', v => (v ? String(v) : '—')],
+  ['cpu_limit', 'CPU limit', v => (v == null ? 'unlimited' : (Number.isInteger(v) ? v : v.toFixed(2)) + ' cores')],
+  ['mem_limit_bytes', 'Memory limit', v => (v == null ? 'unlimited' : fmtGB(v))],
+  ['restart_policy', 'Restart policy', v => v || '—'],
+  // The seconds between SIGTERM and SIGKILL on `docker stop`/`restart`.
+  // start.sh needs a few seconds on SIGTERM to deregister from GitHub, so
+  // anything under STOP_TIMEOUT_DANGER_S is the zone where that can be
+  // killed mid-flight and orphan the registration - flagged on the value
+  // itself, not on a specific historical number (a past Docker Engine
+  // regression pinned this at 1s fleet-wide; that has since been fixed by
+  // `stop_grace_period: 60s` in compose, and this must not hardcode "1 is
+  // bad" now that it no longer is).
+  ['stop_timeout', 'Stop timeout', v => (v == null ? '—' :
+    v < STOP_TIMEOUT_DANGER_S
+      ? `${v}s - too short: deregistration may be killed mid-flight and orphan the GitHub registration`
+      : `${v}s`)],
+  ['privileged', 'Privileged', v => (v ? 'yes' : 'no')],
+  ['network_mode', 'Network mode', v => v || '—'],
+  ['ip', 'IP address', v => v || '—'],
+];
+
+let inspectBuilt = false;
+function buildInspectPanel() {
+  const skel = $('rd-inspect-skel');
+  if (skel) skel.remove();
+  const kvHTML = FIELDS.map(([key, label]) =>
+    `<div><span class="k">${label}</span><span class="v" data-f="${key}">—</span></div>`
+  ).join('');
+  $('rd-inspect-panel').insertAdjacentHTML('beforeend', `<div class="kv">${kvHTML}</div>`);
+  inspectBuilt = true;
+}
+
+// Mounts/env are patched in place, keyed rows, exactly like everything else
+// on this poll path. A running container's mounts/env never change, but the
+// operator can edit Settings and hit "Recreate fleet" while this page is
+// open - the next inspect poll then sees genuinely different content for
+// the same-named container, and an innerHTML rebuild here would violate the
+// no-rebuild-on-a-poll rule the rest of the page follows.
+let mountsInited = false, envInited = false;
+const mountRows = new Map();  // destination -> {tr, source, destination, mode, rw}
+const envRows = new Map();    // key -> {tr, keyEl, valEl}
+
+function ensureMountsTable() {
+  if (mountsInited) return;
+  mountsInited = true;
+  const target = $('rd-mounts');
+  target.className = '';
+  target.innerHTML = `<table><thead><tr>
+      <th>Source</th><th>Destination</th><th>Mode</th><th>RW</th>
+    </tr></thead><tbody></tbody></table>`;
+}
+
+function renderMounts(mounts) {
+  const target = $('rd-mounts');
+  if (!mounts.length) {
+    if (mountsInited) { target.innerHTML = ''; mountsInited = false; mountRows.clear(); }
+    target.className = '';
+    if (target.textContent !== 'No mounts.') target.textContent = 'No mounts.';
+    return;
+  }
+  ensureMountsTable();
+  const tbody = target.querySelector('tbody');
+  const seen = new Set();
+  mounts.forEach(m => {
+    const key = m.destination;
+    seen.add(key);
+    let row = mountRows.get(key);
+    if (!row) {
+      const tr = document.createElement('tr');
+      tr.innerHTML = '<td></td><td></td><td></td><td></td>';
+      const [source, destination, mode, rw] = tr.children;
+      row = {tr, source, destination, mode, rw};
+      mountRows.set(key, row);
+      tbody.appendChild(tr);
+    }
+    const srcText = m.source ?? '', destText = m.destination ?? '', modeText = m.mode ?? '';
+    const rwText = m.rw ? 'yes' : 'no';
+    if (row.source.textContent !== srcText) row.source.textContent = srcText;
+    if (row.destination.textContent !== destText) row.destination.textContent = destText;
+    if (row.mode.textContent !== modeText) row.mode.textContent = modeText;
+    if (row.rw.textContent !== rwText) row.rw.textContent = rwText;
+  });
+  for (const [key, row] of mountRows) {
+    if (!seen.has(key)) { row.tr.remove(); mountRows.delete(key); }
+  }
+}
+
+function ensureEnvTable() {
+  if (envInited) return;
+  envInited = true;
+  const target = $('rd-env');
+  target.className = '';
+  target.innerHTML = `<table><thead><tr><th>Key</th><th>Value</th></tr></thead><tbody></tbody></table>`;
+}
+
+function renderEnv(env) {
+  const target = $('rd-env');
+  const entries = Object.entries(env || {});
+  if (!entries.length) {
+    if (envInited) { target.innerHTML = ''; envInited = false; envRows.clear(); }
+    target.className = '';
+    if (target.textContent !== 'No environment variables.') target.textContent = 'No environment variables.';
+    return;
+  }
+  ensureEnvTable();
+  const tbody = target.querySelector('tbody');
+  const seen = new Set();
+  entries.forEach(([k, v]) => {
+    seen.add(k);
+    let row = envRows.get(k);
+    if (!row) {
+      const tr = document.createElement('tr');
+      tr.innerHTML = '<td></td><td></td>';
+      const [keyEl, valEl] = tr.children;
+      row = {tr, keyEl, valEl};
+      envRows.set(k, row);
+      tbody.appendChild(tr);
+    }
+    if (row.keyEl.textContent !== k) row.keyEl.textContent = k;
+    const vText = String(v ?? '');
+    if (row.valEl.textContent !== vText) row.valEl.textContent = vText;
+  });
+  for (const [key, row] of envRows) {
+    if (!seen.has(key)) { row.tr.remove(); envRows.delete(key); }
+  }
+}
+
+function renderInspect(d) {
+  lastInspectData = d;
+  if (!inspectBuilt) buildInspectPanel();
+  FIELDS.forEach(([key, , fmt]) => {
+    const el = document.querySelector(`#rd-inspect-panel [data-f="${key}"]`);
+    const text = fmt(d[key]);
+    if (el.textContent !== text) el.textContent = text;
+  });
+  // A StopTimeout too low to let start.sh deregister is not cosmetic: it can
+  // orphan the GitHub registration on stop/restart. Flagged by threshold, not
+  // by a specific historical number - a past Docker Engine regression pinned
+  // this at 1s fleet-wide, but that is fixed now (compose sets
+  // stop_grace_period: 60s), and a value that is fine today must not be
+  // flagged just because it once matched a bug that no longer applies.
+  const stopEl = document.querySelector('#rd-inspect-panel [data-f="stop_timeout"]');
+  if (stopEl) {
+    const danger = d.stop_timeout != null && d.stop_timeout < STOP_TIMEOUT_DANGER_S;
+    const cls = 'v' + (danger ? ' regression' : '');
+    if (stopEl.className !== cls) stopEl.className = cls;
+  }
+  renderMounts(d.mounts || []);
+  renderEnv(d.env || {});
+  renderCapacity();
+}
+
+async function pollInspect() {
+  try {
+    const res = await fetch(`/api/runner/${NAME}/inspect?t=` + Date.now(), {cache: 'no-store'});
+    if (res.status === 404) { goMissing(); return; }
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    const body = await res.json();
+    if (!body.ok) throw new Error(body.error || 'inspect error');
+    renderInspect(body.data);
+  } catch (e) {
+    // Keep the last-known values on screen; a transient docker inspect
+    // failure should not blank a panel that was showing good data.
+  }
+}
+
+// -- engine tab: docker system df + images/containers/volumes -------------
+// Fetches once on first open and on the explicit refresh button only. The
+// backend call shells into the runner and allows itself 20s, so this must
+// never be put on a poll - see runner_detail.engine().
+const CACHE_CAP_GB = 40;   // matches the buildx maxUsedSpace cap in start.sh
+const DF_LABELS = [
+  ['images', 'Images'], ['containers', 'Containers'],
+  ['volumes', 'Volumes'], ['build_cache', 'Build cache'],
+];
+
+async function fetchEngine() {
+  if (engineLoading) return;
+  engineLoading = true;
+  $('eng-refresh').disabled = true;
+  $('eng-skel').textContent = 'Loading engine data';
+  $('eng-skel').hidden = false;
+  $('eng-body').hidden = true;
+  try {
+    const res = await fetch(`/api/runner/${NAME}/engine`);
+    if (res.status === 404) { goMissing(); return; }
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok || !body.ok) throw new Error(body.error || ('HTTP ' + res.status));
+    renderEngine(body.data || {});
+    $('eng-skel').hidden = true;
+    $('eng-body').hidden = false;
+  } catch (e) {
+    $('eng-skel').textContent = 'Could not load engine data - ' + e.message;
+    $('eng-skel').hidden = false;
+    $('eng-body').hidden = true;
+  } finally {
+    engineLoading = false;
+    $('eng-refresh').disabled = false;
+  }
+}
+
+function renderDf(df) {
+  const kv = $('eng-df');
+  if (df.error) {
+    kv.innerHTML = `<div><span class="k">Disk usage</span>` +
+      `<span class="v" style="color:var(--alert)">${esc(df.error)}</span></div>`;
+    $('eng-cache-meter').hidden = true;
+    lastEngineDf = null;
+    renderCapacity();
+    return;
+  }
+  $('eng-cache-meter').hidden = false;
+  kv.innerHTML = DF_LABELS.map(([key, label]) => {
+    const s = df[key];
+    const val = s ? `${s.size} · ${s.count} item(s) · ${s.reclaimable} reclaimable` : 'no data';
+    return `<div><span class="k">${label}</span><span class="v">${esc(val)}</span></div>`;
+  }).join('');
+
+  const bc = df.build_cache;
+  const capBytes = CACHE_CAP_GB * 1e9;
+  if (bc && bc.size) {
+    const used = toBytes(bc.size);
+    const pct = Math.max(0, Math.min(100, (used / capBytes) * 100));
+    $('eng-cache-val').textContent = `${bc.size} / ${CACHE_CAP_GB} GB`;
+    $('eng-cache-fill').style.width = pct + '%';
+    $('eng-cache-fill').className = 'fill ' + (pct >= 90 ? 'crit' : pct >= 70 ? 'warn' : '');
+  } else {
+    $('eng-cache-val').textContent = `no data / ${CACHE_CAP_GB} GB`;
+    $('eng-cache-fill').style.width = '0%';
+    $('eng-cache-fill').className = 'fill';
+  }
+  // The engine tab's own df is a richer source (reclaimable + entry count)
+  // than the fleet card's bare size - prefer it in the capacity block once
+  // it has actually been loaded.
+  lastEngineDf = bc || null;
+  renderCapacity();
+}
+
+// A section is either an array of docker JSON objects, or {"error": "..."}.
+// One erroring must not blank the other three - each is rendered independently.
+function renderEngineSection(target, data, cols) {
+  if (data && !Array.isArray(data) && typeof data === 'object' && 'error' in data) {
+    target.innerHTML = `<div class="skel" style="padding:16px 0;color:var(--alert)">${esc(data.error)}</div>`;
+    return;
+  }
+  const rows = Array.isArray(data) ? data : [];
+  if (!rows.length) {
+    target.innerHTML = `<div class="skel" style="padding:16px 0">None</div>`;
+    return;
+  }
+  target.innerHTML = `<div class="wrap"><table><thead><tr>${
+    cols.map(([label]) => `<th>${label}</th>`).join('')
+  }</tr></thead><tbody>${
+    rows.map(r => `<tr>${cols.map(([, get]) => `<td>${esc(get(r))}</td>`).join('')}</tr>`).join('')
+  }</tbody></table></div>`;
+}
+
+function renderEngine(d) {
+  renderDf(d.df || {});
+
+  // The operator is looking for what is big - sort images by size descending.
+  const images = Array.isArray(d.images)
+    ? d.images.slice().sort((a, b) => toBytes(b.Size) - toBytes(a.Size))
+    : d.images;
+  renderEngineSection($('eng-images'), images, [
+    ['Repository', r => r.Repository || '<none>'],
+    ['Tag', r => r.Tag || '<none>'],
+    ['Size', r => r.Size || '-'],
+    ['Created', r => r.CreatedSince || '-'],
+    ['ID', r => (r.ID || '').slice(0, 12) || '-'],
+  ]);
+  renderEngineSection($('eng-containers'), d.containers, [
+    ['Name', r => r.Names || '-'],
+    ['Image', r => r.Image || '-'],
+    ['Status', r => r.Status || '-'],
+    ['State', r => r.State || '-'],
+  ]);
+  renderEngineSection($('eng-volumes'), d.volumes, [
+    ['Name', r => r.Name || '-'],
+    ['Driver', r => r.Driver || '-'],
+  ]);
+}
+
+async function pruneThisRunner() {
+  if (!confirm(`Clear ${NAME}'s build cache and unused images? This deletes them and cannot be undone.`)) return;
+  const btn = $('eng-prune');
+  btn.disabled = true;
+  const label = btn.textContent;
+  btn.textContent = 'Clearing...';
+  try {
+    const res = await fetch('/api/runner/' + NAME + '/prune', {method: 'POST'});
+    const d = await res.json().catch(() => ({}));
+    if (res.status === 409) {
+      // Busy is a normal outcome here, not a failure - the runner was left alone on purpose.
+      toast(NAME + ': busy running a job, not touched');
+      return;
+    }
+    const data = d.data || {};
+    if (!res.ok || d.ok === false) {
+      // One prune (buildx/image) can fail while the other succeeded - that
+      // still reclaimed real space, and discarding freed_bytes here just
+      // because ok is false would hide a correct result behind a pure error.
+      const err = data.error || d.error || ('HTTP ' + res.status);
+      let msg = NAME + ': clear cache failed - ' + err;
+      if (data.freed_bytes != null) {
+        msg += ' (still reclaimed ' + fmtGB(data.freed_bytes) + ')';
+      }
+      toast(msg, true);
+      if (data.freed_bytes) fetchEngine();   // partial reclaim changed the figures
+      return;
+    }
+    let msg;
+    if (data.freed_bytes == null) {
+      // null means measurement genuinely failed, not that nothing was freed.
+      msg = NAME + ': reclaimed, amount unknown';
+      if (data.error) msg += ' - ' + data.error;
+    } else {
+      msg = NAME + ': ' + fmtGB(data.freed_bytes) + ' freed';
+    }
+    toast(msg);
+    fetchEngine();   // the figures just changed - reflect it
+  } catch (e) {
+    toast(NAME + ': clear cache failed - ' + e.message, true);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = label;
+  }
+}
+
+$('eng-refresh').addEventListener('click', fetchEngine);
+$('eng-prune').addEventListener('click', pruneThisRunner);
+
+// -- logs tab: live-tail via a cursor, append-only ------------------------
+// The cursor and buffered line count live at module scope, not inside
+// start/stopLogsPolling, so that switching tabs away and back (or the
+// browser tab going background then foreground) resumes exactly where it
+// left off instead of re-fetching the whole 5 minute window.
+let logsCursor = '';
+let logsLoaded = false;
+let logsLineCount = 0;
+let logsFilterValue = '';
+let logsInFlight = false;
+const LOGS_CAP = 2000;
+
+function isPaneAtBottom(pane) {
+  return pane.scrollHeight - pane.scrollTop - pane.clientHeight <= 4;
+}
+
+// docker's own timestamp, trimmed to a clock reading - the full RFC3339
+// value is what drives the cursor, not what belongs on screen.
+function fmtLogTime(t) {
+  const m = /T(\d\d:\d\d:\d\d)/.exec(t || '');
+  return m ? m[1] : (t || '');
+}
+
+function appendLogLines(lines) {
+  if (!lines.length) return;
+  const pane = $('logs-pane');
+  const atBottom = isPaneAtBottom(pane);
+  const frag = document.createDocumentFragment();
+  lines.forEach(l => {
+    const div = document.createElement('div');
+    div.className = 'logline';
+    if (l.t) {
+      const ts = document.createElement('span');
+      ts.className = 'logts';
+      ts.textContent = fmtLogTime(l.t);
+      div.appendChild(ts);
+    }
+    div.appendChild(document.createTextNode(l.text));
+    div.dataset.needle = String(l.text ?? '').toLowerCase();
+    if (logsFilterValue && !div.dataset.needle.includes(logsFilterValue)) div.hidden = true;
+    frag.appendChild(div);
+  });
+  pane.appendChild(frag);
+  logsLineCount += lines.length;
+
+  // Cap the buffer, oldest first. Trimming from the top shifts everything
+  // below it up by the removed height, so when the operator is scrolled
+  // away from the bottom we walk scrollTop back by the same amount -
+  // otherwise trimming alone would silently scroll them.
+  let removedHeight = 0;
+  while (logsLineCount > LOGS_CAP) {
+    const first = pane.firstElementChild;
+    if (!first) break;
+    removedHeight += first.offsetHeight;
+    pane.removeChild(first);
+    logsLineCount--;
+  }
+
+  if (atBottom) {
+    pane.scrollTop = pane.scrollHeight;
+    $('logs-jump').hidden = true;
+  } else {
+    if (removedHeight) pane.scrollTop -= removedHeight;
+    $('logs-jump').hidden = false;
+  }
+}
+
+async function pollLogs() {
+  // The backend allows this call up to 15s, and the tab-open fetch pulls a
+  // full 5-minute window - both can easily outlast the 2s tick below. Without
+  // this guard, a slow call would still be in flight when the next tick
+  // fires with the same stale logsCursor, and both responses would land,
+  // appending the same lines twice. Released in `finally` so a failed
+  // request can't permanently freeze polling.
+  if (logsInFlight) return;
+  logsInFlight = true;
+  try {
+    const res = await fetch(`/api/runner/${NAME}/logs?since=` + encodeURIComponent(logsCursor), {cache: 'no-store'});
+    if (res.status === 404) { goMissing(); return; }
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    const body = await res.json();
+    if (!body.ok) throw new Error(body.error || 'logs error');
+    const data = body.data || {};
+    if (!logsLoaded) {
+      $('logs-skel').hidden = true;
+      $('logs-wrap').hidden = false;
+      logsLoaded = true;
+    }
+    appendLogLines(data.lines || []);
+    if (data.cursor != null) logsCursor = data.cursor;
+  } catch (e) {
+    if (!logsLoaded) {
+      $('logs-skel').textContent = 'Could not load logs - ' + e.message;
+      $('logs-skel').hidden = false;
+    }
+    // Once the pane has content, a transient failure just skips a beat -
+    // the existing lines stay exactly as they are.
+  } finally {
+    logsInFlight = false;
+  }
+}
+
+function startLogsPolling() {
+  if (logsTimer || document.hidden) return;
+  pollLogs();
+  logsTimer = setInterval(pollLogs, 2000);
+}
+function stopLogsPolling() {
+  clearInterval(logsTimer);
+  logsTimer = null;
+}
+// The other tabs never poll in the background; this one polls fastest of
+// all, so it is the one that most needs to stop when the browser tab itself
+// isn't visible, not just when the operator switches to a different panel.
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) {
+    stopLogsPolling();
+  } else if (currentTab === 'logs') {
+    startLogsPolling();
+  }
+});
+
+$('logs-pane').addEventListener('scroll', () => {
+  $('logs-jump').hidden = isPaneAtBottom($('logs-pane'));
+});
+$('logs-jump').addEventListener('click', () => {
+  const pane = $('logs-pane');
+  pane.scrollTop = pane.scrollHeight;
+  $('logs-jump').hidden = true;
+});
+$('logs-filter').addEventListener('input', () => {
+  logsFilterValue = $('logs-filter').value.trim().toLowerCase();
+  $('logs-pane').querySelectorAll('.logline').forEach(div => {
+    div.hidden = logsFilterValue !== '' && !div.dataset.needle.includes(logsFilterValue);
+  });
+});
+
+// -- history tab: this runner's past runs + GitHub's own view -------------
+async function fetchHistoryRuns() {
+  try {
+    const res = await fetch(`/api/runner/${NAME}/history`);
+    if (res.status === 404) { goMissing(); return; }
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok || !body.ok) throw new Error(body.error || ('HTTP ' + res.status));
+    renderHistoryRows(body.data || []);
+  } catch (e) {
+    $('hist-skel').textContent = 'Could not load run history - ' + e.message;
+    $('hist-skel').hidden = false;
+    $('hist-wrap').hidden = true;
+  }
+}
+
+function renderHistoryRows(runs) {
+  if (!runs.length) {
+    $('hist-skel').textContent = 'No runs recorded yet';
+    $('hist-skel').hidden = false;
+    $('hist-wrap').hidden = true;
+    return;
+  }
+  $('hist-rows').innerHTML = runs.map(r => {
+    const running = !r.ended_at;
+    const res = running ? 'running' : (r.result || 'unknown');
+    return `<tr data-id="${r.id}">
+      <td class="num">${fmtTime(r.started_at)}</td>
+      <td>${esc(r.job_name)}</td>
+      <td><span class="res ${esc(res)}">${esc(res)}</span></td>
+      <td class="num">${running ? 'running' : fmtDur(r.duration_s)}</td>
+    </tr>`;
+  }).join('');
+  $('hist-rows').querySelectorAll('tr[data-id]').forEach(tr => {
+    tr.addEventListener('click', () => openRun(tr.dataset.id));
+  });
+  $('hist-skel').hidden = true;
+  $('hist-wrap').hidden = false;
+}
+
+// The GitHub panel erroring must not blank the local run table above - the
+// two fetches are independent and fail independently.
+async function fetchHistoryGithub() {
+  try {
+    const res = await fetch(`/api/runner/${NAME}/github`);
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok || !body.ok) throw new Error(body.error || ('HTTP ' + res.status));
+    const rows = body.data || [];
+    const match = rows.find(r => r.name === currentReg);
+    renderGithubPanel(match, rows.length);
+  } catch (e) {
+    $('hist-gh-skel').textContent = 'GitHub status unavailable - ' + e.message;
+    $('hist-gh-skel').hidden = false;
+    $('hist-gh-body').hidden = true;
+  }
+}
+
+function renderGithubPanel(match, total) {
+  $('hist-gh-skel').hidden = true;
+  $('hist-gh-body').hidden = false;
+  if (!match) {
+    $('hist-ver').textContent = '—';
+    $('hist-gh-kv').innerHTML = `<div><span class="k">GitHub agent</span><span class="v">${
+      currentReg
+        ? `no match for registration "${esc(currentReg)}" (${total} runner(s) on the org)`
+        : 'registration not yet known'
+    }</span></div>`;
+    return;
+  }
+  // This is the early warning for a fleet-wide pinned-version deprecation -
+  // shown big, not buried in the grid below.
+  $('hist-ver').textContent = match.version || '—';
+  const fields = [
+    ['Agent ID', match.id],
+    ['Status', match.status || '—'],
+    ['Busy', match.busy ? 'yes' : 'no'],
+    ['Runner group', match.runner_group || '—'],
+    ['OS', match.os || '—'],
+    ['Labels', (match.labels || []).join(', ') || '—'],
+  ];
+  $('hist-gh-kv').innerHTML = fields.map(([k, v]) =>
+    `<div><span class="k">${k}</span><span class="v">${esc(v)}</span></div>`).join('');
+}
+
+// Plot samples as an SVG polyline, same treatment as the fleet history page.
+function histSpark(samples, key, colour, max) {
+  if (samples.length < 2) return '<div class="skel" style="padding:16px 0">Too short to graph</div>';
+  const W = 800, H = 150, pad = 4;
+  const vals = samples.map(s => Number(s[key]) || 0);
+  const top = max || Math.max(...vals, 1);
+  const pts = vals.map((v, i) => {
+    const x = pad + (i / (vals.length - 1)) * (W - pad * 2);
+    const y = H - pad - (v / top) * (H - pad * 2);
+    return `${x.toFixed(1)},${y.toFixed(1)}`;
+  }).join(' ');
+  return `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none">
+    <polyline points="${pts}" fill="none" stroke="${colour}" stroke-width="1.6"/>
+  </svg>`;
+}
+
+async function openRun(id) {
+  try {
+    const res = await fetch('/api/history/run/' + id);
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    const r = await res.json();
+    const s = r.samples_data || [];
+    const memMax = Math.max(...s.map(x => x.mem || 0), 1);
+    const cpuMax = Math.max(...s.map(x => x.cpu || 0), 100);
+    $('sheet').innerHTML = `
+      <button class="close" onclick="document.getElementById('ov').classList.remove('show')">Close</button>
+      <h3>${esc(r.job_name)}</h3>
+      <div class="ctx">${esc(r.runner)} &middot; ${esc(r.registration || '-')}</div>
+      <div class="kv">
+        <div><span class="k">Started</span><span class="v">${fmtTime(r.started_at)}</span></div>
+        <div><span class="k">Ended</span><span class="v">${fmtTime(r.ended_at)}</span></div>
+        <div><span class="k">Duration</span><span class="v">${fmtDur(r.duration_s)}</span></div>
+        <div><span class="k">Result</span><span class="v"><span class="res ${esc(r.result || 'running')}">${esc(r.result || 'running')}</span></span></div>
+      </div>
+      <div class="legend"><span><i style="background:var(--signal)"></i>CPU &middot; peak ${cpuMax.toFixed(0)}%</span></div>
+      ${histSpark(s, 'cpu', 'var(--signal)', cpuMax)}
+      <div class="legend"><span><i style="background:var(--drain)"></i>Memory &middot; peak ${fmtMem(memMax)}</span></div>
+      ${histSpark(s, 'mem', 'var(--drain)', memMax)}`;
+    $('ov').classList.add('show');
+  } catch (e) {
+    toast('Could not load run details - ' + e.message, true);
+  }
+}
+
+$('ov').addEventListener('click', e => {
+  if (e.target.id === 'ov') $('ov').classList.remove('show');
+});
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape') $('ov').classList.remove('show');
+});
+
+pollStatus();
+pollSeries();
+statusTimer = setInterval(pollStatus, 5000);
+seriesTimer = setInterval(pollSeries, 5000);
+showTab('overview');
+</script>
+{% endif %}
+{% endblock %}

@@ -36,6 +36,14 @@ Explicitly out of scope for this spec:
   construction.
 - **Maintenance actions** (prune this runner's cache, clear `_work`, force
   re-register). Same follow-up.
+
+  > **Amendment, 2026-07-29:** cache reclaim shipped on this branch after all,
+  > added mid-implementation at the operator's request - `POST
+  > /api/runner/<name>/prune` (per-runner) and `POST /api/prune-all`
+  > (fleet-wide sweep of every idle runner). Left in place here rather than
+  > deleted, as the record of what was originally scoped out and why it
+  > changed. `_work` cleanup and forced re-registration remain out of scope
+  > and stay deferred to the follow-up spec.
 - **Interactive browser shell.** Considered and dropped. The runners are
   `--privileged`, so a browser terminal would convert a dashboard password
   compromise into a root prompt on the host — a different severity from every

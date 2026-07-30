@@ -128,15 +128,23 @@ def _stats_map():
 
 
 def _job_state(name):
-    """Derive busy/idle from the runner's log.
+    """Derive busy/idle/unknown from the runner's log.
 
     Takes the LAST job event of either kind. Grepping only for 'Running job'
     reports a finished job as still running whenever its completion line has
     scrolled out of the tail window.
+
+    A failed `docker logs` (including its own 10s timeout) returns "unknown",
+    not "idle". The two are not interchangeable: a runner mid-way through a
+    heavy build is exactly the one whose log read is most likely to time out,
+    so answering "idle" here would tell a destructive caller (prune) it is
+    safe to act precisely when it cannot tell. Callers that need a strict
+    safe/unsafe split (is_idle) already collapse "unknown" into "not idle";
+    callers that show state to an operator (collect) treat it explicitly.
     """
     ok, out, _ = _docker("logs", "--tail", "200", name, timeout=10)
     if not ok:
-        return "idle", ""
+        return "unknown", ""
     last = ""
     for line in out.splitlines():
         if "Running job:" in line or re.search(r"Job .* completed", line):
@@ -159,16 +167,89 @@ def _registration(name):
         return "-"
 
 
-def _inner_df(name):
+def _df_rows(name):
+    """Parsed `docker system df` rows keyed by Type, or None if unmeasurable.
+
+    _inner_df flattens a failure to ("0B","0B") for the grid, which is fine
+    there. prune() must not: reporting a fabricated empty after-state would
+    overstate what was reclaimed.
+    """
     ok, out, _ = _docker("exec", name, "docker", "system", "df",
                          "--format", "json", timeout=20)
     if not ok or not out:
+        return None
+    rows = {}
+    for line in out.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            row = json.loads(line)
+        except Exception:      # noqa: BLE001 - rendered, not raised
+            continue
+        if isinstance(row, dict) and row.get("Type"):
+            rows[row["Type"]] = row
+    return rows or None
+
+
+def _inner_df(name):
+    """Build cache and image totals from the runner's own daemon.
+
+    `docker system df --format json` emits ONE OBJECT PER LINE, one per
+    resource type, keyed by a "Type" field - not a single object with
+    "BuildCache" and "Images" keys. Reading only the first line and looking up
+    those keys is why this reported 0B for every runner regardless of what they
+    were actually holding.
+    """
+    rows = _df_rows(name)
+    if rows is None:
         return "0B", "0B"
-    try:
-        d = json.loads(out.splitlines()[0])
-        return d.get("BuildCache", "0B"), d.get("Images", "0B")
-    except Exception:
-        return "0B", "0B"
+    return (rows.get("Build Cache", {}).get("Size", "0B"),
+            rows.get("Images", {}).get("Size", "0B"))
+
+
+_host_info_cache = None
+
+
+def host_info():
+    """Core count and total RAM of the engine hosting the runners.
+
+    Cached for the process lifetime: this shells out, and a host does not gain
+    cores while the dashboard runs.
+
+    Needed because `docker stats` reports CPU as a percentage of ONE core, so
+    "70%" on a 56-core box means 1.3 cores, not "nearly full". Without the
+    denominator the number is actively misleading.
+    """
+    global _host_info_cache
+    if _host_info_cache is not None:
+        return _host_info_cache
+    # 15s, not the default 30s: `docker info` talks to the daemon, not a
+    # container, so it should answer fast - but a slow/warming-up daemon can
+    # still hit this boundary, which is exactly the case the caching below
+    # must survive without wedging the feature off for good.
+    ok, out, _ = _docker("info", "--format", "{{.NCPU}} {{.MemTotal}}",
+                         timeout=15)
+    info = {"ncpu": 0, "mem_total_bytes": 0}
+    if ok and out:
+        parts = out.split()
+        if len(parts) >= 2:
+            try:
+                info = {"ncpu": int(parts[0]),
+                        "mem_total_bytes": int(parts[1])}
+            except ValueError:
+                pass
+    # Only cache on success. A transient failure (daemon warm-up, a timeout
+    # under load, a blip) must not be memoised as though it were the real
+    # answer - runner_detail.cached() already had to fix exactly this bug
+    # shape (a failure stored and replayed for its whole TTL); caching the
+    # zero sentinel here unconditionally would reproduce it, but for the rest
+    # of the process's life instead of a TTL, since nothing ever calls
+    # host_info() with _host_info_cache reset. Leaving the sentinel at None
+    # lets the next call retry.
+    if ok:
+        _host_info_cache = info
+    return info
 
 
 def collect():
@@ -192,7 +273,18 @@ def collect():
             continue
 
         job_state, job = _job_state(name)
-        state = "draining" if name in draining else job_state
+        if name in draining:
+            state = "draining"
+        elif job_state == "unknown":
+            # A failed log read correlates with a runner grinding through a
+            # heavy build (see _job_state), so "busy" is the safer guess for
+            # the grid than a bare "unknown" the CSS has no styling for -
+            # and it is more accurate than the old behaviour of silently
+            # showing "idle" here.
+            state = "busy"
+            job = job or "state unknown - could not read logs"
+        else:
+            state = job_state
         cpu_s, mem_s = stats.get(name, ("0%", "0B / 0B"))
         try:
             cpu = float(cpu_s.replace("%", ""))
@@ -217,6 +309,7 @@ def collect():
     return {
         "generated": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "disk": _disk(),
+        "host": host_info(),
         "runners": runners,
     }
 
@@ -298,6 +391,11 @@ def create(index, env):
 
 
 def is_idle(name):
+    """True only for a definite "idle". "busy" and "unknown" both answer
+    False - this gates both the drain watcher (worst case: an early stop,
+    which just restarts) and cache prune (worst case: deleting layers a
+    running job needs), and the two callers cannot be told apart from here.
+    """
     state, _ = _job_state(name)
     return state == "idle"
 
@@ -316,6 +414,92 @@ def logs_since(name, seconds=45):
 
 _UNITS = {"B": 1, "KB": 10**3, "MB": 10**6, "GB": 10**9, "TB": 10**12,
           "KIB": 1024, "MIB": 1024**2, "GIB": 1024**3, "TIB": 1024**4}
+
+
+def _df_sizes(rows):
+    """{"build_cache": ..., "images": ...} from _df_rows(), or None if
+    unmeasurable. Kept distinct from _inner_df's "0B" fallback: prune() must
+    be able to tell "empty" from "could not measure"."""
+    if rows is None:
+        return None
+    return {"build_cache": rows.get("Build Cache", {}).get("Size", "0B"),
+            "images": rows.get("Images", {}).get("Size", "0B")}
+
+
+def prune(name, timeout=300):
+    """Reclaim build cache and unused images inside one runner.
+
+    Measures `docker system df` either side so the caller can report a real
+    number rather than "done". Both prunes are attempted even if the first
+    fails - they are independent, and reclaiming one of the two is better than
+    neither - UNLESS the buildx prune itself times out, in which case a
+    second prune is not issued (see below).
+
+    `measured` tells the caller whether "before"/"after"/"freed_bytes" can be
+    trusted. A failed `docker system df` is not read as "0B" here: that would
+    either fabricate an empty after-state (inflating freed_bytes to the whole
+    before-figure) or otherwise misreport what was reclaimed.
+
+    Generous timeout: discarding tens of gigabytes of build cache is not fast,
+    and a premature kill leaves the daemon mid-sweep.
+    """
+    # Narrow the check-then-act window the route opened. This cannot close it -
+    # a job can still start between this check and the prune - but BuildKit
+    # will not delete layers an in-flight build holds, so the residual risk is
+    # a slower build, not a broken one.
+    if not is_idle(name):
+        return {"name": name, "ok": False,
+                "error": f"{name} became busy before the prune started",
+                "before": None, "after": None,
+                "freed_bytes": None, "measured": False}
+
+    before = _df_sizes(_df_rows(name))
+
+    ok1, _, err1 = _docker("exec", name, "docker", "buildx", "prune", "-af",
+                           timeout=timeout)
+    timed_out = not ok1 and "timed out" in (err1 or "")
+    if timed_out:
+        # The exec client was killed; the daemon is very likely still sweeping.
+        # Issuing a second prune now would race it, and measuring df would
+        # report a number that means nothing.
+        return {
+            "name": name, "ok": False,
+            "error": f"buildx prune {err1}; the runner's daemon may still be "
+                     f"pruning. Re-check its usage in a few minutes.",
+            "before": before,
+            "after": None, "freed_bytes": None, "measured": False,
+        }
+
+    ok2, _, err2 = _docker("exec", name, "docker", "image", "prune", "-af",
+                           timeout=timeout)
+
+    after = _df_sizes(_df_rows(name))
+
+    if before is None or after is None:
+        return {
+            "name": name,
+            "ok": ok1 and ok2,
+            "error": (err1 or err2) or None,
+            "before": before,
+            "after": after,
+            "freed_bytes": None,
+            "measured": False,
+        }
+
+    freed = ((parse_size(before["build_cache"]) + parse_size(before["images"]))
+             - (parse_size(after["build_cache"]) + parse_size(after["images"])))
+
+    return {
+        "name": name,
+        "ok": ok1 and ok2,
+        "error": (err1 or err2) or None,
+        "before": before,
+        "after": after,
+        # A build running elsewhere on the same daemon can grow the cache while
+        # we prune, which would otherwise report a negative "freed".
+        "freed_bytes": max(0, freed),
+        "measured": True,
+    }
 
 
 def parse_size(s):

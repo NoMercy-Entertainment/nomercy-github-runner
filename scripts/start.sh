@@ -16,7 +16,7 @@ umask 0000
 #   "Runner version vX is deprecated and cannot receive messages"
 # Pin a current version here and bump it when GitHub deprecates it again.
 # Keep this in sync with ARG/ENV RUNNER_VERSION in the dockerfile.
-RUNNER_VERSION="2.335.1"
+RUNNER_VERSION="2.336.0"
 
 # ── Self-heal / upgrade: (re)install runner binaries ─────────────────────────
 # Re-extract when the binaries are missing (a botched auto-update wiped them)

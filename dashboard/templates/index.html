@@ -14,7 +14,8 @@
 .card.stopped{opacity:.72}
 .chead{display:flex;align-items:baseline;gap:9px;margin-bottom:3px}
 .cname{font-family:var(--label);font-size:15px;font-weight:600;letter-spacing:.09em;
-  text-transform:uppercase}
+  text-transform:uppercase;color:var(--drain);text-decoration:none}
+.cname:hover{text-decoration:underline}
 .badge{margin-left:auto;font-size:9px;letter-spacing:.16em;text-transform:uppercase;
   padding:2px 7px;border:1px solid currentColor}
 .badge.idle{color:var(--text-dim)}
@@ -74,6 +75,7 @@
 <div style="display:flex;gap:8px;margin-bottom:16px;flex-wrap:wrap">
   <button id="btn-add" class="primary">+ Add runner</button>
   <button id="btn-recreate" class="warn">Recreate fleet</button>
+  <button id="btn-prune-all" class="warn">Clear all cache</button>
   <span class="hint" style="align-self:center">Recreate applies saved settings changes.</span>
 </div>
 
@@ -141,6 +143,90 @@ async function act(action, name, btn) {
   }
 }
 
+// Prune endpoints live at a different URL shape than act()'s (name in the
+// path, not the body) and freed_bytes can be null - measurement failed, not
+// zero - so they get their own handling rather than reusing act().
+async function pruneOne(name, btn) {
+  btn.disabled = true;
+  const label = btn.textContent;
+  btn.textContent = 'Clearing...';
+  try {
+    const res = await fetch('/api/runner/' + name + '/prune', {method: 'POST'});
+    const d = await res.json().catch(() => ({}));
+    if (res.status === 409) {
+      // Busy is a normal outcome here, not a failure - the runner was left alone on purpose.
+      toast(name + ': busy running a job, not touched');
+      return;
+    }
+    const data = d.data || {};
+    if (!res.ok || d.ok === false) {
+      // One prune (buildx/image) can fail while the other succeeded - that
+      // still reclaimed real space, and discarding freed_bytes here just
+      // because ok is false would hide a correct result behind a pure error.
+      const err = data.error || d.error || ('HTTP ' + res.status);
+      let msg = name + ': clear cache failed - ' + err;
+      if (data.freed_bytes != null) {
+        msg += ' (still reclaimed ' + fmtGB(data.freed_bytes) + ')';
+      }
+      toast(msg, true);
+      if (data.freed_bytes) tick();   // partial reclaim changed the figures
+      return;
+    }
+    let msg;
+    if (data.freed_bytes == null) {
+      msg = name + ': reclaimed, amount unknown';
+      if (data.error) msg += ' - ' + data.error;
+    } else {
+      msg = name + ': ' + fmtGB(data.freed_bytes) + ' freed';
+    }
+    toast(msg);
+    tick();
+  } catch (e) {
+    toast(name + ': clear cache failed - ' + e.message, true);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = label;
+  }
+}
+
+async function pruneAll(btn) {
+  if (!confirm('Clear build cache and unused images on every idle runner? Busy runners are skipped and left alone. Each runner gets up to 2 minutes; one that needs longer reports an error and can be retried individually.')) return;
+  btn.disabled = true;
+  const label = btn.textContent;
+  btn.textContent = 'Clearing all...';
+  try {
+    const res = await fetch('/api/prune-all', {method: 'POST'});
+    const d = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(d.error || ('HTTP ' + res.status));
+    const data = d.data || {};
+    const results = data.results || [];
+    const skipped = data.skipped || [];
+    const failed = results.filter(x => !x.ok);
+    // freed_bytes === null on a successful result means that runner's amount
+    // is genuinely unknown, not zero - the backend folds it into 0 for the
+    // aggregate, so the total here is a floor, not an exact figure, and must
+    // say so rather than print a confident-looking number.
+    const unknownCount = results.filter(x => x.ok && x.freed_bytes == null).length;
+    let msg = `Cleared ${results.length - failed.length}/${results.length} runner(s), `;
+    msg += unknownCount > 0
+      ? `at least ${fmtGB(data.freed_bytes || 0)} freed (${unknownCount} amount unknown).`
+      : `${fmtGB(data.freed_bytes || 0)} freed total.`;
+    if (skipped.length) {
+      msg += ' Skipped: ' + skipped.map(s => `${s.name} (${s.reason})`).join(', ') + '.';
+    }
+    if (failed.length) {
+      msg += ' Failed: ' + failed.map(x => `${x.name} - ${x.error || 'unknown error'}`).join(', ') + '.';
+    }
+    toast(msg, failed.length > 0);
+    tick();
+  } catch (e) {
+    toast('Clear all cache failed - ' + e.message, true);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = label;
+  }
+}
+
 function meterHTML(key, label) {
   return `<div class="meter" data-m="${key}">
     <div class="mrow"><span>${label}</span><span class="mval"></span></div>
@@ -165,7 +251,7 @@ function makeCard(r, i) {
   el.style.animationDelay = (i * 45) + 'ms';
   el.innerHTML =
     `<div class="chead">
-       <span class="cname">${r.name.replace('github-runner-', 'Runner ')}</span>
+       <a class="cname" href="/runner/${r.name}">${r.name.replace('github-runner-', 'Runner ')}</a>
        <span class="badge"></span>
      </div>
      <div class="creg"></div>
@@ -178,12 +264,18 @@ function makeCard(r, i) {
        <button data-a="start">Start</button>
        <button data-a="restart">Restart</button>
        <button data-a="remove"      class="danger">Remove</button>
+       <button data-a="prune"       class="warn">Clear cache</button>
      </div>`;
   el.querySelectorAll('.actions button').forEach(b => {
     b.addEventListener('click', () => {
       const a = b.dataset.a;
       if (a === 'remove' && !confirm(`Remove ${r.name}? It is deregistered and deleted.`)) return;
       if (a === 'stop' && !confirm(`Stop ${r.name} now? A running job would be killed.`)) return;
+      if (a === 'prune') {
+        if (!confirm(`Clear ${r.name}'s build cache and unused images? This deletes them and cannot be undone.`)) return;
+        pruneOne(r.name, b);
+        return;
+      }
       act(a, r.name, b);
     });
   });
@@ -203,6 +295,11 @@ function render(d) {
   if (rs.length && skel) skel.remove();
   if (!rs.length && !skel) grid.innerHTML = '<div class="skel">No runners</div>';
 
+  const host = d.host || {ncpu: 0, mem_total_bytes: 0};
+  const ncpu = Number(host.ncpu) || 0;
+  // Fallback only used when `docker info` failed (ncpu === 0): scale each
+  // bar against the busiest runner in the fleet rather than divide by zero
+  // or claim "of 0 cores".
   const cpuScale = Math.max(100, ...rs.map(x => Number(x.cpu_percent) || 0));
   rs.forEach((r, i) => {
     let card = cards.get(r.name);
@@ -210,6 +307,12 @@ function render(d) {
 
     const cls = 'card ' + r.state;
     if (card.className !== cls) card.className = cls;
+
+    const nameLink = card.querySelector('.cname');
+    const dispName = r.name.replace('github-runner-', 'Runner ');
+    if (nameLink.textContent !== dispName) nameLink.textContent = dispName;
+    const href = '/runner/' + r.name;
+    if (nameLink.getAttribute('href') !== href) nameLink.setAttribute('href', href);
 
     const badge = card.querySelector('.badge');
     if (badge.textContent !== r.state) { badge.textContent = r.state; badge.className = 'badge ' + r.state; }
@@ -229,12 +332,25 @@ function render(d) {
     const mu = toBytes(r.mem_used), ml = toBytes(r.mem_limit);
     const cache = toBytes(r.build_cache);
     // docker stats is per-core: 400% means four cores busy, not an error.
-    // Scale the bar against the busiest runner so the fleet is comparable.
-    setMeter(card, 'cpu', cpu.toFixed(0) + '%', (cpu / cpuScale) * 100);
-    setMeter(card, 'mem', (r.mem_used || '0B') + ' / ' + (r.mem_limit || '?'),
-             ml > 0 ? (mu / ml) * 100 : 0);
-    setMeter(card, 'cache', fmtGB(cache) + ' / ' + CACHE_CAP_GB + ' GB',
-             (cache / (CACHE_CAP_GB * 1e9)) * 100);
+    // Scaled against the host's real core count so the bar reflects actual
+    // machine load - 1.3/56 cores draws nearly empty, not nearly full. Only
+    // when ncpu is unknown (docker info failed) do we fall back to scaling
+    // against the busiest runner in the fleet.
+    const cpuText = ncpu > 0
+      ? cpu.toFixed(1) + '%  ·  ' + (cpu / 100).toFixed(1) + ' / ' + ncpu + ' cores'
+      : cpu.toFixed(0) + '%';
+    const cpuPct = ncpu > 0 ? (cpu / ncpu) : (cpu / cpuScale) * 100;
+    setMeter(card, 'cpu', cpuText, cpuPct);
+    // Percentage first on all three meters, so the eye reads the same shape
+    // down the card instead of hunting for the number in a different position.
+    const memPct = ml > 0 ? (mu / ml) * 100 : 0;
+    const memText = (ml > 0 ? memPct.toFixed(1) + '%  ·  ' : '') +
+      (r.mem_used || '0B') + ' / ' + (r.mem_limit || '?');
+    setMeter(card, 'mem', memText, memPct);
+    const cachePct = (cache / (CACHE_CAP_GB * 1e9)) * 100;
+    setMeter(card, 'cache',
+             cachePct.toFixed(1) + '%  ·  ' + fmtGB(cache) + ' / ' + CACHE_CAP_GB + ' GB',
+             cachePct);
 
     // Only offer what makes sense for the current state.
     const stopped = r.state === 'stopped', draining = r.state === 'draining';
@@ -248,6 +364,7 @@ function render(d) {
     set('start', stopped);
     set('restart', !stopped);
     set('remove', true);
+    set('prune', true);
   });
 
   for (const [name, el] of cards) {
@@ -284,6 +401,7 @@ $('btn-recreate').addEventListener('click', e => {
   if (!confirm('Recreate every runner? Each is removed and rebuilt with current settings. Running jobs will be lost.')) return;
   act('recreate', null, e.target);
 });
+$('btn-prune-all').addEventListener('click', e => pruneAll(e.target));
 
 tick();
 setInterval(tick, 5000);

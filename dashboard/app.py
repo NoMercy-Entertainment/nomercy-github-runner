@@ -12,6 +12,7 @@ therefore cross the network unencrypted; the UI says so rather than letting it
 be forgotten.
 """
 
+import collections
 import hashlib
 import hmac
 import json
@@ -27,6 +28,8 @@ from flask import (Flask, jsonify, redirect, render_template, request,
 import docker_ops as ops
 import github_api
 import history
+import runner_detail
+from runner_detail import SECRET_KEYS, mask
 
 DATA = os.environ.get("DASH_DATA", "/data")
 PORT = int(os.environ.get("DASH_PORT", "9200"))
@@ -41,7 +44,6 @@ EDITABLE = {
     "GH_TOKEN", "GITHUB_ORG", "RUNNER_LABELS",
     "RUNNER_GROUP", "RUNNER_CPU_LIMIT", "RUNNER_MEM_LIMIT",
 }
-SECRET_KEYS = {"GH_TOKEN"}
 
 app = Flask(__name__)
 
@@ -164,21 +166,59 @@ def write_env(updates):
     os.replace(tmp, ENV_PATH)
 
 
-def mask(value):
-    """Show enough to recognise a token, never enough to use it."""
-    if not value:
-        return ""
-    if len(value) <= 8:
-        return "*" * len(value)
-    return value[:4] + "•" * 8 + value[-4:]
-
-
 # --------------------------------------------------------------------------
 # background: status cache + drain watcher
 # --------------------------------------------------------------------------
 
 _status = {"generated": "", "disk": {}, "runners": []}
 _status_lock = threading.Lock()
+
+# Ten minutes of live history at the 5s collector interval. In memory rather
+# than in SQLite: the samples table is deliberately per-job, and widening it to
+# record continuously would grow the database for data the live view only needs
+# while someone is looking at it.
+SERIES_LEN = 120
+_series = {}
+
+
+def _record_series(status):
+    """Append one point per runner. Called from the collector, which has
+    already computed all three values for the grid - so this costs an append,
+    not a docker call."""
+    runners = status.get("runners", [])
+    live = set()
+    for r in runners:
+        name = r.get("name")
+        if not name:
+            continue
+        live.add(name)
+        ring = _series.get(name)
+        if ring is None:
+            ring = _series[name] = collections.deque(maxlen=SERIES_LEN)
+        ring.append({
+            "t": status.get("generated", ""),
+            "cpu": r.get("cpu_percent", 0),
+            "mem": ops.parse_size(r.get("mem_used")),
+            "cache": ops.parse_size(r.get("build_cache")),
+        })
+
+    # An empty runner list is far more often a transient `docker ps` hiccup or
+    # "Recreate fleet" briefly emptying every runner at once, than every
+    # runner genuinely vanishing in the same instant. Pruning here would wipe
+    # up to ten minutes of history for all six over what is usually a blip -
+    # only prune when the list is non-empty, so a runner missing from a
+    # *live* list still loses its ring, but a wholesale empty poll changes
+    # nothing.
+    if not runners:
+        return
+    # A removed runner must not keep its ring, or the dict grows for the life
+    # of the process across add/remove cycles.
+    for gone in set(_series) - live:
+        del _series[gone]
+
+
+def _series_for(name):
+    return list(_series.get(name, ()))
 
 
 def _collector():
@@ -188,6 +228,7 @@ def _collector():
             s = ops.collect()
             with _status_lock:
                 _status = s
+                _record_series(s)
             _record_history(s)
         except Exception as e:  # noqa: BLE001
             print(f"[collector] {e}")
@@ -401,6 +442,134 @@ def settings():
 def api_status():
     with _status_lock:
         return jsonify(_status)
+
+
+def _detail_target(name):
+    """Validate a runner name from the URL.
+
+    Same rule as _target(), which reads from the JSON body. Checked before any
+    docker call so a crafted name can never reach the command line.
+    """
+    if not re.fullmatch(r"github-runner-\d+", name or ""):
+        return None, (jsonify(ok=False, error="bad runner name"), 400)
+    if name not in ops.list_runner_names():
+        return None, (jsonify(ok=False, error="no such runner"), 404)
+    return name, None
+
+
+def _detail(name, fn, *args, **kwargs):
+    """Run a collector and turn its result into a response."""
+    name, err = _detail_target(name)
+    if err:
+        return err
+    result = fn(name, *args, **kwargs)
+    return jsonify(result), (200 if result.get("ok") else 500)
+
+
+@app.route("/runner/<name>")
+def runner_page(name):
+    if not re.fullmatch(r"github-runner-\d+", name or ""):
+        return render_template("runner.html", name=name, missing=True), 404
+    if name not in ops.list_runner_names():
+        return render_template("runner.html", name=name, missing=True), 404
+    return render_template("runner.html", name=name, missing=False)
+
+
+@app.route("/api/runner/<name>/inspect")
+def api_runner_inspect(name):
+    name, err = _detail_target(name)
+    if err:
+        return err
+    result = runner_detail.cached(
+        f"inspect:{name}", 10, lambda: runner_detail.inspect(name))
+    return jsonify(result), (200 if result.get("ok") else 500)
+
+
+@app.route("/api/runner/<name>/engine")
+def api_runner_engine(name):
+    return _detail(name, runner_detail.engine)
+
+
+@app.route("/api/runner/<name>/logs")
+def api_runner_logs(name):
+    return _detail(name, runner_detail.logs,
+                   since=request.args.get("since", ""))
+
+
+@app.route("/api/runner/<name>/series")
+def api_runner_series(name):
+    name, err = _detail_target(name)
+    if err:
+        return err
+    with _status_lock:
+        return jsonify(ok=True, data=_series_for(name))
+
+
+@app.route("/api/runner/<name>/github")
+def api_runner_github(name):
+    name, err = _detail_target(name)
+    if err:
+        return err
+    env = read_env()
+    token, org = env.get("GH_TOKEN"), env.get("GITHUB_ORG")
+    if not token or not org:
+        return jsonify(ok=False, error="GH_TOKEN or GITHUB_ORG not set"), 500
+    try:
+        # Keyed by org, not by runner: every runner on this page asks the same
+        # question, and GitHub rate-limits.
+        rows = runner_detail.cached(
+            f"github:{org}", 60, lambda: github_api.GitHub(token, org).runners())
+    except Exception as e:  # noqa: BLE001 - rendered in the panel
+        return jsonify(ok=False, error=str(e)), 500
+    if rows is None:
+        return jsonify(ok=False, error="could not reach the GitHub API"), 500
+    return jsonify(ok=True, data=rows)
+
+
+@app.route("/api/runner/<name>/history")
+def api_runner_history(name):
+    name, err = _detail_target(name)
+    if err:
+        return err
+    return jsonify(ok=True, data=history.list_runs(runner=name, limit=100))
+
+
+@app.route("/api/runner/<name>/prune", methods=["POST"])
+def api_runner_prune(name):
+    name, err = _detail_target(name)
+    if err:
+        return err
+    # Refuse rather than race: clearing the cache under a running job discards
+    # exactly the layers it is about to reuse.
+    if not ops.is_idle(name):
+        return jsonify(ok=False, error=f"{name} is busy running a job"), 409
+    result = ops.prune(name)
+    return jsonify(ok=result["ok"], data=result), (200 if result["ok"] else 500)
+
+
+@app.route("/api/prune-all", methods=["POST"])
+def api_prune_all():
+    """Sweep every idle runner. Busy ones are skipped, never interrupted.
+
+    Each prune gets 120s rather than the 300s single-runner default: six
+    runners at the full timeout would let one HTTP request run for close to
+    an hour with no client-side timeout. 120s keeps the whole sweep inside
+    something a browser tab will survive; a runner that needs longer than
+    that reports an error here and can still be pruned individually.
+    """
+    results, skipped = [], []
+    for name in ops.list_runner_names():
+        if not ops.is_idle(name):
+            skipped.append({"name": name, "reason": "busy running a job"})
+            continue
+        results.append(ops.prune(name, timeout=120))
+    # A per-runner failure can leave freed_bytes as None (measurement was not
+    # trustworthy) rather than 0 - treat that as "contributed nothing" to the
+    # fleet total instead of crashing the whole sweep's response.
+    freed = sum(r["freed_bytes"] or 0 for r in results)
+    ok = all(r["ok"] for r in results)
+    return jsonify(ok=ok, data={"results": results, "skipped": skipped,
+                                "freed_bytes": freed})
 
 
 def _target():

@@ -9,7 +9,7 @@ RUN apk add --no-cache docker-cli bash coreutils tzdata \
  && pip install --no-cache-dir flask==3.0.3
 
 WORKDIR /app
-COPY app.py docker_ops.py history.py github_api.py ./
+COPY app.py docker_ops.py history.py github_api.py runner_detail.py ./
 COPY templates/ ./templates/
 
 ENV PYTHONUNBUFFERED=1 \
