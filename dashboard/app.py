@@ -648,19 +648,40 @@ def api_settings():
 
 @app.route("/api/recreate", methods=["POST"])
 def api_recreate():
-    """Remove and recreate every runner so new settings take effect."""
+    """Remove and recreate every runner so new settings take effect.
+
+    A cascade that destroyed six runners in production started here: `docker
+    rm -f` reporting failure on a slow-but-successful removal was read as "the
+    runner is still there", so the loop skipped its replacement and moved on
+    to destroy the next one - repeatedly. The exit status of remove() is only
+    a hint; list_runner_names() is the ground truth for whether the container
+    is actually gone. If it is gone, replace it even if remove() said it
+    failed. If it is NOT gone, or if create() fails, stop the sweep
+    immediately instead of continuing on to the next runner - a runner that
+    was removed and not replaced is lost capacity, and repeating that across
+    the fleet is exactly the incident being fixed.
+    """
     env = read_env()
     names = ops.list_runner_names()
     results = []
     for name in names:
         idx = ops._index_of(name)
         ok, _, err = ops.remove(name)
-        if not ok:
+        if not ok and name in ops.list_runner_names():
+            # remove() failed AND the container is still there: it is not
+            # safe to assume anything about the rest of the fleet. Stop here
+            # rather than destroying the next runner too.
             results.append({"name": name, "ok": False, "error": err})
-            continue
+            return jsonify(ok=False, results=results, aborted_at=name), 500
+
         ok2, new, err2 = ops.create(idx, env)
         results.append({"name": new, "ok": ok2,
                         "error": None if ok2 else err2})
+        if not ok2:
+            # A removed runner that failed to come back is lost capacity.
+            # Stop rather than repeat that across the remaining runners.
+            return jsonify(ok=False, results=results, aborted_at=new), 500
+
     return jsonify(ok=all(r["ok"] for r in results), results=results)
 
 

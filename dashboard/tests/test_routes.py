@@ -235,6 +235,131 @@ def test_missing_runner_page_says_so(client, monkeypatch):
     assert b"no longer exists" in r.data
 
 
+def test_recreate_happy_path_removes_and_recreates_every_runner(client, monkeypatch):
+    names = ["github-runner-1", "github-runner-2"]
+    monkeypatch.setattr(docker_ops, "list_runner_names", lambda: list(names))
+    remove_calls = []
+
+    def fake_remove(name):
+        remove_calls.append(name)
+        return True, "", ""
+
+    create_calls = []
+
+    def fake_create(idx, env):
+        create_calls.append(idx)
+        return True, f"github-runner-{idx}", None
+
+    monkeypatch.setattr(docker_ops, "remove", fake_remove)
+    monkeypatch.setattr(docker_ops, "create", fake_create)
+
+    r = client.post("/api/recreate")
+    assert r.status_code == 200
+    body = r.get_json()
+    assert body["ok"] is True
+    assert "aborted_at" not in body
+    assert remove_calls == ["github-runner-1", "github-runner-2"]
+    assert create_calls == [1, 2]
+    assert len(body["results"]) == 2
+    assert all(res["ok"] for res in body["results"])
+
+
+def test_removal_reported_as_failed_but_container_gone_still_creates_replacement(
+        client, monkeypatch):
+    """A `docker rm -f` that exceeds its timeout reports failure to the caller
+    even when the container is actually gone. The route must not trust that
+    exit status - it must check list_runner_names() and, finding the runner
+    really gone, still create its replacement."""
+    state = {"names": ["github-runner-1"]}
+    monkeypatch.setattr(docker_ops, "list_runner_names",
+                        lambda: list(state["names"]))
+
+    def fake_remove(name):
+        # Slow-but-successful removal: the container is gone, but the
+        # command itself reports failure (e.g. a timeout).
+        state["names"].remove(name)
+        return False, "", "timed out after 180s"
+
+    monkeypatch.setattr(docker_ops, "remove", fake_remove)
+    monkeypatch.setattr(docker_ops, "create",
+                        lambda idx, env: (True, f"github-runner-{idx}", None))
+
+    r = client.post("/api/recreate")
+    assert r.status_code == 200
+    body = r.get_json()
+    assert body["ok"] is True
+    assert body["results"] == [
+        {"name": "github-runner-1", "ok": True, "error": None},
+    ]
+
+
+def test_removal_that_leaves_the_container_present_aborts_the_sweep(client, monkeypatch):
+    """Regression test for the incident that destroyed six production runners
+    in one recreate sweep: a removal that both reported failure AND left the
+    container behind was, before this fix, treated as "skip this one and
+    keep going" - which meant the loop moved on to destroy the next runner,
+    and the next, until the whole fleet was gone with nothing recreated.
+
+    The fix must stop at the first runner that is confirmed still present,
+    and - the assertion that actually encodes the incident - never call
+    remove() again for any runner after that point.
+    """
+    names = ["github-runner-1", "github-runner-2", "github-runner-3"]
+    monkeypatch.setattr(docker_ops, "list_runner_names", lambda: list(names))
+
+    remove_calls = []
+
+    def fake_remove(name):
+        remove_calls.append(name)
+        # Reports failure AND the container is still present (not removed
+        # from `names`) - the exact shape of the wedged/Dead-state removal
+        # that triggered the outage.
+        return False, "", "timed out after 180s"
+
+    create_calls = []
+
+    monkeypatch.setattr(docker_ops, "remove", fake_remove)
+    monkeypatch.setattr(docker_ops, "create",
+                        lambda idx, env: create_calls.append(idx) or
+                        (True, f"github-runner-{idx}", None))
+
+    r = client.post("/api/recreate")
+    assert r.status_code == 500
+    body = r.get_json()
+    assert body["ok"] is False
+    assert body["aborted_at"] == "github-runner-1"
+    assert remove_calls == ["github-runner-1"], \
+        "the sweep must stop, not cascade into removing the rest of the fleet"
+    assert create_calls == []
+
+
+def test_failing_create_also_aborts_the_sweep(client, monkeypatch):
+    """A runner removed and not replaced is lost capacity. Repeating that
+    across the fleet is the same cascade as the remove-side bug, just
+    triggered from the create() side - it must abort too."""
+    names = ["github-runner-1", "github-runner-2"]
+    monkeypatch.setattr(docker_ops, "list_runner_names", lambda: list(names))
+
+    remove_calls = []
+
+    def fake_remove(name):
+        remove_calls.append(name)
+        names.remove(name)
+        return True, "", ""
+
+    monkeypatch.setattr(docker_ops, "remove", fake_remove)
+    monkeypatch.setattr(docker_ops, "create",
+                        lambda idx, env: (False, f"github-runner-{idx}", "create failed"))
+
+    r = client.post("/api/recreate")
+    assert r.status_code == 500
+    body = r.get_json()
+    assert body["ok"] is False
+    assert body["aborted_at"] == "github-runner-1"
+    assert remove_calls == ["github-runner-1"], \
+        "must not remove the next runner after a failed create"
+
+
 def test_prune_all_still_reports_when_one_runner_fails(client, monkeypatch):
     monkeypatch.setattr(docker_ops, "list_runner_names",
                         lambda: ["github-runner-1", "github-runner-2"])

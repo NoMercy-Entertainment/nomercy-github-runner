@@ -356,7 +356,12 @@ def restart(name, timeout=60):
 
 
 def remove(name):
-    ok, out, err = _docker("rm", "-f", name, timeout=120)
+    # 180s, not 120s: these containers hold a nested (Docker-in-Docker)
+    # daemon, and tearing that down on removal has been observed to take
+    # ~110s - too close to a 120s limit for comfort. A timeout here is read
+    # by the caller as "removal failed" even when it eventually succeeds, so
+    # the margin matters more than it looks like it should.
+    ok, out, err = _docker("rm", "-f", name, timeout=180)
     set_draining(name, False)
     return ok, out, err
 
