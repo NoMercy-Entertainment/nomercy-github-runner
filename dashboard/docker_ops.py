@@ -395,6 +395,25 @@ def create(index, env):
     return ok, name, (err or out)
 
 
+def started_at(name):
+    """When this container last started, to whole seconds, or "" if unknown.
+
+    Truncated rather than passed through: the daemon reports nanoseconds
+    ("2026-08-20T14:23:37.714612450Z") while history stores whole seconds
+    ("2026-08-20T14:23:37Z"), and the two are compared as strings. Left
+    untruncated, a fractional stamp sorts *before* the same second without
+    one, because "." is below "Z" - close enough to right to survive review
+    and wrong exactly once a second.
+    """
+    ok, out, _ = _docker("inspect", "-f", "{{.State.StartedAt}}", name,
+                         timeout=10)
+    if not ok:
+        return ""
+    stamp = (out or "").strip()
+    head, sep, _ = stamp.partition(".")
+    return (head + "Z") if sep else stamp
+
+
 def is_idle(name):
     """True only for a definite "idle". "busy" and "unknown" both answer
     False - this gates both the drain watcher (worst case: an early stop,

@@ -306,6 +306,19 @@ def _record_history(status):
         except Exception as e:  # noqa: BLE001
             print(f"[history:{name}] {e}")
 
+        # A job killed mid-flight never writes the "completed" line the loop
+        # above keys on, so nothing there will ever close its row. Gated on
+        # an open run existing: that keeps the extra inspect off the 5s poll
+        # for every idle runner and bounds it to one call per poll while a
+        # job is genuinely in progress.
+        try:
+            if history.has_open_run(name):
+                started = ops.started_at(name)
+                if started:
+                    history.close_interrupted(name, started)
+        except Exception as e:  # noqa: BLE001
+            print(f"[orphans:{name}] {e}")
+
         # Samples attach to whichever run is open, so an idle runner records
         # nothing and the graph covers exactly the job's duration.
         if r["state"] in ("busy", "draining"):

@@ -169,6 +169,42 @@ def close_run(runner, job_name, ended_at, result):
              row["id"]))
 
 
+def has_open_run(runner):
+    """Whether this runner has a run still recorded as running."""
+    with _lock, _conn() as c:
+        return c.execute(
+            "SELECT 1 FROM runs WHERE runner=? AND ended_at IS NULL LIMIT 1",
+            (runner,)).fetchone() is not None
+
+
+def close_interrupted(runner, container_started_at):
+    """Close runs that were still open when their container last restarted.
+
+    close_run() only ever fires on the runner's own "Job ... completed with
+    result:" line - which is precisely the line a job killed mid-flight never
+    writes. Nothing else closed those rows, so a SIGTERM, a restart or a
+    fleet recreate left a run marked running for good, and the detail page
+    rendered it as a job still in progress a month later.
+
+    A run that began before the container's current start cannot still be
+    running: the process that was running it no longer exists. Ended at the
+    restart, which is the last moment it can be proven dead - not "now",
+    which would grow the duration for as long as nobody looked.
+
+    Runs that began *after* that start are the live ones and are untouched,
+    as are runs already closed.
+    """
+    with _lock, _conn() as c:
+        cur = c.execute(
+            "UPDATE runs SET ended_at=?, result='Interrupted',"
+            " duration_s=MAX(0, CAST(strftime('%s', ?) AS INTEGER)"
+            "               - CAST(strftime('%s', started_at) AS INTEGER))"
+            " WHERE runner=? AND ended_at IS NULL AND started_at < ?",
+            (container_started_at, container_started_at,
+             runner, container_started_at))
+        return cur.rowcount
+
+
 def add_sample(runner, cpu, mem, when):
     """Attach a resource sample to whatever run is open on this runner."""
     with _lock, _conn() as c:
