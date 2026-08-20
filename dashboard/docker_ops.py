@@ -127,6 +127,34 @@ def _stats_map():
     return m
 
 
+# "2026-08-20 13:27:33Z: Running job: build-base / docker-build" - the
+# runner stamps its own lines, so the age of an event can be read straight off
+# the line that was matched, without a second `docker logs --timestamps` pass.
+RE_LOG_STAMP = re.compile(r"(\d{4}-\d{2}-\d{2}) (\d{2}:\d{2}:\d{2})Z:")
+
+
+def _outlived_by_container(name, line):
+    """Whether this log line describes something the container has outlived.
+
+    A job that began before the container's current start cannot still be
+    running - the process that was running it is gone. Without this, a job
+    killed mid-flight leaves its "Running job:" as the last event in the log
+    for good, and the runner reads busy for ever.
+
+    Both unknowns answer False, which keeps whatever the log alone said. That
+    direction matters: is_idle() gates prune and drain, so a guess that
+    invents "idle" would clear the build cache out from under a live job,
+    while a guess that keeps "busy" only delays a sweep.
+    """
+    m = RE_LOG_STAMP.search(line)
+    if not m:
+        return False
+    started = started_at(name)
+    if not started:
+        return False
+    return f"{m.group(1)}T{m.group(2)}Z" < started
+
+
 def _job_state(name):
     """Derive busy/idle/unknown from the runner's log.
 
@@ -149,9 +177,11 @@ def _job_state(name):
     for line in out.splitlines():
         if "Running job:" in line or re.search(r"Job .* completed", line):
             last = line
-    if "Running job:" in last:
-        return "busy", last.split("Running job:", 1)[1].strip()
-    return "idle", ""
+    if "Running job:" not in last:
+        return "idle", ""
+    if _outlived_by_container(name, last):
+        return "idle", ""
+    return "busy", last.split("Running job:", 1)[1].strip()
 
 
 def _registration(name):
