@@ -24,6 +24,8 @@ import time
 
 from flask import (Flask, jsonify, redirect, render_template, request,
                    session, url_for)
+from flask.sessions import SecureCookieSessionInterface
+from itsdangerous import BadSignature
 
 import docker_ops as ops
 import github_api
@@ -63,6 +65,50 @@ def _secret_key():
 
 
 app.secret_key = _secret_key()
+
+
+class ClockTolerantSessions(SecureCookieSessionInterface):
+    """Session cookies that survive the clock being corrected backwards.
+
+    This runs in a WSL distro whose clock is periodically pulled back by ~12
+    seconds. Flask stamps the session cookie with the time it was signed, and
+    itsdangerous refuses any cookie stamped after the current clock -
+    "Signature age -12 < 0 seconds" - so a single backward jump invalidates
+    every live session at once and logs everyone out mid-click. That was the
+    whole of a long-standing "why do I keep getting logged out" complaint.
+
+    A stamp in the future can only ever be our own clock's doing: the stamp is
+    inside the HMAC, so a client cannot move it without the secret key. There
+    is therefore nothing to defend against by rejecting it, and the check costs
+    real sessions. Age is verified in one direction only - genuinely expired
+    cookies are still refused below, and an unsigned or edited cookie still
+    fails the signature check exactly as before.
+    """
+
+    def open_session(self, app, request):
+        s = self.get_signing_serializer(app)
+        if s is None:
+            return None
+        val = request.cookies.get(self.get_cookie_name(app))
+        if not val:
+            return self.session_class()
+        try:
+            # max_age=None verifies the signature but skips itsdangerous' own
+            # age checks, so the lifetime can be enforced here instead - where
+            # a backward clock jump is distinguishable from a stale cookie.
+            data, issued = s.loads(val, max_age=None, return_timestamp=True)
+        except BadSignature:
+            return self.session_class()
+        # time.time() is the clock itsdangerous stamps the cookie with, so
+        # signing and expiry are measured against one clock. Comparing against
+        # a second, independent clock is what this class exists to undo.
+        age = time.time() - issued.timestamp()
+        if age > app.permanent_session_lifetime.total_seconds():
+            return self.session_class()
+        return self.session_class(data)
+
+
+app.session_interface = ClockTolerantSessions()
 
 
 def _auth():
