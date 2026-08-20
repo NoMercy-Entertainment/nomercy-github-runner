@@ -366,10 +366,16 @@ async function act(action, btn) {
   }
 }
 document.querySelectorAll('#rd-actions button').forEach(b => {
-  b.addEventListener('click', () => {
+  b.addEventListener('click', async () => {
     const a = b.dataset.a;
-    if (a === 'remove' && !confirm(`Remove ${NAME}? It is deregistered and deleted.`)) return;
-    if (a === 'stop' && !confirm(`Stop ${NAME} now? A running job would be killed.`)) return;
+    if (a === 'remove' && !(await confirmDialog({
+          title: `Remove ${NAME}?`,
+          body: 'It is deregistered from GitHub and the container is deleted.',
+          confirm: 'Remove'}))) return;
+    if (a === 'stop' && !(await confirmDialog({
+          title: `Stop ${NAME}?`,
+          body: 'A running job would be killed.',
+          confirm: 'Stop'}))) return;
     act(a, b);
   });
 });
@@ -875,7 +881,11 @@ function renderEngine(d) {
 }
 
 async function pruneThisRunner() {
-  if (!confirm(`Clear ${NAME}'s build cache and unused images? This deletes them and cannot be undone.`)) return;
+  if (!(await confirmDialog({
+        title: `Clear ${NAME}'s build cache?`,
+        body: 'The build cache and unused images are deleted. This cannot be '
+            + 'undone.',
+        confirm: 'Clear cache'}))) return;
   const btn = $('eng-prune');
   btn.disabled = true;
   const label = btn.textContent;

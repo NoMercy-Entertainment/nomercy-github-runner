@@ -131,7 +131,11 @@ $('save').addEventListener('click', async e => {
 });
 
 $('save-recreate').addEventListener('click', async e => {
-  if (!confirm('Save settings and recreate every runner? Running jobs will be lost.')) return;
+  if (!(await confirmDialog({
+        title: 'Save and recreate every runner?',
+        body: 'Every runner is removed and rebuilt with the saved settings. '
+            + 'Running jobs will be lost.',
+        confirm: 'Save and recreate'}))) return;
   e.target.disabled = true;
   try {
     await save();

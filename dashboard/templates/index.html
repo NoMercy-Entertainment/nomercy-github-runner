@@ -190,7 +190,12 @@ async function pruneOne(name, btn) {
 }
 
 async function pruneAll(btn) {
-  if (!confirm('Clear build cache and unused images on every idle runner? Busy runners are skipped and left alone. Each runner gets up to 2 minutes; one that needs longer reports an error and can be retried individually.')) return;
+  if (!(await confirmDialog({
+        title: 'Clear cache on every idle runner?',
+        body: 'Busy runners are skipped and left alone. Each runner gets up to '
+            + '2 minutes; one that needs longer reports an error and can be '
+            + 'retried individually.',
+        confirm: 'Clear all'}))) return;
   btn.disabled = true;
   const label = btn.textContent;
   btn.textContent = 'Clearing all...';
@@ -267,12 +272,22 @@ function makeCard(r, i) {
        <button data-a="prune"       class="warn">Clear cache</button>
      </div>`;
   el.querySelectorAll('.actions button').forEach(b => {
-    b.addEventListener('click', () => {
+    b.addEventListener('click', async () => {
       const a = b.dataset.a;
-      if (a === 'remove' && !confirm(`Remove ${r.name}? It is deregistered and deleted.`)) return;
-      if (a === 'stop' && !confirm(`Stop ${r.name} now? A running job would be killed.`)) return;
+      if (a === 'remove' && !(await confirmDialog({
+            title: `Remove ${r.name}?`,
+            body: 'It is deregistered from GitHub and the container is deleted.',
+            confirm: 'Remove'}))) return;
+      if (a === 'stop' && !(await confirmDialog({
+            title: `Stop ${r.name}?`,
+            body: 'A running job would be killed.',
+            confirm: 'Stop'}))) return;
       if (a === 'prune') {
-        if (!confirm(`Clear ${r.name}'s build cache and unused images? This deletes them and cannot be undone.`)) return;
+        if (!(await confirmDialog({
+              title: `Clear ${r.name}'s build cache?`,
+              body: 'The build cache and unused images are deleted. This cannot '
+                  + 'be undone.',
+              confirm: 'Clear cache'}))) return;
         pruneOne(r.name, b);
         return;
       }
@@ -397,8 +412,12 @@ async function tick() {
 }
 
 $('btn-add').addEventListener('click', e => act('add', null, e.target));
-$('btn-recreate').addEventListener('click', e => {
-  if (!confirm('Recreate every runner? Each is removed and rebuilt with current settings. Running jobs will be lost.')) return;
+$('btn-recreate').addEventListener('click', async e => {
+  if (!(await confirmDialog({
+        title: 'Recreate every runner?',
+        body: 'Each runner is removed and rebuilt with the current settings. '
+            + 'Running jobs will be lost.',
+        confirm: 'Recreate'}))) return;
   act('recreate', null, e.target);
 });
 $('btn-prune-all').addEventListener('click', e => pruneAll(e.target));
