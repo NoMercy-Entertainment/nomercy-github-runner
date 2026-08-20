@@ -60,6 +60,19 @@ GET, so the rule is one condition in one place: a POST from a `viewer` is
 403. A check that must be repeated at fifteen call sites is a check that will
 eventually be forgotten at one of them.
 
+That rule alone is not quite enough, and the exception is named rather than
+left implicit. Two routes are reads that are not for everyone:
+
+- `GET /settings` - operator and above. The real token never reaches the
+  browser (the template renders `token_mask`, first four and last four
+  characters), but the org, labels, group and limits are configuration, and a
+  partially disclosed token is still a disclosure. A viewer is there to see
+  why a build failed.
+- `GET /users` - owner only.
+
+Both are enumerated in one place next to the POST rule, so the guard reads as
+a single policy rather than a general rule with forgotten holes.
+
 ### Owner bootstrap
 
 Seeded, not claimed: `DASH_OWNER=github:6890678` in `.env`.
@@ -116,9 +129,12 @@ of the control panel for their own fleet, and the only way back in is
 ## Testing
 
 - Allowlist: approve, deny, revoke, role changes, unknown identity.
-- Guard: viewer POST is 403, operator POST passes, pending identity reaches
-  neither, a revoked identity with a live cookie is refused on the next
-  request.
+- Guard: viewer POST is 403, operator POST passes, a pending identity reaches
+  neither, and a revoked identity holding a live cookie is refused on its next
+  request rather than at its next sign-in.
+- Guard, read exceptions: viewer is refused `GET /settings`, non-owner is
+  refused `GET /users`. Pinned by their own tests, because they are the two
+  cases the POST rule does not catch.
 - Owner seed: honoured when `users.json` is absent; not claimable by whoever
   signs in first.
 - Callbacks: driven against a stubbed provider, no network in tests.
