@@ -31,6 +31,21 @@ Two separate layers. Conflating them is the mistake above.
   (discovery URL, client id, client secret). `auth.nomercy.tv` is therefore
   configuration, not code, and any other compliant IdP works unchanged.
 
+The IdP is confirmed: Keycloak, realm `NoMercyTV`.
+
+```
+issuer     https://auth.nomercy.tv/realms/NoMercyTV
+discovery  <issuer>/.well-known/openid-configuration
+PKCE       S256 supported
+signing    RS256, via <issuer>/protocol/openid-connect/certs
+claims     sub, name, preferred_username, email
+```
+
+There is no `groups` or `roles` claim in `claims_supported`, so Keycloak
+cannot express "who may use the dashboard" without a custom mapper - and it
+does not need to. Authorization is the allowlist below; the IdP is only ever
+asked who someone is.
+
 **Authorization** answers *may you*, and is an explicit allowlist in
 `/data/users.json`. Nothing else grants access. Not org membership, not
 holding a nomercy.tv account, not having authenticated successfully.
@@ -150,10 +165,23 @@ here; it is recorded so it is not mistaken for an oversight.
 
 ## Open items, needed to run - not to build
 
-- OIDC discovery URL for `auth.nomercy.tv` (`/.well-known/openid-configuration`
-  on the bare host returns 404, so it is elsewhere - under Keycloak it is
-  `/realms/<realm>/.well-known/openid-configuration`), plus client id/secret.
-- A GitHub OAuth App under NoMercy-Entertainment. An OAuth App accepts a
-  single callback URL, and `localhost` and `192.168.178.19` are different
-  hosts; the LAN URL is canonical. A DHCP reservation for the host is assumed,
-  or the callback breaks on a new lease.
+**A new Keycloak client, not the existing one.** The exported
+`phillippepelzer.me` client is Forgejo's. Reusing it does not work and should
+not be attempted:
+
+- its `redirectUris` are `https://*.phillippepelzer.me/callback` and Forgejo's
+  own callback. Keycloak matches `redirect_uri` against that list, and the
+  dashboard's `http://192.168.178.19:9200/...` matches neither.
+- one secret would then authenticate two unrelated applications, so rotating
+  or revoking it for the dashboard breaks Forgejo logins.
+
+Create `nomercy-runners`: confidential, standard flow only, PKCE `S256`,
+redirect URI the dashboard callback, and no wildcard in it.
+
+**A GitHub OAuth App under NoMercy-Entertainment.** An OAuth App accepts a
+single callback URL, and `localhost` and `192.168.178.19` are different hosts;
+the LAN URL is canonical. A DHCP reservation for the host is assumed, or the
+callback breaks on a new lease.
+
+Both secrets belong in `.env`, which is already gitignored - never in a file
+committed alongside the code.
