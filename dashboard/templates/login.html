@@ -16,10 +16,12 @@
       <button type="submit" class="primary">Sign in</button>
     </form>
   </div>
+  {% if not secure %}
   <div class="notice">
-    <b>Plain HTTP.</b> This dashboard is reachable over your network without
-    TLS, so this password and the GitHub token cross the wire unencrypted.
-    Fine on a trusted LAN; not something to expose beyond it.
+    <b>Plain HTTP.</b> You reached this dashboard without TLS, so this password
+    and the GitHub token cross the wire unencrypted. Fine on a trusted LAN; not
+    something to expose beyond it.
   </div>
+  {% endif %}
 </div>
 {% endblock %}

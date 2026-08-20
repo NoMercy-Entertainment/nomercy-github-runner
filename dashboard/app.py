@@ -141,6 +141,26 @@ def check_password(pw):
     return hmac.compare_digest(dk.hex(), a["hash"])
 
 
+def request_is_secure():
+    """Whether this particular request reached the browser over TLS.
+
+    Two ways in: directly on http://192.168.178.19:9200, and through a reverse
+    proxy that terminates TLS at https://gh-runners.phillippepelzer.me. Which
+    one was used is a property of the request, not of the deployment, so it
+    cannot be a constant in a template.
+
+    X-Forwarded-Proto is spoofable by anyone who can reach this app directly,
+    and that is acceptable *here*: the only thing it decides is whether a
+    warning is displayed, so forging it hides a warning from the forger and
+    from nobody else. Do not reuse this to build an OAuth redirect_uri or any
+    absolute URL - those must come from pinned configuration, or a forged
+    header redirects the authorization code somewhere it should not go.
+    """
+    # A chain of proxies appends: "https,http". The client-facing one is first.
+    proto = request.headers.get("X-Forwarded-Proto", request.scheme)
+    return proto.split(",")[0].strip().lower() == "https"
+
+
 def logged_in():
     return session.get("ok") is True
 
@@ -437,7 +457,8 @@ def login():
             return redirect(url_for("index"))
         error = "Wrong password."
         time.sleep(1)  # blunt the brute-force rate
-    return render_template("login.html", error=error)
+    return render_template("login.html", error=error,
+                           secure=request_is_secure())
 
 
 @app.route("/logout")
