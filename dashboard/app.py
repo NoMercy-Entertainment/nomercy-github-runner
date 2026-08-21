@@ -22,7 +22,7 @@ import secrets
 import threading
 import time
 
-from flask import (Flask, jsonify, redirect, render_template, request,
+from flask import (Flask, g, jsonify, redirect, render_template, request,
                    session, url_for)
 from flask.sessions import SecureCookieSessionInterface
 from itsdangerous import BadSignature
@@ -30,7 +30,9 @@ from itsdangerous import BadSignature
 import docker_ops as ops
 import github_api
 import history
+import oidc
 import runner_detail
+import users
 from runner_detail import SECRET_KEYS, mask
 
 DATA = os.environ.get("DASH_DATA", "/data")
@@ -161,24 +163,94 @@ def request_is_secure():
     return proto.split(",")[0].strip().lower() == "https"
 
 
-def logged_in():
-    return session.get("ok") is True
+def _conf(key):
+    """Deployment configuration: real environment first, then .env."""
+    return (os.environ.get(key) or read_env().get(key) or "").strip()
+
+
+def _public_url():
+    """The base URL browsers actually use, pinned rather than sniffed.
+
+    Never derived from Host or X-Forwarded-Host. This app is also reachable
+    directly on the LAN address, where those headers are attacker-controlled,
+    and the OAuth redirect_uri is built from this - a forged header would send
+    an authorization code to a host of the attacker's choosing.
+    """
+    return _conf("DASH_PUBLIC_URL").rstrip("/")
+
+
+def _oidc():
+    base = _public_url()
+    return oidc.OIDC(_conf("OIDC_ISSUER"), _conf("OIDC_CLIENT_ID"),
+                     _conf("OIDC_CLIENT_SECRET"),
+                     f"{base}/callback" if base else "")
+
+
+def current_role():
+    """The caller's role right now, or None for "not allowed".
+
+    Read from the allowlist on every request rather than trusted from the
+    session, so a revoke or a downgrade lands on the next click instead of
+    whenever a fourteen-day cookie happens to expire.
+    """
+    sub = session.get("sub")
+    if sub:
+        return users.role_of(sub)
+    # Cutover only. The shared password still exists and still means full
+    # access, exactly as before; this branch goes when it does.
+    if session.get("ok") is True:
+        return "owner"
+    return None
+
+
+def _forbid(why):
+    if request.path.startswith("/api/"):
+        return jsonify(ok=False, error=why), 403
+    return render_template("forbidden.html", why=why), 403
+
+
+# Reachable without a session: the sign-in page and the round trip to the IdP.
+OPEN_PATHS = {"/login", "/setup", "/auth/start", "/callback", "/auth/pending"}
+
+
+@app.context_processor
+def _template_role():
+    """Let templates hide what the caller cannot use.
+
+    Taken from g, which guard() already resolved, rather than re-reading the
+    allowlist per render. Absent on the open pages, where there is no role -
+    hence the default.
+    """
+    return {"role": getattr(g, "role", None)}
 
 
 @app.before_request
 def guard():
-    open_paths = {"/login", "/setup", "/static"}
     if request.path.startswith("/static"):
         return None
-    if request.path in open_paths:
+    if request.path in OPEN_PATHS:
         return None
     if not password_is_set():
         return redirect(url_for("setup"))
-    if not logged_in():
+
+    role = g.role = current_role()
+    if role is None:
         # API callers get JSON; a browser gets the login page.
         if request.path.startswith("/api/"):
             return jsonify(error="not authenticated"), 401
         return redirect(url_for("login"))
+
+    # One policy, read top to bottom. Every mutating route here is a POST and
+    # every read a GET, so the general rule is a single condition - but two
+    # reads are not for everyone, and they are named rather than left to be
+    # noticed later.
+    if request.path == "/users" or request.path.startswith("/api/users/"):
+        if role != "owner":
+            return _forbid("Only the owner can manage access.")
+    elif request.path == "/settings" and role == "viewer":
+        return _forbid("Settings are not available with read-only access.")
+    elif request.method == "POST" and role == "viewer":
+        return _forbid("Your access is read-only.")
     return None
 
 
@@ -458,13 +530,125 @@ def login():
         error = "Wrong password."
         time.sleep(1)  # blunt the brute-force rate
     return render_template("login.html", error=error,
-                           secure=request_is_secure())
+                           secure=request_is_secure(),
+                           oidc_ready=_oidc().configured())
 
 
 @app.route("/logout")
 def logout():
     session.clear()
     return redirect(url_for("login"))
+
+
+# --------------------------------------------------------------------------
+# single sign-on
+# --------------------------------------------------------------------------
+
+@app.route("/auth/start")
+def auth_start():
+    client = _oidc()
+    if not client.configured():
+        return render_template(
+            "login.html", secure=request_is_secure(), oidc_ready=False,
+            error="Single sign-on is not configured on this dashboard."), 500
+    try:
+        url, state, verifier = client.authorize_url()
+    except oidc.OIDCError as e:
+        return render_template(
+            "login.html", secure=request_is_secure(), oidc_ready=True,
+            error=f"Could not reach the identity provider: {e}"), 502
+    session["oidc_state"] = state
+    session["oidc_verifier"] = verifier
+    return redirect(url)
+
+
+@app.route("/callback")
+def auth_callback():
+    # Popped, not read: a state is good for exactly one callback, so a
+    # replayed or forwarded callback URL cannot be used a second time.
+    state = session.pop("oidc_state", None)
+    verifier = session.pop("oidc_verifier", None)
+    offered = request.args.get("state", "")
+
+    if not state or not verifier or not hmac.compare_digest(state, offered):
+        # No state of ours means this sign-in did not begin here - which is
+        # what CSRF against a callback looks like.
+        return render_template(
+            "forbidden.html",
+            why="This sign-in did not start here. Try again."), 400
+
+    code = request.args.get("code", "")
+    if not code:
+        return render_template(
+            "forbidden.html",
+            why=request.args.get("error_description")
+                or request.args.get("error")
+                or "The identity provider returned no authorization code."), 400
+
+    try:
+        claims = _oidc().exchange(code, verifier)
+    except oidc.OIDCError as e:
+        return render_template("forbidden.html", why=str(e)), 400
+
+    role = users.sign_in(claims["sub"],
+                         claims.get("preferred_username", ""),
+                         claims.get("name", ""))
+    if role is None:
+        # Authenticated, and allowed nothing. No session is created.
+        return redirect(url_for("auth_pending"))
+
+    # Cleared first: a session that changes who it belongs to must not carry
+    # anything the previous holder put in it.
+    session.clear()
+    session["sub"] = claims["sub"]
+    session["name"] = (claims.get("name")
+                       or claims.get("preferred_username") or "")
+    session.permanent = True
+    return redirect(url_for("index"))
+
+
+@app.route("/auth/pending")
+def auth_pending():
+    return render_template("pending.html")
+
+
+# --------------------------------------------------------------------------
+# access management (owner only - enforced in guard())
+# --------------------------------------------------------------------------
+
+@app.route("/users")
+def users_page():
+    return render_template("users.html", people=users.list_users(),
+                           waiting=users.pending(), roles=users.ROLES,
+                           me=session.get("sub"))
+
+
+@app.route("/api/users/<action>", methods=["POST"])
+def api_users(action):
+    body = request.get_json(silent=True) or {}
+    sub = (body.get("sub") or "").strip()
+    if not sub:
+        return jsonify(ok=False, error="no sub given"), 400
+
+    # The account that hands out access must not be able to strand itself.
+    # There is no second way in once the password is gone.
+    if sub == session.get("sub") and action in ("revoke", "approve"):
+        return jsonify(
+            ok=False,
+            error="You cannot change your own access."), 400
+
+    if action == "approve":
+        try:
+            users.approve(sub, (body.get("role") or "").strip())
+        except ValueError as e:
+            return jsonify(ok=False, error=str(e)), 400
+    elif action == "deny":
+        users.deny(sub)
+    elif action == "revoke":
+        users.revoke(sub)
+    else:
+        return jsonify(ok=False, error="unknown action"), 404
+    return jsonify(ok=True)
 
 
 @app.route("/")

@@ -7,6 +7,15 @@
     <div class="sub">Control dashboard</div>
   </div>
   {% if error %}<div class="notice err"><b>{{ error }}</b></div>{% endif %}
+  {% if oidc_ready %}
+  <div class="panel" style="margin-bottom:14px">
+    <a class="btn primary" href="/auth/start"
+       style="display:inline-block;text-decoration:none">Sign in with NoMercy</a>
+    <div style="margin-top:10px;font-size:11px;color:var(--text-dim)">
+      Signing in proves who you are. Access is granted separately by the owner.
+    </div>
+  </div>
+  {% endif %}
   <div class="panel">
     <form method="post">
       <div class="field">
