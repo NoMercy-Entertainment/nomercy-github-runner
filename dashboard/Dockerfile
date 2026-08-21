@@ -6,7 +6,7 @@
 FROM python:3.12-alpine
 
 RUN apk add --no-cache docker-cli bash coreutils tzdata \
- && pip install --no-cache-dir flask==3.0.3
+ && pip install --no-cache-dir flask==3.0.3 flask-sock==0.7.0
 
 WORKDIR /app
 COPY app.py docker_ops.py github_api.py history.py oidc.py runner_detail.py users.py ./

@@ -399,6 +399,82 @@ function setStale(on) {
   $('live-txt').textContent = on ? 'Stale' : 'Live';
 }
 
+// --- live transport -------------------------------------------------------
+// The socket carries a baseline once and then only what changed, so a quiet
+// fleet is a quiet connection. `state` is the client's copy of the picture,
+// because a delta can only be applied to something.
+let state = null, ws = null, wsTries = 0, pollTimer = null;
+
+function applyDelta(s, d) {
+  if (!s) return s;
+  if (d.runners) {
+    for (const [name, fields] of Object.entries(d.runners)) {
+      const i = s.runners.findIndex(r => r.name === name);
+      if (i === -1) s.runners.push(fields);      // arrives whole, not as a diff
+      else Object.assign(s.runners[i], fields);
+    }
+  }
+  if (d.gone) s.runners = s.runners.filter(r => !d.gone.includes(r.name));
+  if (d.disk) s.disk = d.disk;
+  if (d.host) s.host = d.host;
+  return s;
+}
+
+function transport(txt) { $('live-txt').textContent = txt; }
+
+function startPolling() {
+  if (pollTimer) return;
+  tick();
+  pollTimer = setInterval(tick, 5000);
+}
+
+function stopPolling() {
+  if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+}
+
+// nginx does not forward Upgrade unless it is told to, so the socket can work
+// on the LAN address and fail through the proxy. Polling stays as the floor:
+// silently showing five-minute-old numbers is the worst thing an operations
+// dashboard can do, and worse than any amount of polling.
+function connect() {
+  const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  let sock;
+  try {
+    sock = new WebSocket(proto + '//' + location.host + '/ws/fleet');
+  } catch (e) {
+    startPolling();
+    return;
+  }
+  ws = sock;
+
+  sock.onopen = () => { wsTries = 0; stopPolling(); setStale(false); transport('Live'); };
+
+  sock.onmessage = ev => {
+    let m;
+    try { m = JSON.parse(ev.data); } catch (e) { return; }
+    if (m.type === 'snapshot') state = m.data;
+    else if (m.type === 'update') state = applyDelta(state, m.data);
+    else return;
+    if (!state) return;
+    render(state);
+    lastGood = Date.now();
+    setStale(false);
+    transport('Live');
+  };
+
+  sock.onerror = () => { try { sock.close(); } catch (e) {} };
+
+  sock.onclose = () => {
+    ws = null;
+    startPolling();                 // cover the gap before retrying
+    transport('Polling');
+    wsTries += 1;
+    // Backed off, so a dashboard left open against a stopped container does
+    // not hammer it the moment it comes back.
+    setTimeout(connect, Math.min(30000, 1000 * 2 ** Math.min(wsTries, 5)));
+  };
+}
+
 async function tick() {
   try {
     const res = await fetch('/api/status?t=' + Date.now(), {cache: 'no-store'});
@@ -423,7 +499,8 @@ $('btn-recreate').addEventListener('click', async e => {
 });
 $('btn-prune-all').addEventListener('click', e => pruneAll(e.target));
 
+// One HTTP fetch so the grid paints immediately, then the socket takes over.
 tick();
-setInterval(tick, 5000);
+connect();
 </script>
 {% endblock %}

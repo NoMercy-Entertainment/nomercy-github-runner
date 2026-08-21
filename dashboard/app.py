@@ -25,6 +25,7 @@ import time
 from flask import (Flask, g, jsonify, redirect, render_template, request,
                    session, url_for)
 from flask.sessions import SecureCookieSessionInterface
+from flask_sock import Sock
 from itsdangerous import BadSignature
 
 import docker_ops as ops
@@ -50,6 +51,12 @@ EDITABLE = {
 }
 
 app = Flask(__name__)
+
+# ping/pong keeps the connection open through nginx, whose default
+# proxy_read_timeout is 60s and which would otherwise cut an idle - that
+# is to say, a correctly quiet - socket.
+app.config["SOCK_SERVER_OPTIONS"] = {"ping_interval": 25}
+sock = Sock(app)
 
 
 # --------------------------------------------------------------------------
@@ -236,7 +243,8 @@ def guard():
     role = g.role = current_role()
     if role is None:
         # API callers get JSON; a browser gets the login page.
-        if request.path.startswith("/api/"):
+        if request.path.startswith(("/api/", "/ws/")):
+            # A WebSocket client cannot read a redirect to a login page.
             return jsonify(error="not authenticated"), 401
         return redirect(url_for("login"))
 
@@ -309,7 +317,12 @@ def write_env(updates):
 # --------------------------------------------------------------------------
 
 _status = {"generated": "", "disk": {}, "runners": []}
-_status_lock = threading.Lock()
+# A condition, not a plain lock: fleet subscribers wait on it rather than
+# asking every few seconds. The generation counter is what lets a
+# subscriber tell "nothing published yet" from "published while I was
+# sending".
+_status_lock = threading.Condition()
+_status_gen = 0
 
 # Ten minutes of live history at the 5s collector interval. In memory rather
 # than in SQLite: the samples table is deliberately per-job, and widening it to
@@ -360,13 +373,15 @@ def _series_for(name):
 
 
 def _collector():
-    global _status
+    global _status, _status_gen
     while True:
         try:
             s = ops.collect()
             with _status_lock:
                 _status = s
                 _record_series(s)
+                _status_gen += 1
+                _status_lock.notify_all()
             _record_history(s)
         except Exception as e:  # noqa: BLE001
             print(f"[collector] {e}")
@@ -701,6 +716,106 @@ def settings():
 # --------------------------------------------------------------------------
 # api
 # --------------------------------------------------------------------------
+
+# --------------------------------------------------------------------------
+# live push
+# --------------------------------------------------------------------------
+
+# How long a subscriber sleeps before waking on its own when the collector
+# publishes nothing. It exists so revocation is still noticed on a fleet that
+# is not changing - not to poll for data.
+WS_IDLE_WAKE = 20
+
+
+def diff_status(old, new):
+    """What changed between two fleet snapshots, or None if nothing did.
+
+    Field-level and per runner, so an idle fleet costs nothing on the wire and
+    a busy one costs one state and one job string. Sending the whole snapshot
+    every tick would be polling with a socket wrapped around it.
+    """
+    before = {r["name"]: r for r in (old or {}).get("runners", []) if r.get("name")}
+    after = {r["name"]: r for r in (new or {}).get("runners", []) if r.get("name")}
+
+    changed = {}
+    for name, now in after.items():
+        was = before.get(name)
+        if was is None:
+            # Never seen by this client: a diff of it would be unusable.
+            changed[name] = now
+            continue
+        fields = {k: v for k, v in now.items() if was.get(k) != v}
+        if fields:
+            changed[name] = fields
+
+    delta = {}
+    if changed:
+        delta["runners"] = changed
+    gone = sorted(set(before) - set(after))
+    if gone:
+        delta["gone"] = gone
+    for key in ("disk", "host"):
+        if (old or {}).get(key) != (new or {}).get(key):
+            delta[key] = (new or {}).get(key)
+
+    # "generated" moves every tick and means nothing on its own. Including it
+    # would make every tick look like a change and undo the whole point.
+    return delta or None
+
+
+def fleet_frames(authorised, wait_for_change, current):
+    """Frames for one subscriber: a baseline, then only what changes.
+
+    `authorised` is re-checked on every wake, including wakes where nothing
+    changed. The access model is built on the role being re-read per request,
+    and a socket is one request that lasts hours - without this, revoking
+    someone would only take effect when they closed the tab.
+    """
+    if not authorised():
+        return
+    previous = current()
+    yield {"type": "snapshot", "data": previous}
+
+    while True:
+        wait_for_change()
+        if not authorised():
+            return
+        now = current()
+        delta = diff_status(previous, now)
+        previous = now
+        if delta:
+            yield {"type": "update", "data": delta}
+
+
+@sock.route("/ws/fleet")
+def ws_fleet(ws):
+    sub = session.get("sub")
+    # Cutover: a password session has no sub and nothing to re-check. Goes
+    # with the password.
+    legacy = sub is None and session.get("ok") is True
+    seen = {"gen": -1}
+
+    def authorised():
+        return True if legacy else users.role_of(sub) is not None
+
+    def current():
+        with _status_lock:
+            seen["gen"] = _status_gen
+            # The collector replaces this dict rather than mutating it, so the
+            # reference is safe to hand out unlocked.
+            return _status
+
+    def wait_for_change():
+        with _status_lock:
+            _status_lock.wait_for(lambda: _status_gen != seen["gen"],
+                                  timeout=WS_IDLE_WAKE)
+
+    try:
+        for frame in fleet_frames(authorised, wait_for_change, current):
+            ws.send(json.dumps(frame))
+    except Exception:      # noqa: BLE001 - a closed browser tab is not an error
+        pass
+
 
 @app.route("/api/status")
 def api_status():
