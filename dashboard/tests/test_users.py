@@ -10,18 +10,17 @@ import users
 
 
 @pytest.fixture
-def store(tmp_path, monkeypatch):
-    """A fresh allowlist per test, with no owner seeded unless asked."""
+def fresh(tmp_path, monkeypatch):
+    """A brand-new allowlist: empty, so the next sign-in becomes admin."""
     monkeypatch.setattr(users, "PATH", str(tmp_path / "users.json"))
-    monkeypatch.delenv("DASH_OWNER", raising=False)
     return users
 
 
 @pytest.fixture
-def owned(store, monkeypatch):
-    """An allowlist seeded with an owner hint, nothing bound yet."""
-    monkeypatch.setenv("DASH_OWNER", "oidc:preferred_username:phill")
-    return store
+def store(fresh):
+    """An allowlist that already has its admin, so nobody else gets a free role."""
+    fresh.sign_in("sub-admin", "admin", "The Admin")
+    return fresh
 
 
 # --------------------------------------------------------------------- basics
@@ -43,31 +42,37 @@ def test_signing_in_twice_does_not_duplicate_the_request(store):
     assert len(store.pending()) == 1
 
 
-# ----------------------------------------------------------- owner bootstrap
+# ----------------------------------------------------------- admin bootstrap
 
-def test_the_seeded_owner_is_bound_on_first_sign_in(owned):
-    assert owned.sign_in("sub-phill", "phill", "Phil") == "owner"
-    assert owned.role_of("sub-phill") == "owner"
+def test_the_first_sign_in_on_an_empty_list_becomes_admin(fresh):
+    assert fresh.sign_in("sub-phill", "phill", "Phil") == "admin"
+    assert fresh.role_of("sub-phill") == "admin"
+    assert fresh.pending() == []
 
 
-def test_the_owner_is_keyed_on_sub_not_on_the_username(owned):
+def test_the_second_sign_in_does_not(fresh):
+    fresh.sign_in("sub-phill", "phill", "Phil")
+    assert fresh.sign_in("sub-stoney", "stoney", "Stoney") is None
+    assert [p["sub"] for p in fresh.pending()] == ["sub-stoney"]
+
+
+def test_admin_is_keyed_on_sub_not_on_the_username(fresh):
     """A renamed or re-registered username must not inherit the account."""
-    owned.sign_in("sub-phill", "phill", "Phil")
-    assert owned.sign_in("sub-impostor", "phill", "Not Phil") is None
-    assert owned.role_of("sub-impostor") is None
+    fresh.sign_in("sub-phill", "phill", "Phil")
+    assert fresh.sign_in("sub-impostor", "phill", "Not Phil") is None
+    assert fresh.role_of("sub-impostor") is None
 
 
-def test_the_hint_is_ignored_once_an_owner_exists(owned):
-    owned.sign_in("sub-phill", "phill", "Phil")
-    owned.sign_in("sub-other", "phill", "Someone")
-    owners = [u["sub"] for u in owned.list_users() if u["role"] == "owner"]
-    assert owners == ["sub-phill"]
+def test_non_admin_members_do_not_close_the_bootstrap(fresh):
+    """A list with people on it but no admin would otherwise be unmanageable."""
+    fresh.approve("sub-viewer", "viewer")
+    assert fresh.sign_in("sub-phill", "phill", "Phil") == "admin"
 
 
-def test_without_a_hint_nobody_becomes_owner_by_signing_in_first(store):
-    """The race that would hand over the fleet."""
-    assert store.sign_in("sub-first", "first", "First") is None
-    assert store.list_users() == []
+def test_once_the_last_admin_is_revoked_the_next_sign_in_becomes_admin(fresh):
+    fresh.sign_in("sub-phill", "phill", "Phil")
+    fresh.revoke("sub-phill")
+    assert fresh.sign_in("sub-stoney", "stoney", "Stoney") == "admin"
 
 
 # ------------------------------------------------------------------ approvals

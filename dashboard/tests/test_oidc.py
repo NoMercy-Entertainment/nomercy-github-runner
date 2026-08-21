@@ -14,7 +14,7 @@ import pytest
 
 import oidc
 
-ISSUER = "https://auth.nomercy.tv/realms/NoMercyTV"
+ISSUER = "https://auth.nomercy.tv/realms/master"
 
 DISCOVERY = {
     "issuer": ISSUER,

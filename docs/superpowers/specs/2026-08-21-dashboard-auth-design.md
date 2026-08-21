@@ -89,7 +89,7 @@ it would transfer access silently. `sub` cannot be transferred.
 
 | Role | May |
 |---|---|
-| `owner` | everything, plus approve/deny/revoke and set roles |
+| `admin` | everything, plus approve/deny/revoke and set roles - including making other admins |
 | `operator` | everything except user management |
 | `viewer` | read only: fleet, runner detail, logs, engine, history |
 
@@ -103,18 +103,22 @@ Two reads are not for everyone, and are named rather than left implicit:
 - `GET /settings` - operator and above. The real token never reaches the
   browser (the template renders `token_mask`), but the configuration does, and
   a partially masked token is still a disclosure.
-- `GET /users` - owner only.
+- `GET /users` - admin only.
 
-### Owner bootstrap
+### Admin bootstrap
 
-Seeded, not claimed. `DASH_OWNER=oidc:preferred_username:<name>` in `.env`.
+Revised 2026-08-21, later the same day. The first design seeded a single
+owner from `DASH_OWNER` and rejected "first to sign in wins" as a race. That
+was replaced, on request, with exactly that: while no admin exists, the first
+identity to sign in is bound as `admin` on its `sub`. Everyone after that
+lands in the pending queue.
 
-Deliberately not "first to sign in wins": the dashboard is reachable beyond
-this machine, so that is a race that hands over the fleet. On the first
-successful login matching that hint the owner is bound to the returned `sub`,
-written to `users.json`, and the hint is never consulted again - so a later
-rename cannot take the account over. The hint exists only because a human does
-not know their own `sub`.
+Why the race is now acceptable: the realm moved to the private `master` realm
+on `auth.nomercy.tv`, whose only accounts are the two people who should hold
+the dashboard anyway. The perimeter is the realm, not a hint in `.env`. There
+is no `owner` role any more - every admin can manage access, including
+granting admin - and if every admin is ever revoked the bootstrap reopens
+rather than leaving a list nobody can edit.
 
 ### Access request flow
 
@@ -122,7 +126,7 @@ not know their own `sub`.
 2. No allowlist entry: the request is recorded as pending (sub, display name,
    first seen) and the person gets a "requested access" page. They are signed
    in to nothing.
-3. The owner approves with a role, denies, or later revokes, at `/users`.
+3. An admin approves with a role, denies, or later revokes, at `/users`.
 
 Revocation is enforced per request, not at sign-in - otherwise someone just
 revoked keeps a working session for the full fourteen-day lifetime. The
@@ -134,7 +138,7 @@ request.
 - `dashboard/oidc.py` - discovery (cached), authorize URL with state and PKCE,
   code exchange, userinfo. Knows nothing about who is allowed.
 - `dashboard/users.py` - the allowlist: roles, pending queue, approve, deny,
-  revoke, owner binding. Knows nothing about OIDC.
+  revoke, admin bootstrap. Knows nothing about OIDC.
 
 Kept apart so `app.py` (695 lines) does not absorb this, and so each can be
 tested without the other.
@@ -150,14 +154,19 @@ The password is removed in its own commit, last, only once login works end to
 end. Removing it earlier locks the operator out of their own control panel,
 and the way back in is `docker exec` by hand.
 
+Done 2026-08-21: `/setup`, `POST /login`, `auth.json` and the `ok=True`
+session branch are gone. A cookie from before the cutover carries no `sub` and
+therefore no role.
+
 ## Testing
 
 - Allowlist: approve, deny, revoke, role change, unknown identity.
-- Owner: bound from the hint on first login, then keyed on `sub`; a rename
-  does not transfer it; not claimable by whoever signs in first.
+- Admin: the first sign-in on an empty list is bound as admin on `sub`; the
+  second is not; a rename does not transfer it; the bootstrap reopens only
+  once no admin is left.
 - Guard: viewer POST is 403, operator POST passes, pending reaches neither,
   a revoked identity holding a live cookie is refused on its next request.
-- Guard read exceptions: viewer refused `GET /settings`, non-owner refused
+- Guard read exceptions: viewer refused `GET /settings`, non-admin refused
   `GET /users` - the two cases the POST rule does not catch.
 - OIDC: `state` mismatch rejected, PKCE verifier sent, callback driven against
   a stubbed token and userinfo endpoint. No network in tests.

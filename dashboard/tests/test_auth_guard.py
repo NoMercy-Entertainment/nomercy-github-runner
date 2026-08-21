@@ -15,7 +15,9 @@ import users
 @pytest.fixture
 def store(tmp_path, monkeypatch):
     monkeypatch.setattr(users, "PATH", str(tmp_path / "users.json"))
-    monkeypatch.delenv("DASH_OWNER", raising=False)
+    # An admin already exists, so no test identity gets the bootstrap role by
+    # accident. The bootstrap itself is tested by name further down.
+    users.approve("sub-resident-admin", "admin")
     return users
 
 
@@ -25,8 +27,6 @@ def as_role(store, monkeypatch):
     import app as dash
 
     dash.app.config["TESTING"] = True
-    if not dash.password_is_set():
-        dash.set_password("test-password-123")
     # Keep the fleet endpoints off docker in these tests.
     monkeypatch.setattr(dash.ops, "list_runner_names", lambda: [])
 
@@ -51,8 +51,8 @@ def test_an_operator_may_post(as_role):
     assert as_role("operator").post("/api/prune-all").status_code != 403
 
 
-def test_an_owner_may_post(as_role):
-    assert as_role("owner").post("/api/prune-all").status_code != 403
+def test_an_admin_may_post(as_role):
+    assert as_role("admin").post("/api/prune-all").status_code != 403
 
 
 def test_a_viewer_may_read_the_fleet(as_role):
@@ -69,15 +69,24 @@ def test_an_operator_may_read_settings(as_role):
     assert as_role("operator").get("/settings").status_code == 200
 
 
-def test_only_the_owner_may_read_the_user_list(as_role):
+def test_only_an_admin_may_read_the_user_list(as_role):
     assert as_role("operator").get("/users").status_code == 403
-    assert as_role("owner").get("/users").status_code == 200
+    assert as_role("admin").get("/users").status_code == 200
 
 
-def test_only_the_owner_may_change_access(as_role):
+def test_only_an_admin_may_change_access(as_role):
     r = as_role("operator").post("/api/users/approve",
-                                 json={"sub": "sub-other", "role": "owner"})
+                                 json={"sub": "sub-other", "role": "admin"})
     assert r.status_code == 403
+    assert users.role_of("sub-other") is None
+
+
+def test_an_admin_may_grant_access_including_admin(as_role):
+    """Every admin can manage access, not just whoever signed in first."""
+    c = as_role("admin")
+    r = c.post("/api/users/approve", json={"sub": "sub-other", "role": "admin"})
+    assert r.status_code == 200
+    assert users.role_of("sub-other") == "admin"
 
 
 # --------------------------------------------------------------- revocation
@@ -113,8 +122,6 @@ def fake_idp(monkeypatch, store):
     import app as dash
 
     dash.app.config["TESTING"] = True
-    if not dash.password_is_set():
-        dash.set_password("test-password-123")
 
     class Fake:
         claims = {"sub": "sub-newcomer", "preferred_username": "newcomer",
@@ -200,6 +207,24 @@ def test_an_approved_identity_gets_a_session(fake_idp, store):
         assert s["sub"] == "sub-newcomer"
 
 
+def test_the_first_sign_in_ever_becomes_admin_and_gets_a_session(
+        fake_idp, store, tmp_path, monkeypatch):
+    """An empty allowlist has nobody to approve anyone: the first in is admin."""
+    dash, _ = fake_idp
+    monkeypatch.setattr(store, "PATH", str(tmp_path / "empty.json"))
+    c = dash.app.test_client()
+    with c.session_transaction() as s:
+        s["oidc_state"] = "the-state"
+        s["oidc_verifier"] = "the-verifier"
+
+    r = c.get("/callback?code=abc&state=the-state")
+
+    assert r.status_code == 302
+    assert r.headers["Location"].endswith("/")
+    assert users.role_of("sub-newcomer") == "admin"
+    assert c.get("/users").status_code == 200
+
+
 def test_a_failed_exchange_does_not_sign_anyone_in(fake_idp):
     dash, _ = fake_idp
     c = dash.app.test_client()
@@ -230,18 +255,32 @@ def test_the_state_is_single_use(fake_idp, store):
     assert c.get("/callback?code=abc&state=the-state").status_code == 400
 
 
-# ------------------------------------------------- owner cannot strand itself
+# ------------------------------------------------- admin cannot strand itself
 
-def test_the_owner_cannot_revoke_their_own_access(as_role):
-    """The one account that can hand out access must not be able to delete it."""
-    c = as_role("owner", sub="sub-boss")
+def test_an_admin_cannot_revoke_their_own_access(as_role):
+    """An account that hands out access must not be able to delete itself."""
+    c = as_role("admin", sub="sub-boss")
     r = c.post("/api/users/revoke", json={"sub": "sub-boss"})
     assert r.status_code == 400
-    assert users.role_of("sub-boss") == "owner"
+    assert users.role_of("sub-boss") == "admin"
 
 
-def test_the_owner_cannot_demote_themselves(as_role):
-    c = as_role("owner", sub="sub-boss")
+def test_an_admin_cannot_demote_themselves(as_role):
+    c = as_role("admin", sub="sub-boss")
     r = c.post("/api/users/approve", json={"sub": "sub-boss", "role": "viewer"})
     assert r.status_code == 400
-    assert users.role_of("sub-boss") == "owner"
+    assert users.role_of("sub-boss") == "admin"
+
+
+# --------------------------------------------------------- no password path
+
+def test_there_is_no_password_login_any_more(anon_client):
+    assert anon_client.post("/login", data={"password": "x"}).status_code == 405
+    assert anon_client.get("/setup").status_code in (302, 401, 404)
+
+
+def test_a_legacy_password_session_is_worth_nothing(anon_client):
+    """Cookies from before the cutover carried ok=True and no sub."""
+    with anon_client.session_transaction() as s:
+        s["ok"] = True
+    assert anon_client.get("/api/status").status_code == 401

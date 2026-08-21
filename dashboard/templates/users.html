@@ -11,7 +11,7 @@
 .sub-id{font-size:10px;color:var(--text-faint)}
 .role{font-family:var(--label);font-size:10px;letter-spacing:.14em;
   text-transform:uppercase}
-.role.owner{color:var(--signal)} .role.operator{color:var(--drain)}
+.role.admin{color:var(--signal)} .role.operator{color:var(--drain)}
 .role.viewer{color:var(--text-dim)}
 .row-actions{display:flex;gap:6px;justify-content:flex-end}
 select{background:var(--bg-inset);color:var(--text);border:1px solid var(--rule-hot);
@@ -56,8 +56,9 @@ select{background:var(--bg-inset);color:var(--text);border:1px solid var(--rule-
       <td>
         <div class="row-actions">
           <select id="role-{{ loop.index }}">
-            <option value="viewer">Viewer</option>
-            <option value="operator">Operator</option>
+            {% for r in roles %}
+            <option value="{{ r }}"{% if r == 'operator' %} selected{% endif %}>{{ r }}</option>
+            {% endfor %}
           </select>
           <button data-act="approve" data-sub="{{ p.sub }}"
                   data-role-from="role-{{ loop.index }}">Approve</button>
@@ -87,10 +88,13 @@ select{background:var(--bg-inset);color:var(--text);border:1px solid var(--rule-
       <td>
         <div class="row-actions">
           {% if u.sub != me %}
+          <select id="has-{{ loop.index }}">
+            {% for r in roles %}
+            <option value="{{ r }}"{% if r == u.role %} selected{% endif %}>{{ r }}</option>
+            {% endfor %}
+          </select>
           <button data-act="approve" data-sub="{{ u.sub }}"
-                  data-role="{{ 'viewer' if u.role == 'operator' else 'operator' }}">
-            Make {{ 'viewer' if u.role == 'operator' else 'operator' }}
-          </button>
+                  data-role-from="has-{{ loop.index }}">Set role</button>
           <button class="danger" data-act="revoke" data-sub="{{ u.sub }}">Revoke</button>
           {% else %}
           <span class="sub-id">you</span>
@@ -130,8 +134,10 @@ document.querySelectorAll('button[data-act]').forEach(b => {
     const role = b.dataset.roleFrom ? $(b.dataset.roleFrom).value : b.dataset.role;
 
     const words = {
-      approve: ['Grant access?', 'They will be able to use this dashboard as '
-                + (role || 'the chosen role') + '. You can change or revoke it later.'],
+      approve: ['Set access?', 'They will be able to use this dashboard as '
+                + (role || 'the chosen role') + (role === 'admin'
+                  ? ', which includes managing access - yours too.'
+                  : '. You can change or revoke it later.')],
       deny:    ['Deny this request?', 'The request is dropped. They can ask again '
                 + 'by signing in, and you would see it here.'],
       revoke:  ['Revoke access?', 'They lose access on their very next request, '

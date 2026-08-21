@@ -20,8 +20,8 @@ import os
 import threading
 import time
 
-# owner may manage users; operator may act; viewer may only read.
-ROLES = ("viewer", "operator", "owner")
+# admin may manage users; operator may act; viewer may only read.
+ROLES = ("viewer", "operator", "admin")
 
 PATH = os.path.join(os.environ.get("DASH_DATA", "/data"), "users.json")
 
@@ -36,8 +36,8 @@ def _load():
     """The store, always with both sections present.
 
     A missing or unreadable file reads as empty rather than raising: an empty
-    allowlist denies everyone, which is the safe direction to fail in. The
-    seeded owner can still bind and rebuild the list from there.
+    allowlist denies everyone, which is the safe direction to fail in. With no
+    admin left, the next sign-in becomes one and rebuilds the list from there.
     """
     try:
         with open(PATH, encoding="utf-8") as fh:
@@ -65,32 +65,23 @@ def _save(data):
         pass
 
 
-def _owner_hint():
-    """(claim, value) from DASH_OWNER, or None if unset or malformed.
-
-    Format: `oidc:preferred_username:phill`. A bootstrap only - a person does
-    not know their own `sub`, so the first bind has to match on something they
-    can type. Consulted only while no owner exists.
-    """
-    raw = (os.environ.get("DASH_OWNER") or "").strip()
-    if not raw:
-        return None
-    parts = raw.split(":", 2)
-    if len(parts) != 3 or parts[0] != "oidc" or not parts[1] or not parts[2]:
-        return None
-    return parts[1], parts[2]
-
-
-def _has_owner(data):
-    return any(u.get("role") == "owner" for u in data["users"].values())
+def _has_admin(data):
+    return any(u.get("role") == "admin" for u in data["users"].values())
 
 
 def sign_in(sub, preferred_username, display_name):
     """Role for this identity after a successful authentication, or None.
 
     None means authenticated but not allowed: the attempt is recorded as a
-    pending request for the owner to decide on, and the caller must not treat
+    pending request for an admin to decide on, and the caller must not treat
     it as a session.
+
+    Bootstrap: while no admin exists, the first identity to sign in becomes
+    one. That is a race by design, and it is accepted because the identity
+    provider is a private realm - only its accounts can enter the race at
+    all - and because the alternative, a seeded owner, was a setting nobody
+    wanted to maintain. Once an admin exists this branch is closed until
+    every admin has been revoked.
     """
     with _lock:
         data = _load()
@@ -99,23 +90,16 @@ def sign_in(sub, preferred_username, display_name):
         if known:
             return known.get("role")
 
-        hint = _owner_hint()
-        if hint and not _has_owner(data):
-            claim, value = hint
-            offered = {"preferred_username": preferred_username,
-                       "sub": sub}.get(claim)
-            if offered and offered == value:
-                data["users"][sub] = {
-                    "role": "owner",
-                    "name": display_name or preferred_username or sub,
-                    "username": preferred_username or "",
-                    "added": _now(),
-                }
-                # Bound to the sub from here on. The hint is never read again,
-                # so renaming the account cannot transfer ownership.
-                data["pending"].pop(sub, None)
-                _save(data)
-                return "owner"
+        if not _has_admin(data):
+            data["users"][sub] = {
+                "role": "admin",
+                "name": display_name or preferred_username or sub,
+                "username": preferred_username or "",
+                "added": _now(),
+            }
+            data["pending"].pop(sub, None)
+            _save(data)
+            return "admin"
 
         if sub not in data["pending"]:
             data["pending"][sub] = {

@@ -19,20 +19,22 @@ os.environ.setdefault("ENV_PATH", os.path.join(_TMP, ".env"))
 
 
 @pytest.fixture
-def client():
-    """A logged-in Flask test client.
+def client(tmp_path, monkeypatch):
+    """A Flask test client signed in as an admin.
 
-    app.py guards every route with a before_request hook, so an unauthenticated
-    client gets 401 or a redirect. Setting session['ok'] is what login() does.
+    app.py guards every route with a before_request hook and reads the role
+    from the allowlist on every request, so the client needs a real entry in
+    a throwaway users.json and a session that carries its sub.
     """
     import app as dash
+    import users
 
+    monkeypatch.setattr(users, "PATH", str(tmp_path / "users.json"))
+    users.approve("sub-test-admin", "admin")
     dash.app.config["TESTING"] = True
-    if not dash.password_is_set():
-        dash.set_password("test-password-123")
     with dash.app.test_client() as c:
         with c.session_transaction() as s:
-            s["ok"] = True
+            s["sub"] = "sub-test-admin"
         yield c
 
 
@@ -42,7 +44,5 @@ def anon_client():
     import app as dash
 
     dash.app.config["TESTING"] = True
-    if not dash.password_is_set():
-        dash.set_password("test-password-123")
     with dash.app.test_client() as c:
         yield c

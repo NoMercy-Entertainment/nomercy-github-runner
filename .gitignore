@@ -4,7 +4,7 @@
 # Python
 __pycache__/
 *.pyc
-7ptk5r2.json
+0079xqw.json
 
 # .env backups carry the same secrets as .env itself
 .env.*

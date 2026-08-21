@@ -3,17 +3,17 @@
 Serves the status page, the settings page, and the control endpoints for the
 runners on this engine.
 
-Auth: a password you set on first visit, hashed with PBKDF2 and never stored
-in plaintext. Sessions are Flask's signed cookies over a secret generated once
-and persisted, so restarting the dashboard does not log you out.
+Auth: single sign-on against Keycloak (oidc.py) proves who someone is; the
+allowlist in users.py decides what they may do. There is no password here.
+Sessions are Flask's signed cookies over a secret generated once and persisted,
+so restarting the dashboard does not log you out.
 
-This runs over plain HTTP on a LAN by request. Passwords and the GitHub token
-therefore cross the network unencrypted; the UI says so rather than letting it
-be forgotten.
+This is also reachable over plain HTTP on the LAN by request. The GitHub token
+then crosses the network unencrypted; the UI says so rather than letting it be
+forgotten.
 """
 
 import collections
-import hashlib
 import hmac
 import json
 import os
@@ -39,7 +39,6 @@ from runner_detail import SECRET_KEYS, mask
 DATA = os.environ.get("DASH_DATA", "/data")
 PORT = int(os.environ.get("DASH_PORT", "9200"))
 ENV_PATH = os.environ.get("ENV_PATH", "/repo/.env")
-AUTH_PATH = os.path.join(DATA, "auth.json")
 SECRET_PATH = os.path.join(DATA, "secret.key")
 
 # Only these may be written from the UI. An allowlist rather than "write
@@ -120,36 +119,6 @@ class ClockTolerantSessions(SecureCookieSessionInterface):
 app.session_interface = ClockTolerantSessions()
 
 
-def _auth():
-    try:
-        return json.load(open(AUTH_PATH))
-    except Exception:
-        return None
-
-
-def password_is_set():
-    return _auth() is not None
-
-
-def set_password(pw):
-    salt = secrets.token_bytes(16)
-    dk = hashlib.pbkdf2_hmac("sha256", pw.encode(), salt, 200_000)
-    with open(AUTH_PATH, "w") as fh:
-        json.dump({"salt": salt.hex(), "hash": dk.hex()}, fh)
-    os.chmod(AUTH_PATH, 0o600)
-
-
-def check_password(pw):
-    a = _auth()
-    if not a:
-        return False
-    dk = hashlib.pbkdf2_hmac("sha256", pw.encode(),
-                             bytes.fromhex(a["salt"]), 200_000)
-    # compare_digest, not ==: a plain comparison leaks the prefix length
-    # through timing.
-    return hmac.compare_digest(dk.hex(), a["hash"])
-
-
 def request_is_secure():
     """Whether this particular request reached the browser over TLS.
 
@@ -200,14 +169,7 @@ def current_role():
     session, so a revoke or a downgrade lands on the next click instead of
     whenever a fourteen-day cookie happens to expire.
     """
-    sub = session.get("sub")
-    if sub:
-        return users.role_of(sub)
-    # Cutover only. The shared password still exists and still means full
-    # access, exactly as before; this branch goes when it does.
-    if session.get("ok") is True:
-        return "owner"
-    return None
+    return users.role_of(session.get("sub"))
 
 
 def _forbid(why):
@@ -217,7 +179,7 @@ def _forbid(why):
 
 
 # Reachable without a session: the sign-in page and the round trip to the IdP.
-OPEN_PATHS = {"/login", "/setup", "/auth/start", "/callback", "/auth/pending"}
+OPEN_PATHS = {"/login", "/auth/start", "/callback", "/auth/pending"}
 
 
 @app.context_processor
@@ -237,8 +199,6 @@ def guard():
         return None
     if request.path in OPEN_PATHS:
         return None
-    if not password_is_set():
-        return redirect(url_for("setup"))
 
     role = g.role = current_role()
     if role is None:
@@ -253,8 +213,8 @@ def guard():
     # reads are not for everyone, and they are named rather than left to be
     # noticed later.
     if request.path == "/users" or request.path.startswith("/api/users/"):
-        if role != "owner":
-            return _forbid("Only the owner can manage access.")
+        if role != "admin":
+            return _forbid("Only an admin can manage access.")
     elif request.path == "/settings" and role == "viewer":
         return _forbid("Settings are not available with read-only access.")
     elif request.method == "POST" and role == "viewer":
@@ -513,39 +473,9 @@ def _drain_watcher():
 # pages
 # --------------------------------------------------------------------------
 
-@app.route("/setup", methods=["GET", "POST"])
-def setup():
-    if password_is_set():
-        return redirect(url_for("login"))
-    error = None
-    if request.method == "POST":
-        pw = request.form.get("password", "")
-        confirm = request.form.get("confirm", "")
-        if len(pw) < 8:
-            error = "Use at least 8 characters."
-        elif pw != confirm:
-            error = "Those do not match."
-        else:
-            set_password(pw)
-            session["ok"] = True
-            return redirect(url_for("index"))
-    return render_template("setup.html", error=error)
-
-
-@app.route("/login", methods=["GET", "POST"])
+@app.route("/login")
 def login():
-    if not password_is_set():
-        return redirect(url_for("setup"))
-    error = None
-    if request.method == "POST":
-        if check_password(request.form.get("password", "")):
-            session["ok"] = True
-            session.permanent = True
-            return redirect(url_for("index"))
-        error = "Wrong password."
-        time.sleep(1)  # blunt the brute-force rate
-    return render_template("login.html", error=error,
-                           secure=request_is_secure(),
+    return render_template("login.html", secure=request_is_secure(),
                            oidc_ready=_oidc().configured())
 
 
@@ -628,7 +558,7 @@ def auth_pending():
 
 
 # --------------------------------------------------------------------------
-# access management (owner only - enforced in guard())
+# access management (admin only - enforced in guard())
 # --------------------------------------------------------------------------
 
 @app.route("/users")
@@ -646,7 +576,8 @@ def api_users(action):
         return jsonify(ok=False, error="no sub given"), 400
 
     # The account that hands out access must not be able to strand itself.
-    # There is no second way in once the password is gone.
+    # There is no second way in: no password, and the bootstrap only reopens
+    # once every admin is gone.
     if sub == session.get("sub") and action in ("revoke", "approve"):
         return jsonify(
             ok=False,
@@ -790,13 +721,10 @@ def fleet_frames(authorised, wait_for_change, current):
 @sock.route("/ws/fleet")
 def ws_fleet(ws):
     sub = session.get("sub")
-    # Cutover: a password session has no sub and nothing to re-check. Goes
-    # with the password.
-    legacy = sub is None and session.get("ok") is True
     seen = {"gen": -1}
 
     def authorised():
-        return True if legacy else users.role_of(sub) is not None
+        return users.role_of(sub) is not None
 
     def current():
         with _status_lock:
