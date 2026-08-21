@@ -1,65 +1,89 @@
 # Dashboard authentication and access control
 
-Status: design, approved in outline. Not implemented.
+Status: design agreed. Implementation in progress.
 Supersedes: the shared-password login in `dashboard/app.py`.
 
 ## Why
 
-The dashboard currently authenticates with one shared password over plain
-HTTP, and it is about to be published to the LAN (192.168.178.0/24). One
-secret shared by everyone who should ever have access cannot be revoked for
-one person, records nothing about who did what, and has no answer for "let
-this person look but not touch".
+The dashboard authenticated with one shared password, and it is now reachable
+at `http://192.168.178.19:9200` and through a TLS-terminating proxy at
+`https://gh-runners.phillippepelzer.me`. One secret shared by everyone who
+should ever have access cannot be revoked for one person, records nothing
+about who acted, and cannot express "may look, may not touch".
 
-The first proposal here was "sign in with GitHub, restricted to members of
-NoMercy-Entertainment". That was wrong and was rejected during design. Org
-membership is a set, not an access rule: it currently resolves to six people
-plus one outside collaborator, all of whom would have been able to stop,
-remove and recreate runners. **Being able to prove who you are must not, on
-its own, grant access to anything.**
+An earlier draft proposed "sign in with GitHub, restricted to members of
+NoMercy-Entertainment". That was rejected during design and the reason is
+worth keeping: org membership is a set, not an access rule. It resolves to six
+people plus an outside collaborator, all of whom would have been able to stop,
+remove and recreate runners. **Proving who you are must not, on its own, grant
+access to anything.**
 
-## Model
+## Provider
 
-Two separate layers. Conflating them is the mistake above.
+One provider: Keycloak at `auth.nomercy.tv`, realm `NoMercyTV`. Confirmed
+against its discovery document.
 
-**Authentication** answers *who are you* and produces a stable identity key
-`provider:subject`. Two providers:
+    issuer   https://auth.nomercy.tv/realms/NoMercyTV
+    PKCE     S256
+    signing  RS256
+    claims   sub, name, preferred_username, email
 
-- `github` - GitHub OAuth. Not OIDC: no discovery document, so a small
-  adapter exchanges the code and reads `GET /user`.
-- `oidc` - a generic OpenID Connect client, configured entirely from `.env`
-  (discovery URL, client id, client secret). `auth.nomercy.tv` is therefore
-  configuration, not code, and any other compliant IdP works unchanged.
+There is no `groups` or `roles` claim, so Keycloak cannot express who may use
+the dashboard - and does not need to. It is asked who someone is; never
+whether they may do anything.
 
-The IdP is confirmed: Keycloak, realm `NoMercyTV`.
+### The client
 
-```
-issuer     https://auth.nomercy.tv/realms/NoMercyTV
-discovery  <issuer>/.well-known/openid-configuration
-PKCE       S256 supported
-signing    RS256, via <issuer>/protocol/openid-connect/certs
-claims     sub, name, preferred_username, email
-```
+The existing `phillippepelzer.me` client is reused, as instructed. Its
+`redirectUris` include `https://*.phillippepelzer.me/callback`, so the
+dashboard callback must be exactly:
 
-There is no `groups` or `roles` claim in `claims_supported`, so Keycloak
-cannot express "who may use the dashboard" without a custom mapper - and it
-does not need to. Authorization is the allowlist below; the IdP is only ever
-asked who someone is.
+    https://gh-runners.phillippepelzer.me/callback
 
-**Authorization** answers *may you*, and is an explicit allowlist in
-`/data/users.json`. Nothing else grants access. Not org membership, not
-holding a nomercy.tv account, not having authenticated successfully.
+Path `/callback`, not `/auth/oidc/callback` - the wildcard covers the host
+segment, not the path.
+
+Accepted, recorded once: one secret now authenticates both Forgejo and this
+dashboard, so rotating or revoking it for one breaks the other.
+
+### The redirect_uri is pinned, never derived
+
+Built from `DASH_PUBLIC_URL` in `.env`, never from `Host` or
+`X-Forwarded-Host`. The app is also reachable directly on the LAN address,
+where those headers are attacker-controlled; deriving the redirect from them
+lets a forged header send an authorization code to another host.
+
+### No JWT library
+
+The image installs Flask and nothing else, and that is kept.
+
+The flow is authorization code + PKCE `S256` + `state`, with a confidential
+client, and the code is exchanged in a direct server-to-server TLS call to the
+token endpoint. Claims are then read from `userinfo`, also over direct TLS -
+not by parsing the `id_token`.
+
+This is the case OIDC Core 3.1.3.7 covers: when the token is received by
+direct communication with the token endpoint, TLS server authentication may
+stand in for verifying the token signature. The threats a signature check and
+a `nonce` would cover are already covered here - PKCE binds the code to this
+login attempt, the client secret means only we can redeem it, `state` covers
+CSRF, and TLS authenticates the issuer. A JWT verifier would add a dependency
+and a keyset cache to be wrong about, for no threat left standing.
+
+If the flow ever changes shape - an implicit or hybrid response, or an
+id_token read from anywhere but the token endpoint - this reasoning expires
+and a real verifier is required.
+
+## Authorization
+
+An explicit allowlist in `/data/users.json`. Authenticating grants nothing;
+holding a nomercy.tv account grants nothing.
 
 ### Identity key
 
-Keyed on the provider's immutable subject: GitHub's numeric `id`, OIDC's
-`sub`. Never the username or the email address.
-
-A GitHub username can be changed, which releases the old name for anyone else
-to register. An allowlist keyed on `login` would hand the new owner of that
-name the old holder's access, silently and with no event to notice. Emails
-are reassignable in some directories for the same reason. The numeric id
-cannot be transferred.
+Keyed on `sub`, never `preferred_username` or `email`. A username can be
+changed, freeing the old one for someone else to take; an allowlist keyed on
+it would transfer access silently. `sub` cannot be transferred.
 
 ### Roles
 
@@ -69,119 +93,77 @@ cannot be transferred.
 | `operator` | everything except user management |
 | `viewer` | read only: fleet, runner detail, logs, engine, history |
 
-Enforced in the existing `before_request` guard rather than per endpoint.
-Every mutating route in this codebase is already a POST and every read is a
-GET, so the rule is one condition in one place: a POST from a `viewer` is
-403. A check that must be repeated at fifteen call sites is a check that will
-eventually be forgotten at one of them.
+Enforced in the existing `before_request` guard, not per endpoint. Every
+mutating route is already a POST and every read a GET, so the rule is one
+condition in one place: a POST from a `viewer` is 403. A check repeated at
+fifteen call sites is a check that gets forgotten at one of them.
 
-That rule alone is not quite enough, and the exception is named rather than
-left implicit. Two routes are reads that are not for everyone:
+Two reads are not for everyone, and are named rather than left implicit:
 
 - `GET /settings` - operator and above. The real token never reaches the
-  browser (the template renders `token_mask`, first four and last four
-  characters), but the org, labels, group and limits are configuration, and a
-  partially disclosed token is still a disclosure. A viewer is there to see
-  why a build failed.
+  browser (the template renders `token_mask`), but the configuration does, and
+  a partially masked token is still a disclosure.
 - `GET /users` - owner only.
-
-Both are enumerated in one place next to the POST rule, so the guard reads as
-a single policy rather than a general rule with forgotten holes.
 
 ### Owner bootstrap
 
-Seeded, not claimed: `DASH_OWNER=github:6890678` in `.env`.
+Seeded, not claimed. `DASH_OWNER=oidc:preferred_username:<name>` in `.env`.
 
-Deliberately not "the first account to sign in becomes owner". Once this is
-published to the LAN that is a race, and losing it hands over the fleet. A
-seeded owner is also independent of the data volume: if `users.json` is lost,
-the owner can still get in and re-approve everyone.
+Deliberately not "first to sign in wins": the dashboard is reachable beyond
+this machine, so that is a race that hands over the fleet. On the first
+successful login matching that hint the owner is bound to the returned `sub`,
+written to `users.json`, and the hint is never consulted again - so a later
+rename cannot take the account over. The hint exists only because a human does
+not know their own `sub`.
 
 ### Access request flow
 
-1. Unknown identity authenticates successfully.
-2. Guard finds no allowlist entry - the request is recorded as pending
-   (provider, subject, display name, first seen) and the person gets a
-   "requested access" page. They are not signed in to anything.
-3. The owner sees pending requests on `/users` and approves with a role,
-   denies, or later revokes.
+1. An unknown identity authenticates successfully.
+2. No allowlist entry: the request is recorded as pending (sub, display name,
+   first seen) and the person gets a "requested access" page. They are signed
+   in to nothing.
+3. The owner approves with a role, denies, or later revokes, at `/users`.
 
-Revocation is enforced per request, not at sign-in. Otherwise a person whose
-access was just withdrawn keeps a valid session cookie for the full session
-lifetime, which is fourteen days.
+Revocation is enforced per request, not at sign-in - otherwise someone just
+revoked keeps a working session for the full fourteen-day lifetime. The
+session carries the `sub` only; the role is read from the allowlist on every
+request.
 
 ## Shape
 
-New modules, to keep `app.py` (695 lines) from absorbing this:
+- `dashboard/oidc.py` - discovery (cached), authorize URL with state and PKCE,
+  code exchange, userinfo. Knows nothing about who is allowed.
+- `dashboard/users.py` - the allowlist: roles, pending queue, approve, deny,
+  revoke, owner binding. Knows nothing about OIDC.
 
-- `dashboard/identity.py` - the two providers. Given a callback request,
-  returns `(provider, subject, display_name)` or an error. Knows nothing
-  about who is allowed.
-- `dashboard/users.py` - the allowlist: load/save, roles, pending queue,
-  approve/deny/revoke. Knows nothing about OAuth.
+Kept apart so `app.py` (695 lines) does not absorb this, and so each can be
+tested without the other.
 
-Routes: `/auth/<provider>/start`, `/auth/<provider>/callback`, `/auth/pending`,
-`/users` (owner only), `/api/users/<action>` (owner only), `/logout`.
+Routes: `GET /login` (the button), `GET /auth/start`, `GET /callback`,
+`GET /auth/pending`, `GET /users`, `POST /api/users/<action>`, `GET /logout`.
 
-Sessions keep the existing `ClockTolerantSessions`. The session carries the
-identity key only; the role is read from the allowlist on every request, so a
-role change or a revoke takes effect immediately.
-
-### Dependency
-
-`authlib` is added to the image for the OIDC client: discovery, PKCE, `state`,
-`nonce`, and JWKS signature validation. Hand-rolling any of those is how OIDC
-integrations end up accepting tokens they should not. The GitHub adapter needs
-none of it beyond `state`.
+Sessions keep the existing `ClockTolerantSessions`.
 
 ## Cutover
 
-The password is removed in its own commit, last, only once both providers have
-been verified working end to end. Removing it earlier locks the operator out
-of the control panel for their own fleet, and the only way back in is
-`docker exec` by hand.
+The password is removed in its own commit, last, only once login works end to
+end. Removing it earlier locks the operator out of their own control panel,
+and the way back in is `docker exec` by hand.
 
 ## Testing
 
-- Allowlist: approve, deny, revoke, role changes, unknown identity.
-- Guard: viewer POST is 403, operator POST passes, a pending identity reaches
-  neither, and a revoked identity holding a live cookie is refused on its next
-  request rather than at its next sign-in.
-- Guard, read exceptions: viewer is refused `GET /settings`, non-owner is
-  refused `GET /users`. Pinned by their own tests, because they are the two
-  cases the POST rule does not catch.
-- Owner seed: honoured when `users.json` is absent; not claimable by whoever
-  signs in first.
-- Callbacks: driven against a stubbed provider, no network in tests.
-- Identity: a changed username does not move access; the subject is what is
-  stored.
+- Allowlist: approve, deny, revoke, role change, unknown identity.
+- Owner: bound from the hint on first login, then keyed on `sub`; a rename
+  does not transfer it; not claimable by whoever signs in first.
+- Guard: viewer POST is 403, operator POST passes, pending reaches neither,
+  a revoked identity holding a live cookie is refused on its next request.
+- Guard read exceptions: viewer refused `GET /settings`, non-owner refused
+  `GET /users` - the two cases the POST rule does not catch.
+- OIDC: `state` mismatch rejected, PKCE verifier sent, callback driven against
+  a stubbed token and userinfo endpoint. No network in tests.
 
 ## Known limitation, accepted
 
-This runs over plain HTTP on the LAN, so the OAuth `code` and the session
-cookie cross the network unencrypted. The firewall rule is scoped to
-192.168.178.0/24. Terminating TLS is a separate decision and is not in scope
-here; it is recorded so it is not mistaken for an oversight.
-
-## Open items, needed to run - not to build
-
-**A new Keycloak client, not the existing one.** The exported
-`phillippepelzer.me` client is Forgejo's. Reusing it does not work and should
-not be attempted:
-
-- its `redirectUris` are `https://*.phillippepelzer.me/callback` and Forgejo's
-  own callback. Keycloak matches `redirect_uri` against that list, and the
-  dashboard's `http://192.168.178.19:9200/...` matches neither.
-- one secret would then authenticate two unrelated applications, so rotating
-  or revoking it for the dashboard breaks Forgejo logins.
-
-Create `nomercy-runners`: confidential, standard flow only, PKCE `S256`,
-redirect URI the dashboard callback, and no wildcard in it.
-
-**A GitHub OAuth App under NoMercy-Entertainment.** An OAuth App accepts a
-single callback URL, and `localhost` and `192.168.178.19` are different hosts;
-the LAN URL is canonical. A DHCP reservation for the host is assumed, or the
-callback breaks on a new lease.
-
-Both secrets belong in `.env`, which is already gitignored - never in a file
-committed alongside the code.
+The proxy last hop to this container is plain HTTP across the LAN, and the
+dashboard remains directly reachable at `http://192.168.178.19:9200`, where
+there is no TLS at all. Recorded so it is not mistaken for an oversight.
