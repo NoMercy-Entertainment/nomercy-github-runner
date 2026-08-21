@@ -111,7 +111,10 @@ footer{margin-top:18px;display:flex;flex-wrap:wrap;gap:10px 20px;font-size:10px;
    page: every page asks the same kind of question, and four copies would
    drift. */
 dialog#confirm{border:1px solid var(--rule-hot);background:var(--bg-panel);
-  color:var(--text);padding:0;max-width:440px;width:calc(100% - 32px)}
+  color:var(--text);padding:0;max-width:440px;width:calc(100% - 32px);
+  /* The reset above zeroes every margin, including the margin:auto a browser
+     uses to centre a modal dialog - without this it sits in the top-left. */
+  margin:auto}
 dialog#confirm::backdrop{background:rgba(0,0,0,.65)}
 dialog#confirm .dlg-t{font-family:var(--label);font-size:11px;letter-spacing:.18em;
   text-transform:uppercase;color:var(--text);padding:14px 18px;

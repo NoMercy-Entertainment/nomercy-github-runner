@@ -43,3 +43,21 @@ def test_every_page_that_confirms_uses_the_shared_helper():
     for name in ("index.html", "runner.html", "settings.html"):
         with open(os.path.join(TEMPLATES, name), encoding="utf-8") as fh:
             assert "confirmDialog(" in fh.read(), f"{name} does not confirm anything"
+
+
+def test_the_dialog_centres_itself_despite_the_global_reset():
+    """The reset zeroes every margin, including the one that centres a modal.
+
+    A browser centres <dialog> by giving it margin:auto. base.html resets
+    margin to 0 on *, which silently drops the dialog into the top-left
+    corner - correct-looking CSS, wrong result, and invisible until you open
+    one.
+    """
+    with open(os.path.join(TEMPLATES, "base.html"), encoding="utf-8") as fh:
+        src = fh.read()
+
+    assert "margin:0" in src, "the reset this guards against is gone; drop this test"
+
+    start = src.index("dialog#confirm{")
+    rule = src[start:src.index("}", start)]
+    assert "margin:auto" in rule, "the dialog does not restore its own centring"

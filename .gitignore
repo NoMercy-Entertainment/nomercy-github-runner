@@ -5,3 +5,6 @@
 __pycache__/
 *.pyc
 7ptk5r2.json
+
+# .env backups carry the same secrets as .env itself
+.env.*
