@@ -61,3 +61,11 @@ def test_the_dialog_centres_itself_despite_the_global_reset():
     start = src.index("dialog#confirm{")
     rule = src[start:src.index("}", start)]
     assert "margin:auto" in rule, "the dialog does not restore its own centring"
+
+
+def test_the_layout_declares_a_favicon():
+    """Without an explicit icon every page load also 404s /favicon.ico."""
+    with open(os.path.join(TEMPLATES, "base.html"), encoding="utf-8") as fh:
+        src = fh.read()
+    assert 'rel="icon"' in src
+    assert "image/svg+xml" in src
