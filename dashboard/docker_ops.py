@@ -16,6 +16,8 @@ import re
 import subprocess
 import time
 
+import providers
+
 IMAGE = os.environ.get(
     "RUNNER_IMAGE",
     "ghcr.io/nomercy-entertainment/nomercy-github-runner:latest",
@@ -87,13 +89,39 @@ def set_draining(name, on=True):
 # telemetry
 # --------------------------------------------------------------------------
 
-def list_runner_names():
-    ok, out, _ = _docker("ps", "-a", "--filter", f"name=^{PREFIX}",
-                         "--format", "{{.Names}}")
+def list_runners():
+    """[(name, provider)] for every runner container on this engine.
+
+    One `docker ps` for both fleets: `--format` exposes a single label through
+    the `.Label` function, so names and providers arrive together rather than
+    costing an inspect per container.
+
+    Selection is by name prefix, not by the nomercy.runner label. The runners
+    deployed today were created by compose, which never set that label, and a
+    listing that required it would show an empty fleet.
+    """
+    ok, out, _ = _docker(
+        "ps", "-a", "--format",
+        '{{.Names}}\t{{.Label "' + providers.LABEL_PROVIDER + '"}}')
     if not ok:
         return []
-    names = [n for n in out.splitlines() if n.startswith(PREFIX)]
-    return sorted(names, key=_index_of)
+    found = []
+    for line in out.splitlines():
+        name, _, label = line.partition("\t")
+        name, label = name.strip(), label.strip()
+        p = providers.from_label(label, name)
+        # from_label can answer on the label alone; require the name to match
+        # too, so a stray label on an unrelated container cannot enrol it into
+        # a fleet whose action routes would then act on it.
+        if p and name.startswith(p.prefix):
+            found.append((name, p))
+    return sorted(found, key=lambda t: (t[1].key != "github", t[1].key,
+                                        _index_of(t[0])))
+
+
+def list_runner_names():
+    """Names only. app.py's guards ask nothing more than "does this exist"."""
+    return [n for n, _ in list_runners()]
 
 
 def _index_of(name):
@@ -101,8 +129,9 @@ def _index_of(name):
     return int(m.group(1)) if m else 0
 
 
-def next_free_index():
-    used = {_index_of(n) for n in list_runner_names()}
+def next_free_index(provider):
+    """Lowest unused index within one fleet. The two number independently."""
+    used = {_index_of(n) for n, p in list_runners() if p is provider}
     i = 1
     while i in used:
         i += 1

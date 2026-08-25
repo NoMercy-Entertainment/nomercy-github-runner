@@ -920,7 +920,8 @@ def api_runner(action):
 
 @app.route("/api/runner/add", methods=["POST"])
 def api_add():
-    idx = ops.next_free_index()
+    import providers
+    idx = ops.next_free_index(providers.GITHUB)
     ok, name, err = ops.create(idx, read_env())
     return jsonify(ok=ok, name=name, error=None if ok else err), \
         (200 if ok else 500)
