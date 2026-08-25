@@ -528,7 +528,7 @@ def create(index, env, provider=None):
     provider = provider or providers.GITHUB
     name = provider.name_for(index)
 
-    container_env, err = provider.container_env(env)
+    container_env, err = provider.container_env(env, name)
     if err:
         # No container is started on a half-built environment: a Forgejo
         # runner without a registration token boots, fails, and restarts for

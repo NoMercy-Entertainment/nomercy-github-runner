@@ -50,6 +50,22 @@ def test_a_created_forgejo_runner_is_labelled(monkeypatch):
     assert "FORGEJO_RUNNER_REGISTRATION_TOKEN=REG-123" in args
 
 
+def test_a_created_forgejo_runner_registers_under_its_container_name(monkeypatch):
+    """scripts/start-forgejo.sh falls back to $(hostname) - the container ID,
+    not its name - when FORGEJO_RUNNER_NAME is absent. A dashboard-created
+    runner must pass it explicitly so it registers with Forgejo under the
+    same name docker ps shows, matching the statically-declared
+    forgejo-runner-1 in docker-compose.runners.yml."""
+    forge = _FakeForge()
+    monkeypatch.setattr(providers.FORGEJO, "forge_client", lambda env: forge)
+    seen = _capture(monkeypatch)
+    ok, name, _ = docker_ops.create(
+        5, {"FORGEJO_INSTANCE_URL": "https://forgejo.example",
+            "FORGEJO_ADMIN_TOKEN": "t"}, providers.FORGEJO)
+    assert ok and name == "forgejo-runner-5"
+    assert f"FORGEJO_RUNNER_NAME={name}" in seen[0]
+
+
 def test_a_created_github_runner_is_labelled_too(monkeypatch):
     seen = _capture(monkeypatch)
     ok, name, _ = docker_ops.create(3, {"GH_TOKEN": "t"}, providers.GITHUB)

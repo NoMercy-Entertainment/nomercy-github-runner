@@ -116,6 +116,15 @@ jobs while the move happens.
    roughly 90 seconds (the enrichment sweep interval) with a result, branch
    and link.
 
+   `forgejo-runner-1` should also show up under that exact name in Forgejo's
+   own **Site Administration → Actions → Runners** list, not as a hex string.
+   Both creation paths - this static compose service and the dashboard's "+
+   Add runner" - pass `FORGEJO_RUNNER_NAME` explicitly so a runner always
+   registers under its container name; without it, `scripts/start-forgejo.sh`
+   falls back to `$(hostname)`, which Docker sets to the container ID.
+   Matching between the dashboard and Forgejo does not depend on this (it
+   keys on `uuid`), but an operator comparing the two runner lists does.
+
 5. **The point of no return.** Only once step 4 has shown a completed Forgejo
    run in the dashboard's history - proof the new runner is actually taking
    and finishing real jobs, not just registered and idle - stop and remove
@@ -155,8 +164,11 @@ After step 5, roll back by reversing it:
 docker compose -f /d/docker-compose/BeastStack/forgejo/docker-compose.yml up -d forgejo_runner
 ```
 
-That re-registers `forgejo_runner` against Forgejo (its own volume still
-holds its prior registration unless it was also removed) and it resumes
+`forgejo_runner` mounts `./forgejo_runner_data:/data`, a host bind mount, not
+a named volume - `docker rm -f` in step 5 cannot lose it. A bind mount is a
+directory on disk; only a named or anonymous volume is at risk from `-v`, and
+step 5 does not pass one. So the registration this command restores is
+exactly the one that existed before step 5, and `forgejo_runner` resumes
 picking up jobs immediately, the same way `forgejo-runner-1` does. Stop
 `forgejo-runner-1` in this repository if the intent is to fall back
 completely rather than run both again:

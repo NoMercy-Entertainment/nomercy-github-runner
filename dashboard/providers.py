@@ -36,12 +36,19 @@ class Provider:
     def name_for(self, index):
         return f"{self.prefix}{index}"
 
-    def container_env(self, env):
+    def container_env(self, env, name=None):
         """Environment for a new runner container, as (dict, error).
 
         Returns an error rather than raising because one of the two has to
         talk to the network to build it - Forgejo mints a fresh registration
         token per runner - and a failed create must render, not 500.
+
+        `name` is the container name create() is about to use
+        (provider.name_for(index)). GitHub does not need it - the agent name
+        is whatever actions-runner picks at registration. Forgejo does: it is
+        what the runner registers as, and without it a dashboard-created
+        runner registers under its container ID instead of a name matching
+        what `docker ps` and Forgejo's own runner list both show.
         """
         raise NotImplementedError
 
@@ -51,7 +58,7 @@ class Provider:
 
 
 class _GitHub(Provider):
-    def container_env(self, env):
+    def container_env(self, env, name=None):
         return {
             "GH_TOKEN": env.get("GH_TOKEN", ""),
             "GITHUB_ORG": env.get("GITHUB_ORG", "NoMercy-Entertainment"),
@@ -68,7 +75,7 @@ class _GitHub(Provider):
 
 
 class _Forgejo(Provider):
-    def container_env(self, env):
+    def container_env(self, env, name=None):
         url = (env.get("FORGEJO_INSTANCE_URL") or "").strip()
         if not url:
             return {}, "FORGEJO_INSTANCE_URL is not set"
@@ -83,6 +90,16 @@ class _Forgejo(Provider):
             "FORGEJO_INSTANCE_URL": url,
             "FORGEJO_RUNNER_REGISTRATION_TOKEN": token,
             "FORGEJO_RUNNER_LABELS": env.get("FORGEJO_RUNNER_LABELS", ""),
+            # Without this, scripts/start-forgejo.sh falls back to
+            # $(hostname), which Docker sets to the container ID - not
+            # --name - so a dashboard-created runner would register with
+            # Forgejo under a hex string instead of forgejo-runner-<N>,
+            # unlike the statically-declared forgejo-runner-1 in
+            # docker-compose.runners.yml. Matching still works either way
+            # (docker_ops keys runners on uuid), but an operator comparing
+            # Forgejo's runner list against `docker ps` needs the names to
+            # agree.
+            "FORGEJO_RUNNER_NAME": name or "",
         }, None
 
     def forge_client(self, env):

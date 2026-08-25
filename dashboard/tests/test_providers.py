@@ -52,3 +52,43 @@ def test_github_container_env_needs_no_network(monkeypatch):
     assert err is None
     assert env["GH_TOKEN"] == "t"
     assert env["GITHUB_ORG"] == "NoMercy-Entertainment"
+
+
+def test_github_container_env_ignores_a_name(monkeypatch):
+    """GitHub has no use for the container name - it must not choke on one."""
+    env, err = providers.GITHUB.container_env(
+        {"GH_TOKEN": "t"}, "github-runner-9")
+    assert err is None
+    assert "FORGEJO_RUNNER_NAME" not in env
+
+
+def test_forgejo_container_env_registers_under_the_container_name(monkeypatch):
+    """A dashboard-created runner must register under its container name, or
+    Forgejo's runner list and `docker ps` disagree about which is which - see
+    the fix in docs/forgejo-runner-migration.md."""
+    class _FakeForge:
+        def registration_token(self):
+            return "REG-1"
+
+    monkeypatch.setattr(providers.FORGEJO, "forge_client",
+                        lambda env: _FakeForge())
+    env, err = providers.FORGEJO.container_env(
+        {"FORGEJO_INSTANCE_URL": "https://forgejo.example"},
+        "forgejo-runner-7")
+    assert err is None
+    assert env["FORGEJO_RUNNER_NAME"] == "forgejo-runner-7"
+
+
+def test_forgejo_container_env_tolerates_no_name(monkeypatch):
+    """container_env is called directly in a couple of tests without a name;
+    it must degrade to an empty string rather than raise or emit "None"."""
+    class _FakeForge:
+        def registration_token(self):
+            return "REG-1"
+
+    monkeypatch.setattr(providers.FORGEJO, "forge_client",
+                        lambda env: _FakeForge())
+    env, err = providers.FORGEJO.container_env(
+        {"FORGEJO_INSTANCE_URL": "https://forgejo.example"})
+    assert err is None
+    assert env["FORGEJO_RUNNER_NAME"] == ""
