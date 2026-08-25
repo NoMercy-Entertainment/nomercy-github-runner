@@ -336,7 +336,7 @@ def _collector():
     global _status, _status_gen
     while True:
         try:
-            s = ops.collect()
+            s = ops.collect(read_env())
             with _status_lock:
                 _status = s
                 _record_series(s)

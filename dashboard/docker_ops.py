@@ -161,6 +161,13 @@ def _stats_map():
 # the line that was matched, without a second `docker logs --timestamps` pass.
 RE_LOG_STAMP = re.compile(r"(\d{4}-\d{2}-\d{2}) (\d{2}:\d{2}:\d{2})Z:")
 
+# time="2026-08-25T14:38:55Z" level=info msg="task 830 repo is FiLL/q ..."
+# The daemon logs a task starting and never logs it finishing, which is why
+# Forgejo's busy/idle comes from the API and this pattern only names the job.
+RE_FORGEJO_TASK = re.compile(
+    r'time="(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})Z".*?'
+    r'msg="task (\d+) repo is (\S+)')
+
 
 def _outlived_by_container(name, line):
     """Whether this log line describes something the container has outlived.
@@ -184,12 +191,68 @@ def _outlived_by_container(name, line):
     return f"{m.group(1)}T{m.group(2)}Z" < started
 
 
-def _job_state(name):
-    """Derive busy/idle/unknown from the runner's log.
+def _runner_file(name, provider):
+    """The runner's registration file, parsed, or {} if unreadable.
 
-    Takes the LAST job event of either kind. Grepping only for 'Running job'
-    reports a finished job as still running whenever its completion line has
-    scrolled out of the tail window.
+    Read once per collect and passed to everything that needs it: the
+    registration name, and - for Forgejo - the uuid that identifies this
+    runner to the forge. Reading it twice would double the exec cost of every
+    poll for no gain.
+    """
+    ok, out, _ = _docker("exec", name, "cat", provider.registration_path,
+                         timeout=8)
+    if not ok or not out:
+        return {}
+    try:
+        # GitHub writes .runner with a UTF-8 BOM. json.loads chokes on it,
+        # which silently turned every registration name into "-".
+        return json.loads(out.lstrip("﻿"))
+    except Exception:  # noqa: BLE001 - rendered, not raised
+        return {}
+
+
+def _forgejo_current_job(name):
+    """A label for whatever task was last picked up. Display only."""
+    ok, out, _ = _docker("logs", "--tail", "200", name, timeout=10)
+    if not ok:
+        return ""
+    last = None
+    for line in out.splitlines():
+        m = RE_FORGEJO_TASK.search(line)
+        if m:
+            last = m
+    return f"task {last.group(2)} - {last.group(3)}" if last else ""
+
+
+def _forgejo_job_state(name, runner_file, forge_status):
+    """busy/idle/unknown from Forgejo, which knows without being inferred.
+
+    forge_status is {uuid: status} or None. None means the API could not be
+    reached, and a runner Forgejo has never heard of is equally unknown - a
+    container mid-registration has no answer yet, and answering "idle" for it
+    would let prune act on a runner about to pick up work.
+    """
+    uuid = (runner_file or {}).get("uuid")
+    if not uuid or forge_status is None:
+        return "unknown", ""
+    status = forge_status.get(uuid)
+    if not status:
+        return "unknown", ""
+    if status == "active":
+        return "busy", _forgejo_current_job(name)
+    # idle and offline both mean "running no job". offline is separately
+    # visible from the container being down, so it needs no third state here.
+    return "idle", ""
+
+
+def _job_state(name, provider=None, runner_file=None, forge_status=None):
+    """Derive busy/idle/unknown for a runner.
+
+    provider defaults to GitHub so the single-argument form keeps working.
+
+    The GitHub branch below takes the LAST job event of either kind.
+    Grepping only for 'Running job' reports a finished job as still running
+    whenever its completion line has scrolled out of the tail window.
 
     A failed `docker logs` (including its own 10s timeout) returns "unknown",
     not "idle". The two are not interchangeable: a runner mid-way through a
@@ -199,6 +262,10 @@ def _job_state(name):
     safe/unsafe split (is_idle) already collapse "unknown" into "not idle";
     callers that show state to an operator (collect) treat it explicitly.
     """
+    provider = provider or providers.GITHUB
+    if provider is providers.FORGEJO:
+        return _forgejo_job_state(name, runner_file, forge_status)
+
     ok, out, _ = _docker("logs", "--tail", "200", name, timeout=10)
     if not ok:
         return "unknown", ""
@@ -213,17 +280,10 @@ def _job_state(name):
     return "busy", last.split("Running job:", 1)[1].strip()
 
 
-def _registration(name):
-    ok, out, _ = _docker("exec", name, "cat",
-                         "/root/actions-runner/.runner", timeout=8)
-    if not ok:
-        return "-"
-    try:
-        # The runner writes .runner with a UTF-8 BOM. json.loads chokes on it,
-        # which silently turned every registration name into "-".
-        return json.loads(out.lstrip("﻿")).get("agentName", "-")
-    except Exception:
-        return "-"
+def _registration(name, provider=None, runner_file=None):
+    provider = provider or providers.GITHUB
+    rf = runner_file if runner_file is not None else _runner_file(name, provider)
+    return rf.get(provider.registration_key) or "-"
 
 
 def _df_rows(name):
@@ -311,12 +371,23 @@ def host_info():
     return info
 
 
-def collect():
+def collect(env=None):
+    env = env or {}
     stats = _stats_map()
     draining = set(load_state().get("draining", []))
     runners = []
+    found = list_runners()
 
-    for name in list_runner_names():
+    # One API call for the whole Forgejo fleet, not one per runner. Skipped
+    # entirely when no Forgejo runner exists, so a GitHub-only deployment
+    # never pays for a forge it does not use.
+    forge_status = None
+    if any(p is providers.FORGEJO for _, p in found):
+        client = providers.FORGEJO.forge_client(env)
+        if client is not None:
+            forge_status = client.runner_statuses()
+
+    for name, provider in found:
         ok, status, _ = _docker("ps", "-a", "--filter", f"name=^{name}$",
                                 "--format", "{{.Status}}")
         status = status or "unknown"
@@ -324,14 +395,15 @@ def collect():
 
         if not running:
             runners.append({
-                "name": name, "registration": "-", "state": "stopped",
-                "job": "", "uptime": status, "cpu_percent": 0,
-                "mem_used": "0B", "mem_limit": "-",
+                "name": name, "provider": provider.key, "registration": "-",
+                "state": "stopped", "job": "", "uptime": status,
+                "cpu_percent": 0, "mem_used": "0B", "mem_limit": "-",
                 "build_cache": "0B", "images": "0B",
             })
             continue
 
-        job_state, job = _job_state(name)
+        rf = _runner_file(name, provider)
+        job_state, job = _job_state(name, provider, rf, forge_status)
         if name in draining:
             state = "draining"
         elif job_state == "unknown":
@@ -354,7 +426,8 @@ def collect():
 
         runners.append({
             "name": name,
-            "registration": _registration(name),
+            "provider": provider.key,
+            "registration": _registration(name, provider, rf),
             "state": state,
             "job": job,
             "uptime": status.replace("Up ", "").split(" (")[0],
@@ -473,13 +546,26 @@ def started_at(name):
     return (head + "Z") if sep else stamp
 
 
-def is_idle(name):
+def is_idle(name, provider=None, forge_status=None, env=None):
     """True only for a definite "idle". "busy" and "unknown" both answer
     False - this gates both the drain watcher (worst case: an early stop,
     which just restarts) and cache prune (worst case: deleting layers a
     running job needs), and the two callers cannot be told apart from here.
+
+    forge_status is fetched here when the caller has none. collect() already
+    holds one for the whole fleet and passes it in; the drain watcher and
+    prune() do not, and without this they would read every Forgejo runner as
+    unknown and refuse to act on it for ever.
     """
-    state, _ = _job_state(name)
+    provider = provider or providers.GITHUB
+    rf = None
+    if provider is providers.FORGEJO:
+        rf = _runner_file(name, provider)
+        if forge_status is None:
+            client = provider.forge_client(env or {})
+            if client is not None:
+                forge_status = client.runner_statuses()
+    state, _ = _job_state(name, provider, rf, forge_status)
     return state == "idle"
 
 
@@ -509,7 +595,7 @@ def _df_sizes(rows):
             "images": rows.get("Images", {}).get("Size", "0B")}
 
 
-def prune(name, timeout=300):
+def prune(name, timeout=300, provider=None, env=None):
     """Reclaim build cache and unused images inside one runner.
 
     Measures `docker system df` either side so the caller can report a real
@@ -530,7 +616,17 @@ def prune(name, timeout=300):
     # a job can still start between this check and the prune - but BuildKit
     # will not delete layers an in-flight build holds, so the residual risk is
     # a slower build, not a broken one.
-    if not is_idle(name):
+    #
+    # Called with just `name` when provider is unset, not
+    # is_idle(name, provider, env=env) unconditionally: is_idle() is a
+    # deliberately easy seam to stub out in tests that want to isolate prune's
+    # own logic from job-state detection, and every such stub in this suite is
+    # a single-argument lambda. Passing provider/env through for a GitHub
+    # runner changes nothing about the answer - is_idle already defaults
+    # provider to GITHUB and ignores env on that path - so this costs nothing
+    # and keeps those stubs working.
+    idle = is_idle(name) if provider is None else is_idle(name, provider, env=env)
+    if not idle:
         return {"name": name, "ok": False,
                 "error": f"{name} became busy before the prune started",
                 "before": None, "after": None,
