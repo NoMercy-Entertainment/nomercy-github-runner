@@ -81,6 +81,37 @@ def set_draining(name, on=True):
     save_state(st)
 
 
+def _remember_forgejo_uuid(name, uuid):
+    """Persist the uuid a Forgejo container's OWN registration file last
+    showed us, keyed by the container's name.
+
+    This is local bookkeeping about a container we already run - "what uuid
+    did forgejo-runner-N last register as" - not a name-based match against
+    arbitrary forge records. The exclusion in _elsewhere() still compares
+    uuids only; this just recovers the uuid to compare with once the
+    container is stopped and _runner_file() (docker exec) can no longer read
+    it. Without it, every stop/restart of a local Forgejo runner - including
+    every "Recreate fleet" - made that runner's own forge record briefly
+    indistinguishable from a genuinely-elsewhere one, so it double-listed:
+    once as `stopped` under Forgejo, once as an inert Elsewhere card.
+
+    Read fresh and written only when the value actually changes (which,
+    once a runner has registered, is for the rest of its life) - the same
+    read-modify-write shape set_draining() uses against this same file,
+    kept to the same small race window against a concurrent drain toggle
+    rather than a wider one from caching a value across the whole sweep.
+    """
+    if not uuid:
+        return
+    st = load_state()
+    uuids = st.get("forgejo_uuids") or {}
+    if uuids.get(name) == uuid:
+        return
+    uuids[name] = uuid
+    st["forgejo_uuids"] = uuids
+    save_state(st)
+
+
 # --------------------------------------------------------------------------
 # telemetry
 # --------------------------------------------------------------------------
@@ -408,9 +439,18 @@ def _status_map(records):
             for r in (records or []) if isinstance(r, dict) and r.get("uuid")}
 
 
-def _forge_records(env):
+def _forge_records(env, client=None):
     """The whole Forgejo fleet's runner records, cached for a window that
     starts when the call FINISHES, not when it started.
+
+    `client`, when given, is reused instead of building a fresh one.
+    collect() builds a client itself to decide whether Forgejo is configured
+    at all (see its own comment), and passes that same client through here
+    rather than having this construct a second one for the same sweep -
+    building one is a local check only (env has a URL and a token), never a
+    network call, but there is no reason to do it twice. Every other caller
+    (tests, _forge_statuses() below) passes nothing and gets the previous
+    behaviour: build one here, only when the cache actually needs a fetch.
 
     A failed call is NOT cached as though it were an answer - the hazard
     host_info() documents. What is stored on failure is None, which is
@@ -439,7 +479,8 @@ def _forge_records(env):
     now = time.monotonic()
     if _forge_status_cache is not None and now < _forge_status_cache[0]:
         return _forge_status_cache[1]
-    client = providers.FORGEJO.forge_client(env)
+    if client is None:
+        client = providers.FORGEJO.forge_client(env)
     got = client.runner_statuses() if client is not None else None
     ttl = _FORGE_STATUS_TTL if got is not None else _FORGE_STATUS_FAIL_BACKOFF
     _forge_status_cache = (time.monotonic() + ttl, got)
@@ -457,28 +498,41 @@ def _forge_statuses(env):
 def collect(env=None):
     env = env or {}
     stats = _stats_map()
-    draining = set(load_state().get("draining", []))
+    # `st`, not `state`: the loop below already uses `state` as the
+    # per-runner idle/busy/draining/stopped label, and shadowing it with
+    # this dict would be a landmine for the next edit even though nothing
+    # here reads it again after the two lines below.
+    st = load_state()
+    draining = set(st.get("draining", []))
+    # {container name: last-known uuid}, our own bookkeeping - see
+    # _remember_forgejo_uuid(). Falls back for a container currently stopped,
+    # whose registration file _runner_file() cannot read right now.
+    persisted_forgejo_uuids = st.get("forgejo_uuids") or {}
     runners = []
     found = list_runners()
 
-    # One API call for the whole Forgejo fleet, not one per runner. Skipped
-    # entirely when no Forgejo runner exists, so a GitHub-only deployment
-    # never pays for a forge it does not use. forge_records feeds both the
-    # busy/idle map below AND the Elsewhere list after the loop - one call,
-    # two reductions of its answer.
+    # One API call for the whole Forgejo fleet, not one per runner. Gated on
+    # Forgejo being CONFIGURED - forge_client(env) can build a client at all
+    # - not on a local Forgejo container existing. Elsewhere's whole premise
+    # is runners that are NOT local containers: gating on one would leave
+    # the section empty for exactly the deployment shape it exists to show -
+    # the local Forgejo fleet drained, removed, or not yet created, while a
+    # Windows-service or macOS-VM runner is still alive and registered.
+    # forge_client() only checks that a URL and token are present - no
+    # network call - so this still costs a GitHub-only, Forgejo-UNCONFIGURED
+    # deployment nothing beyond that one cheap local check. Built once and
+    # handed to _forge_records() below rather than let it build a second one
+    # for the same sweep.
+    forge_client = providers.FORGEJO.forge_client(env)
     forge_status = None
     forge_records = None
-    if any(p is providers.FORGEJO for _, p in found):
-        forge_records = _forge_records(env)
+    if forge_client is not None:
+        forge_records = _forge_records(env, forge_client)
         forge_status = None if forge_records is None else _status_map(forge_records)
 
     # uuids of every Forgejo runner that IS a container on this engine, so
     # the Elsewhere list below can tell "the forge knows about this and it is
-    # one of ours" from "the forge knows about this and it is not". Only
-    # populated from RUNNING containers: a stopped one's registration file is
-    # behind `docker exec`, which needs a running container to answer, and
-    # nothing else in collect() reads a stopped container's file either (its
-    # "registration" field below is a bare "-" for the same reason).
+    # one of ours" from "the forge knows about this and it is not".
     known_forgejo_uuids = set()
 
     for name, provider in found:
@@ -488,6 +542,10 @@ def collect(env=None):
         running = status.startswith("Up")
 
         if not running:
+            if provider is providers.FORGEJO:
+                remembered = persisted_forgejo_uuids.get(name)
+                if remembered:
+                    known_forgejo_uuids.add(remembered)
             runners.append({
                 "name": name, "provider": provider.key, "registration": "-",
                 "state": "stopped", "job": "", "uptime": status,
@@ -501,6 +559,7 @@ def collect(env=None):
             uuid = (rf or {}).get("uuid")
             if uuid:
                 known_forgejo_uuids.add(uuid)
+                _remember_forgejo_uuid(name, uuid)
         job_state, job = _job_state(name, provider, rf, forge_status)
         if name in draining:
             state = "draining"

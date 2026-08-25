@@ -34,6 +34,15 @@ def _clear_forge_status_cache():
     docker_ops._forge_status_cache = None
 
 
+@pytest.fixture(autouse=True)
+def _isolated_state_file(tmp_path, monkeypatch):
+    """_remember_forgejo_uuid() persists to docker_ops.STATE_PATH, a real
+    file that would otherwise live for the whole test session - point it at
+    a fresh temp file per test so uuid bookkeeping from one test (or a run
+    of the full suite) can never leak into another."""
+    monkeypatch.setattr(docker_ops, "STATE_PATH", str(tmp_path / "state.json"))
+
+
 KNOWN_UUID = "aa11bb22-0000-4757-8626-000000000000"
 WINDOWS_UUID = "win-service-0001"
 MACOS_UUID = "macos-vm-0002"
@@ -177,28 +186,38 @@ def test_elsewhere_carries_no_container_only_fields(monkeypatch):
         assert absent not in windows
 
 
-def test_a_stopped_containers_own_record_is_a_known_gap(monkeypatch):
-    """Documents a deliberate scope limit rather than hiding it.
+def test_a_stopped_containers_own_record_does_not_double_list(monkeypatch):
+    """The bug a code review caught before this shipped: every stop or
+    restart of a local Forgejo runner - including every "Recreate fleet" -
+    made that runner's own forge record briefly indistinguishable from a
+    genuinely-elsewhere one while docker exec could not answer, so it
+    double-listed: once as `stopped` under Forgejo, once as an inert
+    Elsewhere card. That is a routine operation, not a corner case.
 
-    known_forgejo_uuids is only populated from RUNNING containers (see the
-    comment in collect()): a stopped container's registration file sits
-    behind `docker exec`, which needs a running container to answer, and
-    nothing else in collect() reads a stopped container's file either - its
-    "registration" field is a bare "-" for the exact same reason. So while a
-    Forgejo container is stopped, its own forge record - if Forgejo still
-    reports one - is indistinguishable from a genuine forge-only runner and
-    surfaces as a (harmless, read-only, un-actionable) Elsewhere card
-    alongside its "stopped" card in `runners`, until it is started again.
+    Fixed by persisting the container's own uuid (docker_ops.
+    _remember_forgejo_uuid) the moment a RUNNING sweep reads it, and
+    falling back to that persisted value once the container can no longer
+    answer `docker exec` itself. This is local bookkeeping about our own
+    container by name - not a name-based match against forge records, which
+    stays uuid-only throughout.
     """
-    monkeypatch.setattr(docker_ops, "_docker", _docker_stub(running=False))
     forge = _Forge([FORGE_RECORDS[0]])   # only the container's own record
     monkeypatch.setattr(providers.FORGEJO, "forge_client", lambda env: forge)
 
-    status = docker_ops.collect({})
+    # Sweep 1: the container is running - collect() reads its uuid straight
+    # off `docker exec ... cat .../.runner` and remembers it for later.
+    monkeypatch.setattr(docker_ops, "_docker", _docker_stub(running=True))
+    first = docker_ops.collect({})
+    assert first["elsewhere"] == []
 
-    assert status["runners"][0]["state"] == "stopped"
-    assert status["runners"][0]["name"] == "forgejo-runner-1"
-    assert [e["uuid"] for e in status["elsewhere"]] == [KNOWN_UUID]
+    # Sweep 2: the SAME container is now stopped. docker exec can no longer
+    # answer, but the persisted uuid from sweep 1 still excludes it.
+    monkeypatch.setattr(docker_ops, "_docker", _docker_stub(running=False))
+    second = docker_ops.collect({})
+
+    assert second["runners"][0]["state"] == "stopped"
+    assert second["runners"][0]["name"] == "forgejo-runner-1"
+    assert second["elsewhere"] == []
 
 
 def test_collect_never_calls_forgejo_twice_for_one_sweep(monkeypatch):
@@ -227,27 +246,52 @@ def test_an_unreachable_forge_leaves_elsewhere_empty(monkeypatch):
     assert status["elsewhere"] == []
 
 
-def test_a_github_only_fleet_never_touches_the_forge_for_elsewhere(
-        monkeypatch):
-    """Unchanged pre-existing behaviour, still true with Elsewhere added:
-    collect() never builds a Forgejo client at all when there is no Forgejo
-    container on this engine."""
-    def ps(*args, **kwargs):
-        if args[:3] == ("ps", "-a", "--format"):
-            return (True, "github-runner-1\t\n", "")
-        if args[:3] == ("ps", "-a", "--filter"):
-            return (True, "Up 1 hour", "")
-        if args and args[0] == "stats":
-            return (True, "", "")
+def _github_only_ps(*args, **kwargs):
+    """No local Forgejo container at all - either it was never created, or
+    the whole local fleet has been drained/removed. This is exactly the
+    deployment shape Elsewhere exists for."""
+    if args[:3] == ("ps", "-a", "--format"):
+        return (True, "github-runner-1\t\n", "")
+    if args[:3] == ("ps", "-a", "--filter"):
+        return (True, "Up 1 hour", "")
+    if args and args[0] == "stats":
         return (True, "", "")
+    return (True, "", "")
 
-    monkeypatch.setattr(docker_ops, "_docker", ps)
+
+def test_a_configured_forge_still_shows_elsewhere_with_no_local_container(
+        monkeypatch):
+    """The case the old container-existence gate got wrong: gating the forge
+    call on a local Forgejo container existing left the section dark exactly
+    when it mattered most - no local Forgejo runner at all, while Forgejo is
+    fully configured and reports runners that are alive and registered
+    elsewhere (the Windows service, the macOS VM)."""
+    monkeypatch.setattr(docker_ops, "_docker", _github_only_ps)
+    forge = _Forge(FORGE_RECORDS)
+    monkeypatch.setattr(providers.FORGEJO, "forge_client", lambda env: forge)
+
+    status = docker_ops.collect({})
+
+    assert status["runners"] == [] or all(
+        r["provider"] != "forgejo" for r in status["runners"])
+    assert {r["uuid"] for r in status["elsewhere"]} == {
+        KNOWN_UUID, WINDOWS_UUID, MACOS_UUID}
+    assert forge.calls == 1
+
+
+def test_an_unconfigured_forge_makes_no_call_regardless_of_containers(
+        monkeypatch):
+    """The mirror case: Forgejo is not configured at all. forge_client(env)
+    returning None is a local check (no URL/token in env) - not a network
+    call - so this still costs nothing beyond that one check, exactly the
+    property the old, now-replaced container-existence gate was protecting."""
+    monkeypatch.setattr(docker_ops, "_docker", _github_only_ps)
     calls = []
     monkeypatch.setattr(providers.FORGEJO, "forge_client",
                         lambda env: calls.append(1) or None)
 
     status = docker_ops.collect({})
-    assert calls == []
+    assert len(calls) == 1, "checked once per sweep to decide the gate"
     assert status["elsewhere"] == []
 
 

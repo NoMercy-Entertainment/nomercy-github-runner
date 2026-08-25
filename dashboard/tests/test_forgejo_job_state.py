@@ -154,10 +154,16 @@ def test_the_github_path_still_works_with_one_argument(monkeypatch):
 
 # --------------------------------------------------------------------------
 # collect() must ask Forgejo once for the whole fleet, never per runner, and
-# never at all when there is no Forgejo runner to ask about. A hand-trace
+# never make a real fetch at all when Forgejo is not CONFIGURED. A hand-trace
 # confirmed this once; these pin it so a future edit that moves the call
 # inside the per-runner loop fails loudly instead of just costing more API
 # calls than the 5s poll interval can afford.
+#
+# The gate used to be "does a local Forgejo container exist" - correct back
+# when this call only served busy/idle for that container, wrong once the
+# Elsewhere section existed to show runners that are NOT local containers.
+# See test_elsewhere_section.py for the tests that pin the corrected gate
+# (Forgejo configured, not "a Forgejo container happens to be here").
 # --------------------------------------------------------------------------
 
 def _docker_stub(ps_output):
@@ -202,7 +208,19 @@ def test_collect_asks_forgejo_once_for_a_mixed_fleet(monkeypatch):
     assert len(status_calls) == 1
 
 
-def test_collect_never_asks_forgejo_for_a_github_only_fleet(monkeypatch):
+def test_an_unconfigured_forge_makes_no_real_fetch_for_a_github_only_fleet(
+        monkeypatch):
+    """Superseded assumption, corrected: it is no longer true that
+    forge_client() is never even built for a GitHub-only fleet - the gate is
+    now "is Forgejo configured", not "is there a local Forgejo container",
+    so forge_client(env) IS called to find that out (see test_elsewhere_
+    section.py for why: Elsewhere's whole point is showing runners that are
+    NOT local containers).
+
+    What must still hold is the cost guarantee that motivated the old test:
+    an UNCONFIGURED forge (forge_client returns None) never goes past that
+    one local check - runner_statuses() is never reached, so no network call
+    is ever attempted."""
     ps_output = "github-runner-1\t\ngithub-runner-2\t\n"
     monkeypatch.setattr(docker_ops, "_docker", _docker_stub(ps_output))
 
@@ -213,8 +231,9 @@ def test_collect_never_asks_forgejo_for_a_github_only_fleet(monkeypatch):
         return None
 
     monkeypatch.setattr(providers.FORGEJO, "forge_client", fake_forge_client)
-    docker_ops.collect()
-    assert client_calls == [], "a GitHub-only fleet must never even build a Forgejo client"
+    status = docker_ops.collect()
+    assert len(client_calls) == 1, "checked once per sweep, not per runner"
+    assert status["elsewhere"] == []
 
 
 # --------------------------------------------------------------------------
