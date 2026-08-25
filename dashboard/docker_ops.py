@@ -18,15 +18,10 @@ import time
 
 import providers
 
-IMAGE = os.environ.get(
-    "RUNNER_IMAGE",
-    "ghcr.io/nomercy-entertainment/nomercy-github-runner:latest",
-)
 # Path to the repo AS THE DOCKER DAEMON SEES IT, not as this container sees it.
 # Bind mounts are resolved by the daemon, so a path valid only inside the
 # dashboard container would silently create an empty directory instead.
 REPO_HOST_PATH = os.environ.get("REPO_HOST_PATH", "/mnt/d/docker-compose/GithubRunners")
-PREFIX = "github-runner-"
 LABEL = "nomercy.runner=true"
 
 STATE_PATH = os.path.join(os.environ.get("DASH_DATA", "/data"), "state.json")
@@ -520,7 +515,9 @@ def remove(name, provider=None, env=None):
             print(f"[forgejo:deregister:{name}] {e}")
 
     # 180s: these containers hold a nested daemon, and tearing that down on
-    # removal has been observed to take ~110s.
+    # removal has been observed to take ~110s. A timeout here is read by the
+    # caller as "removal failed" even when it eventually succeeds, so the
+    # margin matters more than it looks like it should.
     ok, out, err = _docker("rm", "-f", name, timeout=180)
     set_draining(name, False)
     return ok, out, err
