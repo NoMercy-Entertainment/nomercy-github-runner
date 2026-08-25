@@ -35,9 +35,14 @@ CREATE TABLE IF NOT EXISTS runs (
   ended_at      TEXT,
   duration_s    INTEGER,
   result        TEXT,
+  provider      TEXT    NOT NULL DEFAULT 'github',
+  forge_task_id INTEGER,
   cpu_min REAL, cpu_max REAL, cpu_avg REAL,
   mem_min INTEGER, mem_max INTEGER, mem_avg INTEGER,
   samples       INTEGER DEFAULT 0,
+  -- The gh_ prefix is historical. These columns carry enrichment for both
+  -- forges; renaming them would be a migration over live history for no
+  -- functional gain.
   gh_checked    INTEGER DEFAULT 0,
   gh_run_id     INTEGER,
   gh_repo       TEXT,
@@ -78,6 +83,15 @@ def _conn():
 def init():
     with _lock, _conn() as c:
         c.executescript(SCHEMA)
+        # CREATE TABLE IF NOT EXISTS does nothing to a table that already
+        # exists, so a deployed database never gains a column from SCHEMA
+        # alone. The live history predates both of these.
+        have = {r[1] for r in c.execute("PRAGMA table_info(runs)")}
+        if "provider" not in have:
+            c.execute("ALTER TABLE runs ADD COLUMN provider TEXT NOT NULL"
+                      " DEFAULT 'github'")
+        if "forge_task_id" not in have:
+            c.execute("ALTER TABLE runs ADD COLUMN forge_task_id INTEGER")
 
 
 # --------------------------------------------------------------------------
@@ -113,12 +127,17 @@ def parse_events(text):
 # writes
 # --------------------------------------------------------------------------
 
-def open_run(runner, registration, job_name, started_at):
+def open_run(runner, registration, job_name, started_at,
+             provider="github", forge_task_id=None):
+    # provider and forge_task_id are keyword arguments with defaults, not new
+    # positional ones: existing callers and tests pass four arguments.
     with _lock, _conn() as c:
         c.execute(
-            "INSERT OR IGNORE INTO runs (runner, registration, job_name, started_at)"
-            " VALUES (?,?,?,?)",
-            (runner, registration, job_name, started_at))
+            "INSERT OR IGNORE INTO runs"
+            " (runner, registration, job_name, started_at, provider,"
+            "  forge_task_id) VALUES (?,?,?,?,?,?)",
+            (runner, registration, job_name, started_at, provider,
+             forge_task_id))
 
 
 def close_run(runner, job_name, ended_at, result):
@@ -167,6 +186,26 @@ def close_run(runner, job_name, ended_at, result):
              agg["cmin"], agg["cmax"], agg["cavg"],
              agg["mmin"], agg["mmax"], int(agg["mavg"] or 0), agg["n"],
              row["id"]))
+
+
+def apply_close(run_id, ended_at, result):
+    """Close one run by id.
+
+    close_run() matches on (runner, job_name) because a GitHub completion line
+    is all the log gives. Forgejo's end comes from the API against a run we
+    already know the id of, so matching again would only add a way to close
+    the wrong row.
+    """
+    with _lock, _conn() as c:
+        row = c.execute("SELECT started_at FROM runs WHERE id=?",
+                        (run_id,)).fetchone()
+        if not row:
+            return
+        c.execute(
+            "UPDATE runs SET ended_at=?, result=?, duration_s=?"
+            " WHERE id=? AND ended_at IS NULL",
+            (ended_at, result,
+             _seconds_between(row["started_at"], ended_at), run_id))
 
 
 def has_open_run(runner):
@@ -232,10 +271,19 @@ def _seconds_between(a, b):
 # --------------------------------------------------------------------------
 
 def pending_enrichment(limit=20):
+    """Runs still awaiting a forge lookup.
+
+    A GitHub run must have ended first: find_job() matches within the window
+    between its start and its end. A Forgejo run is the opposite case - it is
+    still open precisely because only the API can close it, so requiring an end
+    here would mean no Forgejo run were ever enriched or ever closed.
+    """
     with _lock, _conn() as c:
         return [dict(r) for r in c.execute(
-            "SELECT id, runner, registration, job_name, started_at, ended_at"
-            " FROM runs WHERE gh_checked=0 AND ended_at IS NOT NULL"
+            "SELECT id, runner, registration, job_name, started_at, ended_at,"
+            " provider, forge_task_id"
+            " FROM runs WHERE gh_checked=0"
+            "   AND (ended_at IS NOT NULL OR provider='forgejo')"
             " ORDER BY started_at DESC LIMIT ?", (limit,)).fetchall()]
 
 
