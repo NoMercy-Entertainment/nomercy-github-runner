@@ -86,6 +86,27 @@ hits Forgejo's user-scoped equivalent under `/api/v1/user/...` instead.
 The config key was renamed `FORGEJO_ADMIN_TOKEN` → `FORGEJO_API_TOKEN` to
 match: it no longer needs, and must never be minted with, admin scope.
 
+## What the tests could not see
+
+**`forgejo-runner` logs to stderr; the GitHub runner logs to stdout.** Every log
+read in `docker_ops` used only stdout, so for a Forgejo runner it returned the
+three lines of shell echo from the start script and nothing else. The busy card
+showed no job name, and — far worse — `logs_since` fed the history parser an
+empty log, so **no Forgejo run was ever recorded**. Measured on the live
+deployment after two real jobs had completed: `stdout 3 lines, 0 task lines;
+stderr 10 lines, 2 task lines`, and `rows by provider: [('github', 2105)]`.
+
+339 tests, five fix rounds, a whole-branch review and a scoped re-review all
+missed it, because every test hands the parsers ready-made log text and so never
+crosses the stream split. One real job made it visible in seconds.
+
+Log reads now go through `_docker_logs`, which merges the two streams at the OS
+level with `stderr=subprocess.STDOUT` rather than concatenating them afterwards,
+so ordering survives. The lesson generalises: a stub that stands in for the thing
+under test cannot fail the way the real thing does. The same shape produced the
+`--config` and `unregister` defects above — both survived review by never being
+run against the real binary.
+
 ## Deliberate behaviour changes
 
 **`/api/recreate`, `/api/prune-all` and `/api/runner/add` now require a
