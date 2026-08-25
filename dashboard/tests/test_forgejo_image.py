@@ -44,7 +44,15 @@ def test_registration_lands_where_providers_expects_it():
     assert "forgejo-runner register" in start
 
 
-def test_the_daemon_is_the_final_process():
-    """exec, not a background start: the container must die when the runner
-    does, or Docker reports Up for a runner that is gone."""
-    assert "exec forgejo-runner daemon" in _read(START)
+def test_deregistration_survives_shutdown():
+    """The daemon is started as a background child and waited on, not exec'd.
+    A trap handler does not survive exec — the shell's process image is replaced.
+    Keeping this shell alive as PID 1 is what makes deregistration reachable when
+    the container stops. This pattern is documented in scripts/start.sh:447-452."""
+    start = _read(START)
+    # The daemon is not exec'd (which would replace the shell and lose traps)
+    assert "exec forgejo-runner daemon" not in start
+    # A TERM trap exists to deregister
+    assert "trap" in start and "deregister" in start
+    # The script waits on the runner child rather than exiting immediately
+    assert "wait" in start and "RUNNER_PID" in start

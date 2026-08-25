@@ -10,7 +10,7 @@ ARG FORGEJO_RUNNER_VERSION=12.0.1
 ENV DEBIAN_FRONTEND=noninteractive
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        ca-certificates curl gnupg bash procps tzdata \
+        ca-certificates curl procps tzdata \
     && install -m 0755 -d /etc/apt/keyrings \
     && curl -fsSL https://download.docker.com/linux/ubuntu/gpg \
          -o /etc/apt/keyrings/docker.asc \

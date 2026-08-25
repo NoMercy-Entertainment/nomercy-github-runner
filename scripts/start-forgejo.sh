@@ -20,14 +20,22 @@ cd "$DATA"
 #
 # builder.gc caps the build cache. Without it the nested daemons grow without
 # limit - the GitHub fleet once filled a 1 TB disk this way.
+# BuildKit cachemounts break with overlay2 in nested containers, so disable
+# the containerd snapshotter to route BuildKit through the daemon's
+# fuse-overlayfs snapshotter.
 mkdir -p /etc/docker
 cat > /etc/docker/daemon.json <<'JSON'
 {
   "storage-driver": "fuse-overlayfs",
+  "features": {
+    "containerd-snapshotter": false
+  },
   "builder": {
     "gc": {
       "enabled": true,
-      "defaultKeepStorage": "20GB"
+      "policy": [
+        { "maxUsedSpace": "20GB" }
+      ]
     }
   }
 }
@@ -65,9 +73,44 @@ if [ ! -f "$DATA/.runner" ]; then
 fi
 
 # --- deregistration on the way out ---------------------------------------
-# The dashboard deregisters through the API when it removes a runner, which
-# covers the case it knows about. This covers the other one: the container
-# being stopped by anything else. Both are idempotent.
-trap 'echo "SIGTERM - unregistering"; forgejo-runner unregister 2>/dev/null || true' TERM
+# The daemon is started as a background child and waited on rather than exec'd.
+# A trap handler does not survive exec — the shell's process image is replaced.
+# Keeping this shell alive as PID 1 is what makes deregistration reachable when
+# the container stops. The dashboard deregisters through the API when it removes
+# a runner, which covers the case it knows about. This covers the other one:
+# the container being stopped by anything else. Both are idempotent.
+deregister() {
+  echo "Shutting down runner — deregistering..."
+  forgejo-runner unregister 2>/dev/null || true
+}
 
-exec forgejo-runner daemon --config "$DATA/config.yaml"
+trap 'deregister' TERM
+trap 'deregister' INT
+trap 'deregister' EXIT
+
+# Job control on. Without it bash adds SIGINT to a background child's ignore
+# mask, so the daemon would silently stop being interruptible the moment it
+# moved off the foreground.
+set -m
+
+echo "Starting Forgejo runner daemon..."
+forgejo-runner daemon --config "$DATA/config.yaml" &
+RUNNER_PID=$!
+
+# `wait` is looped rather than called once. With job control on, bash's `wait`
+# returns when the child changes state, not only when it exits: a `kill -STOP`
+# would make it return 128+SIGSTOP while the process is merely paused. A single
+# `wait` would then fall straight through to deregister a perfectly healthy
+# runner. Re-checking that the PID exists means only a real exit ends the loop.
+#
+# The `sleep 1` is not decorative: `wait` on an already-reported stopped job
+# returns immediately, so without it a stopped child spins this loop at full CPU.
+# Polling once a second costs nothing and cannot spin.
+RUNNER_STATUS=0
+while kill -0 "$RUNNER_PID" 2>/dev/null; do
+  wait "$RUNNER_PID"
+  RUNNER_STATUS=$?
+  kill -0 "$RUNNER_PID" 2>/dev/null && sleep 1
+done
+
+exit "$RUNNER_STATUS"
