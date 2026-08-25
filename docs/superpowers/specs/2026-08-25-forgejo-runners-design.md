@@ -108,9 +108,21 @@ Without it, "Recreate fleet" does not know which fleet it is destroying.
 
 ## Busy and idle
 
-Forgejo answers this directly. `GET /admin/actions/runners` returns a `status`
+Forgejo answers this directly. `GET /user/actions/runners` returns a `status`
 field enumerated as `offline | idle | active` - the forge's own account of what
 its runner is doing, rather than an inference from a log line.
+
+This is the endpoint scoped to the owner's own account, not Forgejo's global
+admin equivalent, `GET /admin/actions/runners`. A runner registered through
+the admin path is available to every repository and every user on the
+instance; this instance has open registration (`DISABLE_REGISTRATION=false`),
+so a global runner would execute jobs pushed by strangers on hardware the
+owner controls. The GitHub side of this dashboard is scoped to a single
+organisation, and the Forgejo side is scoped equivalently - to the owner's own
+account, not to the whole instance. (Confirmed against the live database: the
+owner's existing runners all carry `owner_id = 1`, i.e. they are already
+user-scoped - which is also why `GET /admin/actions/runners` answers with an
+empty array rather than the runners that are actually there.)
 
 Runners are matched on `uuid`, not on name: the API documents `name` as "not
 unique". The uuid is in `/data/.runner`, which the provider already reads for
@@ -188,7 +200,7 @@ The enricher loop dispatches on `runs.provider` to pick the forge client.
 daemon` does not; the registration survives in `/data/.runner` and at Forgejo.
 A removed container would leave a ghost runner sitting at `offline`.
 
-So `remove()` for Forgejo calls `DELETE /admin/actions/runners/{id}` first, then
+So `remove()` for Forgejo calls `DELETE /user/actions/runners/{id}` first, then
 `docker rm`. If that call fails the removal still proceeds and the UI reports
 it: a container the operator wants gone must be removable even when Forgejo is
 not answering.
@@ -200,11 +212,11 @@ New keys in `.env`:
 | key | purpose |
 |---|---|
 | `FORGEJO_INSTANCE_URL` | `https://forgejo.phillippepelzer.me` |
-| `FORGEJO_ADMIN_TOKEN` | admin API: runner status, tasks, deregistration, minting registration tokens |
+| `FORGEJO_API_TOKEN` | user-scoped API: runner status, tasks, deregistration, minting registration tokens - scoped to the owner's own account, not admin |
 | `FORGEJO_RUNNER_LABELS` | the `ubuntu-*:docker://...` mapping currently inline in BeastStack's compose file |
 
 `FORGEJO_RUNNER_REGISTRATION_TOKEN` is not carried over. The dashboard mints a
-fresh token per runner from `GET /admin/actions/runners/registration-token`,
+fresh token per runner from `GET /user/actions/runners/registration-token`,
 which is what makes "+ Add runner" work for Forgejo without a token being
 copied by hand.
 
@@ -213,7 +225,7 @@ Two places must follow:
 - `EDITABLE` in `app.py` gains the three keys, or they cannot be set from the
   settings page.
 - `SECRET_KEYS` in `runner_detail.py` becomes `{"GH_TOKEN",
-  "FORGEJO_ADMIN_TOKEN"}`. Without that the admin token renders unmasked on
+  "FORGEJO_API_TOKEN"}`. Without that the API token renders unmasked on
   the detail page.
 
 ## Network

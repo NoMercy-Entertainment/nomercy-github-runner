@@ -60,8 +60,8 @@ code{background:var(--bg-inset);padding:1px 5px;border:1px solid var(--rule);fon
       <div class="hint">e.g. <code>https://forgejo.example.com</code>. Blank disables the Forgejo fleet.</div>
     </div>
     <div class="field">
-      <label for="FORGEJO_ADMIN_TOKEN">Admin token</label>
-      <input type="password" id="FORGEJO_ADMIN_TOKEN" placeholder="{{ forgejo_token_mask or 'not set' }}" autocomplete="new-password">
+      <label for="FORGEJO_API_TOKEN">API token</label>
+      <input type="password" id="FORGEJO_API_TOKEN" placeholder="{{ forgejo_token_mask or 'not set' }}" autocomplete="new-password">
       <div class="hint">
         Currently <code>{{ forgejo_token_mask or 'not set' }}</code>. The real value is
         never sent to this page. Leave blank to keep it; type a new one to replace it.
@@ -131,7 +131,7 @@ code{background:var(--bg-inset);padding:1px 5px;border:1px solid var(--rule);fon
 <script>
 const FIELDS = ['GITHUB_ORG','GH_TOKEN','RUNNER_LABELS','RUNNER_GROUP',
                 'RUNNER_CPU_LIMIT','RUNNER_MEM_LIMIT',
-                'FORGEJO_INSTANCE_URL','FORGEJO_ADMIN_TOKEN','FORGEJO_RUNNER_LABELS'];
+                'FORGEJO_INSTANCE_URL','FORGEJO_API_TOKEN','FORGEJO_RUNNER_LABELS'];
 const $ = id => document.getElementById(id);
 
 function toast(msg, bad) {
@@ -154,7 +154,7 @@ async function save() {
   if (!res.ok || d.ok === false) throw new Error(d.error || ('HTTP ' + res.status));
   // Clear the token boxes so a just-typed secret is not left sitting in the DOM.
   $('GH_TOKEN').value = '';
-  $('FORGEJO_ADMIN_TOKEN').value = '';
+  $('FORGEJO_API_TOKEN').value = '';
   return d;
 }
 

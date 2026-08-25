@@ -17,7 +17,7 @@
 - The eight `github-runner-N` containers running today must keep appearing in the dashboard without being recreated. They carry no `nomercy.provider` label.
 - Container names stay a strict allowlist: `(?:github|forgejo)-runner-\d+`. The name reaches a command line.
 - Forgejo instance URL: `https://forgejo.phillippepelzer.me`. Never `http://forgejo:3000` (a compose network that does not exist on the distro) and never the host gateway `172.28.192.1` (changes across reboots).
-- Forgejo API auth header: `Authorization: token <FORGEJO_ADMIN_TOKEN>`.
+- Forgejo API auth header: `Authorization: token <FORGEJO_API_TOKEN>`.
 - `GET /api/v1/admin/actions/runners` returns a **bare JSON array**, not an object with a `runners` key.
 - `GET /api/v1/repos/{owner}/{repo}/actions/tasks` returns `{"total_count": N, "workflow_runs": [...]}` — the tasks are under `workflow_runs` despite the name.
 - Every new `dashboard/*.py` module must be added to the `COPY` line in `dashboard/Dockerfile`, or `test_image_contents.py` fails.
@@ -188,11 +188,11 @@ class _Forgejo(Provider):
             return {}, "FORGEJO_INSTANCE_URL is not set"
         client = self.forge_client(env)
         if client is None:
-            return {}, "FORGEJO_ADMIN_TOKEN is not set"
+            return {}, "FORGEJO_API_TOKEN is not set"
         token = client.registration_token()
         if not token:
             return {}, ("could not mint a registration token - check "
-                        "FORGEJO_ADMIN_TOKEN and that Forgejo is reachable")
+                        "FORGEJO_API_TOKEN and that Forgejo is reachable")
         return {
             "FORGEJO_INSTANCE_URL": url,
             "FORGEJO_RUNNER_REGISTRATION_TOKEN": token,
@@ -202,7 +202,7 @@ class _Forgejo(Provider):
     def forge_client(self, env):
         import forgejo_api
         url = (env.get("FORGEJO_INSTANCE_URL") or "").strip()
-        token = (env.get("FORGEJO_ADMIN_TOKEN") or "").strip()
+        token = (env.get("FORGEJO_API_TOKEN") or "").strip()
         if not (url and token):
             return None
         return forgejo_api.Forgejo(url, token)
@@ -1870,7 +1870,7 @@ def test_a_created_forgejo_runner_is_labelled(monkeypatch):
     seen = _capture(monkeypatch)
     ok, name, _ = docker_ops.create(
         2, {"FORGEJO_INSTANCE_URL": "https://forgejo.example",
-            "FORGEJO_ADMIN_TOKEN": "t"}, providers.FORGEJO)
+            "FORGEJO_API_TOKEN": "t"}, providers.FORGEJO)
     assert ok and name == "forgejo-runner-2"
     args = seen[0]
     assert "--label" in args
@@ -2035,7 +2035,7 @@ git commit -m "feat: create and remove Forgejo runners, deregistering on the way
 
 **Interfaces:**
 - Consumes: nothing.
-- Produces: `FORGEJO_INSTANCE_URL`, `FORGEJO_ADMIN_TOKEN`, `FORGEJO_RUNNER_LABELS` settable from the settings page, with the token masked everywhere a value is rendered.
+- Produces: `FORGEJO_INSTANCE_URL`, `FORGEJO_API_TOKEN`, `FORGEJO_RUNNER_LABELS` settable from the settings page, with the token masked everywhere a value is rendered.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -2043,7 +2043,7 @@ git commit -m "feat: create and remove Forgejo runners, deregistering on the way
 # dashboard/tests/test_forgejo_config.py
 """The admin token is a credential and must be treated as one.
 
-FORGEJO_ADMIN_TOKEN can mint registration tokens and delete runners. Rendering
+FORGEJO_API_TOKEN can mint registration tokens and delete runners. Rendering
 it unmasked on a page anyone with dashboard access can open would hand that
 over, and the token is one .env line away from GH_TOKEN, which is masked.
 """
@@ -2051,7 +2051,7 @@ import runner_detail
 
 
 def test_the_admin_token_is_masked():
-    assert "FORGEJO_ADMIN_TOKEN" in runner_detail.SECRET_KEYS
+    assert "FORGEJO_API_TOKEN" in runner_detail.SECRET_KEYS
 
 
 def test_the_instance_url_is_not_a_secret():
@@ -2067,7 +2067,7 @@ def test_masking_leaves_a_token_recognisable_but_unusable():
 
 def test_the_settings_page_can_write_the_forgejo_keys():
     import app as dash
-    for key in ("FORGEJO_INSTANCE_URL", "FORGEJO_ADMIN_TOKEN",
+    for key in ("FORGEJO_INSTANCE_URL", "FORGEJO_API_TOKEN",
                 "FORGEJO_RUNNER_LABELS"):
         assert key in dash.EDITABLE, key
 
@@ -2082,16 +2082,16 @@ def test_editable_is_still_an_allowlist():
 - [ ] **Step 2: Run the test to verify it fails**
 
 Run: `cd dashboard && python -m pytest tests/test_forgejo_config.py -q`
-Expected: FAIL — `FORGEJO_ADMIN_TOKEN` not in `SECRET_KEYS`.
+Expected: FAIL — `FORGEJO_API_TOKEN` not in `SECRET_KEYS`.
 
 - [ ] **Step 3: Write the implementation**
 
 In `dashboard/runner_detail.py`:
 
 ```python
-# Values that must never be rendered. FORGEJO_ADMIN_TOKEN mints registration
+# Values that must never be rendered. FORGEJO_API_TOKEN mints registration
 # tokens and deletes runners, so it is exactly as sensitive as GH_TOKEN.
-SECRET_KEYS = {"GH_TOKEN", "FORGEJO_ADMIN_TOKEN"}
+SECRET_KEYS = {"GH_TOKEN", "FORGEJO_API_TOKEN"}
 ```
 
 In `dashboard/app.py`:
@@ -2100,7 +2100,7 @@ In `dashboard/app.py`:
 EDITABLE = {
     "GH_TOKEN", "GITHUB_ORG", "RUNNER_LABELS",
     "RUNNER_GROUP", "RUNNER_CPU_LIMIT", "RUNNER_MEM_LIMIT",
-    "FORGEJO_INSTANCE_URL", "FORGEJO_ADMIN_TOKEN", "FORGEJO_RUNNER_LABELS",
+    "FORGEJO_INSTANCE_URL", "FORGEJO_API_TOKEN", "FORGEJO_RUNNER_LABELS",
 }
 ```
 
@@ -2117,7 +2117,7 @@ FORGEJO_INSTANCE_URL=https://forgejo.example.tld
 # deregister a removed runner, and mint a registration token per new runner.
 # Because the dashboard mints those itself, there is no static registration
 # token to keep here.
-FORGEJO_ADMIN_TOKEN=
+FORGEJO_API_TOKEN=
 
 # Label-to-image mapping for job containers, exactly as forgejo-runner
 # register --labels expects it.
@@ -2605,7 +2605,7 @@ Add to `.env` (values, not placeholders):
 
 ```
 FORGEJO_INSTANCE_URL=https://forgejo.phillippepelzer.me
-FORGEJO_ADMIN_TOKEN=<an admin API token from Forgejo: Settings > Applications>
+FORGEJO_API_TOKEN=<an admin API token from Forgejo: Settings > Applications>
 FORGEJO_RUNNER_LABELS=<copy the --labels string from BeastStack/forgejo/docker-compose.yml>
 FORGEJO_RUNNER_REGISTRATION_TOKEN=<from Forgejo: Site Administration > Actions > Runners>
 ```
@@ -2614,7 +2614,7 @@ FORGEJO_RUNNER_REGISTRATION_TOKEN=<from Forgejo: Site Administration > Actions >
 
 ```bash
 wsl -d github-runners -u root -- bash -lc \
-  'curl -s -H "Authorization: token $FORGEJO_ADMIN_TOKEN" \
+  'curl -s -H "Authorization: token $FORGEJO_API_TOKEN" \
    https://forgejo.phillippepelzer.me/api/v1/admin/actions/runners | head -c 400'
 ```
 

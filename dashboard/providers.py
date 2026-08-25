@@ -92,11 +92,11 @@ class _Forgejo(Provider):
                         "labels never picks up a job")
         client = self.forge_client(env)
         if client is None:
-            return {}, "FORGEJO_ADMIN_TOKEN is not set"
+            return {}, "FORGEJO_API_TOKEN is not set"
         token = client.registration_token()
         if not token:
             return {}, ("could not mint a registration token - check "
-                        "FORGEJO_ADMIN_TOKEN and that Forgejo is reachable")
+                        "FORGEJO_API_TOKEN and that Forgejo is reachable")
         return {
             "FORGEJO_INSTANCE_URL": url,
             "FORGEJO_RUNNER_REGISTRATION_TOKEN": token,
@@ -116,7 +116,7 @@ class _Forgejo(Provider):
     def forge_client(self, env):
         import forgejo_api
         url = (env.get("FORGEJO_INSTANCE_URL") or "").strip()
-        token = (env.get("FORGEJO_ADMIN_TOKEN") or "").strip()
+        token = (env.get("FORGEJO_API_TOKEN") or "").strip()
         if not (url and token):
             return None
         return forgejo_api.Forgejo(url, token)

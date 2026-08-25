@@ -77,8 +77,9 @@ def test_the_script_does_not_pretend_to_deregister():
     It was called here anyway, inside `timeout ... || true`, so its absence
     was completely silent: every shutdown logged "deregistering..." and
     deregistered nothing. Deregistration is the dashboard's job through
-    Forgejo's admin API (docker_ops.remove()), and this container cannot do
-    it even in principle - it holds a registration token, not an admin token.
+    Forgejo's user-scoped API (docker_ops.remove()), and this container cannot
+    do it even in principle - it holds a registration token, not the
+    dashboard's API token.
 
     Asserting the absence, not just the current text, because the failure
     this replaces is somebody adding the call back in good faith."""

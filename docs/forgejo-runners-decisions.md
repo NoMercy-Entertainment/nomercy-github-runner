@@ -52,13 +52,36 @@ binary. The flag is gone.
 `timeout ... || true`, so its absence was silent, while the comment claimed it
 covered the container being stopped by anything other than the dashboard. There
 is no such subcommand. Deregistration is the dashboard's job through
-`DELETE /api/v1/admin/actions/runners/{id}`; a Forgejo runner container stopped
+`DELETE /api/v1/user/actions/runners/{id}`; a Forgejo runner container stopped
 by anything else leaves an `offline` entry to delete in Forgejo's own UI.
 
 **`pending_enrichment` filtered on `ended_at IS NOT NULL`.** A Forgejo run has no
 end until the enrichment sweep fetches one, so every Forgejo run would have been
 invisible to the only thing that could close it — the history would have shown
 starts and nothing else, for ever.
+
+## Where the design was wrong
+
+**The runner endpoints were built against Forgejo's admin surface, not the
+owner's own.** `forgejo_api.py` called `/api/v1/admin/actions/runners` and its
+siblings — the obvious reading of "manage runners" against Forgejo's API, and
+wrong. Queried against the live instance it returned an empty runner list,
+which read as "nothing registered yet" and nearly stood as the explanation.
+The owner checked Forgejo's database directly: the four runners already
+running there all carry `owner_id = 1` (the user `fill`) — they are
+user-scoped, which is exactly why the admin endpoint saw none of them. The
+right conclusion was "wrong endpoint", not "recreate the runners as global".
+
+A runner registered through the admin path is available to every repository
+and every user on the instance. This instance has open registration
+(`DISABLE_REGISTRATION=false`), so a global runner would run jobs pushed by
+strangers on hardware the owner controls — the exact thing the GitHub side's
+org scoping already exists to prevent. Every admin call `forgejo_api.py` made
+(`runner_statuses`, `runner_ids`, `registration_token`, `delete_runner`) now
+hits Forgejo's user-scoped equivalent under `/api/v1/user/...` instead.
+`find_task`'s repository endpoint was never admin-scoped and did not change.
+The config key was renamed `FORGEJO_ADMIN_TOKEN` → `FORGEJO_API_TOKEN` to
+match: it no longer needs, and must never be minted with, admin scope.
 
 ## Deliberate behaviour changes
 
@@ -123,7 +146,7 @@ ahead of `/usr/bin`.
 
 No Forgejo runner has ever registered against the live instance from the distro.
 The deployment in [the migration runbook](forgejo-runner-migration.md) has not
-been performed. It needs a Forgejo admin API token with **repository** scope as
-well as admin: `find_task` uses repository endpoints, and a token with only
-admin scope makes busy/idle work and history look fine while every run is
-silently closed as `Unknown` a day later.
+been performed. It needs a Forgejo API token with **repository** scope as
+well as the user-scoped runner scope: `find_task` uses repository endpoints,
+and a token missing repository scope makes busy/idle work and history look
+fine while every run is silently closed as `Unknown` a day later.

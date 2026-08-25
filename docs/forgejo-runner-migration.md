@@ -49,18 +49,25 @@ distro's engine) but was rejected: it can change across a reboot, and the
 public URL cannot. Both `.env` (`FORGEJO_INSTANCE_URL`) and the compose
 service pass this same public URL through - there is only the one value.
 
-## Where the admin token comes from, and what it's for
+## Where the token comes from, and what it's for
 
-`FORGEJO_ADMIN_TOKEN` is an admin API token, minted in Forgejo under
-**Settings → Applications**. It must carry admin rights - a token scoped only
-to a user account cannot see `/api/v1/admin/actions/runners`, and every
-Forgejo feature in the dashboard (status, history enrichment, deregistration,
-minting registration tokens for runners the dashboard creates) depends on
-that endpoint answering.
+`FORGEJO_API_TOKEN` is minted in Forgejo under **Settings → Applications**,
+scoped to the owner's own account - `user: Read and Write` plus
+`repository: Read`. It deliberately does **not** carry admin rights: every
+runner call the dashboard makes (status, deregistration, minting
+registration tokens for runners the dashboard creates) goes through
+Forgejo's user-scoped endpoints (`/api/v1/user/actions/runners` and its
+siblings), not the admin ones. A runner registered through the admin
+endpoints is visible to every repository and every user on the instance -
+with this instance's open registration, that would mean strangers' pushed
+workflows could run on the owner's own hardware, which is exactly what
+scoping the token to the owner's account instead of admin is for. History
+enrichment (`find_task`) additionally needs the repository scope, which is
+why the token carries both.
 
 This token is separate from a runner *registration* token. Forgejo issues
 short-lived registration tokens per runner; the dashboard mints one
-automatically through the admin API for any runner it creates, so there is no
+automatically through the user-scoped API for any runner it creates, so there is no
 static registration token stored anywhere in the dashboard's own
 configuration. `forgejo-runner-1`, being declared directly in this compose
 file rather than created through the dashboard, is the one exception: it
@@ -75,7 +82,7 @@ requires it only when that file is absent.
 The new runner is brought up beside the old one so nothing stops picking up
 jobs while the move happens.
 
-1. **Configure.** Add `FORGEJO_INSTANCE_URL`, `FORGEJO_ADMIN_TOKEN`,
+1. **Configure.** Add `FORGEJO_INSTANCE_URL`, `FORGEJO_API_TOKEN`,
    `FORGEJO_RUNNER_LABELS` (copy the `--labels` mapping from
    `BeastStack/forgejo/docker-compose.yml`) and
    `FORGEJO_RUNNER_REGISTRATION_TOKEN` (from Forgejo's Runners admin page) to
@@ -86,7 +93,7 @@ jobs while the move happens.
    the dashboard talks to two different kinds of endpoint and a token can pass
    one and fail the other.
 
-   `.env` has to be sourced explicitly. `$FORGEJO_ADMIN_TOKEN` is **not** set
+   `.env` has to be sourced explicitly. `$FORGEJO_API_TOKEN` is **not** set
    in the distro's login shell - it lives in `.env`, which only
    `docker compose` reads - so a command that merely references it sends an
    empty `Authorization:` header and reports a scope problem for a token that
@@ -96,13 +103,13 @@ jobs while the move happens.
    ```bash
    wsl -d github-runners -u root -- bash -lc \
      'set -a; . /mnt/d/docker-compose/GithubRunners/.env; set +a;
-      curl -s -H "Authorization: token $FORGEJO_ADMIN_TOKEN" \
-        "$FORGEJO_INSTANCE_URL/api/v1/admin/actions/runners?limit=100" | head -c 400'
+      curl -s -H "Authorization: token $FORGEJO_API_TOKEN" \
+        "$FORGEJO_INSTANCE_URL/api/v1/user/actions/runners?limit=100" | head -c 400'
    ```
 
    Expect a JSON **array**, including an entry for `beaststack-runner` (the
    existing runner's registered name). A `{"message": ...}` response means the
-   token lacks admin rights - fix that before continuing.
+   token lacks the `user: Read and Write` scope - fix that before continuing.
 
    Then the **repository** endpoint, which is the one history enrichment
    actually uses (`forgejo_api.find_task`). Substitute a repository that has
@@ -112,16 +119,16 @@ jobs while the move happens.
    wsl -d github-runners -u root -- bash -lc \
      'set -a; . /mnt/d/docker-compose/GithubRunners/.env; set +a;
       curl -s -o /dev/null -w "%{http_code}\n" \
-        -H "Authorization: token $FORGEJO_ADMIN_TOKEN" \
+        -H "Authorization: token $FORGEJO_API_TOKEN" \
         "$FORGEJO_INSTANCE_URL/api/v1/repos/OWNER/REPO/actions/tasks?limit=1"'
    ```
 
-   Expect `200`. This second check exists because admin scope and repository
-   scope are separate, and having only the first fails silently: busy/idle
-   works, the runner looks healthy, runs appear in the history - and then
-   every Forgejo run is closed as `Unknown` a day later by the enricher's
-   give-up path, with nothing logged anywhere an operator would look. A `403`
-   or `404` here is that future, made visible now.
+   Expect `200`. This second check exists because the `user` runner scope and
+   `repository` scope are separate, and having only the first fails silently:
+   busy/idle works, the runner looks healthy, runs appear in the history - and
+   then every Forgejo run is closed as `Unknown` a day later by the
+   enricher's give-up path, with nothing logged anywhere an operator would
+   look. A `403` or `404` here is that future, made visible now.
 
 3. **Build the runner image.** Nothing publishes
    `ghcr.io/nomercy-entertainment/nomercy-forgejo-runner` - the CI job in
@@ -226,10 +233,10 @@ wsl -d github-runners -u root -- bash -lc \
 Stopping it this way leaves `forgejo-runner-1` showing as **offline** in
 Forgejo's runner list, and it has to be deleted there by hand. That is not an
 oversight: `forgejo-runner` has no `unregister` subcommand, and the container
-holds a registration token rather than an admin token, so it could not
-deregister itself even if one existed. Deregistration happens only on the path
-that has the admin token - the dashboard's Remove button, which calls
-`DELETE /api/v1/admin/actions/runners/{id}` before removing the container. Any
+holds a registration token rather than the dashboard's API token, so it could
+not deregister itself even if one existed. Deregistration happens only on the
+path that has the API token - the dashboard's Remove button, which calls
+`DELETE /api/v1/user/actions/runners/{id}` before removing the container. Any
 other way of stopping a Forgejo runner leaves an entry to tidy up.
 
 ## What has and has not been verified

@@ -96,7 +96,7 @@ def env(monkeypatch):
     """A populated .env, so `env` reaching the seam is observable at all."""
     import app as dash
     values = {"FORGEJO_INSTANCE_URL": "https://forgejo.example",
-              "FORGEJO_ADMIN_TOKEN": "tok",
+              "FORGEJO_API_TOKEN": "tok",
               "FORGEJO_RUNNER_LABELS": "ubuntu-latest:docker://node:lts"}
     monkeypatch.setattr(dash, "read_env", lambda: dict(values))
     return values

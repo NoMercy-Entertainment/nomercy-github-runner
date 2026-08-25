@@ -48,7 +48,7 @@ SECRET_PATH = os.path.join(DATA, "secret.key")
 EDITABLE = {
     "GH_TOKEN", "GITHUB_ORG", "RUNNER_LABELS",
     "RUNNER_GROUP", "RUNNER_CPU_LIMIT", "RUNNER_MEM_LIMIT",
-    "FORGEJO_INSTANCE_URL", "FORGEJO_ADMIN_TOKEN", "FORGEJO_RUNNER_LABELS",
+    "FORGEJO_INSTANCE_URL", "FORGEJO_API_TOKEN", "FORGEJO_RUNNER_LABELS",
 }
 
 app = Flask(__name__)
@@ -733,7 +733,7 @@ def settings():
         "settings.html",
         env=env,
         token_mask=mask(env.get("GH_TOKEN", "")),
-        forgejo_token_mask=mask(env.get("FORGEJO_ADMIN_TOKEN", "")),
+        forgejo_token_mask=mask(env.get("FORGEJO_API_TOKEN", "")),
         has_runners=has_runners,
         env_path=ENV_PATH,
     )

@@ -91,9 +91,10 @@ SHUTDOWN_CHILD_TIMEOUT=2        # bounded wait on child after signalling
 # logged "deregistering..." and deregistered nothing.
 #
 # Nor can it be fixed here. This container holds a single-use registration
-# token, not an admin token, and only an admin token may delete a runner. The
-# dashboard is what deregisters: docker_ops.remove() calls Forgejo's
-# DELETE /api/v1/admin/actions/runners/{id} before removing the container.
+# token, not the dashboard's API token, and only that token may delete a
+# runner. The dashboard is what deregisters: docker_ops.remove() calls
+# Forgejo's DELETE /api/v1/user/actions/runners/{id} before removing the
+# container.
 #
 # So the real, accepted consequence: a Forgejo runner container stopped by
 # anything other than the dashboard - `docker stop`, `compose down`, the WSL

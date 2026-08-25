@@ -1,7 +1,7 @@
 """Forgejo's account of its own runners and the jobs they ran.
 
 Forgejo answers two questions the runner's log cannot. Whether a runner is
-busy: `status` on the admin runners endpoint is enumerated offline/idle/active,
+busy: `status` on the user runners endpoint is enumerated offline/idle/active,
 which beats inferring it from a log line. And how a job ended: the
 forgejo-runner daemon logs a task starting and never logs it finishing, so
 without this the history would have no end times and no results at all.
@@ -88,8 +88,13 @@ class Forgejo:
         drain act on that answer.
 
         The endpoint returns a BARE ARRAY, not an object with a "runners" key.
+
+        This calls the user-scoped endpoint, not the admin one: a runner
+        registered under /admin/actions/runners is available to every
+        repository and every user on the instance, which is not the scope
+        this dashboard wants. See docs/forgejo-runners-decisions.md.
         """
-        data = self._get("/api/v1/admin/actions/runners",
+        data = self._get("/api/v1/user/actions/runners",
                          {"limit": 100})
         if not isinstance(data, list):
             return None
@@ -98,14 +103,14 @@ class Forgejo:
 
     def runner_ids(self):
         """{uuid: id}, for deregistration. None if the call failed."""
-        data = self._get("/api/v1/admin/actions/runners", {"limit": 100})
+        data = self._get("/api/v1/user/actions/runners", {"limit": 100})
         if not isinstance(data, list):
             return None
         return {r["uuid"]: r.get("id")
                 for r in data if isinstance(r, dict) and r.get("uuid")}
 
     def registration_token(self):
-        data = self._get("/api/v1/admin/actions/runners/registration-token")
+        data = self._get("/api/v1/user/actions/runners/registration-token")
         if not isinstance(data, dict):
             return None
         return data.get("token") or None
@@ -114,7 +119,7 @@ class Forgejo:
         if not runner_id:
             return False
         got = self._request(
-            f"/api/v1/admin/actions/runners/{runner_id}", "DELETE")
+            f"/api/v1/user/actions/runners/{runner_id}", "DELETE")
         return got is not None
 
     # ---------------------------------------------------------------- tasks

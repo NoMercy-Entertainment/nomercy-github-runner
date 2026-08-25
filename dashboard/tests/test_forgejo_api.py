@@ -1,7 +1,7 @@
 """Shapes captured from Forgejo 16.0.2's own swagger, not invented.
 
 Two of them are easy to get wrong by assuming they mirror GitHub:
-  - /admin/actions/runners returns a BARE ARRAY, not {"runners": [...]}
+  - /user/actions/runners returns a BARE ARRAY, not {"runners": [...]}
   - /actions/tasks puts the tasks under "workflow_runs", despite the name
 Getting either wrong yields an empty result rather than an error, which is
 exactly the failure that survives review.
@@ -51,7 +51,7 @@ def _client(routes):
 
 
 def test_runner_statuses_reads_a_bare_array():
-    fj = _client({"/api/v1/admin/actions/runners": RUNNERS})
+    fj = _client({"/api/v1/user/actions/runners": RUNNERS})
     assert fj.runner_statuses() == {
         "edfa80e4-9f11-4757-8626-a707af9be520": "idle",
         "aa11bb22-0000-4757-8626-000000000000": "active",
@@ -66,7 +66,7 @@ def test_a_failed_call_is_not_an_empty_fleet():
 
 
 def test_registration_token_is_unwrapped():
-    fj = _client({"/api/v1/admin/actions/runners/registration-token":
+    fj = _client({"/api/v1/user/actions/runners/registration-token":
                   {"token": "REG-123"}})
     assert fj.registration_token() == "REG-123"
 
@@ -216,9 +216,9 @@ def test_request_url_construction_with_params(monkeypatch):
     monkeypatch.setattr(forgejo_api.urllib.request, "urlopen", fake_urlopen)
 
     fj = forgejo_api.Forgejo("https://forgejo.example/", "tok")
-    fj._get("/api/v1/admin/actions/runners", {"limit": 100})
+    fj._get("/api/v1/user/actions/runners", {"limit": 100})
 
-    assert captured_req.full_url == "https://forgejo.example/api/v1/admin/actions/runners?limit=100"
+    assert captured_req.full_url == "https://forgejo.example/api/v1/user/actions/runners?limit=100"
 
 
 def test_request_url_without_params_has_no_trailing_question(monkeypatch):
@@ -289,7 +289,7 @@ def test_request_method_dispatch_delete(monkeypatch):
 
     assert captured_req is not None
     assert captured_req.get_method() == "DELETE"
-    assert captured_req.full_url == "https://forgejo.example/api/v1/admin/actions/runners/123"
+    assert captured_req.full_url == "https://forgejo.example/api/v1/user/actions/runners/123"
 
 
 def test_request_empty_body_returns_true_sentinel(monkeypatch):
