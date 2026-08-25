@@ -6,6 +6,9 @@ Two of them are easy to get wrong by assuming they mirror GitHub:
 Getting either wrong yields an empty result rather than an error, which is
 exactly the failure that survives review.
 """
+import json
+import urllib.error
+import pytest
 import forgejo_api
 
 RUNNERS = [
@@ -107,3 +110,236 @@ def test_a_still_running_task_is_not_reported_as_finished():
         dict(TASKS["workflow_runs"][0], status="running", updated_at=None)]}
     fj = _client({"/api/v1/repos/FiLL/p/actions/tasks": running})
     assert fj.find_task("FiLL/p", 830, "2026-08-25T14:38:55Z") is None
+
+
+# ============================================================================
+# _request and delete_runner test coverage
+# ============================================================================
+
+class FakeResponse:
+    def __init__(self, body_bytes):
+        self.body_bytes = body_bytes
+
+    def read(self):
+        return self.body_bytes
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        pass
+
+
+def test_request_auth_header_is_forgejo_token_not_github_bearer(monkeypatch):
+    """Forgejo rejects Bearer auth, which is GitHub's scheme. A future
+    "consistency" edit toward github_api.py must fail loudly here."""
+    captured_req = None
+
+    def fake_urlopen(req, timeout=None):
+        nonlocal captured_req
+        captured_req = req
+        return FakeResponse(b'{"ok":true}')
+
+    monkeypatch.setattr(forgejo_api.urllib.request, "urlopen", fake_urlopen)
+
+    fj = forgejo_api.Forgejo("https://forgejo.example/", "test-token-123")
+    fj._get("/api/test")
+
+    assert captured_req is not None
+    assert captured_req.get_header("Authorization") == "token test-token-123"
+    assert not captured_req.get_header("Authorization").startswith("Bearer")
+
+
+def test_request_url_construction_with_params(monkeypatch):
+    """URL joins base + path, and params produce a query string."""
+    captured_req = None
+
+    def fake_urlopen(req, timeout=None):
+        nonlocal captured_req
+        captured_req = req
+        return FakeResponse(b'[]')
+
+    monkeypatch.setattr(forgejo_api.urllib.request, "urlopen", fake_urlopen)
+
+    fj = forgejo_api.Forgejo("https://forgejo.example/", "tok")
+    fj._get("/api/v1/admin/actions/runners", {"limit": 100})
+
+    assert captured_req.full_url == "https://forgejo.example/api/v1/admin/actions/runners?limit=100"
+
+
+def test_request_url_without_params_has_no_trailing_question(monkeypatch):
+    """URL without params should not end with '?'."""
+    captured_req = None
+
+    def fake_urlopen(req, timeout=None):
+        nonlocal captured_req
+        captured_req = req
+        return FakeResponse(b'[]')
+
+    monkeypatch.setattr(forgejo_api.urllib.request, "urlopen", fake_urlopen)
+
+    fj = forgejo_api.Forgejo("https://forgejo.example/", "tok")
+    fj._get("/api/test")
+
+    assert not captured_req.full_url.endswith("?")
+    assert captured_req.full_url == "https://forgejo.example/api/test"
+
+
+def test_request_trailing_slash_on_base_is_normalized(monkeypatch):
+    """A trailing slash on the base URL should not produce a doubled slash."""
+    captured_req = None
+
+    def fake_urlopen(req, timeout=None):
+        nonlocal captured_req
+        captured_req = req
+        return FakeResponse(b'[]')
+
+    monkeypatch.setattr(forgejo_api.urllib.request, "urlopen", fake_urlopen)
+
+    fj = forgejo_api.Forgejo("https://forgejo.example/", "tok")
+    fj._get("/api/test")
+
+    assert not "//" in captured_req.full_url.split("://")[1]
+
+
+def test_request_method_dispatch_get(monkeypatch):
+    """_get issues a GET request."""
+    captured_req = None
+
+    def fake_urlopen(req, timeout=None):
+        nonlocal captured_req
+        captured_req = req
+        return FakeResponse(b'[]')
+
+    monkeypatch.setattr(forgejo_api.urllib.request, "urlopen", fake_urlopen)
+
+    fj = forgejo_api.Forgejo("https://forgejo.example/", "tok")
+    fj._get("/api/test")
+
+    assert captured_req.get_method() == "GET"
+
+
+def test_request_method_dispatch_delete(monkeypatch):
+    """delete_runner issues a DELETE request."""
+    captured_req = None
+
+    def fake_urlopen(req, timeout=None):
+        nonlocal captured_req
+        captured_req = req
+        return FakeResponse(b'')
+
+    monkeypatch.setattr(forgejo_api.urllib.request, "urlopen", fake_urlopen)
+
+    fj = forgejo_api.Forgejo("https://forgejo.example/", "tok")
+    fj.delete_runner(123)
+
+    assert captured_req is not None
+    assert captured_req.get_method() == "DELETE"
+    assert captured_req.full_url == "https://forgejo.example/api/v1/admin/actions/runners/123"
+
+
+def test_request_empty_body_returns_true_sentinel(monkeypatch):
+    """An empty response body returns True, not None. This makes
+    delete_runner see a no-content DELETE as success."""
+    def fake_urlopen(req, timeout=None):
+        return FakeResponse(b'')
+
+    monkeypatch.setattr(forgejo_api.urllib.request, "urlopen", fake_urlopen)
+
+    fj = forgejo_api.Forgejo("https://forgejo.example/", "tok")
+    result = fj._request("/api/test", "DELETE")
+
+    assert result is True
+
+
+def test_delete_runner_returns_true_on_empty_response(monkeypatch):
+    """delete_runner returns True when the endpoint succeeds (empty body)."""
+    def fake_urlopen(req, timeout=None):
+        return FakeResponse(b'')
+
+    monkeypatch.setattr(forgejo_api.urllib.request, "urlopen", fake_urlopen)
+
+    fj = forgejo_api.Forgejo("https://forgejo.example/", "tok")
+    assert fj.delete_runner(123) is True
+
+
+def test_request_http_error_returns_none(monkeypatch):
+    """HTTPError from urlopen returns None."""
+    def fake_urlopen(req, timeout=None):
+        raise urllib.error.HTTPError("url", 404, "Not Found", {}, None)
+
+    monkeypatch.setattr(forgejo_api.urllib.request, "urlopen", fake_urlopen)
+
+    fj = forgejo_api.Forgejo("https://forgejo.example/", "tok")
+    result = fj._request("/api/test")
+
+    assert result is None
+
+
+def test_request_generic_exception_returns_none(monkeypatch):
+    """Generic exception from urlopen returns None."""
+    def fake_urlopen(req, timeout=None):
+        raise ConnectionError("Network unreachable")
+
+    monkeypatch.setattr(forgejo_api.urllib.request, "urlopen", fake_urlopen)
+
+    fj = forgejo_api.Forgejo("https://forgejo.example/", "tok")
+    result = fj._request("/api/test")
+
+    assert result is None
+
+
+def test_delete_runner_returns_false_on_failure(monkeypatch):
+    """delete_runner returns False when the request fails."""
+    def fake_urlopen(req, timeout=None):
+        raise urllib.error.HTTPError("url", 500, "Server Error", {}, None)
+
+    monkeypatch.setattr(forgejo_api.urllib.request, "urlopen", fake_urlopen)
+
+    fj = forgejo_api.Forgejo("https://forgejo.example/", "tok")
+    assert fj.delete_runner(123) is False
+
+
+def test_delete_runner_with_none_returns_false_without_request(monkeypatch):
+    """delete_runner(None) returns False without issuing any request."""
+    fake_called = False
+
+    def fake_urlopen(req, timeout=None):
+        nonlocal fake_called
+        fake_called = True
+        return FakeResponse(b'')
+
+    monkeypatch.setattr(forgejo_api.urllib.request, "urlopen", fake_urlopen)
+
+    fj = forgejo_api.Forgejo("https://forgejo.example/", "tok")
+    result = fj.delete_runner(None)
+
+    assert result is False
+    assert fake_called is False
+
+
+def test_delete_runner_with_zero_returns_false_without_request(monkeypatch):
+    """delete_runner(0) returns False without issuing any request."""
+    fake_called = False
+
+    def fake_urlopen(req, timeout=None):
+        nonlocal fake_called
+        fake_called = True
+        return FakeResponse(b'')
+
+    monkeypatch.setattr(forgejo_api.urllib.request, "urlopen", fake_urlopen)
+
+    fj = forgejo_api.Forgejo("https://forgejo.example/", "tok")
+    result = fj.delete_runner(0)
+
+    assert result is False
+    assert fake_called is False
+
+
+def test_runner_statuses_rejects_non_list_body():
+    """A non-list JSON body (e.g. dict with "runners" key) must not
+    masquerade as an empty fleet. This pins the counterintuitive bare-array
+    shape that someone might "fix" by assuming GitHub's shape."""
+    fj = forgejo_api.Forgejo("https://forgejo.example/", "tok")
+    fj._get = lambda path, params=None: {"runners": []}
+    assert fj.runner_statuses() is None
