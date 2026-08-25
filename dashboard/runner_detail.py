@@ -14,7 +14,9 @@ import time
 
 import docker_ops
 
-SECRET_KEYS = {"GH_TOKEN"}
+# Values that must never be rendered. FORGEJO_ADMIN_TOKEN mints registration
+# tokens and deletes runners, so it is exactly as sensitive as GH_TOKEN.
+SECRET_KEYS = {"GH_TOKEN", "FORGEJO_ADMIN_TOKEN"}
 
 # Same source app.py's read_env() uses. Duplicated rather than imported: app.py
 # already imports this module, so importing app back here would be circular.
