@@ -76,6 +76,17 @@ if [ ! -f "$DATA/.runner" ]; then
     --labels "$FORGEJO_RUNNER_LABELS"
 fi
 
+# --- shutdown budget -------------------------------------------------------
+# `docker stop` sends SIGTERM and SIGKILLs after the container's stop grace period.
+# The shutdown path is ordered so the work that MUST complete (deregistration)
+# runs first and gets whatever budget exists; stopping the child is what SIGKILL
+# does for free. Order matters: deregister, then signal child, then wait bounded.
+SHUTDOWN_UNREGISTER_MAX_TIME=3  # timeout for forgejo-runner unregister (network call)
+SHUTDOWN_CHILD_TIMEOUT=2        # bounded wait on child after signalling
+# Worst case shutdown: 3 (unregister) + 2 (child) = 5s. The 60s default grace
+# period is plenty; explicitly timeout the network call so a hung Forgejo does
+# not delay container shutdown.
+
 # --- deregistration on the way out ---------------------------------------
 # The daemon is started as a background child and waited on rather than exec'd.
 # A trap handler does not survive exec — the shell's process image is replaced.
@@ -93,12 +104,50 @@ deregister() {
   fi
   DEREGISTERED=1
   echo "Shutting down runner — deregistering..."
-  forgejo-runner unregister 2>/dev/null || true
+  timeout "$SHUTDOWN_UNREGISTER_MAX_TIME" forgejo-runner unregister 2>/dev/null || true
 }
 
-trap 'deregister' TERM
-trap 'deregister' INT
-trap 'deregister' EXIT
+RUNNER_STOPPED=0
+stop_runner() {
+  # Guard against double-stopping: only one shutdown path should stop the child.
+  if [ "$RUNNER_STOPPED" -eq 1 ]; then
+    return 0
+  fi
+  RUNNER_STOPPED=1
+
+  # Signal the child. This is separate from deregister — deregistration talks to
+  # Forgejo, stopping the child ends its wait loop. Both must happen.
+  [ -n "$RUNNER_PID" ] && kill -TERM "$RUNNER_PID" 2>/dev/null || true
+
+  # Poll for child exit up to timeout. This is what stops the wait loop blocking
+  # until the grace period expires. Without signalling the child, `docker stop`
+  # takes the full grace period waiting for the daemon to exit on its own.
+  local waited=0
+  while kill -0 "$RUNNER_PID" 2>/dev/null; do
+    if [ "$waited" -ge "$SHUTDOWN_CHILD_TIMEOUT" ]; then
+      # Timeout reached; child will get SIGKILL from Docker
+      return 1
+    fi
+    sleep 1
+    waited=$((waited + 1))
+  done
+
+  return 0
+}
+
+# Order matters: deregistration is the work that must complete, while stopping
+# the child is what SIGKILL does anyway if we time out. Deregister first, then
+# stop the child. See scripts/start.sh:426-431 for the detailed reasoning.
+shutdown_handler() {
+  echo "Received SIGTERM — shutting down runner..."
+  deregister
+  stop_runner
+  exit 0
+}
+
+trap 'shutdown_handler' TERM
+trap 'shutdown_handler' INT
+trap 'shutdown_handler' EXIT
 
 # Job control on. Without it bash adds SIGINT to a background child's ignore
 # mask, so the daemon would silently stop being interruptible the moment it

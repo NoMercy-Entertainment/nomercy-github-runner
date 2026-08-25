@@ -56,3 +56,18 @@ def test_deregistration_survives_shutdown():
     assert "trap" in start and "deregister" in start
     # The script waits on the runner child rather than exiting immediately
     assert "wait" in start and "RUNNER_PID" in start
+
+
+def test_the_child_is_signalled_on_shutdown():
+    """Without signalling the child, `docker stop` takes the full grace period
+    (~60s) waiting for the daemon to exit on its own. Every stop would be slow,
+    and the dashboard's remove button would appear frozen. The stop_runner()
+    function must send kill -TERM to the child to unblock the wait loop."""
+    start = _read(START)
+    # The script must send SIGTERM to the child
+    assert "kill -TERM \"$RUNNER_PID\"" in start
+    # And it must do so with error suppression (child may already be gone)
+    assert "2>/dev/null || true" in start
+    # stop_runner function must exist and be called
+    assert "stop_runner()" in start
+    assert "stop_runner" in start
