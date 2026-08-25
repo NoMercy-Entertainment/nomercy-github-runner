@@ -213,7 +213,10 @@ def test_prune_all_skips_busy_and_totals_the_rest(client, monkeypatch):
     monkeypatch.setattr(docker_ops, "prune",
                         lambda n, **k: {"name": n, "ok": True, "error": None,
                                         "before": {}, "after": {}, "freed_bytes": 10})
-    body = client.post("/api/prune-all").get_json()
+    # provider is required by design (Task 10): a fleet-blind prune-all would
+    # let either of two per-fleet buttons clear the wrong fleet's cache.
+    body = client.post("/api/prune-all",
+                       json={"provider": "github"}).get_json()
     assert body["ok"] is True
     assert [s["name"] for s in body["data"]["skipped"]] == ["github-runner-2"]
     assert len(body["data"]["results"]) == 2
@@ -253,7 +256,9 @@ def test_recreate_happy_path_removes_and_recreates_every_runner(client, monkeypa
     monkeypatch.setattr(docker_ops, "remove", fake_remove)
     monkeypatch.setattr(docker_ops, "create", fake_create)
 
-    r = client.post("/api/recreate")
+    # provider is required by design (Task 10): a fleet-blind recreate would
+    # destroy and rebuild whichever fleet the caller did not mean.
+    r = client.post("/api/recreate", json={"provider": "github"})
     assert r.status_code == 200
     body = r.get_json()
     assert body["ok"] is True
@@ -284,7 +289,9 @@ def test_removal_reported_as_failed_but_container_gone_still_creates_replacement
     monkeypatch.setattr(docker_ops, "create",
                         lambda idx, env: (True, f"github-runner-{idx}", None))
 
-    r = client.post("/api/recreate")
+    # provider is required by design (Task 10): a fleet-blind recreate would
+    # destroy and rebuild whichever fleet the caller did not mean.
+    r = client.post("/api/recreate", json={"provider": "github"})
     assert r.status_code == 200
     body = r.get_json()
     assert body["ok"] is True
@@ -323,7 +330,9 @@ def test_removal_that_leaves_the_container_present_aborts_the_sweep(client, monk
                         lambda idx, env: create_calls.append(idx) or
                         (True, f"github-runner-{idx}", None))
 
-    r = client.post("/api/recreate")
+    # provider is required by design (Task 10): a fleet-blind recreate would
+    # destroy and rebuild whichever fleet the caller did not mean.
+    r = client.post("/api/recreate", json={"provider": "github"})
     assert r.status_code == 500
     body = r.get_json()
     assert body["ok"] is False
@@ -351,7 +360,9 @@ def test_failing_create_also_aborts_the_sweep(client, monkeypatch):
     monkeypatch.setattr(docker_ops, "create",
                         lambda idx, env: (False, f"github-runner-{idx}", "create failed"))
 
-    r = client.post("/api/recreate")
+    # provider is required by design (Task 10): a fleet-blind recreate would
+    # destroy and rebuild whichever fleet the caller did not mean.
+    r = client.post("/api/recreate", json={"provider": "github"})
     assert r.status_code == 500
     body = r.get_json()
     assert body["ok"] is False
@@ -371,7 +382,10 @@ def test_prune_all_still_reports_when_one_runner_fails(client, monkeypatch):
                 "before": {}, "after": {}, "freed_bytes": 10 if ok else 0}
 
     monkeypatch.setattr(docker_ops, "prune", one_fails)
-    body = client.post("/api/prune-all").get_json()
+    # provider is required by design (Task 10): a fleet-blind prune-all would
+    # let either of two per-fleet buttons clear the wrong fleet's cache.
+    body = client.post("/api/prune-all",
+                       json={"provider": "github"}).get_json()
     # One failure must not hide the other runner's result or abort the sweep.
     assert len(body["data"]["results"]) == 2
     assert body["data"]["freed_bytes"] == 10

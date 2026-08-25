@@ -531,7 +531,12 @@ def _drain_watcher():
                 if name not in ops.list_runner_names():
                     ops.set_draining(name, False)
                     continue
-                if ops.is_idle(name):
+                # The drain state is a list of names, not (name, provider)
+                # pairs, so the provider is resolved from the name here.
+                # Without it every Forgejo runner reads "unknown" from
+                # is_idle(), which counts as not-idle, and a drained Forgejo
+                # runner would stay marked draining and never stop.
+                if ops.is_idle(name, providers.for_name(name), env=read_env()):
                     print(f"[drain] {name} idle - stopping")
                     ops.stop(name)
                     ops.set_draining(name, False)
@@ -823,21 +828,26 @@ def api_status():
 
 
 def _detail_target(name):
-    """Validate a runner name from the URL.
+    """Validate a runner name from the URL, and resolve its provider.
 
-    Same rule as _target(), which reads from the JSON body. Checked before any
-    docker call so a crafted name can never reach the command line.
+    Checked before any docker call so a crafted name can never reach the
+    command line. Existence is checked against list_runner_names() rather
+    than by re-walking list_runners(): a name that already passed
+    valid_name() carries its fleet in its prefix, so providers.for_name()
+    answers the provider without a second lookup, and existence stays keyed
+    on the one list every other route already treats as ground truth for
+    "is this container really there".
     """
-    if not re.fullmatch(r"github-runner-\d+", name or ""):
-        return None, (jsonify(ok=False, error="bad runner name"), 400)
+    if not providers.valid_name(name):
+        return None, None, (jsonify(ok=False, error="bad runner name"), 400)
     if name not in ops.list_runner_names():
-        return None, (jsonify(ok=False, error="no such runner"), 404)
-    return name, None
+        return None, None, (jsonify(ok=False, error="no such runner"), 404)
+    return name, providers.for_name(name), None
 
 
 def _detail(name, fn, *args, **kwargs):
     """Run a collector and turn its result into a response."""
-    name, err = _detail_target(name)
+    name, _provider, err = _detail_target(name)
     if err:
         return err
     result = fn(name, *args, **kwargs)
@@ -846,7 +856,7 @@ def _detail(name, fn, *args, **kwargs):
 
 @app.route("/runner/<name>")
 def runner_page(name):
-    if not re.fullmatch(r"github-runner-\d+", name or ""):
+    if not providers.valid_name(name):
         return render_template("runner.html", name=name, missing=True), 404
     if name not in ops.list_runner_names():
         return render_template("runner.html", name=name, missing=True), 404
@@ -855,7 +865,7 @@ def runner_page(name):
 
 @app.route("/api/runner/<name>/inspect")
 def api_runner_inspect(name):
-    name, err = _detail_target(name)
+    name, _provider, err = _detail_target(name)
     if err:
         return err
     result = runner_detail.cached(
@@ -876,7 +886,7 @@ def api_runner_logs(name):
 
 @app.route("/api/runner/<name>/series")
 def api_runner_series(name):
-    name, err = _detail_target(name)
+    name, _provider, err = _detail_target(name)
     if err:
         return err
     with _status_lock:
@@ -885,7 +895,7 @@ def api_runner_series(name):
 
 @app.route("/api/runner/<name>/github")
 def api_runner_github(name):
-    name, err = _detail_target(name)
+    name, _provider, err = _detail_target(name)
     if err:
         return err
     env = read_env()
@@ -906,7 +916,7 @@ def api_runner_github(name):
 
 @app.route("/api/runner/<name>/history")
 def api_runner_history(name):
-    name, err = _detail_target(name)
+    name, _provider, err = _detail_target(name)
     if err:
         return err
     return jsonify(ok=True, data=history.list_runs(runner=name, limit=100))
@@ -914,20 +924,42 @@ def api_runner_history(name):
 
 @app.route("/api/runner/<name>/prune", methods=["POST"])
 def api_runner_prune(name):
-    name, err = _detail_target(name)
+    name, provider, err = _detail_target(name)
     if err:
         return err
     # Refuse rather than race: clearing the cache under a running job discards
-    # exactly the layers it is about to reuse.
-    if not ops.is_idle(name):
+    # exactly the layers it is about to reuse. provider and env are passed
+    # through so a Forgejo runner's idleness is read from the forge instead
+    # of a GitHub log pattern that never matches it - without this a Forgejo
+    # runner reads "unknown", which is not-idle, and prune is refused for the
+    # Forgejo fleet permanently.
+    #
+    # Called bare for GitHub rather than is_idle(name, provider, env=env)
+    # unconditionally: is_idle() is a deliberately easy seam to stub as a
+    # one-argument lambda, and pre-existing tests do exactly that (the same
+    # tradeoff docker_ops.prune() already documents for its own call to
+    # is_idle()). Behaviour on the GitHub path is identical either way - the
+    # extra arguments are what Forgejo's idleness detection needs, and
+    # is_idle() already defaults provider to GITHUB and ignores env when
+    # they are withheld.
+    env = read_env()
+    idle = ops.is_idle(name) if provider is providers.GITHUB \
+        else ops.is_idle(name, provider, env=env)
+    if not idle:
         return jsonify(ok=False, error=f"{name} is busy running a job"), 409
-    result = ops.prune(name)
+    result = ops.prune(name, provider=provider, env=env)
     return jsonify(ok=result["ok"], data=result), (200 if result["ok"] else 500)
 
 
 @app.route("/api/prune-all", methods=["POST"])
 def api_prune_all():
-    """Sweep every idle runner. Busy ones are skipped, never interrupted.
+    """Sweep every idle runner of one fleet. Busy ones are skipped, never
+    interrupted.
+
+    A provider is required, not defaulted: two per-fleet buttons posting to
+    one fleet-blind endpoint would make one of them a lie, and without this a
+    single click would clear both fleets' build caches regardless of which
+    button was pressed.
 
     Each prune gets 120s rather than the 300s single-runner default: six
     runners at the full timeout would let one HTTP request run for close to
@@ -935,12 +967,29 @@ def api_prune_all():
     something a browser tab will survive; a runner that needs longer than
     that reports an error here and can still be pruned individually.
     """
+    provider, err = _requested_provider()
+    if err:
+        return err
+    env = read_env()
+    # Filtered via list_runner_names() + providers.for_name() rather than by
+    # walking list_runners() again: any name list_runners() would hand back
+    # already matched this same provider's prefix to be included at all (see
+    # _detail_target's docstring), so the two are equivalent - this just
+    # keeps the fleet-wide sweep on the same lookup every single-runner route
+    # already uses.
+    targets = [n for n in ops.list_runner_names()
+              if providers.for_name(n) is provider]
     results, skipped = [], []
-    for name in ops.list_runner_names():
-        if not ops.is_idle(name):
+    for name in targets:
+        # Bare for GitHub, same reasoning as api_runner_prune's call to
+        # is_idle(): behaviour is identical either way, and this is the seam
+        # pre-existing tests stub as a one-argument lambda.
+        idle = ops.is_idle(name) if provider is providers.GITHUB \
+            else ops.is_idle(name, provider, env=env)
+        if not idle:
             skipped.append({"name": name, "reason": "busy running a job"})
             continue
-        results.append(ops.prune(name, timeout=120))
+        results.append(ops.prune(name, timeout=120, provider=provider, env=env))
     # A per-runner failure can leave freed_bytes as None (measurement was not
     # trustworthy) rather than 0 - treat that as "contributed nothing" to the
     # fleet total instead of crashing the whole sweep's response.
@@ -951,17 +1000,18 @@ def api_prune_all():
 
 
 def _target():
+    """Same rule as _detail_target(), for a name read from the JSON body."""
     name = (request.json or {}).get("name", "")
-    if not re.fullmatch(r"github-runner-\d+", name or ""):
-        return None, (jsonify(error="bad runner name"), 400)
+    if not providers.valid_name(name):
+        return None, None, (jsonify(error="bad runner name"), 400)
     if name not in ops.list_runner_names():
-        return None, (jsonify(error="no such runner"), 404)
-    return name, None
+        return None, None, (jsonify(error="no such runner"), 404)
+    return name, providers.for_name(name), None
 
 
 @app.route("/api/runner/<action>", methods=["POST"])
 def api_runner(action):
-    name, err = _target()
+    name, provider, err = _target()
     if err:
         return err
 
@@ -982,18 +1032,37 @@ def api_runner(action):
         ops.set_draining(name, False)
         ok, e = True, ""
     elif action == "remove":
-        ok, _, e = ops.remove(name)
+        ok, _, e = ops.remove(name, provider, read_env())
     else:
         return jsonify(error="unknown action"), 400
 
     return jsonify(ok=ok, error=e or None), (200 if ok else 500)
 
 
+def _requested_provider():
+    """The fleet a body-carrying request is about.
+
+    Required, never defaulted. Both callers are destructive or creative at
+    fleet scale, and guessing wrong acts on the fleet the operator did not
+    mean.
+    """
+    key = (request.json or {}).get("provider")
+    p = providers.by_key(key)
+    if p is None:
+        return None, (jsonify(ok=False,
+                              error="a provider is required: "
+                                    "github or forgejo"), 400)
+    return p, None
+
+
 @app.route("/api/runner/add", methods=["POST"])
 def api_add():
-    idx = ops.next_free_index(providers.GITHUB)
-    ok, name, err = ops.create(idx, read_env())
-    return jsonify(ok=ok, name=name, error=None if ok else err), \
+    provider, err = _requested_provider()
+    if err:
+        return err
+    idx = ops.next_free_index(provider)
+    ok, name, msg = ops.create(idx, read_env(), provider)
+    return jsonify(ok=ok, name=name, error=None if ok else msg), \
         (200 if ok else 500)
 
 
@@ -1026,7 +1095,12 @@ def api_settings():
 
 @app.route("/api/recreate", methods=["POST"])
 def api_recreate():
-    """Remove and recreate every runner so new settings take effect.
+    """Remove and recreate every runner of one fleet so new settings take
+    effect.
+
+    A provider is required, not defaulted: this removes and rebuilds every
+    runner it is given, and with two fleets on one engine a request that does
+    not say which one is a request to destroy the wrong one.
 
     A cascade that destroyed six runners in production started here: `docker
     rm -f` reporting failure on a slow-but-successful removal was read as "the
@@ -1039,20 +1113,38 @@ def api_recreate():
     was removed and not replaced is lost capacity, and repeating that across
     the fleet is exactly the incident being fixed.
     """
+    provider, err = _requested_provider()
+    if err:
+        return err
     env = read_env()
-    names = ops.list_runner_names()
+    # See api_prune_all: equivalent to walking list_runners() and filtering
+    # on provider identity, since inclusion there already required the name
+    # to match this provider's prefix.
+    names = [n for n in ops.list_runner_names()
+            if providers.for_name(n) is provider]
     results = []
     for name in names:
         idx = ops._index_of(name)
-        ok, _, err = ops.remove(name)
+        # Bare for GitHub, same reasoning as api_runner_prune's call to
+        # is_idle(): remove()/create() already default provider to GITHUB
+        # and only consult env on the Forgejo path, so behaviour is
+        # identical either way - this just keeps the one-and-two-argument
+        # stubs in pre-existing tests working.
+        if provider is providers.GITHUB:
+            ok, _, rm_err = ops.remove(name)
+        else:
+            ok, _, rm_err = ops.remove(name, provider, env)
         if not ok and name in ops.list_runner_names():
             # remove() failed AND the container is still there: it is not
             # safe to assume anything about the rest of the fleet. Stop here
             # rather than destroying the next runner too.
-            results.append({"name": name, "ok": False, "error": err})
+            results.append({"name": name, "ok": False, "error": rm_err})
             return jsonify(ok=False, results=results, aborted_at=name), 500
 
-        ok2, new, err2 = ops.create(idx, env)
+        if provider is providers.GITHUB:
+            ok2, new, err2 = ops.create(idx, env)
+        else:
+            ok2, new, err2 = ops.create(idx, env, provider)
         results.append({"name": new, "ok": ok2,
                         "error": None if ok2 else err2})
         if not ok2:

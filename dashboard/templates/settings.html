@@ -141,7 +141,13 @@ $('save-recreate').addEventListener('click', async e => {
   try {
     await save();
     toast('Saved. Recreating fleet...');
-    const res = await fetch('/api/recreate', {method: 'POST'});
+    // provider is required by design (Task 10) - interim, until Task 11
+    // gives each fleet its own "Save & recreate" button.
+    const res = await fetch('/api/recreate', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({provider: 'github'})
+    });
     const d = await res.json().catch(() => ({}));
     if (!res.ok || d.ok === false) {
       const bad = (d.results || []).filter(r => !r.ok).map(r => r.name).join(', ');

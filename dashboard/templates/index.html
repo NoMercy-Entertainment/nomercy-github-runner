@@ -128,10 +128,15 @@ async function act(action, name, btn) {
     const url = action === 'add' ? '/api/runner/add'
               : action === 'recreate' ? '/api/recreate'
               : '/api/runner/' + action;
+    // provider is required by design (Task 10) - interim, until Task 11
+    // restructures this page into per-fleet sections with per-fleet buttons.
+    const body = name ? {name}
+               : action === 'recreate' ? {provider: 'github'}
+               : {};
     const res = await fetch(url, {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify(name ? {name} : {})
+      body: JSON.stringify(body)
     });
     const d = await res.json().catch(() => ({}));
     if (!res.ok || d.ok === false) throw new Error(d.error || ('HTTP ' + res.status));
@@ -201,7 +206,13 @@ async function pruneAll(btn) {
   const label = btn.textContent;
   btn.textContent = 'Clearing all...';
   try {
-    const res = await fetch('/api/prune-all', {method: 'POST'});
+    // provider is required by design (Task 10) - interim, until Task 11
+    // gives each fleet its own "Clear all cache" button.
+    const res = await fetch('/api/prune-all', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({provider: 'github'})
+    });
     const d = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(d.error || ('HTTP ' + res.status));
     const data = d.data || {};
