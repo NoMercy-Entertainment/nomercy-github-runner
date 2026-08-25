@@ -9,10 +9,12 @@ watcher both act on is_idle(), and a wrong "idle" deletes layers a running
 build needs.
 """
 import json
+import time
 
 import pytest
 
 import docker_ops
+import forgejo_api
 import providers
 
 
@@ -279,3 +281,46 @@ def test_a_failed_call_is_never_replayed_as_an_answer(monkeypatch):
 def test_no_forgejo_client_answers_unknown_without_a_call(monkeypatch):
     monkeypatch.setattr(providers.FORGEJO, "forge_client", lambda env: None)
     assert docker_ops._forge_statuses({}) is None
+
+
+def test_a_slow_failure_is_not_retried_before_it_could_have_changed(
+        monkeypatch):
+    """Reproduces the bug: the cache deadline used to be taken from a `now`
+    read BEFORE the call. A call slower than _FORGE_STATUS_TTL then stored a
+    deadline already in the past - every subsequent sweep missed the cache
+    and paid the full HTTP timeout again, stalling the shared collector
+    thread (and with it the GITHUB fleet's telemetry) on every poll.
+
+    time.monotonic is monkeypatched so the stub can stand in for a call that
+    blocks for the real urllib timeout without an actual sleep - the call
+    itself advances the fake clock by forgejo_api.REQUEST_TIMEOUT, exactly as
+    a real request against a dead host would before urlopen gives up. Both
+    the deadline check and the deadline write inside _forge_statuses still
+    run for real; only the passage of time during the network call is
+    simulated.
+    """
+    clock = {"t": time.monotonic()}
+    monkeypatch.setattr(docker_ops.time, "monotonic", lambda: clock["t"])
+
+    class _SlowDeadForge:
+        def __init__(self):
+            self.calls = 0
+
+        def runner_statuses(self):
+            self.calls += 1
+            clock["t"] += forgejo_api.REQUEST_TIMEOUT
+            return None
+
+    forge = _wire_forge(monkeypatch, _SlowDeadForge())
+
+    assert docker_ops._forge_statuses({}) is None
+    assert forge.calls == 1
+
+    # A later collector sweep, well within a normal 5s poll cadence, must
+    # still be served from cache - not pay for another full timeout.
+    clock["t"] += 5
+    assert docker_ops._forge_statuses({}) is None
+    assert forge.calls == 1, (
+        "the failed call's cache window must be counted from when the call "
+        "FINISHED, not when it started - a stale pre-call deadline let a "
+        "slow failure be retried immediately")

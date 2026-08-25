@@ -40,6 +40,12 @@ CONCLUSIONS = {
 # map rather than written out again so the two cannot drift apart.
 FINISHED = frozenset(CONCLUSIONS)
 
+# How long a single HTTP call may block before urllib gives up. Read by
+# docker_ops when it decides how long a FAILED fleet-status call may safely
+# stay cached: that backoff must exceed this number, or the collector thread
+# retries a call that has not even had time to fail yet.
+REQUEST_TIMEOUT = 20
+
 
 class Forgejo:
     def __init__(self, base_url, token):
@@ -59,7 +65,7 @@ class Forgejo:
             "User-Agent": "nomercy-runner-dashboard",
         })
         try:
-            with urllib.request.urlopen(req, timeout=20) as r:
+            with urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT) as r:
                 body = r.read().decode()
                 return json.loads(body) if body.strip() else True
         except urllib.error.HTTPError as e:

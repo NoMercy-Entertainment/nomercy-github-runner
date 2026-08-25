@@ -16,6 +16,7 @@ import re
 import subprocess
 import time
 
+import forgejo_api
 import providers
 
 # Path to the repo AS THE DOCKER DAEMON SEES IT, not as this container sees it.
@@ -384,11 +385,24 @@ def host_info():
 # side's equivalent cache is 60s, but that one backs a page a human opens, not
 # a badge that flips when a job starts.
 _FORGE_STATUS_TTL = 10
+
+# A FAILED call gets a longer window than a successful one. It must exceed
+# forgejo_api's own HTTP timeout (read from there rather than assumed, so the
+# two cannot drift apart): the deadline below is taken AFTER the call
+# returns, so a call that pays the full timeout already spends that long
+# before the window even starts. Backing failure off by only _FORGE_STATUS_TTL
+# on top would still let a dead Forgejo cost the collector its 20s timeout
+# roughly every 30s (20s blocking + 10s cached); this instead bounds a
+# completely dead Forgejo to one 20s stall per 50s cycle (20s blocking + 30s
+# cached) - worse case is a fixed cost per sweep, not an unbounded retry storm.
+_FORGE_STATUS_FAIL_BACKOFF = forgejo_api.REQUEST_TIMEOUT + _FORGE_STATUS_TTL  # 30s
+
 _forge_status_cache = None   # (monotonic deadline, statuses-or-None)
 
 
 def _forge_statuses(env):
-    """The whole Forgejo fleet's status, at most once every _FORGE_STATUS_TTL.
+    """The whole Forgejo fleet's status, cached for a window that starts when
+    the call FINISHES, not when it started.
 
     A failed call is NOT cached as though it were an answer - the hazard
     host_info() documents. What is stored on failure is None, which is
@@ -396,10 +410,16 @@ def _forge_statuses(env):
     reporting "unknown"; the previous good map is discarded rather than
     replayed, so a stale idle can never outlive the call that produced it.
 
-    The failed ATTEMPT is still rate-limited by the same window, deliberately.
-    Retrying a dead Forgejo every 5s at a 20s timeout is precisely how the
-    GitHub fleet's telemetry gets held hostage, and the answer during that
-    window ("unknown") is the same either way.
+    The failed ATTEMPT is still rate-limited, deliberately, but by
+    _FORGE_STATUS_FAIL_BACKOFF rather than _FORGE_STATUS_TTL. Taking the
+    deadline from a `now` read BEFORE the call (the previous bug here) made a
+    call slower than the TTL store a deadline already in the past by the time
+    it was written, so a slow/unreachable Forgejo was retried, and paid its
+    full 20s HTTP timeout, on every subsequent collector sweep - exactly the
+    cross-engine stall on the GITHUB fleet's telemetry this cache exists to
+    prevent. Reading the clock after the call fixes that; using a longer
+    backoff for failures on top of it is what keeps a dead Forgejo from still
+    costing a 20s stall every ~30s.
     """
     global _forge_status_cache
     now = time.monotonic()
@@ -407,7 +427,8 @@ def _forge_statuses(env):
         return _forge_status_cache[1]
     client = providers.FORGEJO.forge_client(env)
     got = client.runner_statuses() if client is not None else None
-    _forge_status_cache = (now + _FORGE_STATUS_TTL, got)
+    ttl = _FORGE_STATUS_TTL if got is not None else _FORGE_STATUS_FAIL_BACKOFF
+    _forge_status_cache = (time.monotonic() + ttl, got)
     return got
 
 
