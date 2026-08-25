@@ -231,7 +231,11 @@ def logs(name, since=""):
     Redacted here, structurally, rather than relying on that convention alone.
     """
     window = since or DEFAULT_LOG_WINDOW
-    ok, out, err = docker_ops._docker(
+    # _docker_logs, not _docker: forgejo-runner logs to stderr, and this is
+    # the detail page's log view - the one place an operator actually reads a
+    # runner's log. Plain _docker() would show a Forgejo runner three lines
+    # of shell echo and nothing else. See docker_ops._docker_logs().
+    ok, out, err = docker_ops._docker_logs(
         "logs", "--timestamps", "--tail", str(LOG_TAIL_CAP), "--since", window,
         name, timeout=15)
     if not ok:

@@ -32,13 +32,27 @@ STATE_PATH = os.path.join(os.environ.get("DASH_DATA", "/data"), "state.json")
 # shell helpers
 # --------------------------------------------------------------------------
 
-def _run(args, timeout=30):
+def _run(args, timeout=30, merge_stderr=False):
     """Run a docker command. Returns (ok, stdout, stderr).
 
     Never raises: a wedged runner must not take the whole dashboard down with
     it, so every failure comes back as data for the caller to render.
+
+    merge_stderr redirects the child's stderr onto the same pipe as its
+    stdout BEFORE this process ever reads a byte of either, so what comes
+    back on `stdout` is the two streams interleaved in the order the process
+    actually wrote them - the same thing `docker logs` shows in a terminal.
+    stderr is then always "" in that mode: there is nothing left to hand back
+    separately. See _docker_logs() for why this exists; almost nothing should
+    pass merge_stderr=True directly - go through that helper instead.
     """
     try:
+        if merge_stderr:
+            p = subprocess.run(
+                args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                text=True, timeout=timeout,
+            )
+            return p.returncode == 0, p.stdout.strip(), ""
         p = subprocess.run(
             args, capture_output=True, text=True, timeout=timeout
         )
@@ -49,8 +63,55 @@ def _run(args, timeout=30):
         return False, "", str(e)
 
 
-def _docker(*args, timeout=30):
-    return _run(["docker", *args], timeout=timeout)
+def _docker(*args, timeout=30, merge_stderr=False):
+    return _run(["docker", *args], timeout=timeout, merge_stderr=merge_stderr)
+
+
+def _docker_logs(*args, timeout=30):
+    """_docker(), but with the container's stdout and stderr merged in order.
+
+    Use this, never plain _docker(), for anything that reads a CONTAINER's
+    own log output ("docker logs ..."). Everything else - inspect, exec,
+    stats, ps - should keep using _docker() unchanged; this is specifically
+    about how a runner's own process writes its log, not about docker CLI
+    output in general.
+
+    Why this exists: the GitHub Actions runner (start.sh) writes its log to
+    stdout, but forgejo-runner writes ITS log to stderr. Every log-reading
+    call site in this codebase used to call plain _docker("logs", ...) and
+    read only stdout - which is correct for a GitHub runner and silently
+    empty for a Forgejo one. Measured against a live Forgejo runner that had
+    just completed real jobs: `docker logs --tail 200` returned 3 lines on
+    stdout (shell echo) and 10 on stderr (the runner's actual log, including
+    the "task N repo is ..." lines both the busy-card label and the history
+    reconciler grep for). Reading stdout alone parsed 0 job starts where
+    reading both would have parsed 2. In production this meant the entire
+    Forgejo history path was dead - the history table held thousands of
+    GitHub rows and zero Forgejo ones, real completed tasks and all - and the
+    busy card for a working Forgejo runner showed no job name. Every test
+    kept passing throughout, because the tests hand log text straight to the
+    parsers and never exercise the stdout/stderr split at all.
+
+    The fix is NOT "read stderr too and glue it onto stdout after the fact".
+    _docker()'s _run() calls subprocess.run(capture_output=True), which
+    captures the two streams into separate buffers - by the time both are
+    strings in Python, whatever order the lines were actually written in is
+    gone, and concatenating "stdout then stderr" (or vice versa) would
+    reorder a real interleaved log, which is exactly the kind of corruption
+    the line-by-line "task started" parsing here cannot tolerate. Ordering
+    has to be preserved at the OS level, before capture: this runs the
+    subprocess with stderr=subprocess.STDOUT, so the kernel/shell interleaves
+    the two streams onto one pipe in the order the process wrote them - the
+    same thing a terminal shows for `docker logs` - and this process only
+    ever sees the one, already-ordered stream.
+
+    Do not "simplify" a call site back to plain _docker("logs", ...) because
+    it looks equivalent - that silently reintroduces this exact bug for any
+    container that logs to stderr, and nothing will fail loudly when it
+    happens; the busy card just goes blank and the history table quietly
+    stops gaining rows for that fleet again.
+    """
+    return _docker(*args, timeout=timeout, merge_stderr=True)
 
 
 # --------------------------------------------------------------------------
@@ -240,7 +301,7 @@ def _runner_file(name, provider):
 
 def _forgejo_current_job(name):
     """A label for whatever task was last picked up. Display only."""
-    ok, out, _ = _docker("logs", "--tail", "200", name, timeout=10)
+    ok, out, _ = _docker_logs("logs", "--tail", "200", name, timeout=10)
     if not ok:
         return ""
     last = None
@@ -297,7 +358,7 @@ def _job_state(name, provider=None, runner_file=None, forge_status=None):
     if provider is providers.FORGEJO:
         return _forgejo_job_state(name, runner_file, forge_status)
 
-    ok, out, _ = _docker("logs", "--tail", "200", name, timeout=10)
+    ok, out, _ = _docker_logs("logs", "--tail", "200", name, timeout=10)
     if not ok:
         return "unknown", ""
     last = ""
@@ -867,7 +928,7 @@ def logs_since(name, seconds=45):
     out of view and lose the run entirely. Bounding by time cannot miss
     anything as long as the window exceeds the poll interval.
     """
-    ok, out, _ = _docker("logs", "--since", f"{seconds}s", name, timeout=20)
+    ok, out, _ = _docker_logs("logs", "--since", f"{seconds}s", name, timeout=20)
     return out if ok else ""
 
 
