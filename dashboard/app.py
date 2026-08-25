@@ -444,60 +444,78 @@ def _enricher():
     while True:
         try:
             env = read_env()
-            clients = {}
             # Compared as strings: both sides are the same fixed ISO format,
             # which is how started_at is already compared elsewhere in this
             # codebase.
             stale_before = time.strftime(
                 "%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - 24 * 3600))
-            for run in history.pending_enrichment(limit=10):
-                key = run.get("provider") or "github"
-                if key not in clients:
-                    p = providers.by_key(key)
-                    clients[key] = p.forge_client(env) if p else None
-                client = clients[key]
-                if client is None:
-                    continue
-
-                if key == "forgejo":
-                    found = client.find_task(run.get("job_name"),
-                                             run.get("forge_task_id"),
-                                             run.get("started_at"))
-                    if found:
-                        # Forgejo's task carries the end, which no log line
-                        # does. Close first, then enrich: a crash between the
-                        # two leaves a closed run to be enriched next sweep,
-                        # rather than an enriched run that never ends.
-                        if found.get("ended_at"):
-                            history.apply_close(run["id"], found["ended_at"],
-                                                found.get("conclusion"))
-                        history.apply_enrichment(run["id"], found)
-                    elif run["started_at"] < stale_before:
-                        # Not marked unmatched on the first miss: the common
-                        # case is a task that simply has not finished yet, and
-                        # marking it would close the only route to its end
-                        # time for good.
-                        #
-                        # But a run that never matches would otherwise be
-                        # retried every 90 seconds for the life of the
-                        # deployment - a repo deleted mid-job, or a task
-                        # Forgejo pruned. After a day, close it honestly as
-                        # unknown and stop asking.
-                        history.apply_close(run["id"], run["started_at"],
-                                            "unknown")
-                        history.mark_unmatched(run["id"])
-                else:
-                    found = client.find_job(run.get("registration"),
-                                            run.get("job_name"),
-                                            run.get("started_at"),
-                                            run.get("ended_at"))
-                    if found:
-                        history.apply_enrichment(run["id"], found)
-                    else:
-                        history.mark_unmatched(run["id"])
+            _enrich_pending(env, stale_before)
         except Exception as e:  # noqa: BLE001
             print(f"[enricher] {e}")
         time.sleep(90)
+
+
+def _enrich_pending(env, stale_before):
+    """Run one enrichment sweep over history.pending_enrichment().
+
+    Split out from _enricher() so the two invariants that actually matter
+    here - Forgejo closing before it enriches, and a miss being given up on
+    only after the staleness cutoff rather than on the first try - can be
+    driven directly by a test. Neither survives being buried in a `while
+    True: ... time.sleep(90)` loop, and a broken version of either would
+    still pass every test that only exercises the parser.
+    """
+    clients = {}
+    for run in history.pending_enrichment(limit=10):
+        key = run.get("provider") or "github"
+        if key not in clients:
+            p = providers.by_key(key)
+            clients[key] = p.forge_client(env) if p else None
+        client = clients[key]
+        if client is None:
+            continue
+
+        if key == "forgejo":
+            found = client.find_task(run.get("job_name"),
+                                     run.get("forge_task_id"),
+                                     run.get("started_at"))
+            # A task with no ended_at is treated the same as no match at
+            # all, not enriched. Forgejo's task carries the end, which no
+            # log line does, so this is the only path a Forgejo run ever
+            # closes on - enriching it here regardless would create a run
+            # that is enriched but never closes, which is the exact
+            # failure the close-before-enrich ordering below exists to
+            # avoid, reached from a different direction.
+            if found and found.get("ended_at"):
+                # Close first, then enrich: a crash between the two leaves
+                # a closed run to be enriched next sweep, rather than an
+                # enriched run that never ends.
+                history.apply_close(run["id"], found["ended_at"],
+                                    found.get("conclusion"))
+                history.apply_enrichment(run["id"], found)
+            elif run["started_at"] < stale_before:
+                # Not marked unmatched on the first miss: the common
+                # case is a task that simply has not finished yet, and
+                # marking it would close the only route to its end
+                # time for good.
+                #
+                # But a run that never matches would otherwise be
+                # retried every 90 seconds for the life of the
+                # deployment - a repo deleted mid-job, or a task
+                # Forgejo pruned. After a day, close it honestly as
+                # unknown and stop asking.
+                history.apply_close(run["id"], run["started_at"],
+                                    "unknown")
+                history.mark_unmatched(run["id"])
+        else:
+            found = client.find_job(run.get("registration"),
+                                    run.get("job_name"),
+                                    run.get("started_at"),
+                                    run.get("ended_at"))
+            if found:
+                history.apply_enrichment(run["id"], found)
+            else:
+                history.mark_unmatched(run["id"])
 
 
 def _drain_watcher():
