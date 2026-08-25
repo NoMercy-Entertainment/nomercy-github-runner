@@ -491,41 +491,75 @@ def restart(name, timeout=60):
     return _docker("restart", "-t", str(timeout), name, timeout=timeout + 30)
 
 
-def remove(name):
-    # 180s, not 120s: these containers hold a nested (Docker-in-Docker)
-    # daemon, and tearing that down on removal has been observed to take
-    # ~110s - too close to a 120s limit for comfort. A timeout here is read
-    # by the caller as "removal failed" even when it eventually succeeds, so
-    # the margin matters more than it looks like it should.
+def remove(name, provider=None, env=None):
+    """Remove a runner, deregistering it from its forge first where needed.
+
+    start.sh deregisters a GitHub runner on SIGTERM, so that side needs
+    nothing here. forgejo-runner does not deregister on its own, and a removed
+    container would leave a runner sitting at "offline" in Forgejo for ever.
+
+    A failed deregistration does not block the removal. The operator asked for
+    the container to be gone, and a forge that is not answering must not be
+    able to veto that; the stale registration is visible and deletable in
+    Forgejo's own UI.
+    """
+    provider = provider or providers.GITHUB
+    if provider is providers.FORGEJO:
+        try:
+            client = provider.forge_client(env or {})
+            if client is not None:
+                rf = _runner_file(name, provider)
+                # The id in .runner is written at registration. Falling back
+                # to the live map covers a file that is missing or stale.
+                runner_id = rf.get("id")
+                if not runner_id and rf.get("uuid"):
+                    runner_id = (client.runner_ids() or {}).get(rf["uuid"])
+                if runner_id:
+                    client.delete_runner(runner_id)
+        except Exception as e:  # noqa: BLE001 - never blocks the removal
+            print(f"[forgejo:deregister:{name}] {e}")
+
+    # 180s: these containers hold a nested daemon, and tearing that down on
+    # removal has been observed to take ~110s.
     ok, out, err = _docker("rm", "-f", name, timeout=180)
     set_draining(name, False)
     return ok, out, err
 
 
-def create(index, env):
-    """Create a runner container matching the compose definition."""
-    name = f"{PREFIX}{index}"
+def create(index, env, provider=None):
+    """Create a runner container. Returns (ok, name, message)."""
+    provider = provider or providers.GITHUB
+    name = provider.name_for(index)
+
+    container_env, err = provider.container_env(env)
+    if err:
+        # No container is started on a half-built environment: a Forgejo
+        # runner without a registration token boots, fails, and restarts for
+        # ever under `restart: unless-stopped`.
+        return False, name, err
+
     args = [
         "run", "-d",
         "--name", name,
         "--label", LABEL,
+        "--label", f"{providers.LABEL_PROVIDER}={provider.key}",
         "--privileged",
         "--restart", "unless-stopped",
         "--stop-timeout", "60",
         "--tmpfs", "/tmp",
-        "-v", f"{REPO_HOST_PATH}/scripts/start.sh:/root/start.sh:ro",
-        "-e", f"GH_TOKEN={env.get('GH_TOKEN', '')}",
-        "-e", f"GITHUB_ORG={env.get('GITHUB_ORG', 'NoMercy-Entertainment')}",
-        "-e", f"RUNNER_LABELS={env.get('RUNNER_LABELS', 'self-hosted,Linux,X64')}",
-        "-e", f"RUNNER_GROUP={env.get('RUNNER_GROUP', '')}",
     ]
+    if provider is providers.GITHUB:
+        args += ["-v", f"{REPO_HOST_PATH}/scripts/start.sh:/root/start.sh:ro"]
+    for k, v in container_env.items():
+        args += ["-e", f"{k}={v}"]
+
     cpu = (env.get("RUNNER_CPU_LIMIT") or "0").strip()
     mem = (env.get("RUNNER_MEM_LIMIT") or "0").strip()
     if cpu not in ("", "0"):
         args += ["--cpus", cpu]
     if mem not in ("", "0"):
         args += ["--memory", mem]
-    args.append(IMAGE)
+    args.append(provider.image)
 
     ok, out, err = _docker(*args, timeout=180)
     return ok, name, (err or out)
