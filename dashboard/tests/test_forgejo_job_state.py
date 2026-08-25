@@ -62,6 +62,23 @@ def test_idle_reads_as_idle_even_with_a_task_line_in_the_log(monkeypatch):
         {UUID: "idle"}) == ("idle", "")
 
 
+def test_an_unrecognised_status_is_unknown_not_idle(monkeypatch):
+    """A status word this code does not know is not a licence to prune.
+
+    Only "active", "idle" and "offline" are documented. Anything else -
+    a future Forgejo release, a typo, a bug upstream - must not fall through
+    to "idle" by default: that is exactly the wrong direction, since idle is
+    what tells prune and the drain watcher it is safe to act.
+    """
+    monkeypatch.setattr(docker_ops, "_docker", _fake_docker())
+    state, _ = docker_ops._job_state(
+        "forgejo-runner-1", providers.FORGEJO, RUNNER_FILE,
+        {UUID: "starting"})
+    assert state == "unknown"
+    assert docker_ops.is_idle(
+        "forgejo-runner-1", providers.FORGEJO, {UUID: "starting"}) is False
+
+
 def test_an_unreachable_api_is_unknown_not_idle(monkeypatch):
     monkeypatch.setattr(docker_ops, "_docker", _fake_docker())
     state, _ = docker_ops._job_state(
@@ -117,3 +134,68 @@ def test_the_github_path_still_works_with_one_argument(monkeypatch):
     monkeypatch.setattr(docker_ops, "_docker", lambda *a, **k: (
         True, "2026-08-20 14:23:54Z: Listening for Jobs\n", ""))
     assert docker_ops._job_state("github-runner-3") == ("idle", "")
+
+
+# --------------------------------------------------------------------------
+# collect() must ask Forgejo once for the whole fleet, never per runner, and
+# never at all when there is no Forgejo runner to ask about. A hand-trace
+# confirmed this once; these pin it so a future edit that moves the call
+# inside the per-runner loop fails loudly instead of just costing more API
+# calls than the 5s poll interval can afford.
+# --------------------------------------------------------------------------
+
+def _docker_stub(ps_output):
+    """Enough of `docker` to get collect() through a fleet of stopped
+    containers: the list, an empty `stats`, and a non-"Up" status for every
+    runner so collect() takes the early "stopped" branch and never needs
+    _runner_file/_job_state/_inner_df mocked too."""
+    def call(*args, **kwargs):
+        if args[:3] == ("ps", "-a", "--format"):
+            return (True, ps_output, "")
+        if args and args[0] == "stats":
+            return (True, "", "")
+        if args[:3] == ("ps", "-a", "--filter"):
+            return (True, "Exited (0) 2 hours ago", "")
+        return (True, "", "")
+    return call
+
+
+def test_collect_asks_forgejo_once_for_a_mixed_fleet(monkeypatch):
+    ps_output = (
+        "github-runner-1\t\n"
+        "forgejo-runner-1\tforgejo\n"
+        "forgejo-runner-2\tforgejo\n"
+    )
+    monkeypatch.setattr(docker_ops, "_docker", _docker_stub(ps_output))
+
+    client_calls = []
+    status_calls = []
+
+    class _Forge:
+        def runner_statuses(self):
+            status_calls.append(1)
+            return {}
+
+    def fake_forge_client(env):
+        client_calls.append(1)
+        return _Forge()
+
+    monkeypatch.setattr(providers.FORGEJO, "forge_client", fake_forge_client)
+    docker_ops.collect()
+    assert len(client_calls) == 1
+    assert len(status_calls) == 1
+
+
+def test_collect_never_asks_forgejo_for_a_github_only_fleet(monkeypatch):
+    ps_output = "github-runner-1\t\ngithub-runner-2\t\n"
+    monkeypatch.setattr(docker_ops, "_docker", _docker_stub(ps_output))
+
+    client_calls = []
+
+    def fake_forge_client(env):
+        client_calls.append(1)
+        return None
+
+    monkeypatch.setattr(providers.FORGEJO, "forge_client", fake_forge_client)
+    docker_ops.collect()
+    assert client_calls == [], "a GitHub-only fleet must never even build a Forgejo client"

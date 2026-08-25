@@ -242,7 +242,11 @@ def _forgejo_job_state(name, runner_file, forge_status):
         return "busy", _forgejo_current_job(name)
     # idle and offline both mean "running no job". offline is separately
     # visible from the container being down, so it needs no third state here.
-    return "idle", ""
+    # Anything else - a status word this code does not recognise, whether
+    # from a future Forgejo release or a bug - is refused rather than assumed
+    # harmless: a wrong "idle" here is what lets prune delete layers a live
+    # job needs, so an unrecognised word must read as "unknown", not "idle".
+    return ("idle", "") if status in ("idle", "offline") else ("unknown", "")
 
 
 def _job_state(name, provider=None, runner_file=None, forge_status=None):
@@ -552,10 +556,12 @@ def is_idle(name, provider=None, forge_status=None, env=None):
     which just restarts) and cache prune (worst case: deleting layers a
     running job needs), and the two callers cannot be told apart from here.
 
-    forge_status is fetched here when the caller has none. collect() already
-    holds one for the whole fleet and passes it in; the drain watcher and
-    prune() do not, and without this they would read every Forgejo runner as
-    unknown and refuse to act on it for ever.
+    forge_status is fetched here when the caller has none. prune() and the
+    drain watcher both call is_idle() holding no status of their own -
+    collect() is the one place that already has one for the whole fleet, and
+    it calls _job_state() directly instead of coming through here. Without
+    this fetch, prune() and the drain watcher would read every Forgejo runner
+    as unknown and refuse to act on it for ever.
     """
     provider = provider or providers.GITHUB
     rf = None
