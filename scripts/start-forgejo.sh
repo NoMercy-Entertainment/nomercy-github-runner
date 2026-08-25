@@ -107,6 +107,15 @@ deregister() {
   timeout "$SHUTDOWN_UNREGISTER_MAX_TIME" forgejo-runner unregister 2>/dev/null || true
 }
 
+# RUNNER_PID must exist before the traps go in below: stop_runner reads it,
+# and with `set -u` a signal landing between `trap ... INT/TERM` and the real
+# `RUNNER_PID=$!` (after the daemon is started) would hit "unbound variable"
+# instead of running the handler — fatal, immediate, and bypassing the `||`
+# guards around stop_runner entirely. Declaring it empty here closes that
+# window. Mirrors scripts/start.sh:386-387 (RUNNER_PID="" precedes its traps
+# at 441-443 the same way).
+RUNNER_PID=""
+
 RUNNER_STOPPED=0
 stop_runner() {
   # Guard against double-stopping: only one shutdown path should stop the child.

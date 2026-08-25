@@ -95,3 +95,21 @@ def test_the_exit_trap_does_not_call_the_exiting_handler():
     assert "trap 'cleanup_on_exit' EXIT" in start
     assert "trap 'shutdown_handler' EXIT" not in start
     assert "trap 'shutdown_handler'" not in start
+
+
+def test_runner_pid_is_declared_before_the_traps():
+    """stop_runner reads RUNNER_PID, and the real `RUNNER_PID=$!` does not run
+    until after the daemon is forked, well below where the traps are
+    installed. Under `set -u`, a signal landing in that window before this
+    declaration existed hit "RUNNER_PID: unbound variable" — fatal and
+    immediate, exiting 1 instead of 143/130 and skipping the SIGTERM to the
+    child entirely (measured by direct reproduction: a harness with this
+    declaration removed dies exactly that way). This is a positional check,
+    not just a presence check, so a future edit that moves the traps above
+    the declaration — rather than removing it outright — still fails."""
+    start = _read(START)
+    declare_pos = start.index('RUNNER_PID=""')
+    first_trap_pos = start.index("\ntrap '")
+    assert declare_pos < first_trap_pos, (
+        "RUNNER_PID=\"\" must appear before the first `trap` line"
+    )
