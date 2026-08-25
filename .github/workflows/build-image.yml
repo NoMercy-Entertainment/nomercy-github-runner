@@ -5,7 +5,13 @@ on:
     branches: [master]
     paths:
       - 'dockerfile'
-      - 'scripts/**'
+      # scripts/start.sh, not scripts/**. This job builds the GITHUB runner
+      # image, and `dockerfile` copies exactly one script into it
+      # (ADD scripts/start.sh). Under scripts/** the addition of
+      # scripts/start-forgejo.sh - which belongs to a different image this job
+      # does not build - republished the whole GitHub runner image, and so
+      # would every edit to the PowerShell provisioning scripts beside it.
+      - 'scripts/start.sh'
       - '.github/workflows/build-image.yml'
   workflow_dispatch:
 

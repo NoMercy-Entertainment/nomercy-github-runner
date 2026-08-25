@@ -86,7 +86,7 @@ def test_find_task_matches_on_id_and_maps_to_the_runs_columns():
         "sha": "abcdef12",
         "actor": None,
         "url": "https://forgejo.example/FiLL/p/actions/runs/12",
-        "conclusion": "success",
+        "conclusion": "Succeeded",
         "ended_at": "2026-08-25T14:44:02Z",
     }
 
@@ -97,7 +97,61 @@ def test_find_task_falls_back_to_the_start_time():
     fj = _client({"/api/v1/repos/FiLL/p/actions/tasks": TASKS})
     got = fj.find_task("FiLL/p", 999999, "2026-08-25T14:33:15Z")
     assert got["run_id"] == 829
-    assert got["conclusion"] == "failure"
+    assert got["conclusion"] == "Failed"
+
+
+def test_conclusions_are_translated_into_the_history_vocabulary():
+    """templates/history.html keys its CSS and its result filter on
+    Succeeded/Failed/Canceled and history.summary() counts
+    SUM(result='Succeeded'). A Forgejo run written with Forgejo's own
+    lowercase word counted toward the run total, toward none of the tiles,
+    could not be filtered for, and rendered unstyled - so the translation
+    happens here, at the boundary, where every one of those three reads it."""
+    for forgejo_word, expected in (("success", "Succeeded"),
+                                   ("failure", "Failed"),
+                                   ("cancelled", "Canceled"),
+                                   ("skipped", "Skipped")):
+        tasks = {"workflow_runs": [
+            {"id": 1, "status": forgejo_word,
+             "run_started_at": "2026-08-25T14:00:00Z",
+             "updated_at": "2026-08-25T14:01:00Z"}]}
+        fj = _client({"/api/v1/repos/o/r/actions/tasks": tasks})
+        got = fj.find_task("o/r", 1, "2026-08-25T14:00:00Z")
+        assert got["conclusion"] == expected, forgejo_word
+
+
+def test_an_unfinished_task_is_still_no_task_at_all():
+    """The mapping and the terminal-state set are the same table now, so a
+    running task must still return None rather than KeyError its way out."""
+    tasks = {"workflow_runs": [
+        {"id": 1, "status": "running",
+         "run_started_at": "2026-08-25T14:00:00Z",
+         "updated_at": "2026-08-25T14:01:00Z"}]}
+    fj = _client({"/api/v1/repos/o/r/actions/tasks": tasks})
+    assert fj.find_task("o/r", 1, "2026-08-25T14:00:00Z") is None
+
+
+def test_find_task_survives_a_body_that_is_not_an_object():
+    """runner_statuses() already guards this exact case with isinstance. Here
+    a list body reached `.get("workflow_runs")` and raised AttributeError,
+    which propagates out of the enricher sweep instead of leaving the run
+    unenriched until the next pass."""
+    fj = _client({"/api/v1/repos/o/r/actions/tasks": []})
+    assert fj.find_task("o/r", 1, "2026-08-25T14:00:00Z") is None
+
+
+def test_the_repo_is_quoted_into_the_url_path():
+    """`repo` is a non-whitespace capture of a runner log line that lands in
+    an API path. Unescaped, a "?" ends the path early and turns the rest into
+    a query - a different endpoint from the one this method means to call.
+    This branch already allowlists container names because they reach a
+    command line; a path segment gets the same treatment, with safe="/" so
+    the owner/repo separator survives."""
+    seen = []
+    fj = forgejo_api.Forgejo("https://forgejo.example", "tok")
+    fj._get = lambda path, params=None: seen.append(path)
+    fj.find_task("owner/repo?limit=1#x", 1, "")
+    assert seen == ["/api/v1/repos/owner/repo%3Flimit%3D1%23x/actions/tasks"]
 
 
 def test_find_task_gives_up_rather_than_guessing():

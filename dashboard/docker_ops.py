@@ -370,6 +370,47 @@ def host_info():
     return info
 
 
+# How long one fleet-wide Forgejo runner-status answer is reused.
+#
+# collect() runs every 5s, so uncached this endpoint was called ~17,000 times
+# a day - and, worse, on the SHARED collector thread with a 20s HTTP timeout,
+# so a slow or unreachable Forgejo stalled telemetry for the GITHUB fleet too.
+# That cross-engine coupling is the exact thing this whole design exists to
+# avoid, reached from the dashboard's side instead of Docker's.
+#
+# 10s, matching the drain watcher's own cadence: it bounds how stale a
+# busy/idle badge can be to about two collector sweeps, which is under what a
+# person watching the grid notices, while halving the call rate. The GitHub
+# side's equivalent cache is 60s, but that one backs a page a human opens, not
+# a badge that flips when a job starts.
+_FORGE_STATUS_TTL = 10
+_forge_status_cache = None   # (monotonic deadline, statuses-or-None)
+
+
+def _forge_statuses(env):
+    """The whole Forgejo fleet's status, at most once every _FORGE_STATUS_TTL.
+
+    A failed call is NOT cached as though it were an answer - the hazard
+    host_info() documents. What is stored on failure is None, which is
+    already the explicit "we could not ask" sentinel every caller handles by
+    reporting "unknown"; the previous good map is discarded rather than
+    replayed, so a stale idle can never outlive the call that produced it.
+
+    The failed ATTEMPT is still rate-limited by the same window, deliberately.
+    Retrying a dead Forgejo every 5s at a 20s timeout is precisely how the
+    GitHub fleet's telemetry gets held hostage, and the answer during that
+    window ("unknown") is the same either way.
+    """
+    global _forge_status_cache
+    now = time.monotonic()
+    if _forge_status_cache is not None and now < _forge_status_cache[0]:
+        return _forge_status_cache[1]
+    client = providers.FORGEJO.forge_client(env)
+    got = client.runner_statuses() if client is not None else None
+    _forge_status_cache = (now + _FORGE_STATUS_TTL, got)
+    return got
+
+
 def collect(env=None):
     env = env or {}
     stats = _stats_map()
@@ -382,9 +423,7 @@ def collect(env=None):
     # never pays for a forge it does not use.
     forge_status = None
     if any(p is providers.FORGEJO for _, p in found):
-        client = providers.FORGEJO.forge_client(env)
-        if client is not None:
-            forge_status = client.runner_statuses()
+        forge_status = _forge_statuses(env)
 
     for name, provider in found:
         ok, status, _ = _docker("ps", "-a", "--filter", f"name=^{name}$",
@@ -514,11 +553,21 @@ def remove(name, provider=None, env=None):
         except Exception as e:  # noqa: BLE001 - never blocks the removal
             print(f"[forgejo:deregister:{name}] {e}")
 
+    # -v removes ANONYMOUS volumes only, never named ones (docker rm's own
+    # documented behaviour: "Remove anonymous volumes associated with the
+    # container"). That distinction is what makes this safe: forgejo-runner-1
+    # in docker-compose.runners.yml mounts the NAMED volume
+    # forgejo-runner-1-data, which -v cannot touch, while a runner this
+    # dashboard created mounts nothing at /data - so the VOLUME /data in
+    # forgejo-runner/Dockerfile made Docker create an anonymous volume per
+    # container, and every remove/recreate left one behind, dangling, on the
+    # engine whose disk containment is the entire point of this deployment.
+    #
     # 180s: these containers hold a nested daemon, and tearing that down on
     # removal has been observed to take ~110s. A timeout here is read by the
     # caller as "removal failed" even when it eventually succeeds, so the
     # margin matters more than it looks like it should.
-    ok, out, err = _docker("rm", "-f", name, timeout=180)
+    ok, out, err = _docker("rm", "-f", "-v", name, timeout=180)
     set_draining(name, False)
     return ok, out, err
 
@@ -606,6 +655,58 @@ def is_idle(name, provider=None, forge_status=None, env=None):
     return state == "idle"
 
 
+def _bare(provider):
+    """Whether a provider-aware call should be made in its GitHub form.
+
+    THE convention, in one place. Five call sites had each grown their own
+    copy of `if provider is GITHUB: <bare call> else: <full call>`, each with
+    its own paragraph explaining it, while a sixth - the drain watcher -
+    called the full form for both fleets, so the codebase stated the same
+    rule twice in opposite directions. Now nothing chooses; everything goes
+    through the three wrappers below.
+
+    Why the distinction exists at all, given it changes no behaviour:
+    is_idle(), remove() and create() are deliberately easy seams to stub, and
+    the stubs in this suite are written to the GitHub signature -
+    tests/test_docker_ops.py stubs `is_idle` four times as `lambda n: True`,
+    tests/test_routes.py stubs `remove` as `fake_remove(name)` and `create`
+    as `fake_create(idx, env)`. Those files are pre-existing and not editable
+    here. Passing the extra arguments on the GitHub path would break every
+    one of them for nothing: all three functions already default provider to
+    GITHUB and only consult env on the Forgejo path, so those arguments are
+    exactly what Forgejo needs and exactly what GitHub ignores.
+
+    `provider is None` takes the GitHub branch, because all three default it
+    that way themselves.
+    """
+    return provider is None or provider is providers.GITHUB
+
+
+def idle_check(name, provider=None, env=None):
+    """is_idle() for a caller that holds no forge status of its own.
+
+    Every is_idle() caller outside collect() comes through here - prune(),
+    both prune routes, and the drain watcher. See _bare() for the convention.
+    """
+    if _bare(provider):
+        return is_idle(name)
+    return is_idle(name, provider, env=env)
+
+
+def remove_runner(name, provider=None, env=None):
+    """remove() under the convention _bare() documents."""
+    if _bare(provider):
+        return remove(name)
+    return remove(name, provider, env)
+
+
+def create_runner(index, env, provider=None):
+    """create() under the convention _bare() documents."""
+    if _bare(provider):
+        return create(index, env)
+    return create(index, env, provider)
+
+
 def logs_since(name, seconds=45):
     """Recent log output, for history event extraction.
 
@@ -653,17 +754,7 @@ def prune(name, timeout=300, provider=None, env=None):
     # a job can still start between this check and the prune - but BuildKit
     # will not delete layers an in-flight build holds, so the residual risk is
     # a slower build, not a broken one.
-    #
-    # Called with just `name` when provider is unset, not
-    # is_idle(name, provider, env=env) unconditionally: is_idle() is a
-    # deliberately easy seam to stub out in tests that want to isolate prune's
-    # own logic from job-state detection, and every such stub in this suite is
-    # a single-argument lambda. Passing provider/env through for a GitHub
-    # runner changes nothing about the answer - is_idle already defaults
-    # provider to GITHUB and ignores env on that path - so this costs nothing
-    # and keeps those stubs working.
-    idle = is_idle(name) if provider is None else is_idle(name, provider, env=env)
-    if not idle:
+    if not idle_check(name, provider, env):
         return {"name": name, "ok": False,
                 "error": f"{name} became busy before the prune started",
                 "before": None, "after": None,

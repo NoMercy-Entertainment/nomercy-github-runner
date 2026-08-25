@@ -156,7 +156,10 @@ def test_stale_forgejo_miss_is_closed_and_given_up_on(tmp_path, monkeypatch):
 
     row = history.list_runs()[0]
     assert row["ended_at"] == "2026-08-24T00:00:00Z"
-    assert row["result"] == "unknown"
+    # "Unknown", capitalised, in the same vocabulary templates/history.html
+    # styles and filters on - and deliberately not one of Succeeded/Failed/
+    # Canceled, because the dashboard never found out how this run ended.
+    assert row["result"] == "Unknown"
     assert row["gh_checked"] == 1
     assert history.pending_enrichment() == []
 

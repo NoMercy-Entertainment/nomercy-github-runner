@@ -504,9 +504,18 @@ def _enrich_pending(env, stale_before):
                 # retried every 90 seconds for the life of the
                 # deployment - a repo deleted mid-job, or a task
                 # Forgejo pruned. After a day, close it honestly as
-                # unknown and stop asking.
+                # Unknown and stop asking.
+                #
+                # "Unknown", not one of Succeeded/Failed/Canceled: we
+                # never found out how this run ended, and picking any
+                # of the three would fabricate an outcome. Capitalised
+                # to sit in the same vocabulary as those three, which
+                # is what templates/history.html styles and filters on
+                # - it now knows this word too, and counts it toward
+                # the run total and toward no result tile, which is
+                # the honest answer.
                 history.apply_close(run["id"], run["started_at"],
-                                    "unknown")
+                                    "Unknown")
                 history.mark_unmatched(run["id"])
         else:
             found = client.find_job(run.get("registration"),
@@ -536,7 +545,7 @@ def _drain_watcher():
                 # Without it every Forgejo runner reads "unknown" from
                 # is_idle(), which counts as not-idle, and a drained Forgejo
                 # runner would stay marked draining and never stop.
-                if ops.is_idle(name, providers.for_name(name), env=read_env()):
+                if ops.idle_check(name, providers.for_name(name), read_env()):
                     print(f"[drain] {name} idle - stopping")
                     ops.stop(name)
                     ops.set_draining(name, False)
@@ -864,13 +873,27 @@ def _detail(name, fn, *args, **kwargs):
     return jsonify(result), (200 if result.get("ok") else 500)
 
 
+# The forge each provider key belongs to, as a person would name it. The
+# runner page talks about deregistration and renders a "GitHub view" panel,
+# and on a Forgejo runner every one of those sentences was wrong.
+FORGE_LABEL = {"github": "GitHub", "forgejo": "Forgejo"}
+
+
 @app.route("/runner/<name>")
 def runner_page(name):
     if not providers.valid_name(name):
         return render_template("runner.html", name=name, missing=True), 404
     if name not in ops.list_runner_names():
         return render_template("runner.html", name=name, missing=True), 404
-    return render_template("runner.html", name=name, missing=False)
+    # The provider is what decides whether the GitHub panel renders at all.
+    # Without it the page rendered that panel on /runner/forgejo-runner-1 and
+    # fetched org data for a runner that is not in the org - showing either
+    # another fleet's runners or a bare "GH_TOKEN not set".
+    provider = providers.for_name(name)
+    key = provider.key if provider else "github"
+    return render_template("runner.html", name=name, missing=False,
+                           provider=key,
+                           forge_label=FORGE_LABEL.get(key, key))
 
 
 @app.route("/api/runner/<name>/inspect")
@@ -944,18 +967,11 @@ def api_runner_prune(name):
     # runner reads "unknown", which is not-idle, and prune is refused for the
     # Forgejo fleet permanently.
     #
-    # Called bare for GitHub rather than is_idle(name, provider, env=env)
-    # unconditionally: is_idle() is a deliberately easy seam to stub as a
-    # one-argument lambda, and pre-existing tests do exactly that (the same
-    # tradeoff docker_ops.prune() already documents for its own call to
-    # is_idle()). Behaviour on the GitHub path is identical either way - the
-    # extra arguments are what Forgejo's idleness detection needs, and
-    # is_idle() already defaults provider to GITHUB and ignores env when
-    # they are withheld.
+    # ops.idle_check() is the one place that decides how is_idle() is called
+    # - bare for GitHub, full for Forgejo - so this route does not restate
+    # that rule. See its docstring for why the distinction exists at all.
     env = read_env()
-    idle = ops.is_idle(name) if provider is providers.GITHUB \
-        else ops.is_idle(name, provider, env=env)
-    if not idle:
+    if not ops.idle_check(name, provider, env):
         return jsonify(ok=False, error=f"{name} is busy running a job"), 409
     result = ops.prune(name, provider=provider, env=env)
     return jsonify(ok=result["ok"], data=result), (200 if result["ok"] else 500)
@@ -991,12 +1007,7 @@ def api_prune_all():
               if providers.for_name(n) is provider]
     results, skipped = [], []
     for name in targets:
-        # Bare for GitHub, same reasoning as api_runner_prune's call to
-        # is_idle(): behaviour is identical either way, and this is the seam
-        # pre-existing tests stub as a one-argument lambda.
-        idle = ops.is_idle(name) if provider is providers.GITHUB \
-            else ops.is_idle(name, provider, env=env)
-        if not idle:
+        if not ops.idle_check(name, provider, env):
             skipped.append({"name": name, "reason": "busy running a job"})
             continue
         results.append(ops.prune(name, timeout=120, provider=provider, env=env))
@@ -1135,15 +1146,10 @@ def api_recreate():
     results = []
     for name in names:
         idx = ops._index_of(name)
-        # Bare for GitHub, same reasoning as api_runner_prune's call to
-        # is_idle(): remove()/create() already default provider to GITHUB
-        # and only consult env on the Forgejo path, so behaviour is
-        # identical either way - this just keeps the one-and-two-argument
-        # stubs in pre-existing tests working.
-        if provider is providers.GITHUB:
-            ok, _, rm_err = ops.remove(name)
-        else:
-            ok, _, rm_err = ops.remove(name, provider, env)
+        # ops.remove_runner()/ops.create_runner() apply the same convention
+        # ops.idle_check() does - see docker_ops._bare(). This route does not
+        # restate it.
+        ok, _, rm_err = ops.remove_runner(name, provider, env)
         if not ok and name in ops.list_runner_names():
             # remove() failed AND the container is still there: it is not
             # safe to assume anything about the rest of the fleet. Stop here
@@ -1151,10 +1157,7 @@ def api_recreate():
             results.append({"name": name, "ok": False, "error": rm_err})
             return jsonify(ok=False, results=results, aborted_at=name), 500
 
-        if provider is providers.GITHUB:
-            ok2, new, err2 = ops.create(idx, env)
-        else:
-            ok2, new, err2 = ops.create(idx, env, provider)
+        ok2, new, err2 = ops.create_runner(idx, env, provider)
         results.append({"name": new, "ok": ok2,
                         "error": None if ok2 else err2})
         if not ok2:

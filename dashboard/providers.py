@@ -79,6 +79,17 @@ class _Forgejo(Provider):
         url = (env.get("FORGEJO_INSTANCE_URL") or "").strip()
         if not url:
             return {}, "FORGEJO_INSTANCE_URL is not set"
+        # Checked like the URL and the token, and BEFORE a registration token
+        # is minted, so a create that cannot succeed does not burn one.
+        # start-forgejo.sh passes this straight to `register --labels`, and an
+        # empty value there is not an error: the runner registers, shows as
+        # idle in Forgejo and in this dashboard, and silently never picks up a
+        # job, because a job is matched to a runner by label. That failure has
+        # no symptom to search for, which is why it is refused here instead.
+        labels = (env.get("FORGEJO_RUNNER_LABELS") or "").strip()
+        if not labels:
+            return {}, ("FORGEJO_RUNNER_LABELS is not set - a runner with no "
+                        "labels never picks up a job")
         client = self.forge_client(env)
         if client is None:
             return {}, "FORGEJO_ADMIN_TOKEN is not set"
@@ -89,7 +100,7 @@ class _Forgejo(Provider):
         return {
             "FORGEJO_INSTANCE_URL": url,
             "FORGEJO_RUNNER_REGISTRATION_TOKEN": token,
-            "FORGEJO_RUNNER_LABELS": env.get("FORGEJO_RUNNER_LABELS", ""),
+            "FORGEJO_RUNNER_LABELS": labels,
             # Without this, scripts/start-forgejo.sh falls back to
             # $(hostname), which Docker sets to the container ID - not
             # --name - so a dashboard-created runner would register with

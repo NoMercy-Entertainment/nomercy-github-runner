@@ -73,7 +73,8 @@ def test_forgejo_container_env_registers_under_the_container_name(monkeypatch):
     monkeypatch.setattr(providers.FORGEJO, "forge_client",
                         lambda env: _FakeForge())
     env, err = providers.FORGEJO.container_env(
-        {"FORGEJO_INSTANCE_URL": "https://forgejo.example"},
+        {"FORGEJO_INSTANCE_URL": "https://forgejo.example",
+         "FORGEJO_RUNNER_LABELS": "ubuntu-latest:docker://node:lts"},
         "forgejo-runner-7")
     assert err is None
     assert env["FORGEJO_RUNNER_NAME"] == "forgejo-runner-7"
@@ -89,6 +90,7 @@ def test_forgejo_container_env_tolerates_no_name(monkeypatch):
     monkeypatch.setattr(providers.FORGEJO, "forge_client",
                         lambda env: _FakeForge())
     env, err = providers.FORGEJO.container_env(
-        {"FORGEJO_INSTANCE_URL": "https://forgejo.example"})
+        {"FORGEJO_INSTANCE_URL": "https://forgejo.example",
+         "FORGEJO_RUNNER_LABELS": "ubuntu-latest:docker://node:lts"})
     assert err is None
     assert env["FORGEJO_RUNNER_NAME"] == ""

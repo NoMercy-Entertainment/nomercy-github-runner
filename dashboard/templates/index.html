@@ -288,6 +288,7 @@ const GRIDS = {github: $('grid-github'), forgejo: $('grid-forgejo')};
 // Display casing for confirm-dialog copy; the wire value (button
 // data-provider, POST body) stays the lowercase form the API expects.
 const PROVIDER_LABEL = {github: 'GitHub', forgejo: 'Forgejo'};
+const FORGE = p => PROVIDER_LABEL[p] || p;
 
 function makeCard(r, i) {
   const el = document.createElement('article');
@@ -314,7 +315,9 @@ function makeCard(r, i) {
       const a = b.dataset.a;
       if (a === 'remove' && !(await confirmDialog({
             title: `Remove ${r.name}?`,
-            body: 'It is deregistered from GitHub and the container is deleted.',
+            // The card knows its own forge; saying "GitHub" here was wrong
+            // on every Forgejo card.
+            body: `It is deregistered from ${FORGE(r.provider)} and the container is deleted.`,
             confirm: 'Remove'}))) return;
       if (a === 'stop' && !(await confirmDialog({
             title: `Stop ${r.name}?`,

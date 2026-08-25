@@ -192,6 +192,13 @@ tbody tr[data-id]:hover{background:var(--bg-inset)}
   </div>
 </div>
 <div id="tab-history" hidden>
+  {# GitHub only. This panel reads the ORG's runner list through
+     /api/runner/<name>/github, which a Forgejo runner is not in - it rendered
+     either another fleet's runners or "GH_TOKEN not set" on every Forgejo
+     runner's page. Omitted rather than hidden so nothing fetches it either;
+     the JS below guards on the same value. There is deliberately no Forgejo
+     equivalent yet - that is a feature, not a gap this fix fills. #}
+  {% if provider|default('github', true) == 'github' %}
   <div class="panel" id="hist-gh-panel">
     <h2>GitHub view</h2>
     <div class="skel" id="hist-gh-skel">Loading GitHub status</div>
@@ -200,6 +207,7 @@ tbody tr[data-id]:hover{background:var(--bg-inset)}
       <div class="kv" id="hist-gh-kv"></div>
     </div>
   </div>
+  {% endif %}
   <div class="panel">
     <h2>Run history</h2>
     <div class="skel" id="hist-skel">Loading run history</div>
@@ -226,6 +234,13 @@ tbody tr[data-id]:hover{background:var(--bg-inset)}
 
 <script>
 const NAME = {{ name|tojson }};
+// Defaulted, because the missing-runner branch of runner_page() renders this
+// same template with neither value - the name it was asked for does not
+// resolve to a fleet.
+const PROVIDER = {{ provider|default('github', true)|tojson }};
+// The forge this runner belongs to, by name. Every sentence on this page that
+// used to say "GitHub" says this instead - it was wrong on half the fleet.
+const FORGE = {{ forge_label|default('GitHub', true)|tojson }};
 const STALE_MS = 25000;
 let lastGood = 0;
 const $ = id => document.getElementById(id);
@@ -338,7 +353,10 @@ function showTab(name) {
   if (name === 'history' && !historyFetched) {
     historyFetched = true;
     fetchHistoryRuns();
-    fetchHistoryGithub();
+    // Same guard as the jinja conditional around the panel itself: with no
+    // panel there is nothing to fetch, and asking the GitHub org about a
+    // Forgejo runner has no answer worth rendering.
+    if (PROVIDER === 'github') fetchHistoryGithub();
   }
 }
 document.querySelectorAll('#rd-tabs button').forEach(b => {
@@ -371,7 +389,7 @@ document.querySelectorAll('#rd-actions button').forEach(b => {
     const a = b.dataset.a;
     if (a === 'remove' && !(await confirmDialog({
           title: `Remove ${NAME}?`,
-          body: 'It is deregistered from GitHub and the container is deleted.',
+          body: `It is deregistered from ${FORGE} and the container is deleted.`,
           confirm: 'Remove'}))) return;
     if (a === 'stop' && !(await confirmDialog({
           title: `Stop ${NAME}?`,
@@ -589,6 +607,15 @@ async function pollSeries() {
 // path (curl + config.sh remove); 30s leaves comfortable margin above that
 // without flagging a deliberately generous value like the current 60s.
 const STOP_TIMEOUT_DANGER_S = 30;
+// What a too-short stop timeout actually costs, which is not the same thing
+// on both fleets. A GitHub runner's start.sh deregisters from GitHub on
+// SIGTERM, and a SIGKILL mid-flight orphans that registration. A Forgejo
+// runner deregisters nothing - it cannot, it holds no admin token (see
+// scripts/start-forgejo.sh) - so what a short timeout cuts short there is
+// the nested daemon's own shutdown.
+const STOP_TIMEOUT_RISK = PROVIDER === 'forgejo'
+  ? 'the nested Docker daemon may be SIGKILLed mid-shutdown'
+  : 'deregistration may be killed mid-flight and orphan the GitHub registration';
 const FIELDS = [
   ['image', 'Image', v => v || '—'],
   ['digest', 'Digest', v => v || '—'],
@@ -603,16 +630,16 @@ const FIELDS = [
   ['mem_limit_bytes', 'Memory limit', v => (v == null ? 'unlimited' : fmtGB(v))],
   ['restart_policy', 'Restart policy', v => v || '—'],
   // The seconds between SIGTERM and SIGKILL on `docker stop`/`restart`.
-  // start.sh needs a few seconds on SIGTERM to deregister from GitHub, so
-  // anything under STOP_TIMEOUT_DANGER_S is the zone where that can be
-  // killed mid-flight and orphan the registration - flagged on the value
+  // Both fleets need a few seconds on SIGTERM (see STOP_TIMEOUT_RISK for
+  // what each of them is doing with them), so anything under
+  // STOP_TIMEOUT_DANGER_S is the zone where that gets cut short - flagged on the value
   // itself, not on a specific historical number (a past Docker Engine
   // regression pinned this at 1s fleet-wide; that has since been fixed by
   // `stop_grace_period: 60s` in compose, and this must not hardcode "1 is
   // bad" now that it no longer is).
   ['stop_timeout', 'Stop timeout', v => (v == null ? '—' :
     v < STOP_TIMEOUT_DANGER_S
-      ? `${v}s - too short: deregistration may be killed mid-flight and orphan the GitHub registration`
+      ? `${v}s - too short: ${STOP_TIMEOUT_RISK}`
       : `${v}s`)],
   ['privileged', 'Privileged', v => (v ? 'yes' : 'no')],
   ['network_mode', 'Network mode', v => v || '—'],
@@ -733,8 +760,8 @@ function renderInspect(d) {
     const text = fmt(d[key]);
     if (el.textContent !== text) el.textContent = text;
   });
-  // A StopTimeout too low to let start.sh deregister is not cosmetic: it can
-  // orphan the GitHub registration on stop/restart. Flagged by threshold, not
+  // A StopTimeout too low to let the container shut down is not cosmetic -
+  // see STOP_TIMEOUT_RISK for what each fleet loses. Flagged by threshold, not
   // by a specific historical number - a past Docker Engine regression pinned
   // this at 1s fleet-wide, but that is fixed now (compose sets
   // stop_grace_period: 60s), and a value that is fine today must not be

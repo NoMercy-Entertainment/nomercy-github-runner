@@ -22,6 +22,12 @@ tbody tr:hover{background:var(--bg-inset)}
   text-transform:uppercase;border:1px solid currentColor}
 .res.Succeeded{color:var(--signal)} .res.Failed{color:var(--alert)}
 .res.Canceled{color:var(--text-dim)} .res.running{color:var(--busy)}
+/* Forgejo-only outcomes. Skipped is a task that never ran and Unknown is a
+   run whose end the enricher gave up looking for after a day; neither is
+   folded into the three above, because each of those would be a claim about
+   how the run ended that nobody can make. Styled dim so they read as
+   "no result", not as a failure. */
+.res.Skipped{color:var(--text-dim)} .res.Unknown{color:var(--text-faint)}
 .num{font-variant-numeric:tabular-nums;color:var(--text-dim)}
 .ctx{color:var(--text-faint);font-size:10.5px}
 .ctx a{color:var(--drain);text-decoration:none} .ctx a:hover{text-decoration:underline}
@@ -72,7 +78,8 @@ svg{display:block;width:100%;height:150px;background:var(--bg-inset);
   <select id="f-job"><option value="">All jobs</option>
     {% for j in jobs %}<option>{{ j }}</option>{% endfor %}</select>
   <select id="f-result"><option value="">Any result</option>
-    <option>Succeeded</option><option>Failed</option><option>Canceled</option></select>
+    <option>Succeeded</option><option>Failed</option><option>Canceled</option>
+    <option>Skipped</option><option>Unknown</option></select>
   <button id="refresh">Refresh</button>
   <span class="hint" style="align-self:center">Click a row for resource graphs.</span>
 </div>

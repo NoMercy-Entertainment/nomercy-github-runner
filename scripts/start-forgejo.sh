@@ -77,35 +77,34 @@ if [ ! -f "$DATA/.runner" ]; then
 fi
 
 # --- shutdown budget -------------------------------------------------------
-# `docker stop` sends SIGTERM and SIGKILLs after the container's stop grace period.
-# The shutdown path is ordered so the work that MUST complete (deregistration)
-# runs first and gets whatever budget exists; stopping the child is what SIGKILL
-# does for free. Order matters: deregister, then signal child, then wait bounded.
-SHUTDOWN_UNREGISTER_MAX_TIME=3  # timeout for forgejo-runner unregister (network call)
+# `docker stop` sends SIGTERM and SIGKILLs after the container's stop grace
+# period. All this shell has to do on the way out is get the daemon child to
+# exit; there is no deregistration step here, for the reason below.
 SHUTDOWN_CHILD_TIMEOUT=2        # bounded wait on child after signalling
-# Worst case shutdown: 3 (unregister) + 2 (child) = 5s. The 60s default grace
-# period is plenty; explicitly timeout the network call so a hung Forgejo does
-# not delay container shutdown.
 
-# --- deregistration on the way out ---------------------------------------
-# The daemon is started as a background child and waited on rather than exec'd.
-# A trap handler does not survive exec — the shell's process image is replaced.
-# Keeping this shell alive as PID 1 is what makes deregistration reachable when
-# the container stops. The dashboard deregisters through the API when it removes
-# a runner, which covers the case it knows about. This covers the other one:
-# the container being stopped by anything else. Both are idempotent.
-DEREGISTERED=0
-deregister() {
-  # Guard against double-deregistration: both TERM trap and EXIT trap may reach
-  # this function on the same shutdown. Idempotent on the API level, but we run
-  # only once to avoid log noise and unnecessary work.
-  if [ "$DEREGISTERED" -eq 1 ]; then
-    return 0
-  fi
-  DEREGISTERED=1
-  echo "Shutting down runner — deregistering..."
-  timeout "$SHUTDOWN_UNREGISTER_MAX_TIME" forgejo-runner unregister 2>/dev/null || true
-}
+# --- deregistration is NOT this script's job -------------------------------
+# forgejo-runner has no `unregister` subcommand. Its subcommands are
+# cache-server, create-runner-file, daemon, exec, generate-config, help,
+# one-job, register and validate - nothing else. An earlier version of this
+# script called `forgejo-runner unregister` here wrapped in `timeout ... ||
+# true`, so the subcommand's absence was completely silent: every shutdown
+# logged "deregistering..." and deregistered nothing.
+#
+# Nor can it be fixed here. This container holds a single-use registration
+# token, not an admin token, and only an admin token may delete a runner. The
+# dashboard is what deregisters: docker_ops.remove() calls Forgejo's
+# DELETE /api/v1/admin/actions/runners/{id} before removing the container.
+#
+# So the real, accepted consequence: a Forgejo runner container stopped by
+# anything other than the dashboard - `docker stop`, `compose down`, the WSL
+# distro shutting down - leaves a runner sitting at `offline` in Forgejo,
+# which has to be deleted by hand from Site Administration -> Actions ->
+# Runners. Do not add an `unregister` call back to make that go away; it does
+# not exist, and adding it only restores the illusion that it was handled.
+#
+# The trap machinery below stays regardless of all that: it forwards SIGTERM
+# to the daemon child so `docker stop` returns promptly instead of waiting out
+# the full 60s grace period.
 
 # RUNNER_PID must exist before the traps go in below: stop_runner reads it,
 # and with `set -u` a signal landing between `trap ... INT/TERM` and the real
@@ -124,8 +123,8 @@ stop_runner() {
   fi
   RUNNER_STOPPED=1
 
-  # Signal the child. This is separate from deregister — deregistration talks to
-  # Forgejo, stopping the child ends its wait loop. Both must happen.
+  # Signal the child. This is what ends the wait loop below, and it is the
+  # whole of this container's shutdown work.
   [ -n "$RUNNER_PID" ] && kill -TERM "$RUNNER_PID" 2>/dev/null || true
 
   # Poll for child exit up to timeout. This is what stops the wait loop blocking
@@ -144,10 +143,6 @@ stop_runner() {
   return 0
 }
 
-# Order matters: deregistration is the work that must complete, while stopping
-# the child is what SIGKILL does anyway if we time out. Deregister first, then
-# stop the child. See scripts/start.sh:426-431 for the detailed reasoning.
-#
 # INT and TERM are bound to their own instance of shutdown_handler, each
 # carrying the signal name and the real exit code — not one handler shared
 # across TERM/INT/EXIT that hard-codes `exit 0`. Bash fires the EXIT trap
@@ -160,7 +155,6 @@ stop_runner() {
 shutdown_handler() {
   local signame="$1" code="$2"
   echo "Received SIG${signame} — shutting down runner..."
-  deregister
   # `stop_runner` can `return 1` on timeout. Called bare under `set -e` inside
   # a trap, that non-zero return would trip errexit mid-handler — before this
   # function's own `exit "$code"` runs — and unwind through the EXIT trap
@@ -178,12 +172,11 @@ shutdown_handler() {
 # It exists for the path where the script ends without a signal: the child
 # exits on its own and the wait loop below falls through to its own
 # `exit "$RUNNER_STATUS"`, which is what actually ends the process and is
-# what triggers this trap. On a signal-driven shutdown, deregister and
-# stop_runner already ran inside shutdown_handler (both guarded, so these
-# calls just no-op) before its `exit` unwound into this trap; that re-entry
-# is harmless idempotent cleanup, not the double execution this replaces.
+# what triggers this trap. On a signal-driven shutdown, stop_runner already
+# ran inside shutdown_handler (guarded, so this call just no-ops) before its
+# `exit` unwound into this trap; that re-entry is harmless idempotent
+# cleanup, not the double execution this replaces.
 cleanup_on_exit() {
-  deregister
   stop_runner ||
     echo "Warning: forgejo-runner daemon did not exit within ${SHUTDOWN_CHILD_TIMEOUT}s — leaving it to Docker's SIGKILL."
 }
@@ -198,7 +191,21 @@ trap 'cleanup_on_exit' EXIT
 set -m
 
 echo "Starting Forgejo runner daemon..."
-forgejo-runner daemon --config "$DATA/config.yaml" &
+# No --config. With the flag absent the daemon starts on its built-in
+# defaults; with the flag present and naming a file that does not exist it
+# dies immediately - `Error: invalid configuration: open config file "...":
+# no such file or directory` (verified against forgejo-runner v12.0.1). This
+# script's `register` above writes $DATA/.runner and never writes a
+# config.yaml, so `--config "$DATA/config.yaml"` made first boot an infinite
+# loop: register succeeds, daemon exits non-zero, `restart: unless-stopped`
+# brings it back, .runner now exists so registration is skipped, daemon fails
+# again - for ever, showing as a perpetually restarting runner with nothing in
+# the logs that says why.
+#
+# If a config file is ever genuinely needed, it must be CREATED first
+# (`forgejo-runner generate-config > "$DATA/config.yaml"`) and only then
+# passed. An explicit --config must always name a file that exists.
+forgejo-runner daemon &
 RUNNER_PID=$!
 
 # On a signal-driven shutdown, the INT/TERM trap above runs `exit "$code"`
@@ -212,8 +219,9 @@ RUNNER_PID=$!
 # `wait` is looped rather than called once. With job control on, bash's `wait`
 # returns when the child changes state, not only when it exits: a `kill -STOP`
 # would make it return 128+SIGSTOP while the process is merely paused. A single
-# `wait` would then fall straight through to deregister a perfectly healthy
-# runner. Re-checking that the PID exists means only a real exit ends the loop.
+# `wait` would then fall straight through and exit the container out from under
+# a perfectly healthy runner. Re-checking that the PID exists means only a real
+# exit ends the loop.
 #
 # The `sleep 1` is not decorative: `wait` on an already-reported stopped job
 # returns immediately, so without it a stopped child spins this loop at full CPU.

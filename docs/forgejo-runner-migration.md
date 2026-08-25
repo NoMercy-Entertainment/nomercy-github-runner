@@ -79,22 +79,67 @@ jobs while the move happens.
    `FORGEJO_RUNNER_LABELS` (copy the `--labels` mapping from
    `BeastStack/forgejo/docker-compose.yml`) and
    `FORGEJO_RUNNER_REGISTRATION_TOKEN` (from Forgejo's Runners admin page) to
-   `.env`. `.env.example` documents each key; `.env` itself is gitignored and
+   `.env`. `.env.example` documents each of those four keys; `.env` itself is gitignored and
    is not part of this repository's history.
 
-2. **Confirm the admin token works** before starting anything:
+2. **Confirm the token works** before starting anything. Two checks, because
+   the dashboard talks to two different kinds of endpoint and a token can pass
+   one and fail the other.
+
+   `.env` has to be sourced explicitly. `$FORGEJO_ADMIN_TOKEN` is **not** set
+   in the distro's login shell - it lives in `.env`, which only
+   `docker compose` reads - so a command that merely references it sends an
+   empty `Authorization:` header and reports a scope problem for a token that
+   is perfectly fine. `set -a` exports what the file defines, so both `curl`
+   and the URL below see it:
 
    ```bash
    wsl -d github-runners -u root -- bash -lc \
-     'curl -s -H "Authorization: token $FORGEJO_ADMIN_TOKEN" \
-      https://forgejo.phillippepelzer.me/api/v1/admin/actions/runners | head -c 400'
+     'set -a; . /mnt/d/docker-compose/GithubRunners/.env; set +a;
+      curl -s -H "Authorization: token $FORGEJO_ADMIN_TOKEN" \
+        "$FORGEJO_INSTANCE_URL/api/v1/admin/actions/runners?limit=100" | head -c 400'
    ```
 
    Expect a JSON **array**, including an entry for `beaststack-runner` (the
    existing runner's registered name). A `{"message": ...}` response means the
    token lacks admin rights - fix that before continuing.
 
-3. **Start `forgejo-runner-1` alongside the old runner:**
+   Then the **repository** endpoint, which is the one history enrichment
+   actually uses (`forgejo_api.find_task`). Substitute a repository that has
+   run Actions at least once:
+
+   ```bash
+   wsl -d github-runners -u root -- bash -lc \
+     'set -a; . /mnt/d/docker-compose/GithubRunners/.env; set +a;
+      curl -s -o /dev/null -w "%{http_code}\n" \
+        -H "Authorization: token $FORGEJO_ADMIN_TOKEN" \
+        "$FORGEJO_INSTANCE_URL/api/v1/repos/OWNER/REPO/actions/tasks?limit=1"'
+   ```
+
+   Expect `200`. This second check exists because admin scope and repository
+   scope are separate, and having only the first fails silently: busy/idle
+   works, the runner looks healthy, runs appear in the history - and then
+   every Forgejo run is closed as `Unknown` a day later by the enricher's
+   give-up path, with nothing logged anywhere an operator would look. A `403`
+   or `404` here is that future, made visible now.
+
+3. **Build the runner image.** Nothing publishes
+   `ghcr.io/nomercy-entertainment/nomercy-forgejo-runner` - the CI job in
+   `.github/workflows/build-image.yml` builds the GitHub runner image only.
+   `docker-compose.runners.yml` carries a `build:` stanza for this service, so
+   this is one command, but it is not optional: skipping it ends at
+   `manifest unknown`.
+
+   ```bash
+   wsl -d github-runners -u root -- bash -lc \
+     "cd /mnt/d/docker-compose/GithubRunners && docker compose -f docker-compose.runners.yml build forgejo-runner-1"
+   ```
+
+   Roughly 600 MB and a few minutes. The dashboard's "+ Add runner" for
+   Forgejo pulls the same tag, so that button stays broken until this has run
+   at least once.
+
+4. **Start `forgejo-runner-1` alongside the old runner:**
 
    ```bash
    wsl -d github-runners -u root -- bash -lc \
@@ -107,7 +152,7 @@ jobs while the move happens.
    registered runners itself, so nothing stalls during this window - this is
    what makes a side-by-side rollout possible at all.
 
-4. **Verify in the dashboard.** A Forgejo section should appear with
+5. **Verify in the dashboard.** A Forgejo section should appear with
    `forgejo-runner-1` in it, state `idle`, flipping to `busy` while a job
    runs. The GitHub section should still show all runners unchanged - they
    carry no `nomercy.provider` label, so this is also the live check that the
@@ -125,7 +170,7 @@ jobs while the move happens.
    Matching between the dashboard and Forgejo does not depend on this (it
    keys on `uuid`), but an operator comparing the two runner lists does.
 
-5. **The point of no return.** Only once step 4 has shown a completed Forgejo
+6. **The point of no return.** Only once step 5 has shown a completed Forgejo
    run in the dashboard's history - proof the new runner is actually taking
    and finishing real jobs, not just registered and idle - stop and remove
    the old runner:
@@ -144,7 +189,7 @@ jobs while the move happens.
    `forgejo_runner` is removed and deregistered, `forgejo-runner-1` is the
    only place Forgejo Actions jobs run.
 
-6. **Housekeeping.** Comment out the `forgejo_runner` service in
+7. **Housekeeping.** Comment out the `forgejo_runner` service in
    `BeastStack/forgejo/docker-compose.yml` with a note pointing here, rather
    than deleting it - so the next person to read that file learns where the
    runner went instead of concluding there never was one. Then scale
@@ -155,20 +200,20 @@ jobs while the move happens.
 
 ## Rolling back
 
-Before step 5 above, rolling back is just not taking step 5 - `forgejo_runner`
+Before step 6 above, rolling back is just not taking step 6 - `forgejo_runner`
 on BeastStack was never stopped, so it never needs restarting.
 
-After step 5, roll back by reversing it:
+After step 6, roll back by reversing it:
 
 ```bash
 docker compose -f /d/docker-compose/BeastStack/forgejo/docker-compose.yml up -d forgejo_runner
 ```
 
 `forgejo_runner` mounts `./forgejo_runner_data:/data`, a host bind mount, not
-a named volume - `docker rm -f` in step 5 cannot lose it. A bind mount is a
+a named volume - `docker rm -f` in step 6 cannot lose it. A bind mount is a
 directory on disk; only a named or anonymous volume is at risk from `-v`, and
-step 5 does not pass one. So the registration this command restores is
-exactly the one that existed before step 5, and `forgejo_runner` resumes
+step 6 does not pass one. So the registration this command restores is
+exactly the one that existed before step 6, and `forgejo_runner` resumes
 picking up jobs immediately, the same way `forgejo-runner-1` does. Stop
 `forgejo-runner-1` in this repository if the intent is to fall back
 completely rather than run both again:
@@ -177,6 +222,15 @@ completely rather than run both again:
 wsl -d github-runners -u root -- bash -lc \
   "cd /mnt/d/docker-compose/GithubRunners && docker compose -f docker-compose.runners.yml stop forgejo-runner-1"
 ```
+
+Stopping it this way leaves `forgejo-runner-1` showing as **offline** in
+Forgejo's runner list, and it has to be deleted there by hand. That is not an
+oversight: `forgejo-runner` has no `unregister` subcommand, and the container
+holds a registration token rather than an admin token, so it could not
+deregister itself even if one existed. Deregistration happens only on the path
+that has the admin token - the dashboard's Remove button, which calls
+`DELETE /api/v1/admin/actions/runners/{id}` before removing the container. Any
+other way of stopping a Forgejo runner leaves an entry to tidy up.
 
 ## What has and has not been verified
 
@@ -189,6 +243,14 @@ Measured, and true as of this writing:
   answers but is rejected for the reboot-stability reason above.
 - The slim `nomercy-forgejo-runner` image builds to roughly 600 MB and runs
   `forgejo-runner v12.0.1` with its own nested `dockerd` on `fuse-overlayfs`.
+- `forgejo-runner daemon --config <path>` is fatal when the path does not
+  exist ("invalid configuration: open config file ...: no such file or
+  directory"), and starts normally with no `--config` at all. The script
+  passes no `--config` for that reason; `register` writes `.runner` and never
+  writes a config file.
+- `forgejo-runner` has no `unregister` subcommand. Its subcommands are
+  `cache-server`, `create-runner-file`, `daemon`, `exec`, `generate-config`,
+  `help`, `one-job`, `register` and `validate`.
 - The dashboard's provider seam, history enrichment, busy/idle detection and
   deregistration-on-remove are implemented and covered by the test suite
   (`dashboard/tests/`) against a mocked Forgejo API.
@@ -202,7 +264,7 @@ Not yet verified, because the deployment described above has not happened:
 - No Forgejo job has been run on the new runner, so the dashboard's busy/idle
   display and history enrichment are unverified end to end - they are
   verified against the test suite's mocks, not against production traffic.
-  Step 4 above exists specifically to close that gap before step 5 makes the
+  Step 5 above exists specifically to close that gap before step 6 makes the
   change hard to undo.
 - Whether `ActionTask.id` from the API matches the `task N` number the
   forgejo-runner daemon logs is untested against the live instance. Both

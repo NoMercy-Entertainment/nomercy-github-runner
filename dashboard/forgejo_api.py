@@ -15,9 +15,30 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-# Terminal task states. Anything else - running, waiting, blocked - means the
-# task has not finished, and reporting an end time for it would be a lie.
-FINISHED = {"success", "failure", "cancelled", "skipped"}
+# Terminal task states, mapped onto the result vocabulary the rest of the
+# dashboard is built on. templates/history.html keys its CSS and its result
+# filter on those words and history.summary() counts SUM(result='Succeeded')
+# and friends, so a Forgejo run written with Forgejo's own lowercase
+# "success" counted toward the run total, toward none of the tiles, could not
+# be reached through the filter, and rendered unstyled.
+#
+# "skipped" deliberately keeps a word of its own rather than being folded
+# into one of the other three. The task never ran: "Succeeded" would inflate
+# the success-rate tile, "Failed" would invent a failure, and "Canceled"
+# would assert a cancellation nobody performed. history.html knows this word
+# too - it is in the CSS and in the filter - it simply counts toward no
+# success/failure tile, which is the honest answer.
+CONCLUSIONS = {
+    "success": "Succeeded",
+    "failure": "Failed",
+    "cancelled": "Canceled",
+    "skipped": "Skipped",
+}
+
+# Anything not in there - running, waiting, blocked - means the task has not
+# finished, and reporting an end time for it would be a lie. Derived from the
+# map rather than written out again so the two cannot drift apart.
+FINISHED = frozenset(CONCLUSIONS)
 
 
 class Forgejo:
@@ -102,11 +123,26 @@ class Forgejo:
         An unfinished task returns None rather than a row with no end: it will
         be picked up on a later sweep, when it has actually finished.
         """
-        data = self._get(f"/api/v1/repos/{repo}/actions/tasks",
-                         {"limit": 50})
+        # quote(), because `repo` comes from a non-whitespace capture of a
+        # runner log line and is interpolated straight into a URL path. The
+        # same discipline providers.valid_name() applies to container names
+        # before they reach a command line: unescaped, a "?" or "#" in that
+        # capture ends the path early and turns the rest into a query or
+        # fragment, addressing an endpoint nobody wrote. safe="/" keeps the
+        # owner/repo separator intact, which is the one slash that belongs.
+        path = "/api/v1/repos/%s/actions/tasks" % urllib.parse.quote(
+            repo or "", safe="/")
+        data = self._get(path, {"limit": 50})
+        # Shape-guarded exactly like runner_statuses(): `.get()` on whatever
+        # came back raises AttributeError if the endpoint answers with a list
+        # (a Forgejo version change, a proxy, an error document), and that
+        # exception propagates out of the enricher sweep instead of the run
+        # simply staying unenriched until the next pass.
+        if not isinstance(data, dict):
+            return None
         # The tasks live under "workflow_runs". The name is Forgejo's, not a
         # mistake here - reading "tasks" gets an empty list and no error.
-        tasks = (data or {}).get("workflow_runs") or []
+        tasks = data.get("workflow_runs") or []
 
         match = None
         for t in tasks:
@@ -136,6 +172,10 @@ class Forgejo:
             # keeping a stale value from an earlier partial enrichment.
             "actor": None,
             "url": match.get("url"),
-            "conclusion": status,
+            # Normalised at the boundary, not at the point of display: the
+            # word is written into the runs table and read back by the
+            # history filter and the summary counts, so translating it here
+            # is the only place that covers all three.
+            "conclusion": CONCLUSIONS[status],
             "ended_at": match.get("updated_at"),
         }

@@ -10,8 +10,20 @@ build needs.
 """
 import json
 
+import pytest
+
 import docker_ops
 import providers
+
+
+@pytest.fixture(autouse=True)
+def _clear_forge_status_cache():
+    """collect()'s fleet-wide status answer is cached for a few seconds in a
+    module global. Left warm, it makes the call-counting tests below depend
+    on the order they run in - and on how fast the suite is."""
+    docker_ops._forge_status_cache = None
+    yield
+    docker_ops._forge_status_cache = None
 
 RUNNER_FILE = {
     "id": 4,
@@ -199,3 +211,71 @@ def test_collect_never_asks_forgejo_for_a_github_only_fleet(monkeypatch):
     monkeypatch.setattr(providers.FORGEJO, "forge_client", fake_forge_client)
     docker_ops.collect()
     assert client_calls == [], "a GitHub-only fleet must never even build a Forgejo client"
+
+
+# --------------------------------------------------------------------------
+# the fleet-wide status call is cached
+#
+# collect() runs every 5s on a thread shared with the GitHub fleet, and this
+# call has a 20s HTTP timeout. Uncached it was ~17,000 calls a day, and a slow
+# or unreachable Forgejo stalled telemetry for the GITHUB runners too - the
+# cross-engine coupling the whole isolation design exists to prevent, reached
+# from the dashboard's side instead of Docker's.
+# --------------------------------------------------------------------------
+
+class _CountingForge:
+    def __init__(self, answers):
+        self.answers = list(answers)
+        self.calls = 0
+
+    def runner_statuses(self):
+        self.calls += 1
+        return self.answers.pop(0) if self.answers else None
+
+
+def _wire_forge(monkeypatch, forge):
+    monkeypatch.setattr(providers.FORGEJO, "forge_client", lambda env: forge)
+    return forge
+
+
+def test_the_fleet_status_is_fetched_once_per_window(monkeypatch):
+    forge = _wire_forge(monkeypatch, _CountingForge([{UUID: "idle"},
+                                                     {UUID: "active"}]))
+    assert docker_ops._forge_statuses({}) == {UUID: "idle"}
+    assert docker_ops._forge_statuses({}) == {UUID: "idle"}
+    assert docker_ops._forge_statuses({}) == {UUID: "idle"}
+    assert forge.calls == 1
+
+
+def test_the_window_expires(monkeypatch):
+    forge = _wire_forge(monkeypatch, _CountingForge([{UUID: "idle"},
+                                                     {UUID: "active"}]))
+    assert docker_ops._forge_statuses({}) == {UUID: "idle"}
+    # Rather than sleeping: move the stored deadline into the past.
+    deadline, value = docker_ops._forge_status_cache
+    docker_ops._forge_status_cache = (deadline - 3600, value)
+    assert docker_ops._forge_statuses({}) == {UUID: "active"}
+    assert forge.calls == 2
+
+
+def test_a_failed_call_is_never_replayed_as_an_answer(monkeypatch):
+    """The hazard host_info() documents, and the reason this is not a plain
+    memoise. A failure must answer None - "we could not ask", which every
+    caller turns into "unknown" - and must NOT hand back the last good map,
+    which would report a runner idle on the strength of a call that failed.
+    prune() and the drain watcher act on that answer."""
+    forge = _wire_forge(monkeypatch, _CountingForge([{UUID: "idle"}, None]))
+    assert docker_ops._forge_statuses({}) == {UUID: "idle"}
+    deadline, value = docker_ops._forge_status_cache
+    docker_ops._forge_status_cache = (deadline - 3600, value)
+
+    assert docker_ops._forge_statuses({}) is None
+    # And the stale good map is gone, not sitting in the cache waiting to be
+    # served for the rest of the window.
+    assert docker_ops._forge_statuses({}) is None
+    assert forge.calls == 2, "the failed attempt is rate-limited, not retried"
+
+
+def test_no_forgejo_client_answers_unknown_without_a_call(monkeypatch):
+    monkeypatch.setattr(providers.FORGEJO, "forge_client", lambda env: None)
+    assert docker_ops._forge_statuses({}) is None

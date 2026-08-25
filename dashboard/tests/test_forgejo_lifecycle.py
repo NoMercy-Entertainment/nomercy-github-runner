@@ -42,7 +42,9 @@ def test_a_created_forgejo_runner_is_labelled(monkeypatch):
     seen = _capture(monkeypatch)
     ok, name, _ = docker_ops.create(
         2, {"FORGEJO_INSTANCE_URL": "https://forgejo.example",
-            "FORGEJO_ADMIN_TOKEN": "t"}, providers.FORGEJO)
+            "FORGEJO_ADMIN_TOKEN": "t",
+            "FORGEJO_RUNNER_LABELS": "ubuntu-latest:docker://node:lts"},
+        providers.FORGEJO)
     assert ok and name == "forgejo-runner-2"
     args = seen[0]
     assert "--label" in args
@@ -61,7 +63,9 @@ def test_a_created_forgejo_runner_registers_under_its_container_name(monkeypatch
     seen = _capture(monkeypatch)
     ok, name, _ = docker_ops.create(
         5, {"FORGEJO_INSTANCE_URL": "https://forgejo.example",
-            "FORGEJO_ADMIN_TOKEN": "t"}, providers.FORGEJO)
+            "FORGEJO_ADMIN_TOKEN": "t",
+            "FORGEJO_RUNNER_LABELS": "ubuntu-latest:docker://node:lts"},
+        providers.FORGEJO)
     assert ok and name == "forgejo-runner-5"
     assert f"FORGEJO_RUNNER_NAME={name}" in seen[0]
 
