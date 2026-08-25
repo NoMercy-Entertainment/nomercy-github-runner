@@ -18,6 +18,7 @@ PS_OUTPUT = (
     "forgejo-runner-1\tforgejo\n"
     "runner-dashboard\t\n"
     "immich-server\t\n"
+    "unrelated-box\tgithub\n"
 )
 
 
@@ -38,10 +39,20 @@ def test_both_fleets_are_listed(monkeypatch):
 
 
 def test_non_runner_containers_are_excluded(monkeypatch):
+    """A label alone must not be enough to enrol a container into a fleet.
+
+    The action routes act on membership of list_runners(), so a container that
+    wrongly enrols becomes a target for destructive actions. Both the name
+    prefix and the label must match; a stray label on a mismatched name is
+    rejected."""
     monkeypatch.setattr(docker_ops, "_docker", _fake_ps(PS_OUTPUT))
     names = docker_ops.list_runner_names()
     assert "runner-dashboard" not in names
     assert "immich-server" not in names
+    assert "unrelated-box" not in names  # has github label but not github-runner- prefix
+
+    runners = docker_ops.list_runners()
+    assert all(name != "unrelated-box" for name, _ in runners)
 
 
 def test_a_failed_ps_lists_nothing_rather_than_raising(monkeypatch):
