@@ -123,6 +123,27 @@ def parse_events(text):
     return events
 
 
+# time="2026-08-25T14:38:55Z" level=info msg="task 830 repo is FiLL/q ..."
+#
+# There is no matching completion line. forgejo-runner logs a task being
+# picked up and nothing when it ends, which is why the Forgejo path closes
+# runs from the API instead of from the log.
+RE_FORGEJO_START = re.compile(
+    r'time="(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})Z".*?'
+    r'msg="task (\d+) repo is (\S+)')
+
+
+def parse_forgejo_events(text):
+    """Extract (kind, iso_time, job, task_id). kind is always "start"."""
+    events = []
+    for line in text.splitlines():
+        m = RE_FORGEJO_START.search(line)
+        if m:
+            events.append(("start", m.group(1) + "Z", m.group(3),
+                           int(m.group(2))))
+    return events
+
+
 # --------------------------------------------------------------------------
 # writes
 # --------------------------------------------------------------------------

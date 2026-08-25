@@ -32,6 +32,7 @@ import docker_ops as ops
 import github_api
 import history
 import oidc
+import providers
 import runner_detail
 import users
 from runner_detail import SECRET_KEYS, mask
@@ -364,12 +365,18 @@ def _record_history(status):
             continue
 
         try:
-            for kind, when, job, result in history.parse_events(
-                    ops.logs_since(name, 45)):
-                if kind == "start":
-                    history.open_run(name, r.get("registration"), job, when)
-                else:
-                    history.close_run(name, job, when, result)
+            if r.get("provider") == "forgejo":
+                for _, when, job, task_id in history.parse_forgejo_events(
+                        ops.logs_since(name, 45)):
+                    history.open_run(name, r.get("registration"), job, when,
+                                     provider="forgejo", forge_task_id=task_id)
+            else:
+                for kind, when, job, result in history.parse_events(
+                        ops.logs_since(name, 45)):
+                    if kind == "start":
+                        history.open_run(name, r.get("registration"), job, when)
+                    else:
+                        history.close_run(name, job, when, result)
         except Exception as e:  # noqa: BLE001
             print(f"[history:{name}] {e}")
 
@@ -408,13 +415,20 @@ def _backfill():
     watching - so backfilled runs show timing and result but no graph.
     """
     try:
-        for name in ops.list_runner_names():
-            events = history.parse_events(ops.logs_since(name, 7 * 24 * 3600))
-            for kind, when, job, result in events:
-                if kind == "start":
-                    history.open_run(name, None, job, when)
-                else:
-                    history.close_run(name, job, when, result)
+        for name, provider in ops.list_runners():
+            text = ops.logs_since(name, 7 * 24 * 3600)
+            if provider.key == "forgejo":
+                events = history.parse_forgejo_events(text)
+                for _, when, job, task_id in events:
+                    history.open_run(name, None, job, when,
+                                     provider="forgejo", forge_task_id=task_id)
+            else:
+                events = history.parse_events(text)
+                for kind, when, job, result in events:
+                    if kind == "start":
+                        history.open_run(name, None, job, when)
+                    else:
+                        history.close_run(name, job, when, result)
             if events:
                 print(f"[backfill] {name}: {len(events)} events")
     except Exception as e:  # noqa: BLE001
@@ -422,23 +436,61 @@ def _backfill():
 
 
 def _enricher():
-    """Fill in repo / workflow / branch / commit from the GitHub API.
+    """Fill in repo / workflow / branch / commit, and - for Forgejo - the end.
 
     Separate from the collector: an API sweep can take seconds and must not
-    delay telemetry. Best-effort throughout - an unmatched run keeps its
-    log-only data rather than being dropped.
+    delay telemetry. Best-effort throughout.
     """
     while True:
         try:
             env = read_env()
-            token, org = env.get("GH_TOKEN"), env.get("GITHUB_ORG")
-            if token and org:
-                gh = github_api.GitHub(token, org)
-                for run in history.pending_enrichment(limit=10):
-                    found = gh.find_job(run.get("registration"),
-                                        run.get("job_name"),
-                                        run.get("started_at"),
-                                        run.get("ended_at"))
+            clients = {}
+            # Compared as strings: both sides are the same fixed ISO format,
+            # which is how started_at is already compared elsewhere in this
+            # codebase.
+            stale_before = time.strftime(
+                "%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - 24 * 3600))
+            for run in history.pending_enrichment(limit=10):
+                key = run.get("provider") or "github"
+                if key not in clients:
+                    p = providers.by_key(key)
+                    clients[key] = p.forge_client(env) if p else None
+                client = clients[key]
+                if client is None:
+                    continue
+
+                if key == "forgejo":
+                    found = client.find_task(run.get("job_name"),
+                                             run.get("forge_task_id"),
+                                             run.get("started_at"))
+                    if found:
+                        # Forgejo's task carries the end, which no log line
+                        # does. Close first, then enrich: a crash between the
+                        # two leaves a closed run to be enriched next sweep,
+                        # rather than an enriched run that never ends.
+                        if found.get("ended_at"):
+                            history.apply_close(run["id"], found["ended_at"],
+                                                found.get("conclusion"))
+                        history.apply_enrichment(run["id"], found)
+                    elif run["started_at"] < stale_before:
+                        # Not marked unmatched on the first miss: the common
+                        # case is a task that simply has not finished yet, and
+                        # marking it would close the only route to its end
+                        # time for good.
+                        #
+                        # But a run that never matches would otherwise be
+                        # retried every 90 seconds for the life of the
+                        # deployment - a repo deleted mid-job, or a task
+                        # Forgejo pruned. After a day, close it honestly as
+                        # unknown and stop asking.
+                        history.apply_close(run["id"], run["started_at"],
+                                            "unknown")
+                        history.mark_unmatched(run["id"])
+                else:
+                    found = client.find_job(run.get("registration"),
+                                            run.get("job_name"),
+                                            run.get("started_at"),
+                                            run.get("ended_at"))
                     if found:
                         history.apply_enrichment(run["id"], found)
                     else:
@@ -920,7 +972,6 @@ def api_runner(action):
 
 @app.route("/api/runner/add", methods=["POST"])
 def api_add():
-    import providers
     idx = ops.next_free_index(providers.GITHUB)
     ok, name, err = ops.create(idx, read_env())
     return jsonify(ok=ok, name=name, error=None if ok else err), \
