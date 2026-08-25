@@ -716,6 +716,7 @@ def settings():
         "settings.html",
         env=env,
         token_mask=mask(env.get("GH_TOKEN", "")),
+        forgejo_token_mask=mask(env.get("FORGEJO_ADMIN_TOKEN", "")),
         env_path=ENV_PATH,
     )
 
