@@ -8,3 +8,7 @@ __pycache__/
 
 # .env backups carry the same secrets as .env itself
 .env.*
+
+# Subagent-driven development scratch: ledgers, briefs, review packages.
+# Working notes for a plan in flight, not part of the deliverable.
+.superpowers/sdd/
