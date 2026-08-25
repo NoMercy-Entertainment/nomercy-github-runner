@@ -128,10 +128,11 @@ async function act(action, name, btn) {
     const url = action === 'add' ? '/api/runner/add'
               : action === 'recreate' ? '/api/recreate'
               : '/api/runner/' + action;
-    // provider is required by design (Task 10) - interim, until Task 11
-    // restructures this page into per-fleet sections with per-fleet buttons.
+    // /api/runner/add and /api/recreate both require a provider by design
+    // (Task 10) - interim, until Task 11 restructures this page into
+    // per-fleet sections with per-fleet buttons.
     const body = name ? {name}
-               : action === 'recreate' ? {provider: 'github'}
+               : (action === 'recreate' || action === 'add') ? {provider: 'github'}
                : {};
     const res = await fetch(url, {
       method: 'POST',
