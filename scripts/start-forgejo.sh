@@ -41,6 +41,10 @@ cat > /etc/docker/daemon.json <<'JSON'
 }
 JSON
 
+# Cache cap is 20GB vs start.sh's 40GB because Forgejo jobs run in containerized
+# job containers named by ubuntu-*:docker:// labels, not on the host. Less cache
+# is needed; GitHub's 40GB reflects the fleet's heavier build workload.
+
 # A container restart leaves the pid file behind and dockerd then aborts with
 # "pidfile is held by another process".
 rm -f /var/run/docker.pid
@@ -79,7 +83,15 @@ fi
 # the container stops. The dashboard deregisters through the API when it removes
 # a runner, which covers the case it knows about. This covers the other one:
 # the container being stopped by anything else. Both are idempotent.
+DEREGISTERED=0
 deregister() {
+  # Guard against double-deregistration: both TERM trap and EXIT trap may reach
+  # this function on the same shutdown. Idempotent on the API level, but we run
+  # only once to avoid log noise and unnecessary work.
+  if [ "$DEREGISTERED" -eq 1 ]; then
+    return 0
+  fi
+  DEREGISTERED=1
   echo "Shutting down runner — deregistering..."
   forgejo-runner unregister 2>/dev/null || true
 }
@@ -106,10 +118,18 @@ RUNNER_PID=$!
 # The `sleep 1` is not decorative: `wait` on an already-reported stopped job
 # returns immediately, so without it a stopped child spins this loop at full CPU.
 # Polling once a second costs nothing and cannot spin.
+#
+# `wait` is in `if` context: bash suspends errexit within `if` condition tests,
+# so a TERM signal returning 128+SIGTERM does not exit the script prematurely.
+# The if statement does not catch/suppress the signal — traps still fire — but
+# it prevents errexit from ending the script before the loop logic runs.
 RUNNER_STATUS=0
 while kill -0 "$RUNNER_PID" 2>/dev/null; do
-  wait "$RUNNER_PID"
-  RUNNER_STATUS=$?
+  if wait "$RUNNER_PID"; then
+    RUNNER_STATUS=0
+  else
+    RUNNER_STATUS=$?
+  fi
   kill -0 "$RUNNER_PID" 2>/dev/null && sleep 1
 done
 
