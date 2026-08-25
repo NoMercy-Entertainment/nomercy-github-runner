@@ -135,7 +135,9 @@ def test_is_idle_asks_the_forge_itself_when_nobody_handed_it_a_status(
     drain would be refused for the Forgejo fleet permanently."""
     class _Forge:
         def runner_statuses(self):
-            return {UUID: "idle"}
+            # The widened shape - forgejo_api.Forgejo.runner_statuses() now
+            # answers with the full records, not a {uuid: status} reduction.
+            return [{"uuid": UUID, "status": "idle"}]
 
     monkeypatch.setattr(docker_ops, "_docker", _fake_docker())
     monkeypatch.setattr(providers.FORGEJO, "forge_client", lambda env: _Forge())
@@ -188,7 +190,7 @@ def test_collect_asks_forgejo_once_for_a_mixed_fleet(monkeypatch):
     class _Forge:
         def runner_statuses(self):
             status_calls.append(1)
-            return {}
+            return []
 
     def fake_forge_client(env):
         client_calls.append(1)
@@ -240,9 +242,15 @@ def _wire_forge(monkeypatch, forge):
     return forge
 
 
+# Answers are the widened shape forgejo_api.Forgejo.runner_statuses() now
+# returns - full records, not a {uuid: status} reduction. _forge_statuses()
+# still reduces them to that map itself, so the assertions below - the
+# public contract every existing caller of _forge_statuses() depends on -
+# are unchanged.
 def test_the_fleet_status_is_fetched_once_per_window(monkeypatch):
-    forge = _wire_forge(monkeypatch, _CountingForge([{UUID: "idle"},
-                                                     {UUID: "active"}]))
+    forge = _wire_forge(monkeypatch, _CountingForge(
+        [[{"uuid": UUID, "status": "idle"}],
+         [{"uuid": UUID, "status": "active"}]]))
     assert docker_ops._forge_statuses({}) == {UUID: "idle"}
     assert docker_ops._forge_statuses({}) == {UUID: "idle"}
     assert docker_ops._forge_statuses({}) == {UUID: "idle"}
@@ -250,8 +258,9 @@ def test_the_fleet_status_is_fetched_once_per_window(monkeypatch):
 
 
 def test_the_window_expires(monkeypatch):
-    forge = _wire_forge(monkeypatch, _CountingForge([{UUID: "idle"},
-                                                     {UUID: "active"}]))
+    forge = _wire_forge(monkeypatch, _CountingForge(
+        [[{"uuid": UUID, "status": "idle"}],
+         [{"uuid": UUID, "status": "active"}]]))
     assert docker_ops._forge_statuses({}) == {UUID: "idle"}
     # Rather than sleeping: move the stored deadline into the past.
     deadline, value = docker_ops._forge_status_cache
@@ -266,7 +275,8 @@ def test_a_failed_call_is_never_replayed_as_an_answer(monkeypatch):
     caller turns into "unknown" - and must NOT hand back the last good map,
     which would report a runner idle on the strength of a call that failed.
     prune() and the drain watcher act on that answer."""
-    forge = _wire_forge(monkeypatch, _CountingForge([{UUID: "idle"}, None]))
+    forge = _wire_forge(monkeypatch, _CountingForge(
+        [[{"uuid": UUID, "status": "idle"}], None]))
     assert docker_ops._forge_statuses({}) == {UUID: "idle"}
     deadline, value = docker_ops._forge_status_cache
     docker_ops._forge_status_cache = (deadline - 3600, value)

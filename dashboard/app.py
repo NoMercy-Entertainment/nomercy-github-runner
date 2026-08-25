@@ -780,7 +780,11 @@ def diff_status(old, new):
     gone = sorted(set(before) - set(after))
     if gone:
         delta["gone"] = gone
-    for key in ("disk", "host"):
+    # elsewhere is small (a handful of forge-only entries at most) and
+    # changes rarely, so it is sent whole rather than per-entry like runners
+    # above - the per-runner diffing there earns its complexity from a fleet
+    # that resizes its meters every few seconds; this list does not.
+    for key in ("disk", "host", "elsewhere"):
         if (old or {}).get(key) != (new or {}).get(key):
             delta[key] = (new or {}).get(key)
 

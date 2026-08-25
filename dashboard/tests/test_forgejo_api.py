@@ -51,11 +51,12 @@ def _client(routes):
 
 
 def test_runner_statuses_reads_a_bare_array():
+    """Widened from a {uuid: status} reduction to the full records - a
+    caller that only wants busy/idle (docker_ops._status_map) reduces this
+    itself; one that wants name/labels/version (the Elsewhere section) no
+    longer has to pay for a second call to get what this call already had."""
     fj = _client({"/api/v1/user/actions/runners": RUNNERS})
-    assert fj.runner_statuses() == {
-        "edfa80e4-9f11-4757-8626-a707af9be520": "idle",
-        "aa11bb22-0000-4757-8626-000000000000": "active",
-    }
+    assert fj.runner_statuses() == RUNNERS
 
 
 def test_a_failed_call_is_not_an_empty_fleet():

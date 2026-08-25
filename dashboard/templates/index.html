@@ -27,6 +27,14 @@
 .badge.draining{color:var(--drain);animation:breathe 2s ease-in-out infinite}
 .badge.stopped{color:var(--alert)}
 @keyframes breathe{0%,100%{opacity:1}50%{opacity:.5}}
+/* Elsewhere cards carry Forgejo's own status words - active/offline - rather
+   than this page's busy/stopped, so they get their own selectors rather than
+   reusing the ones above with a translated class name. */
+.card.active::before{background:var(--busy)}
+.badge.active{color:var(--busy);animation:breathe 2s ease-in-out infinite}
+.card.offline::before{background:var(--alert-dk)}
+.card.offline{opacity:.72}
+.badge.offline{color:var(--alert)}
 .creg{font-size:11px;color:var(--text-faint)}
 .cjob{margin:9px 0 11px;font-size:11.5px;color:var(--busy);
   border-left:2px solid var(--busy-dk);padding-left:8px;white-space:nowrap;
@@ -97,6 +105,14 @@
     <span class="hint" style="align-self:center">Recreate applies saved settings changes.</span>
   </div>
   <div class="grid" id="grid-forgejo"><div class="skel">Awaiting telemetry</div></div>
+</div>
+
+<div class="fleet" id="fleet-elsewhere">
+  <h2 class="fleet-head">Elsewhere</h2>
+  <div class="fleet-actions">
+    <span class="hint" style="align-self:center">Registered with Forgejo but not containers on this engine - they cannot be started, stopped, or pruned from here.</span>
+  </div>
+  <div class="grid" id="grid-elsewhere"><div class="skel">Awaiting telemetry</div></div>
 </div>
 
 <div class="disk">
@@ -285,6 +301,11 @@ function setMeter(card, key, valText, pct) {
 // the entrance animation and made the page flash.
 const cards = new Map();
 const GRIDS = {github: $('grid-github'), forgejo: $('grid-forgejo')};
+// Elsewhere cards are keyed by uuid, not name - Forgejo documents runner
+// names as not unique, and a name-keyed Map could silently merge two
+// different runners that happen to share one.
+const elseCards = new Map();
+const gridElsewhere = $('grid-elsewhere');
 // Display casing for confirm-dialog copy; the wire value (button
 // data-provider, POST body) stays the lowercase form the API expects.
 const PROVIDER_LABEL = {github: 'GitHub', forgejo: 'Forgejo'};
@@ -335,6 +356,27 @@ function makeCard(r, i) {
       act(a, r.name, b);
     });
   });
+  return el;
+}
+
+// Elsewhere cards: name, status, labels, version - and nothing else. No
+// meters (CPU/memory/build cache all come from `docker stats`/`docker exec`
+// against a container that does not exist here - rendering a dash or a zero
+// for them would read as "measured, and it is zero"), no actions row (these
+// are not in ops.list_runner_names(), so nothing here could ever act on
+// them - see the sentence in the section header instead), and the name is
+// plain text, not a link: there is no /runner/<name> page for something that
+// is not a container on this engine.
+function makeElseCard(r, i) {
+  const el = document.createElement('article');
+  el.style.animationDelay = (i * 45) + 'ms';
+  el.innerHTML =
+    `<div class="chead">
+       <span class="cname" style="cursor:default"></span>
+       <span class="badge"></span>
+     </div>
+     <div class="creg elabels"></div>
+     <div class="creg ever"></div>`;
   return el;
 }
 
@@ -441,6 +483,44 @@ function render(d) {
     if (!rs.some(r => r.name === name)) { el.remove(); cards.delete(name); }
   }
 
+  // --- Elsewhere: forge-known runners with no container on this engine ----
+  // A separate grid rather than a third entry in GRIDS/byProvider above:
+  // those two carry per-fleet Add/Recreate/Clear-cache buttons this section
+  // deliberately has none of, and folding it into that loop would mean
+  // special-casing every one of those buttons for a "fleet" that has none.
+  const elsewhere = d.elsewhere || [];
+  $('fleet-elsewhere').style.display = elsewhere.length ? '' : 'none';
+
+  const elseSkel = gridElsewhere.querySelector('.skel');
+  if (elsewhere.length && elseSkel) elseSkel.remove();
+  if (!elsewhere.length && !elseSkel) gridElsewhere.innerHTML = '<div class="skel">No runners</div>';
+
+  elsewhere.forEach((r, i) => {
+    let card = elseCards.get(r.uuid);
+    if (!card) { card = makeElseCard(r, i); elseCards.set(r.uuid, card); gridElsewhere.appendChild(card); }
+
+    const cls = 'card ' + r.status;
+    if (card.className !== cls) card.className = cls;
+
+    const nameEl = card.querySelector('.cname');
+    if (nameEl.textContent !== r.name) nameEl.textContent = r.name;
+
+    const badge = card.querySelector('.badge');
+    if (badge.textContent !== r.status) { badge.textContent = r.status; badge.className = 'badge ' + r.status; }
+
+    const labelsEl = card.querySelector('.elabels');
+    const labelsText = r.labels || 'no labels';
+    if (labelsEl.textContent !== labelsText) labelsEl.textContent = labelsText;
+
+    const verEl = card.querySelector('.ever');
+    const verText = 'v' + (r.version || '?');
+    if (verEl.textContent !== verText) verEl.textContent = verText;
+  });
+
+  for (const [uuid, el] of elseCards) {
+    if (!elsewhere.some(r => r.uuid === uuid)) { el.remove(); elseCards.delete(uuid); }
+  }
+
   const dk = d.disk || {}, dp = Number(dk.percent) || 0;
   $('disk-val').textContent = fmtGB(dk.used_bytes || 0) + ' / ' + fmtGB(dk.total_bytes || 0) + '  (' + dp + '%)';
   const df = $('disk-fill');
@@ -471,6 +551,7 @@ function applyDelta(s, d) {
   if (d.gone) s.runners = s.runners.filter(r => !d.gone.includes(r.name));
   if (d.disk) s.disk = d.disk;
   if (d.host) s.host = d.host;
+  if (d.elsewhere) s.elsewhere = d.elsewhere;
   return s;
 }
 

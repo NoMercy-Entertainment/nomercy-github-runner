@@ -397,18 +397,27 @@ _FORGE_STATUS_TTL = 10
 # cached) - worse case is a fixed cost per sweep, not an unbounded retry storm.
 _FORGE_STATUS_FAIL_BACKOFF = forgejo_api.REQUEST_TIMEOUT + _FORGE_STATUS_TTL  # 30s
 
-_forge_status_cache = None   # (monotonic deadline, statuses-or-None)
+_forge_status_cache = None   # (monotonic deadline, records-or-None)
 
 
-def _forge_statuses(env):
-    """The whole Forgejo fleet's status, cached for a window that starts when
-    the call FINISHES, not when it started.
+def _status_map(records):
+    """{uuid: status} from the full records forgejo_api.runner_statuses() now
+    returns. A separate step so the one call this cache exists to bound can
+    still serve every caller that only ever wanted busy/idle, unchanged."""
+    return {r["uuid"]: (r.get("status") or "")
+            for r in (records or []) if isinstance(r, dict) and r.get("uuid")}
+
+
+def _forge_records(env):
+    """The whole Forgejo fleet's runner records, cached for a window that
+    starts when the call FINISHES, not when it started.
 
     A failed call is NOT cached as though it were an answer - the hazard
     host_info() documents. What is stored on failure is None, which is
     already the explicit "we could not ask" sentinel every caller handles by
-    reporting "unknown"; the previous good map is discarded rather than
-    replayed, so a stale idle can never outlive the call that produced it.
+    reporting "unknown"; the previous good records are discarded rather than
+    replayed, so a stale idle - or a stale Elsewhere card - can never outlive
+    the call that produced it.
 
     The failed ATTEMPT is still rate-limited, deliberately, but by
     _FORGE_STATUS_FAIL_BACKOFF rather than _FORGE_STATUS_TTL. Taking the
@@ -420,6 +429,11 @@ def _forge_statuses(env):
     prevent. Reading the clock after the call fixes that; using a longer
     backoff for failures on top of it is what keeps a dead Forgejo from still
     costing a 20s stall every ~30s.
+
+    This is the ONE call collect() makes to Forgejo per window. Both the
+    busy/idle map (_forge_statuses, below) and the Elsewhere list (collect())
+    are derived from what is cached here rather than fetched separately - two
+    reductions of one answer, not two calls.
     """
     global _forge_status_cache
     now = time.monotonic()
@@ -432,6 +446,14 @@ def _forge_statuses(env):
     return got
 
 
+def _forge_statuses(env):
+    """{uuid: status} for the whole Forgejo fleet, or None if the forge could
+    not be asked. Same cache window as _forge_records() - this only reduces
+    what is already cached there, so calling this costs nothing extra."""
+    records = _forge_records(env)
+    return None if records is None else _status_map(records)
+
+
 def collect(env=None):
     env = env or {}
     stats = _stats_map()
@@ -441,10 +463,23 @@ def collect(env=None):
 
     # One API call for the whole Forgejo fleet, not one per runner. Skipped
     # entirely when no Forgejo runner exists, so a GitHub-only deployment
-    # never pays for a forge it does not use.
+    # never pays for a forge it does not use. forge_records feeds both the
+    # busy/idle map below AND the Elsewhere list after the loop - one call,
+    # two reductions of its answer.
     forge_status = None
+    forge_records = None
     if any(p is providers.FORGEJO for _, p in found):
-        forge_status = _forge_statuses(env)
+        forge_records = _forge_records(env)
+        forge_status = None if forge_records is None else _status_map(forge_records)
+
+    # uuids of every Forgejo runner that IS a container on this engine, so
+    # the Elsewhere list below can tell "the forge knows about this and it is
+    # one of ours" from "the forge knows about this and it is not". Only
+    # populated from RUNNING containers: a stopped one's registration file is
+    # behind `docker exec`, which needs a running container to answer, and
+    # nothing else in collect() reads a stopped container's file either (its
+    # "registration" field below is a bare "-" for the same reason).
+    known_forgejo_uuids = set()
 
     for name, provider in found:
         ok, status, _ = _docker("ps", "-a", "--filter", f"name=^{name}$",
@@ -462,6 +497,10 @@ def collect(env=None):
             continue
 
         rf = _runner_file(name, provider)
+        if provider is providers.FORGEJO:
+            uuid = (rf or {}).get("uuid")
+            if uuid:
+                known_forgejo_uuids.add(uuid)
         job_state, job = _job_state(name, provider, rf, forge_status)
         if name in draining:
             state = "draining"
@@ -502,7 +541,35 @@ def collect(env=None):
         "disk": _disk(),
         "host": host_info(),
         "runners": runners,
+        "elsewhere": _elsewhere(forge_records, known_forgejo_uuids),
     }
+
+
+def _elsewhere(forge_records, known_uuids):
+    """Forgejo runners the forge knows about that are not one of the
+    containers on this engine - read-only cards on the status page, never a
+    target for start/stop/prune/remove (those all reach a runner through
+    ops.list_runner_names(), which this never feeds).
+
+    Matched on uuid, like every other runner-identity comparison in this
+    module - Forgejo documents runner names as not unique, so a name match
+    could silently conflate two different runners.
+
+    forge_records is None exactly when the forge could not be asked this
+    window (see _forge_records). That must produce an empty list here, not a
+    stale one from an earlier successful call and not a fabricated entry -
+    the same "unknown answers unknown" discipline _job_state() and is_idle()
+    already apply to this sentinel.
+    """
+    if forge_records is None:
+        return []
+    return [{
+        "uuid": r.get("uuid"),
+        "name": r.get("name") or "-",
+        "status": r.get("status") or "unknown",
+        "labels": ", ".join(r.get("labels") or []),
+        "version": r.get("version") or "",
+    } for r in forge_records if r.get("uuid") not in known_uuids]
 
 
 def _disk():
@@ -671,7 +738,12 @@ def is_idle(name, provider=None, forge_status=None, env=None):
         if forge_status is None:
             client = provider.forge_client(env or {})
             if client is not None:
-                forge_status = client.runner_statuses()
+                # client.runner_statuses() answers with the full records
+                # (see forgejo_api.Forgejo.runner_statuses) - reduced here to
+                # the {uuid: status} map _job_state() expects, exactly like
+                # the cached path in _forge_statuses() does.
+                records = client.runner_statuses()
+                forge_status = None if records is None else _status_map(records)
     state, _ = _job_state(name, provider, rf, forge_status)
     return state == "idle"
 

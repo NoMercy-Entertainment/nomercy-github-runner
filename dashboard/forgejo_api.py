@@ -80,12 +80,23 @@ class Forgejo:
 
     # -------------------------------------------------------------- runners
     def runner_statuses(self):
-        """{uuid: status}, or None if the call failed.
+        """The forge's own ActionRunner records, as a list, or None if the
+        call failed.
 
-        None and {} are deliberately different. {} means Forgejo answered and
+        None and [] are deliberately different. [] means Forgejo answered and
         knows of no runners; None means we could not ask, and the caller must
         report "unknown" rather than treating every runner as idle - prune and
         drain act on that answer.
+
+        WIDENED from a bare {uuid: status} reduction to the full records.
+        docker_ops needs status alone for the runners it already has a
+        container for (busy/idle), but it ALSO needs name/labels/version for
+        a runner Forgejo knows about that is NOT a container on this engine -
+        the Elsewhere section on the status page. Both read the same
+        endpoint, so reducing the payload down to {uuid: status} here, before
+        either caller sees it, would have thrown away exactly what the second
+        one needs and forced a second HTTP call to get it back. Callers that
+        only want busy/idle reduce this themselves (see docker_ops._status_map).
 
         The endpoint returns a BARE ARRAY, not an object with a "runners" key.
 
@@ -98,8 +109,7 @@ class Forgejo:
                          {"limit": 100})
         if not isinstance(data, list):
             return None
-        return {r["uuid"]: (r.get("status") or "")
-                for r in data if isinstance(r, dict) and r.get("uuid")}
+        return [r for r in data if isinstance(r, dict) and r.get("uuid")]
 
     def runner_ids(self):
         """{uuid: id}, for deregistration. None if the call failed."""
