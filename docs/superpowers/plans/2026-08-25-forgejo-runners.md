@@ -183,7 +183,6 @@ class _GitHub(Provider):
 
 class _Forgejo(Provider):
     def container_env(self, env):
-        import forgejo_api
         url = (env.get("FORGEJO_INSTANCE_URL") or "").strip()
         if not url:
             return {}, "FORGEJO_INSTANCE_URL is not set"
@@ -2216,6 +2215,13 @@ def test_recreate_requires_a_provider(client, fleet):
     assert r.status_code == 400
 
 
+def test_prune_all_requires_a_provider(client, fleet):
+    """Two per-fleet buttons posting to one fleet-blind endpoint would make
+    one of them a lie."""
+    r = client.post("/api/prune-all", json={})
+    assert r.status_code == 400
+
+
 def test_add_passes_the_provider_through(client, fleet, monkeypatch):
     seen = {}
 
@@ -2344,9 +2350,24 @@ log pattern that will never match it:
     result = ops.prune(name, provider=provider, env=env)
 ```
 
-`api_prune_all` iterates the fleet; give it `ops.list_runners()` so each name
-arrives with its provider, and pass both into `is_idle` and `prune` the same
-way.
+`api_prune_all` takes a provider too, and prunes only that fleet:
+
+```python
+@app.route("/api/prune-all", methods=["POST"])
+def api_prune_all():
+    provider, err = _requested_provider()
+    if err:
+        return err
+    env = read_env()
+    targets = [n for n, p in ops.list_runners() if p is provider]
+    # ... existing body, over `targets`, passing provider and env into
+    #     ops.is_idle(name, provider, env=env) and
+    #     ops.prune(name, provider=provider, env=env)
+```
+
+Without the provider it would clear both fleets' caches whichever button was
+pressed — which is exactly the ambiguity two sections exist to remove, and it
+would silently make one of the two buttons a lie.
 
 `_drain_watcher` also calls `ops.is_idle(name)`, and it works from names alone
 because the drain state is a list of names. Resolve the provider from the name
