@@ -67,10 +67,13 @@ owner's own.** `forgejo_api.py` called `/api/v1/admin/actions/runners` and its
 siblings — the obvious reading of "manage runners" against Forgejo's API, and
 wrong. Queried against the live instance it returned an empty runner list,
 which read as "nothing registered yet" and nearly stood as the explanation.
-The owner checked Forgejo's database directly: the four runners already
-running there all carry `owner_id = 1` (the user `fill`) — they are
-user-scoped, which is exactly why the admin endpoint saw none of them. The
-right conclusion was "wrong endpoint", not "recreate the runners as global".
+Reading Forgejo's own database settled it: the runners already registered
+there all carry `owner_id = 1` (the user `fill`) — they are user-scoped,
+which is exactly why the admin endpoint saw none of them. The right
+conclusion was "wrong endpoint", not "recreate the runners as global".
+
+The owner is who caught it, by saying the Forgejo runners should be no more
+widely available than the GitHub ones, which are scoped to a single org.
 
 A runner registered through the admin path is available to every repository
 and every user on the instance. This instance has open registration
