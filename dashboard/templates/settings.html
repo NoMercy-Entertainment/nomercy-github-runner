@@ -107,9 +107,17 @@ code{background:var(--bg-inset);padding:1px 5px;border:1px solid var(--rule);fon
   </div>
 </div>
 
-<div style="display:flex;gap:8px;flex-wrap:wrap">
+<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
   <button id="save" class="primary">Save settings</button>
-  <button id="save-recreate" class="warn">Save &amp; recreate fleet</button>
+  {% if has_runners.github %}
+  <button id="save-recreate-github" class="warn" data-provider="github">Save &amp; recreate GitHub fleet</button>
+  {% endif %}
+  {% if has_runners.forgejo %}
+  <button id="save-recreate-forgejo" class="warn" data-provider="forgejo">Save &amp; recreate Forgejo fleet</button>
+  {% endif %}
+  {% if not (has_runners.github or has_runners.forgejo) %}
+  <span class="hint">No runners yet - recreate becomes available once a fleet has one.</span>
+  {% endif %}
 </div>
 
 <div class="notice" style="margin-top:16px">
@@ -157,32 +165,40 @@ $('save').addEventListener('click', async e => {
   finally { e.target.disabled = false; }
 });
 
-$('save-recreate').addEventListener('click', async e => {
-  if (!(await confirmDialog({
-        title: 'Save and recreate every runner?',
-        body: 'Every runner is removed and rebuilt with the saved settings. '
-            + 'Running jobs will be lost.',
-        confirm: 'Save and recreate'}))) return;
-  e.target.disabled = true;
-  try {
-    await save();
-    toast('Saved. Recreating fleet...');
-    // provider is required by design (Task 10) - interim, until Task 11
-    // gives each fleet its own "Save & recreate" button.
-    const res = await fetch('/api/recreate', {
-      method: 'POST',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({provider: 'github'})
-    });
-    const d = await res.json().catch(() => ({}));
-    if (!res.ok || d.ok === false) {
-      const bad = (d.results || []).filter(r => !r.ok).map(r => r.name).join(', ');
-      throw new Error(bad ? ('failed: ' + bad) : (d.error || 'HTTP ' + res.status));
-    }
-    toast('Fleet recreated with the new settings.');
-  } catch (err) {
-    toast('Recreate failed - ' + err.message, true);
-  } finally { e.target.disabled = false; }
+// One button per fleet, each carrying its own provider - never one button
+// guessing which fleet the operator meant. A fleet with no runners gets no
+// button at all (see settings() in app.py), so there is nothing here to
+// gate further on "is this fleet empty".
+const PROVIDER_LABEL = {github: 'GitHub', forgejo: 'Forgejo'};
+
+document.querySelectorAll('[id^="save-recreate-"]').forEach(b => {
+  const provider = b.dataset.provider;
+  const label = PROVIDER_LABEL[provider] || provider;
+  b.addEventListener('click', async () => {
+    if (!(await confirmDialog({
+          title: `Save and recreate the ${label} fleet?`,
+          body: `Every ${label} runner is removed and rebuilt with the saved `
+              + 'settings. Running jobs will be lost.',
+          confirm: 'Save and recreate'}))) return;
+    b.disabled = true;
+    try {
+      await save();
+      toast(`Saved. Recreating ${label} fleet...`);
+      const res = await fetch('/api/recreate', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({provider})
+      });
+      const d = await res.json().catch(() => ({}));
+      if (!res.ok || d.ok === false) {
+        const bad = (d.results || []).filter(r => !r.ok).map(r => r.name).join(', ');
+        throw new Error(bad ? ('failed: ' + bad) : (d.error || 'HTTP ' + res.status));
+      }
+      toast(`${label} fleet recreated with the new settings.`);
+    } catch (err) {
+      toast('Recreate failed - ' + err.message, true);
+    } finally { b.disabled = false; }
+  });
 });
 </script>
 {% endblock %}

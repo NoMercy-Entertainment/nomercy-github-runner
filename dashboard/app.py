@@ -712,11 +712,20 @@ def api_history_run(run_id):
 @app.route("/settings")
 def settings():
     env = read_env()
+    # A "Save & recreate" button for a fleet with nothing in it has nothing
+    # safe to do - same reasoning as the Fleet page hiding an empty section,
+    # applied here to a single button instead of a whole grid.
+    fleets = ops.list_runners()
+    has_runners = {
+        "github": any(p is providers.GITHUB for _, p in fleets),
+        "forgejo": any(p is providers.FORGEJO for _, p in fleets),
+    }
     return render_template(
         "settings.html",
         env=env,
         token_mask=mask(env.get("GH_TOKEN", "")),
         forgejo_token_mask=mask(env.get("FORGEJO_ADMIN_TOKEN", "")),
+        has_runners=has_runners,
         env_path=ENV_PATH,
     )
 
