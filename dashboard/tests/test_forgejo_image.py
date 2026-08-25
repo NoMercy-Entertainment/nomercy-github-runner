@@ -71,3 +71,27 @@ def test_the_child_is_signalled_on_shutdown():
     # stop_runner function must exist and be called
     assert "stop_runner()" in start
     assert "stop_runner" in start
+
+
+def test_signal_handlers_carry_their_own_exit_code():
+    """A single handler shared across INT/TERM/EXIT that hard-coded `exit 0`
+    always reported success regardless of which signal fired, and lost the
+    real code entirely (measured: SIGTERM shutdowns exited 0 instead of 143).
+    INT and TERM must each bind their own instance of shutdown_handler,
+    passing the signal name (for the log line) and the real exit code."""
+    start = _read(START)
+    assert "trap 'shutdown_handler INT 130' INT" in start
+    assert "trap 'shutdown_handler TERM 143' TERM" in start
+
+
+def test_the_exit_trap_does_not_call_the_exiting_handler():
+    """Binding shutdown_handler itself to EXIT is the re-entrancy bug this
+    file shipped twice: bash runs the EXIT trap after any trap's `exit`, so a
+    shutdown_handler bound to EXIT re-enters itself on every signal-driven
+    shutdown (measured: its "shutting down runner" line printed twice, the
+    second time after the child was already dead). EXIT must bind to a
+    separate, non-exiting fallback for the no-signal path instead."""
+    start = _read(START)
+    assert "trap 'cleanup_on_exit' EXIT" in start
+    assert "trap 'shutdown_handler' EXIT" not in start
+    assert "trap 'shutdown_handler'" not in start

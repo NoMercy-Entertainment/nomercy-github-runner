@@ -138,16 +138,50 @@ stop_runner() {
 # Order matters: deregistration is the work that must complete, while stopping
 # the child is what SIGKILL does anyway if we time out. Deregister first, then
 # stop the child. See scripts/start.sh:426-431 for the detailed reasoning.
+#
+# INT and TERM are bound to their own instance of shutdown_handler, each
+# carrying the signal name and the real exit code — not one handler shared
+# across TERM/INT/EXIT that hard-codes `exit 0`. Bash fires the EXIT trap
+# after any trap runs `exit`, so a shared, exiting handler re-enters itself
+# through EXIT on every signal: it printed its "shutting down" line twice, and
+# always reported success regardless of which signal fired or whether
+# stop_runner had to time out. See scripts/start.sh:432-443 for the pattern
+# this mirrors — a plain `exit "$code"` for the signal traps, and a separate,
+# non-exiting handler for EXIT.
 shutdown_handler() {
-  echo "Received SIGTERM — shutting down runner..."
+  local signame="$1" code="$2"
+  echo "Received SIG${signame} — shutting down runner..."
   deregister
-  stop_runner
-  exit 0
+  # `stop_runner` can `return 1` on timeout. Called bare under `set -e` inside
+  # a trap, that non-zero return would trip errexit mid-handler — before this
+  # function's own `exit "$code"` runs — and unwind through the EXIT trap
+  # instead, silently losing both the real exit code and the timeout. Putting
+  # it on the left of `||` exempts it from errexit while still surfacing the
+  # timeout as a warning in the log (the exit code stays the signal's: mixing
+  # in "child was slow to stop" would make an ordinary SIGTERM shutdown look
+  # like a failure to anything checking the container's exit status).
+  stop_runner ||
+    echo "Warning: forgejo-runner daemon did not exit within ${SHUTDOWN_CHILD_TIMEOUT}s — leaving it to Docker's SIGKILL."
+  exit "$code"
 }
 
-trap 'shutdown_handler' TERM
-trap 'shutdown_handler' INT
-trap 'shutdown_handler' EXIT
+# The EXIT trap is a separate, non-exiting fallback, not shutdown_handler.
+# It exists for the path where the script ends without a signal: the child
+# exits on its own and the wait loop below falls through to its own
+# `exit "$RUNNER_STATUS"`, which is what actually ends the process and is
+# what triggers this trap. On a signal-driven shutdown, deregister and
+# stop_runner already ran inside shutdown_handler (both guarded, so these
+# calls just no-op) before its `exit` unwound into this trap; that re-entry
+# is harmless idempotent cleanup, not the double execution this replaces.
+cleanup_on_exit() {
+  deregister
+  stop_runner ||
+    echo "Warning: forgejo-runner daemon did not exit within ${SHUTDOWN_CHILD_TIMEOUT}s — leaving it to Docker's SIGKILL."
+}
+
+trap 'shutdown_handler INT 130' INT
+trap 'shutdown_handler TERM 143' TERM
+trap 'cleanup_on_exit' EXIT
 
 # Job control on. Without it bash adds SIGINT to a background child's ignore
 # mask, so the daemon would silently stop being interruptible the moment it
@@ -158,6 +192,14 @@ echo "Starting Forgejo runner daemon..."
 forgejo-runner daemon --config "$DATA/config.yaml" &
 RUNNER_PID=$!
 
+# On a signal-driven shutdown, the INT/TERM trap above runs `exit "$code"`
+# from inside the interrupted `wait` and the shell exits right there — this
+# loop's own status handling is never reached, and that is fine: the trap's
+# code (143/130) already is the real exit status for that path. What follows
+# exists for the no-signal path: the child dies on its own (a crash, or a
+# clean exit) and this loop has to capture that real exit status without
+# letting errexit end the script before RUNNER_STATUS is set.
+#
 # `wait` is looped rather than called once. With job control on, bash's `wait`
 # returns when the child changes state, not only when it exits: a `kill -STOP`
 # would make it return 128+SIGSTOP while the process is merely paused. A single
@@ -169,9 +211,8 @@ RUNNER_PID=$!
 # Polling once a second costs nothing and cannot spin.
 #
 # `wait` is in `if` context: bash suspends errexit within `if` condition tests,
-# so a TERM signal returning 128+SIGTERM does not exit the script prematurely.
-# The if statement does not catch/suppress the signal — traps still fire — but
-# it prevents errexit from ending the script before the loop logic runs.
+# so the child's non-zero exit status does not trip errexit before
+# RUNNER_STATUS captures it.
 RUNNER_STATUS=0
 while kill -0 "$RUNNER_PID" 2>/dev/null; do
   if wait "$RUNNER_PID"; then
@@ -182,4 +223,8 @@ while kill -0 "$RUNNER_PID" 2>/dev/null; do
   kill -0 "$RUNNER_PID" 2>/dev/null && sleep 1
 done
 
+# Reached only on the no-signal path — a signal-driven shutdown already exited
+# from inside shutdown_handler above. This is what triggers the EXIT trap
+# (cleanup_on_exit, which never calls exit), so RUNNER_STATUS genuinely is the
+# process's final exit code, propagating the child's real status.
 exit "$RUNNER_STATUS"
