@@ -1,0 +1,202 @@
+"""Forgejo's account of its own runners and the jobs they ran.
+
+Forgejo answers two questions the runner's log cannot. Whether a runner is
+busy: `status` on the user runners endpoint is enumerated offline/idle/active,
+which beats inferring it from a log line. And how a job ended: the
+forgejo-runner daemon logs a task starting and never logs it finishing, so
+without this the history would have no end times and no results at all.
+
+Everything is best-effort and returns None on failure. A run that cannot be
+matched keeps its log-only data rather than being dropped.
+"""
+
+import json
+import urllib.error
+import urllib.parse
+import urllib.request
+
+# Terminal task states, mapped onto the result vocabulary the rest of the
+# dashboard is built on. templates/history.html keys its CSS and its result
+# filter on those words and history.summary() counts SUM(result='Succeeded')
+# and friends, so a Forgejo run written with Forgejo's own lowercase
+# "success" counted toward the run total, toward none of the tiles, could not
+# be reached through the filter, and rendered unstyled.
+#
+# "skipped" deliberately keeps a word of its own rather than being folded
+# into one of the other three. The task never ran: "Succeeded" would inflate
+# the success-rate tile, "Failed" would invent a failure, and "Canceled"
+# would assert a cancellation nobody performed. history.html knows this word
+# too - it is in the CSS and in the filter - it simply counts toward no
+# success/failure tile, which is the honest answer.
+CONCLUSIONS = {
+    "success": "Succeeded",
+    "failure": "Failed",
+    "cancelled": "Canceled",
+    "skipped": "Skipped",
+}
+
+# Anything not in there - running, waiting, blocked - means the task has not
+# finished, and reporting an end time for it would be a lie. Derived from the
+# map rather than written out again so the two cannot drift apart.
+FINISHED = frozenset(CONCLUSIONS)
+
+# How long a single HTTP call may block before urllib gives up. Read by
+# docker_ops when it decides how long a FAILED fleet-status call may safely
+# stay cached: that backoff must exceed this number, or the collector thread
+# retries a call that has not even had time to fail yet.
+REQUEST_TIMEOUT = 20
+
+
+class Forgejo:
+    def __init__(self, base_url, token):
+        self.base = (base_url or "").rstrip("/")
+        self.token = token
+
+    # ----------------------------------------------------------------- http
+    def _request(self, path, method="GET", params=None):
+        url = self.base + path
+        if params:
+            url += "?" + urllib.parse.urlencode(params)
+        req = urllib.request.Request(url, method=method, headers={
+            # Forgejo's own scheme. Not "Bearer": that is GitHub's, and
+            # Forgejo answers 401 to it on some deployments.
+            "Authorization": f"token {self.token}",
+            "Accept": "application/json",
+            "User-Agent": "nomercy-runner-dashboard",
+        })
+        try:
+            with urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT) as r:
+                body = r.read().decode()
+                return json.loads(body) if body.strip() else True
+        except urllib.error.HTTPError as e:
+            print(f"[forgejo] {e.code} {method} {path}")
+            return None
+        except Exception as e:  # noqa: BLE001 - surfaced, not raised
+            print(f"[forgejo] {method} {path}: {e}")
+            return None
+
+    def _get(self, path, params=None):
+        return self._request(path, "GET", params)
+
+    # -------------------------------------------------------------- runners
+    def runner_statuses(self):
+        """The forge's own ActionRunner records, as a list, or None if the
+        call failed.
+
+        None and [] are deliberately different. [] means Forgejo answered and
+        knows of no runners; None means we could not ask, and the caller must
+        report "unknown" rather than treating every runner as idle - prune and
+        drain act on that answer.
+
+        WIDENED from a bare {uuid: status} reduction to the full records.
+        docker_ops needs status alone for the runners it already has a
+        container for (busy/idle), but it ALSO needs name/labels/version for
+        a runner Forgejo knows about that is NOT a container on this engine -
+        the Elsewhere section on the status page. Both read the same
+        endpoint, so reducing the payload down to {uuid: status} here, before
+        either caller sees it, would have thrown away exactly what the second
+        one needs and forced a second HTTP call to get it back. Callers that
+        only want busy/idle reduce this themselves (see docker_ops._status_map).
+
+        The endpoint returns a BARE ARRAY, not an object with a "runners" key.
+
+        This calls the user-scoped endpoint, not the admin one: a runner
+        registered under /admin/actions/runners is available to every
+        repository and every user on the instance, which is not the scope
+        this dashboard wants. See docs/forgejo-runners-decisions.md.
+        """
+        data = self._get("/api/v1/user/actions/runners",
+                         {"limit": 100})
+        if not isinstance(data, list):
+            return None
+        return [r for r in data if isinstance(r, dict) and r.get("uuid")]
+
+    def runner_ids(self):
+        """{uuid: id}, for deregistration. None if the call failed."""
+        data = self._get("/api/v1/user/actions/runners", {"limit": 100})
+        if not isinstance(data, list):
+            return None
+        return {r["uuid"]: r.get("id")
+                for r in data if isinstance(r, dict) and r.get("uuid")}
+
+    def registration_token(self):
+        data = self._get("/api/v1/user/actions/runners/registration-token")
+        if not isinstance(data, dict):
+            return None
+        return data.get("token") or None
+
+    def delete_runner(self, runner_id):
+        if not runner_id:
+            return False
+        got = self._request(
+            f"/api/v1/user/actions/runners/{runner_id}", "DELETE")
+        return got is not None
+
+    # ---------------------------------------------------------------- tasks
+    def find_task(self, repo, task_id, started_at):
+        """The finished task a recorded run corresponds to, or None.
+
+        Matched on id first. Whether ActionTask.id is the same number the
+        runner logs as "task 830" is the one thing this design could not
+        settle from the swagger alone, so the start timestamp - which the log
+        gives exactly - is a second, independent way in.
+
+        An unfinished task returns None rather than a row with no end: it will
+        be picked up on a later sweep, when it has actually finished.
+        """
+        # quote(), because `repo` comes from a non-whitespace capture of a
+        # runner log line and is interpolated straight into a URL path. The
+        # same discipline providers.valid_name() applies to container names
+        # before they reach a command line: unescaped, a "?" or "#" in that
+        # capture ends the path early and turns the rest into a query or
+        # fragment, addressing an endpoint nobody wrote. safe="/" keeps the
+        # owner/repo separator intact, which is the one slash that belongs.
+        path = "/api/v1/repos/%s/actions/tasks" % urllib.parse.quote(
+            repo or "", safe="/")
+        data = self._get(path, {"limit": 50})
+        # Shape-guarded exactly like runner_statuses(): `.get()` on whatever
+        # came back raises AttributeError if the endpoint answers with a list
+        # (a Forgejo version change, a proxy, an error document), and that
+        # exception propagates out of the enricher sweep instead of the run
+        # simply staying unenriched until the next pass.
+        if not isinstance(data, dict):
+            return None
+        # The tasks live under "workflow_runs". The name is Forgejo's, not a
+        # mistake here - reading "tasks" gets an empty list and no error.
+        tasks = data.get("workflow_runs") or []
+
+        match = None
+        for t in tasks:
+            if task_id and t.get("id") == task_id:
+                match = t
+                break
+        if match is None:
+            for t in tasks:
+                if started_at and t.get("run_started_at") == started_at:
+                    match = t
+                    break
+        if match is None:
+            return None
+
+        status = (match.get("status") or "").lower()
+        if status not in FINISHED:
+            return None
+
+        return {
+            "run_id": match.get("id"),
+            "repo": repo,
+            "workflow": match.get("workflow_id"),
+            "branch": match.get("head_branch"),
+            "sha": (match.get("head_sha") or "")[:8],
+            # Forgejo's task payload carries no actor. Left explicit rather
+            # than omitted so the column is written as NULL instead of
+            # keeping a stale value from an earlier partial enrichment.
+            "actor": None,
+            "url": match.get("url"),
+            # Normalised at the boundary, not at the point of display: the
+            # word is written into the runs table and read back by the
+            # history filter and the summary counts, so translating it here
+            # is the only place that covers all three.
+            "conclusion": CONCLUSIONS[status],
+            "ended_at": match.get("updated_at"),
+        }

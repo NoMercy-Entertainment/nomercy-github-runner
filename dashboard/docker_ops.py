@@ -16,15 +16,13 @@ import re
 import subprocess
 import time
 
-IMAGE = os.environ.get(
-    "RUNNER_IMAGE",
-    "ghcr.io/nomercy-entertainment/nomercy-github-runner:latest",
-)
+import forgejo_api
+import providers
+
 # Path to the repo AS THE DOCKER DAEMON SEES IT, not as this container sees it.
 # Bind mounts are resolved by the daemon, so a path valid only inside the
 # dashboard container would silently create an empty directory instead.
 REPO_HOST_PATH = os.environ.get("REPO_HOST_PATH", "/mnt/d/docker-compose/GithubRunners")
-PREFIX = "github-runner-"
 LABEL = "nomercy.runner=true"
 
 STATE_PATH = os.path.join(os.environ.get("DASH_DATA", "/data"), "state.json")
@@ -34,13 +32,27 @@ STATE_PATH = os.path.join(os.environ.get("DASH_DATA", "/data"), "state.json")
 # shell helpers
 # --------------------------------------------------------------------------
 
-def _run(args, timeout=30):
+def _run(args, timeout=30, merge_stderr=False):
     """Run a docker command. Returns (ok, stdout, stderr).
 
     Never raises: a wedged runner must not take the whole dashboard down with
     it, so every failure comes back as data for the caller to render.
+
+    merge_stderr redirects the child's stderr onto the same pipe as its
+    stdout BEFORE this process ever reads a byte of either, so what comes
+    back on `stdout` is the two streams interleaved in the order the process
+    actually wrote them - the same thing `docker logs` shows in a terminal.
+    stderr is then always "" in that mode: there is nothing left to hand back
+    separately. See _docker_logs() for why this exists; almost nothing should
+    pass merge_stderr=True directly - go through that helper instead.
     """
     try:
+        if merge_stderr:
+            p = subprocess.run(
+                args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                text=True, timeout=timeout,
+            )
+            return p.returncode == 0, p.stdout.strip(), ""
         p = subprocess.run(
             args, capture_output=True, text=True, timeout=timeout
         )
@@ -51,8 +63,55 @@ def _run(args, timeout=30):
         return False, "", str(e)
 
 
-def _docker(*args, timeout=30):
-    return _run(["docker", *args], timeout=timeout)
+def _docker(*args, timeout=30, merge_stderr=False):
+    return _run(["docker", *args], timeout=timeout, merge_stderr=merge_stderr)
+
+
+def _docker_logs(*args, timeout=30):
+    """_docker(), but with the container's stdout and stderr merged in order.
+
+    Use this, never plain _docker(), for anything that reads a CONTAINER's
+    own log output ("docker logs ..."). Everything else - inspect, exec,
+    stats, ps - should keep using _docker() unchanged; this is specifically
+    about how a runner's own process writes its log, not about docker CLI
+    output in general.
+
+    Why this exists: the GitHub Actions runner (start.sh) writes its log to
+    stdout, but forgejo-runner writes ITS log to stderr. Every log-reading
+    call site in this codebase used to call plain _docker("logs", ...) and
+    read only stdout - which is correct for a GitHub runner and silently
+    empty for a Forgejo one. Measured against a live Forgejo runner that had
+    just completed real jobs: `docker logs --tail 200` returned 3 lines on
+    stdout (shell echo) and 10 on stderr (the runner's actual log, including
+    the "task N repo is ..." lines both the busy-card label and the history
+    reconciler grep for). Reading stdout alone parsed 0 job starts where
+    reading both would have parsed 2. In production this meant the entire
+    Forgejo history path was dead - the history table held thousands of
+    GitHub rows and zero Forgejo ones, real completed tasks and all - and the
+    busy card for a working Forgejo runner showed no job name. Every test
+    kept passing throughout, because the tests hand log text straight to the
+    parsers and never exercise the stdout/stderr split at all.
+
+    The fix is NOT "read stderr too and glue it onto stdout after the fact".
+    _docker()'s _run() calls subprocess.run(capture_output=True), which
+    captures the two streams into separate buffers - by the time both are
+    strings in Python, whatever order the lines were actually written in is
+    gone, and concatenating "stdout then stderr" (or vice versa) would
+    reorder a real interleaved log, which is exactly the kind of corruption
+    the line-by-line "task started" parsing here cannot tolerate. Ordering
+    has to be preserved at the OS level, before capture: this runs the
+    subprocess with stderr=subprocess.STDOUT, so the kernel/shell interleaves
+    the two streams onto one pipe in the order the process wrote them - the
+    same thing a terminal shows for `docker logs` - and this process only
+    ever sees the one, already-ordered stream.
+
+    Do not "simplify" a call site back to plain _docker("logs", ...) because
+    it looks equivalent - that silently reintroduces this exact bug for any
+    container that logs to stderr, and nothing will fail loudly when it
+    happens; the busy card just goes blank and the history table quietly
+    stops gaining rows for that fleet again.
+    """
+    return _docker(*args, timeout=timeout, merge_stderr=True)
 
 
 # --------------------------------------------------------------------------
@@ -83,17 +142,74 @@ def set_draining(name, on=True):
     save_state(st)
 
 
+def _remember_forgejo_uuid(name, uuid):
+    """Persist the uuid a Forgejo container's OWN registration file last
+    showed us, keyed by the container's name.
+
+    This is local bookkeeping about a container we already run - "what uuid
+    did forgejo-runner-N last register as" - not a name-based match against
+    arbitrary forge records. The exclusion in _elsewhere() still compares
+    uuids only; this just recovers the uuid to compare with once the
+    container is stopped and _runner_file() (docker exec) can no longer read
+    it. Without it, every stop/restart of a local Forgejo runner - including
+    every "Recreate fleet" - made that runner's own forge record briefly
+    indistinguishable from a genuinely-elsewhere one, so it double-listed:
+    once as `stopped` under Forgejo, once as an inert Elsewhere card.
+
+    Read fresh and written only when the value actually changes (which,
+    once a runner has registered, is for the rest of its life) - the same
+    read-modify-write shape set_draining() uses against this same file,
+    kept to the same small race window against a concurrent drain toggle
+    rather than a wider one from caching a value across the whole sweep.
+    """
+    if not uuid:
+        return
+    st = load_state()
+    uuids = st.get("forgejo_uuids") or {}
+    if uuids.get(name) == uuid:
+        return
+    uuids[name] = uuid
+    st["forgejo_uuids"] = uuids
+    save_state(st)
+
+
 # --------------------------------------------------------------------------
 # telemetry
 # --------------------------------------------------------------------------
 
-def list_runner_names():
-    ok, out, _ = _docker("ps", "-a", "--filter", f"name=^{PREFIX}",
-                         "--format", "{{.Names}}")
+def list_runners():
+    """[(name, provider)] for every runner container on this engine.
+
+    One `docker ps` for both fleets: `--format` exposes a single label through
+    the `.Label` function, so names and providers arrive together rather than
+    costing an inspect per container.
+
+    Selection is by name prefix, not by the nomercy.runner label. The runners
+    deployed today were created by compose, which never set that label, and a
+    listing that required it would show an empty fleet.
+    """
+    ok, out, _ = _docker(
+        "ps", "-a", "--format",
+        '{{.Names}}\t{{.Label "' + providers.LABEL_PROVIDER + '"}}')
     if not ok:
         return []
-    names = [n for n in out.splitlines() if n.startswith(PREFIX)]
-    return sorted(names, key=_index_of)
+    found = []
+    for line in out.splitlines():
+        name, _, label = line.partition("\t")
+        name, label = name.strip(), label.strip()
+        p = providers.from_label(label, name)
+        # from_label can answer on the label alone; require the name to match
+        # too, so a stray label on an unrelated container cannot enrol it into
+        # a fleet whose action routes would then act on it.
+        if p and name.startswith(p.prefix):
+            found.append((name, p))
+    return sorted(found, key=lambda t: (t[1].key != "github", t[1].key,
+                                        _index_of(t[0])))
+
+
+def list_runner_names():
+    """Names only. app.py's guards ask nothing more than "does this exist"."""
+    return [n for n, _ in list_runners()]
 
 
 def _index_of(name):
@@ -101,8 +217,9 @@ def _index_of(name):
     return int(m.group(1)) if m else 0
 
 
-def next_free_index():
-    used = {_index_of(n) for n in list_runner_names()}
+def next_free_index(provider):
+    """Lowest unused index within one fleet. The two number independently."""
+    used = {_index_of(n) for n, p in list_runners() if p is provider}
     i = 1
     while i in used:
         i += 1
@@ -127,12 +244,107 @@ def _stats_map():
     return m
 
 
-def _job_state(name):
-    """Derive busy/idle/unknown from the runner's log.
+# "2026-08-20 13:27:33Z: Running job: build-base / docker-build" - the
+# runner stamps its own lines, so the age of an event can be read straight off
+# the line that was matched, without a second `docker logs --timestamps` pass.
+RE_LOG_STAMP = re.compile(r"(\d{4}-\d{2}-\d{2}) (\d{2}:\d{2}:\d{2})Z:")
 
-    Takes the LAST job event of either kind. Grepping only for 'Running job'
-    reports a finished job as still running whenever its completion line has
-    scrolled out of the tail window.
+# time="2026-08-25T14:38:55Z" level=info msg="task 830 repo is FiLL/q ..."
+# The daemon logs a task starting and never logs it finishing, which is why
+# Forgejo's busy/idle comes from the API and this pattern only names the job.
+RE_FORGEJO_TASK = re.compile(
+    r'time="(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})Z".*?'
+    r'msg="task (\d+) repo is (\S+)')
+
+
+def _outlived_by_container(name, line):
+    """Whether this log line describes something the container has outlived.
+
+    A job that began before the container's current start cannot still be
+    running - the process that was running it is gone. Without this, a job
+    killed mid-flight leaves its "Running job:" as the last event in the log
+    for good, and the runner reads busy for ever.
+
+    Both unknowns answer False, which keeps whatever the log alone said. That
+    direction matters: is_idle() gates prune and drain, so a guess that
+    invents "idle" would clear the build cache out from under a live job,
+    while a guess that keeps "busy" only delays a sweep.
+    """
+    m = RE_LOG_STAMP.search(line)
+    if not m:
+        return False
+    started = started_at(name)
+    if not started:
+        return False
+    return f"{m.group(1)}T{m.group(2)}Z" < started
+
+
+def _runner_file(name, provider):
+    """The runner's registration file, parsed, or {} if unreadable.
+
+    Read once per collect and passed to everything that needs it: the
+    registration name, and - for Forgejo - the uuid that identifies this
+    runner to the forge. Reading it twice would double the exec cost of every
+    poll for no gain.
+    """
+    ok, out, _ = _docker("exec", name, "cat", provider.registration_path,
+                         timeout=8)
+    if not ok or not out:
+        return {}
+    try:
+        # GitHub writes .runner with a UTF-8 BOM. json.loads chokes on it,
+        # which silently turned every registration name into "-".
+        return json.loads(out.lstrip("﻿"))
+    except Exception:  # noqa: BLE001 - rendered, not raised
+        return {}
+
+
+def _forgejo_current_job(name):
+    """A label for whatever task was last picked up. Display only."""
+    ok, out, _ = _docker_logs("logs", "--tail", "200", name, timeout=10)
+    if not ok:
+        return ""
+    last = None
+    for line in out.splitlines():
+        m = RE_FORGEJO_TASK.search(line)
+        if m:
+            last = m
+    return f"task {last.group(2)} - {last.group(3)}" if last else ""
+
+
+def _forgejo_job_state(name, runner_file, forge_status):
+    """busy/idle/unknown from Forgejo, which knows without being inferred.
+
+    forge_status is {uuid: status} or None. None means the API could not be
+    reached, and a runner Forgejo has never heard of is equally unknown - a
+    container mid-registration has no answer yet, and answering "idle" for it
+    would let prune act on a runner about to pick up work.
+    """
+    uuid = (runner_file or {}).get("uuid")
+    if not uuid or forge_status is None:
+        return "unknown", ""
+    status = forge_status.get(uuid)
+    if not status:
+        return "unknown", ""
+    if status == "active":
+        return "busy", _forgejo_current_job(name)
+    # idle and offline both mean "running no job". offline is separately
+    # visible from the container being down, so it needs no third state here.
+    # Anything else - a status word this code does not recognise, whether
+    # from a future Forgejo release or a bug - is refused rather than assumed
+    # harmless: a wrong "idle" here is what lets prune delete layers a live
+    # job needs, so an unrecognised word must read as "unknown", not "idle".
+    return ("idle", "") if status in ("idle", "offline") else ("unknown", "")
+
+
+def _job_state(name, provider=None, runner_file=None, forge_status=None):
+    """Derive busy/idle/unknown for a runner.
+
+    provider defaults to GitHub so the single-argument form keeps working.
+
+    The GitHub branch below takes the LAST job event of either kind.
+    Grepping only for 'Running job' reports a finished job as still running
+    whenever its completion line has scrolled out of the tail window.
 
     A failed `docker logs` (including its own 10s timeout) returns "unknown",
     not "idle". The two are not interchangeable: a runner mid-way through a
@@ -142,29 +354,28 @@ def _job_state(name):
     safe/unsafe split (is_idle) already collapse "unknown" into "not idle";
     callers that show state to an operator (collect) treat it explicitly.
     """
-    ok, out, _ = _docker("logs", "--tail", "200", name, timeout=10)
+    provider = provider or providers.GITHUB
+    if provider is providers.FORGEJO:
+        return _forgejo_job_state(name, runner_file, forge_status)
+
+    ok, out, _ = _docker_logs("logs", "--tail", "200", name, timeout=10)
     if not ok:
         return "unknown", ""
     last = ""
     for line in out.splitlines():
         if "Running job:" in line or re.search(r"Job .* completed", line):
             last = line
-    if "Running job:" in last:
-        return "busy", last.split("Running job:", 1)[1].strip()
-    return "idle", ""
+    if "Running job:" not in last:
+        return "idle", ""
+    if _outlived_by_container(name, last):
+        return "idle", ""
+    return "busy", last.split("Running job:", 1)[1].strip()
 
 
-def _registration(name):
-    ok, out, _ = _docker("exec", name, "cat",
-                         "/root/actions-runner/.runner", timeout=8)
-    if not ok:
-        return "-"
-    try:
-        # The runner writes .runner with a UTF-8 BOM. json.loads chokes on it,
-        # which silently turned every registration name into "-".
-        return json.loads(out.lstrip("﻿")).get("agentName", "-")
-    except Exception:
-        return "-"
+def _registration(name, provider=None, runner_file=None):
+    provider = provider or providers.GITHUB
+    rf = runner_file if runner_file is not None else _runner_file(name, provider)
+    return rf.get(provider.registration_key) or "-"
 
 
 def _df_rows(name):
@@ -252,27 +463,165 @@ def host_info():
     return info
 
 
-def collect():
-    stats = _stats_map()
-    draining = set(load_state().get("draining", []))
-    runners = []
+# How long one fleet-wide Forgejo runner-status answer is reused.
+#
+# collect() runs every 5s, so uncached this endpoint was called ~17,000 times
+# a day - and, worse, on the SHARED collector thread with a 20s HTTP timeout,
+# so a slow or unreachable Forgejo stalled telemetry for the GITHUB fleet too.
+# That cross-engine coupling is the exact thing this whole design exists to
+# avoid, reached from the dashboard's side instead of Docker's.
+#
+# 10s, matching the drain watcher's own cadence: it bounds how stale a
+# busy/idle badge can be to about two collector sweeps, which is under what a
+# person watching the grid notices, while halving the call rate. The GitHub
+# side's equivalent cache is 60s, but that one backs a page a human opens, not
+# a badge that flips when a job starts.
+_FORGE_STATUS_TTL = 10
 
-    for name in list_runner_names():
+# A FAILED call gets a longer window than a successful one. It must exceed
+# forgejo_api's own HTTP timeout (read from there rather than assumed, so the
+# two cannot drift apart): the deadline below is taken AFTER the call
+# returns, so a call that pays the full timeout already spends that long
+# before the window even starts. Backing failure off by only _FORGE_STATUS_TTL
+# on top would still let a dead Forgejo cost the collector its 20s timeout
+# roughly every 30s (20s blocking + 10s cached); this instead bounds a
+# completely dead Forgejo to one 20s stall per 50s cycle (20s blocking + 30s
+# cached) - worse case is a fixed cost per sweep, not an unbounded retry storm.
+_FORGE_STATUS_FAIL_BACKOFF = forgejo_api.REQUEST_TIMEOUT + _FORGE_STATUS_TTL  # 30s
+
+_forge_status_cache = None   # (monotonic deadline, records-or-None)
+
+
+def _status_map(records):
+    """{uuid: status} from the full records forgejo_api.runner_statuses() now
+    returns. A separate step so the one call this cache exists to bound can
+    still serve every caller that only ever wanted busy/idle, unchanged."""
+    return {r["uuid"]: (r.get("status") or "")
+            for r in (records or []) if isinstance(r, dict) and r.get("uuid")}
+
+
+def _forge_records(env, client=None):
+    """The whole Forgejo fleet's runner records, cached for a window that
+    starts when the call FINISHES, not when it started.
+
+    `client`, when given, is reused instead of building a fresh one.
+    collect() builds a client itself to decide whether Forgejo is configured
+    at all (see its own comment), and passes that same client through here
+    rather than having this construct a second one for the same sweep -
+    building one is a local check only (env has a URL and a token), never a
+    network call, but there is no reason to do it twice. Every other caller
+    (tests, _forge_statuses() below) passes nothing and gets the previous
+    behaviour: build one here, only when the cache actually needs a fetch.
+
+    A failed call is NOT cached as though it were an answer - the hazard
+    host_info() documents. What is stored on failure is None, which is
+    already the explicit "we could not ask" sentinel every caller handles by
+    reporting "unknown"; the previous good records are discarded rather than
+    replayed, so a stale idle - or a stale Elsewhere card - can never outlive
+    the call that produced it.
+
+    The failed ATTEMPT is still rate-limited, deliberately, but by
+    _FORGE_STATUS_FAIL_BACKOFF rather than _FORGE_STATUS_TTL. Taking the
+    deadline from a `now` read BEFORE the call (the previous bug here) made a
+    call slower than the TTL store a deadline already in the past by the time
+    it was written, so a slow/unreachable Forgejo was retried, and paid its
+    full 20s HTTP timeout, on every subsequent collector sweep - exactly the
+    cross-engine stall on the GITHUB fleet's telemetry this cache exists to
+    prevent. Reading the clock after the call fixes that; using a longer
+    backoff for failures on top of it is what keeps a dead Forgejo from still
+    costing a 20s stall every ~30s.
+
+    This is the ONE call collect() makes to Forgejo per window. Both the
+    busy/idle map (_forge_statuses, below) and the Elsewhere list (collect())
+    are derived from what is cached here rather than fetched separately - two
+    reductions of one answer, not two calls.
+    """
+    global _forge_status_cache
+    now = time.monotonic()
+    if _forge_status_cache is not None and now < _forge_status_cache[0]:
+        return _forge_status_cache[1]
+    if client is None:
+        client = providers.FORGEJO.forge_client(env)
+    got = client.runner_statuses() if client is not None else None
+    ttl = _FORGE_STATUS_TTL if got is not None else _FORGE_STATUS_FAIL_BACKOFF
+    _forge_status_cache = (time.monotonic() + ttl, got)
+    return got
+
+
+def _forge_statuses(env):
+    """{uuid: status} for the whole Forgejo fleet, or None if the forge could
+    not be asked. Same cache window as _forge_records() - this only reduces
+    what is already cached there, so calling this costs nothing extra."""
+    records = _forge_records(env)
+    return None if records is None else _status_map(records)
+
+
+def collect(env=None):
+    env = env or {}
+    stats = _stats_map()
+    # `st`, not `state`: the loop below already uses `state` as the
+    # per-runner idle/busy/draining/stopped label, and shadowing it with
+    # this dict would be a landmine for the next edit even though nothing
+    # here reads it again after the two lines below.
+    st = load_state()
+    draining = set(st.get("draining", []))
+    # {container name: last-known uuid}, our own bookkeeping - see
+    # _remember_forgejo_uuid(). Falls back for a container currently stopped,
+    # whose registration file _runner_file() cannot read right now.
+    persisted_forgejo_uuids = st.get("forgejo_uuids") or {}
+    runners = []
+    found = list_runners()
+
+    # One API call for the whole Forgejo fleet, not one per runner. Gated on
+    # Forgejo being CONFIGURED - forge_client(env) can build a client at all
+    # - not on a local Forgejo container existing. Elsewhere's whole premise
+    # is runners that are NOT local containers: gating on one would leave
+    # the section empty for exactly the deployment shape it exists to show -
+    # the local Forgejo fleet drained, removed, or not yet created, while a
+    # Windows-service or macOS-VM runner is still alive and registered.
+    # forge_client() only checks that a URL and token are present - no
+    # network call - so this still costs a GitHub-only, Forgejo-UNCONFIGURED
+    # deployment nothing beyond that one cheap local check. Built once and
+    # handed to _forge_records() below rather than let it build a second one
+    # for the same sweep.
+    forge_client = providers.FORGEJO.forge_client(env)
+    forge_status = None
+    forge_records = None
+    if forge_client is not None:
+        forge_records = _forge_records(env, forge_client)
+        forge_status = None if forge_records is None else _status_map(forge_records)
+
+    # uuids of every Forgejo runner that IS a container on this engine, so
+    # the Elsewhere list below can tell "the forge knows about this and it is
+    # one of ours" from "the forge knows about this and it is not".
+    known_forgejo_uuids = set()
+
+    for name, provider in found:
         ok, status, _ = _docker("ps", "-a", "--filter", f"name=^{name}$",
                                 "--format", "{{.Status}}")
         status = status or "unknown"
         running = status.startswith("Up")
 
         if not running:
+            if provider is providers.FORGEJO:
+                remembered = persisted_forgejo_uuids.get(name)
+                if remembered:
+                    known_forgejo_uuids.add(remembered)
             runners.append({
-                "name": name, "registration": "-", "state": "stopped",
-                "job": "", "uptime": status, "cpu_percent": 0,
-                "mem_used": "0B", "mem_limit": "-",
+                "name": name, "provider": provider.key, "registration": "-",
+                "state": "stopped", "job": "", "uptime": status,
+                "cpu_percent": 0, "mem_used": "0B", "mem_limit": "-",
                 "build_cache": "0B", "images": "0B",
             })
             continue
 
-        job_state, job = _job_state(name)
+        rf = _runner_file(name, provider)
+        if provider is providers.FORGEJO:
+            uuid = (rf or {}).get("uuid")
+            if uuid:
+                known_forgejo_uuids.add(uuid)
+                _remember_forgejo_uuid(name, uuid)
+        job_state, job = _job_state(name, provider, rf, forge_status)
         if name in draining:
             state = "draining"
         elif job_state == "unknown":
@@ -295,7 +644,8 @@ def collect():
 
         runners.append({
             "name": name,
-            "registration": _registration(name),
+            "provider": provider.key,
+            "registration": _registration(name, provider, rf),
             "state": state,
             "job": job,
             "uptime": status.replace("Up ", "").split(" (")[0],
@@ -311,7 +661,35 @@ def collect():
         "disk": _disk(),
         "host": host_info(),
         "runners": runners,
+        "elsewhere": _elsewhere(forge_records, known_forgejo_uuids),
     }
+
+
+def _elsewhere(forge_records, known_uuids):
+    """Forgejo runners the forge knows about that are not one of the
+    containers on this engine - read-only cards on the status page, never a
+    target for start/stop/prune/remove (those all reach a runner through
+    ops.list_runner_names(), which this never feeds).
+
+    Matched on uuid, like every other runner-identity comparison in this
+    module - Forgejo documents runner names as not unique, so a name match
+    could silently conflate two different runners.
+
+    forge_records is None exactly when the forge could not be asked this
+    window (see _forge_records). That must produce an empty list here, not a
+    stale one from an earlier successful call and not a fabricated entry -
+    the same "unknown answers unknown" discipline _job_state() and is_idle()
+    already apply to this sentinel.
+    """
+    if forge_records is None:
+        return []
+    return [{
+        "uuid": r.get("uuid"),
+        "name": r.get("name") or "-",
+        "status": r.get("status") or "unknown",
+        "labels": ", ".join(r.get("labels") or []),
+        "version": r.get("version") or "",
+    } for r in forge_records if r.get("uuid") not in known_uuids]
 
 
 def _disk():
@@ -355,54 +733,191 @@ def restart(name, timeout=60):
     return _docker("restart", "-t", str(timeout), name, timeout=timeout + 30)
 
 
-def remove(name):
-    # 180s, not 120s: these containers hold a nested (Docker-in-Docker)
-    # daemon, and tearing that down on removal has been observed to take
-    # ~110s - too close to a 120s limit for comfort. A timeout here is read
-    # by the caller as "removal failed" even when it eventually succeeds, so
-    # the margin matters more than it looks like it should.
-    ok, out, err = _docker("rm", "-f", name, timeout=180)
+def remove(name, provider=None, env=None):
+    """Remove a runner, deregistering it from its forge first where needed.
+
+    start.sh deregisters a GitHub runner on SIGTERM, so that side needs
+    nothing here. forgejo-runner does not deregister on its own, and a removed
+    container would leave a runner sitting at "offline" in Forgejo for ever.
+
+    A failed deregistration does not block the removal. The operator asked for
+    the container to be gone, and a forge that is not answering must not be
+    able to veto that; the stale registration is visible and deletable in
+    Forgejo's own UI.
+    """
+    provider = provider or providers.GITHUB
+    if provider is providers.FORGEJO:
+        try:
+            client = provider.forge_client(env or {})
+            if client is not None:
+                rf = _runner_file(name, provider)
+                # The id in .runner is written at registration. Falling back
+                # to the live map covers a file that is missing or stale.
+                runner_id = rf.get("id")
+                if not runner_id and rf.get("uuid"):
+                    runner_id = (client.runner_ids() or {}).get(rf["uuid"])
+                if runner_id:
+                    client.delete_runner(runner_id)
+        except Exception as e:  # noqa: BLE001 - never blocks the removal
+            print(f"[forgejo:deregister:{name}] {e}")
+
+    # -v removes ANONYMOUS volumes only, never named ones (docker rm's own
+    # documented behaviour: "Remove anonymous volumes associated with the
+    # container"). That distinction is what makes this safe: forgejo-runner-1
+    # in docker-compose.runners.yml mounts the NAMED volume
+    # forgejo-runner-1-data, which -v cannot touch, while a runner this
+    # dashboard created mounts nothing at /data - so the VOLUME /data in
+    # forgejo-runner/Dockerfile made Docker create an anonymous volume per
+    # container, and every remove/recreate left one behind, dangling, on the
+    # engine whose disk containment is the entire point of this deployment.
+    #
+    # 180s: these containers hold a nested daemon, and tearing that down on
+    # removal has been observed to take ~110s. A timeout here is read by the
+    # caller as "removal failed" even when it eventually succeeds, so the
+    # margin matters more than it looks like it should.
+    ok, out, err = _docker("rm", "-f", "-v", name, timeout=180)
     set_draining(name, False)
     return ok, out, err
 
 
-def create(index, env):
-    """Create a runner container matching the compose definition."""
-    name = f"{PREFIX}{index}"
+def create(index, env, provider=None):
+    """Create a runner container. Returns (ok, name, message)."""
+    provider = provider or providers.GITHUB
+    name = provider.name_for(index)
+
+    container_env, err = provider.container_env(env, name)
+    if err:
+        # No container is started on a half-built environment: a Forgejo
+        # runner without a registration token boots, fails, and restarts for
+        # ever under `restart: unless-stopped`.
+        return False, name, err
+
     args = [
         "run", "-d",
         "--name", name,
         "--label", LABEL,
+        "--label", f"{providers.LABEL_PROVIDER}={provider.key}",
         "--privileged",
         "--restart", "unless-stopped",
         "--stop-timeout", "60",
         "--tmpfs", "/tmp",
-        "-v", f"{REPO_HOST_PATH}/scripts/start.sh:/root/start.sh:ro",
-        "-e", f"GH_TOKEN={env.get('GH_TOKEN', '')}",
-        "-e", f"GITHUB_ORG={env.get('GITHUB_ORG', 'NoMercy-Entertainment')}",
-        "-e", f"RUNNER_LABELS={env.get('RUNNER_LABELS', 'self-hosted,Linux,X64')}",
-        "-e", f"RUNNER_GROUP={env.get('RUNNER_GROUP', '')}",
     ]
+    if provider is providers.GITHUB:
+        args += ["-v", f"{REPO_HOST_PATH}/scripts/start.sh:/root/start.sh:ro"]
+    for k, v in container_env.items():
+        args += ["-e", f"{k}={v}"]
+
     cpu = (env.get("RUNNER_CPU_LIMIT") or "0").strip()
     mem = (env.get("RUNNER_MEM_LIMIT") or "0").strip()
     if cpu not in ("", "0"):
         args += ["--cpus", cpu]
     if mem not in ("", "0"):
         args += ["--memory", mem]
-    args.append(IMAGE)
+    args.append(provider.image)
 
     ok, out, err = _docker(*args, timeout=180)
     return ok, name, (err or out)
 
 
-def is_idle(name):
+def started_at(name):
+    """When this container last started, to whole seconds, or "" if unknown.
+
+    Truncated rather than passed through: the daemon reports nanoseconds
+    ("2026-08-20T14:23:37.714612450Z") while history stores whole seconds
+    ("2026-08-20T14:23:37Z"), and the two are compared as strings. Left
+    untruncated, a fractional stamp sorts *before* the same second without
+    one, because "." is below "Z" - close enough to right to survive review
+    and wrong exactly once a second.
+    """
+    ok, out, _ = _docker("inspect", "-f", "{{.State.StartedAt}}", name,
+                         timeout=10)
+    if not ok:
+        return ""
+    stamp = (out or "").strip()
+    head, sep, _ = stamp.partition(".")
+    return (head + "Z") if sep else stamp
+
+
+def is_idle(name, provider=None, forge_status=None, env=None):
     """True only for a definite "idle". "busy" and "unknown" both answer
     False - this gates both the drain watcher (worst case: an early stop,
     which just restarts) and cache prune (worst case: deleting layers a
     running job needs), and the two callers cannot be told apart from here.
+
+    forge_status is fetched here when the caller has none. prune() and the
+    drain watcher both call is_idle() holding no status of their own -
+    collect() is the one place that already has one for the whole fleet, and
+    it calls _job_state() directly instead of coming through here. Without
+    this fetch, prune() and the drain watcher would read every Forgejo runner
+    as unknown and refuse to act on it for ever.
     """
-    state, _ = _job_state(name)
+    provider = provider or providers.GITHUB
+    rf = None
+    if provider is providers.FORGEJO:
+        rf = _runner_file(name, provider)
+        if forge_status is None:
+            client = provider.forge_client(env or {})
+            if client is not None:
+                # client.runner_statuses() answers with the full records
+                # (see forgejo_api.Forgejo.runner_statuses) - reduced here to
+                # the {uuid: status} map _job_state() expects, exactly like
+                # the cached path in _forge_statuses() does.
+                records = client.runner_statuses()
+                forge_status = None if records is None else _status_map(records)
+    state, _ = _job_state(name, provider, rf, forge_status)
     return state == "idle"
+
+
+def _bare(provider):
+    """Whether a provider-aware call should be made in its GitHub form.
+
+    THE convention, in one place. Five call sites had each grown their own
+    copy of `if provider is GITHUB: <bare call> else: <full call>`, each with
+    its own paragraph explaining it, while a sixth - the drain watcher -
+    called the full form for both fleets, so the codebase stated the same
+    rule twice in opposite directions. Now nothing chooses; everything goes
+    through the three wrappers below.
+
+    Why the distinction exists at all, given it changes no behaviour:
+    is_idle(), remove() and create() are deliberately easy seams to stub, and
+    the stubs in this suite are written to the GitHub signature -
+    tests/test_docker_ops.py stubs `is_idle` four times as `lambda n: True`,
+    tests/test_routes.py stubs `remove` as `fake_remove(name)` and `create`
+    as `fake_create(idx, env)`. Those files are pre-existing and not editable
+    here. Passing the extra arguments on the GitHub path would break every
+    one of them for nothing: all three functions already default provider to
+    GITHUB and only consult env on the Forgejo path, so those arguments are
+    exactly what Forgejo needs and exactly what GitHub ignores.
+
+    `provider is None` takes the GitHub branch, because all three default it
+    that way themselves.
+    """
+    return provider is None or provider is providers.GITHUB
+
+
+def idle_check(name, provider=None, env=None):
+    """is_idle() for a caller that holds no forge status of its own.
+
+    Every is_idle() caller outside collect() comes through here - prune(),
+    both prune routes, and the drain watcher. See _bare() for the convention.
+    """
+    if _bare(provider):
+        return is_idle(name)
+    return is_idle(name, provider, env=env)
+
+
+def remove_runner(name, provider=None, env=None):
+    """remove() under the convention _bare() documents."""
+    if _bare(provider):
+        return remove(name)
+    return remove(name, provider, env)
+
+
+def create_runner(index, env, provider=None):
+    """create() under the convention _bare() documents."""
+    if _bare(provider):
+        return create(index, env)
+    return create(index, env, provider)
 
 
 def logs_since(name, seconds=45):
@@ -413,7 +928,7 @@ def logs_since(name, seconds=45):
     out of view and lose the run entirely. Bounding by time cannot miss
     anything as long as the window exceeds the poll interval.
     """
-    ok, out, _ = _docker("logs", "--since", f"{seconds}s", name, timeout=20)
+    ok, out, _ = _docker_logs("logs", "--since", f"{seconds}s", name, timeout=20)
     return out if ok else ""
 
 
@@ -431,7 +946,7 @@ def _df_sizes(rows):
             "images": rows.get("Images", {}).get("Size", "0B")}
 
 
-def prune(name, timeout=300):
+def prune(name, timeout=300, provider=None, env=None):
     """Reclaim build cache and unused images inside one runner.
 
     Measures `docker system df` either side so the caller can report a real
@@ -452,7 +967,7 @@ def prune(name, timeout=300):
     # a job can still start between this check and the prune - but BuildKit
     # will not delete layers an in-flight build holds, so the residual risk is
     # a slower build, not a broken one.
-    if not is_idle(name):
+    if not idle_check(name, provider, env):
         return {"name": name, "ok": False,
                 "error": f"{name} became busy before the prune started",
                 "before": None, "after": None,

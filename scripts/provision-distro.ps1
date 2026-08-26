@@ -44,8 +44,15 @@ if (-not $vhdx) {
 }
 Write-Host "   virtual disk: $($vhdx.FullName)" -ForegroundColor Green
 
-Write-Host '== enabling systemd ==' -ForegroundColor Cyan
-Invoke-Wsl @('-d', $DistroName, '-u', 'root', '--', 'bash', '-c', "printf '[boot]\nsystemd=true\n' > /etc/wsl.conf")
+Write-Host '== enabling systemd and static DNS ==' -ForegroundColor Cyan
+# generateResolvConf=false + static resolv.conf: by default WSL points the
+# distro at the Windows host's DNS proxy (172.28.x.1), which can silently stop
+# answering after long uptime — on 2026-07-30 that took every runner down with
+# UnknownHostException on all hosts (nomercy-app-kmp#1), and the keepalive task
+# kept the broken distro alive indefinitely. Public resolvers are reachable
+# directly through the NAT, so depend on them instead of the proxy.
+Invoke-Wsl @('-d', $DistroName, '-u', 'root', '--', 'bash', '-c', "printf '[boot]\nsystemd=true\n\n[network]\ngenerateResolvConf=false\n' > /etc/wsl.conf")
+Invoke-Wsl @('-d', $DistroName, '-u', 'root', '--', 'bash', '-c', "rm -f /etc/resolv.conf && printf 'nameserver 1.1.1.1\nnameserver 8.8.8.8\nnameserver 9.9.9.9\n' > /etc/resolv.conf")
 Invoke-Wsl @('--terminate', $DistroName)
 Start-Sleep -Seconds 3
 Invoke-Wsl @('-d', $DistroName, '-u', 'root', '--', 'systemctl', 'is-system-running', '--wait')

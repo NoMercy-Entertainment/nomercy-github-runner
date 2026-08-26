@@ -8,18 +8,27 @@
   </div>
   {% if error %}<div class="notice err"><b>{{ error }}</b></div>{% endif %}
   <div class="panel">
-    <form method="post">
-      <div class="field">
-        <label for="password">Password</label>
-        <input type="password" id="password" name="password" autofocus autocomplete="current-password">
-      </div>
-      <button type="submit" class="primary">Sign in</button>
-    </form>
+    {% if oidc_ready %}
+    <a class="btn primary" href="/auth/start"
+       style="display:inline-block;text-decoration:none">Sign in with NoMercy</a>
+    <div style="margin-top:10px;font-size:11px;color:var(--text-dim)">
+      Signing in proves who you are. Access is granted separately by an admin.
+    </div>
+    {% else %}
+    <div style="font-size:12px;color:var(--text-dim)">
+      Single sign-on is not configured on this dashboard. Set
+      <code>DASH_PUBLIC_URL</code>, <code>OIDC_ISSUER</code>,
+      <code>OIDC_CLIENT_ID</code> and <code>OIDC_CLIENT_SECRET</code> in
+      <code>.env</code>.
+    </div>
+    {% endif %}
   </div>
+  {% if not secure %}
   <div class="notice">
-    <b>Plain HTTP.</b> This dashboard is reachable over your network without
-    TLS, so this password and the GitHub token cross the wire unencrypted.
-    Fine on a trusted LAN; not something to expose beyond it.
+    <b>Plain HTTP.</b> You reached this dashboard without TLS, so your session
+    cookie and the GitHub token cross the wire unencrypted. Fine on a trusted
+    LAN; not something to expose beyond it.
   </div>
+  {% endif %}
 </div>
 {% endblock %}

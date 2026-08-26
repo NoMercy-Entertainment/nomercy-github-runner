@@ -68,6 +68,62 @@ services:
     <<: *runner
     container_name: github-runner-6
 
+  # Forgejo Actions runner. Own nested daemon, exactly like the GitHub
+  # runners, so a Forgejo job filling a disk cannot reach anything else.
+  #
+  # Reached over the public URL rather than http://forgejo:3000: that compose
+  # network is on Docker Desktop's engine and does not exist here.
+  forgejo-runner-1:
+    # Built here, not pulled. Nothing publishes this tag - the CI job in
+    # .github/workflows/build-image.yml builds the GitHub runner image only -
+    # so without a build stanza `compose up` ends at `manifest unknown`, and
+    # so does the dashboard's "+ Add runner" for Forgejo, which uses this
+    # same tag. `image:` is kept alongside `build:` (the pattern the
+    # dashboard service below already uses) so the built image is tagged with
+    # the name providers.FORGEJO defaults to.
+    #
+    # The context is the REPOSITORY ROOT, not ./forgejo-runner: the Dockerfile
+    # does `COPY scripts/start-forgejo.sh`, which a context rooted at the
+    # Dockerfile's own directory cannot see.
+    build:
+      context: .
+      dockerfile: forgejo-runner/Dockerfile
+    image: ghcr.io/nomercy-entertainment/nomercy-forgejo-runner:latest
+    container_name: forgejo-runner-1
+    restart: unless-stopped
+    privileged: true
+    # Same limits as the GitHub fleet above, from the same two variables.
+    # docker_ops.create() applies RUNNER_CPU_LIMIT/RUNNER_MEM_LIMIT to every
+    # Forgejo runner the dashboard creates; without this the one runner
+    # declared here would be the single container in the fleet running
+    # unbounded, which is not a policy anybody chose.
+    deploy:
+      resources:
+        limits:
+          cpus: "${RUNNER_CPU_LIMIT:-0}"
+          memory: "${RUNNER_MEM_LIMIT:-0}"
+    labels:
+      nomercy.runner: "true"
+      nomercy.provider: "forgejo"
+    environment:
+      FORGEJO_INSTANCE_URL: ${FORGEJO_INSTANCE_URL}
+      # Only read on first boot, when /data/.runner does not exist yet.
+      # Runners the dashboard creates instead get a token minted fresh per
+      # runner through the admin API - see docs/forgejo-runner-migration.md.
+      FORGEJO_RUNNER_REGISTRATION_TOKEN: ${FORGEJO_RUNNER_REGISTRATION_TOKEN:-}
+      FORGEJO_RUNNER_LABELS: ${FORGEJO_RUNNER_LABELS}
+      FORGEJO_RUNNER_NAME: forgejo-runner-1
+    volumes:
+      - forgejo-runner-1-data:/data
+    tmpfs:
+      - /tmp
+    # Not for deregistration - start-forgejo.sh cannot deregister and does not
+    # try (see the long comment there). This is for the nested daemon: the
+    # script forwards SIGTERM to the runner child and waits for it, and
+    # Engine 29.x's StopTimeout=1 default (moby/moby#52775) would SIGKILL the
+    # whole container before that has a chance to finish.
+    stop_grace_period: 60s
+
   # Live status page for the fleet: http://localhost:9200
   #
   # The Docker socket is mounted READ-ONLY and it is THIS engine's socket, not
@@ -95,3 +151,4 @@ services:
 
 volumes:
   dashboard-data:
+  forgejo-runner-1-data:

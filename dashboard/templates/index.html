@@ -2,6 +2,10 @@
 {% block title %}NoMercy Runners{% endblock %}
 
 {% block style %}
+.fleet{margin-bottom:22px}
+.fleet-head{font-family:var(--label);font-size:12px;letter-spacing:.18em;
+  text-transform:uppercase;color:var(--text-dim);margin-bottom:10px;font-weight:600}
+.fleet-actions{display:flex;gap:8px;margin-bottom:16px;flex-wrap:wrap;align-items:center}
 .grid{display:grid;gap:12px;grid-template-columns:repeat(auto-fill,minmax(330px,1fr))}
 .card{background:var(--bg-panel);border:1px solid var(--rule);padding:14px 15px 13px;
   position:relative;overflow:hidden;animation:rise .45s cubic-bezier(.2,.7,.3,1) backwards}
@@ -23,6 +27,14 @@
 .badge.draining{color:var(--drain);animation:breathe 2s ease-in-out infinite}
 .badge.stopped{color:var(--alert)}
 @keyframes breathe{0%,100%{opacity:1}50%{opacity:.5}}
+/* Elsewhere cards carry Forgejo's own status words - active/offline - rather
+   than this page's busy/stopped, so they get their own selectors rather than
+   reusing the ones above with a translated class name. */
+.card.active::before{background:var(--busy)}
+.badge.active{color:var(--busy);animation:breathe 2s ease-in-out infinite}
+.card.offline::before{background:var(--alert-dk)}
+.card.offline{opacity:.72}
+.badge.offline{color:var(--alert)}
 .creg{font-size:11px;color:var(--text-faint)}
 .cjob{margin:9px 0 11px;font-size:11.5px;color:var(--busy);
   border-left:2px solid var(--busy-dk);padding-left:8px;white-space:nowrap;
@@ -68,18 +80,40 @@
     <a href="/" class="on">Fleet</a>
     <a href="/history">History</a>
     <a href="/settings">Settings</a>
+    {% if role == 'admin' %}<a href="/users">Access</a>{% endif %}
     <a href="/logout">Sign out</a>
   </nav>
 </header>
 
-<div style="display:flex;gap:8px;margin-bottom:16px;flex-wrap:wrap">
-  <button id="btn-add" class="primary">+ Add runner</button>
-  <button id="btn-recreate" class="warn">Recreate fleet</button>
-  <button id="btn-prune-all" class="warn">Clear all cache</button>
-  <span class="hint" style="align-self:center">Recreate applies saved settings changes.</span>
+<div class="fleet" data-provider="github">
+  <h2 class="fleet-head">GitHub</h2>
+  <div class="fleet-actions">
+    <button id="btn-add-github" class="primary" data-provider="github">+ Add runner</button>
+    <button id="btn-recreate-github" class="warn" data-provider="github">Recreate fleet</button>
+    <button id="btn-prune-github" class="warn" data-provider="github">Clear all cache</button>
+    <span class="hint" style="align-self:center">Recreate applies saved settings changes.</span>
+  </div>
+  <div class="grid" id="grid-github"><div class="skel">Awaiting telemetry</div></div>
 </div>
 
-<div class="grid" id="grid"><div class="skel">Awaiting telemetry</div></div>
+<div class="fleet" data-provider="forgejo">
+  <h2 class="fleet-head">Forgejo</h2>
+  <div class="fleet-actions">
+    <button id="btn-add-forgejo" class="primary" data-provider="forgejo">+ Add runner</button>
+    <button id="btn-recreate-forgejo" class="warn" data-provider="forgejo">Recreate fleet</button>
+    <button id="btn-prune-forgejo" class="warn" data-provider="forgejo">Clear all cache</button>
+    <span class="hint" style="align-self:center">Recreate applies saved settings changes.</span>
+  </div>
+  <div class="grid" id="grid-forgejo"><div class="skel">Awaiting telemetry</div></div>
+</div>
+
+<div class="fleet" id="fleet-elsewhere">
+  <h2 class="fleet-head">Elsewhere</h2>
+  <div class="fleet-actions">
+    <span class="hint" style="align-self:center">Registered with Forgejo but not containers on this engine - they cannot be started, stopped, or pruned from here.</span>
+  </div>
+  <div class="grid" id="grid-elsewhere"><div class="skel">Awaiting telemetry</div></div>
+</div>
 
 <div class="disk">
   <div class="mrow"><span>Runner volume</span><span class="mval" id="disk-val">&mdash;</span></div>
@@ -100,6 +134,10 @@ const CACHE_CAP_GB = 40;
 const STALE_MS = 25000;
 let lastGood = 0;
 const $ = id => document.getElementById(id);
+// "github-runner-3" / "forgejo-runner-1" -> "Runner 3" / "Runner 1". Strips
+// whichever provider's prefix the name actually carries, falling back to
+// github's so an unexpected/missing provider still renders something.
+const dispName = r => r.name.replace((r.provider || 'github') + '-runner-', 'Runner ');
 
 function toast(msg, bad) {
   const t = $('toast');
@@ -121,23 +159,29 @@ const gbNum = b => b / 1e9;
 const fmtGB = b => gbNum(b) < 10 ? gbNum(b).toFixed(2) + ' GB' : Math.round(gbNum(b)) + ' GB';
 const level = p => p >= 90 ? 'crit' : p >= 70 ? 'warn' : '';
 
-async function act(action, name, btn) {
+async function act(action, name, btn, provider) {
   if (btn) btn.disabled = true;
   try {
     const url = action === 'add' ? '/api/runner/add'
               : action === 'recreate' ? '/api/recreate'
               : '/api/runner/' + action;
+    // /api/runner/add and /api/recreate both require a provider by design
+    // (Task 10) - the caller passes it for the fleet-level actions; a
+    // per-runner action (name is set) has no use for it.
+    const body = name ? {name}
+               : (action === 'recreate' || action === 'add') ? {provider}
+               : {};
     const res = await fetch(url, {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify(name ? {name} : {})
+      body: JSON.stringify(body)
     });
     const d = await res.json().catch(() => ({}));
     if (!res.ok || d.ok === false) throw new Error(d.error || ('HTTP ' + res.status));
-    toast(d.note || ((name || d.name || 'fleet') + ': ' + action + ' ok'));
+    toast(d.note || ((name || d.name || (provider ? provider + ' fleet' : 'fleet')) + ': ' + action + ' ok'));
     tick();
   } catch (e) {
-    toast((name || 'fleet') + ': ' + action + ' failed - ' + e.message, true);
+    toast((name || (provider ? provider + ' fleet' : 'fleet')) + ': ' + action + ' failed - ' + e.message, true);
   } finally {
     if (btn) btn.disabled = false;
   }
@@ -189,13 +233,24 @@ async function pruneOne(name, btn) {
   }
 }
 
-async function pruneAll(btn) {
-  if (!confirm('Clear build cache and unused images on every idle runner? Busy runners are skipped and left alone. Each runner gets up to 2 minutes; one that needs longer reports an error and can be retried individually.')) return;
+async function pruneAll(btn, provider) {
+  if (!(await confirmDialog({
+        title: `Clear cache on every idle ${PROVIDER_LABEL[provider] || provider} runner?`,
+        body: 'Busy runners are skipped and left alone. Each runner gets up to '
+            + '2 minutes; one that needs longer reports an error and can be '
+            + 'retried individually.',
+        confirm: 'Clear all'}))) return;
   btn.disabled = true;
   const label = btn.textContent;
   btn.textContent = 'Clearing all...';
   try {
-    const res = await fetch('/api/prune-all', {method: 'POST'});
+    // provider is required by design (Task 10) - each fleet's own button
+    // names its own.
+    const res = await fetch('/api/prune-all', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({provider})
+    });
     const d = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(d.error || ('HTTP ' + res.status));
     const data = d.data || {};
@@ -245,13 +300,23 @@ function setMeter(card, key, valText, pct) {
 // Cards are created once and patched. Rebuilding innerHTML each poll replayed
 // the entrance animation and made the page flash.
 const cards = new Map();
+const GRIDS = {github: $('grid-github'), forgejo: $('grid-forgejo')};
+// Elsewhere cards are keyed by uuid, not name - Forgejo documents runner
+// names as not unique, and a name-keyed Map could silently merge two
+// different runners that happen to share one.
+const elseCards = new Map();
+const gridElsewhere = $('grid-elsewhere');
+// Display casing for confirm-dialog copy; the wire value (button
+// data-provider, POST body) stays the lowercase form the API expects.
+const PROVIDER_LABEL = {github: 'GitHub', forgejo: 'Forgejo'};
+const FORGE = p => PROVIDER_LABEL[p] || p;
 
 function makeCard(r, i) {
   const el = document.createElement('article');
   el.style.animationDelay = (i * 45) + 'ms';
   el.innerHTML =
     `<div class="chead">
-       <a class="cname" href="/runner/${r.name}">${r.name.replace('github-runner-', 'Runner ')}</a>
+       <a class="cname" href="/runner/${r.name}">${dispName(r)}</a>
        <span class="badge"></span>
      </div>
      <div class="creg"></div>
@@ -267,18 +332,51 @@ function makeCard(r, i) {
        <button data-a="prune"       class="warn">Clear cache</button>
      </div>`;
   el.querySelectorAll('.actions button').forEach(b => {
-    b.addEventListener('click', () => {
+    b.addEventListener('click', async () => {
       const a = b.dataset.a;
-      if (a === 'remove' && !confirm(`Remove ${r.name}? It is deregistered and deleted.`)) return;
-      if (a === 'stop' && !confirm(`Stop ${r.name} now? A running job would be killed.`)) return;
+      if (a === 'remove' && !(await confirmDialog({
+            title: `Remove ${r.name}?`,
+            // The card knows its own forge; saying "GitHub" here was wrong
+            // on every Forgejo card.
+            body: `It is deregistered from ${FORGE(r.provider)} and the container is deleted.`,
+            confirm: 'Remove'}))) return;
+      if (a === 'stop' && !(await confirmDialog({
+            title: `Stop ${r.name}?`,
+            body: 'A running job would be killed.',
+            confirm: 'Stop'}))) return;
       if (a === 'prune') {
-        if (!confirm(`Clear ${r.name}'s build cache and unused images? This deletes them and cannot be undone.`)) return;
+        if (!(await confirmDialog({
+              title: `Clear ${r.name}'s build cache?`,
+              body: 'The build cache and unused images are deleted. This cannot '
+                  + 'be undone.',
+              confirm: 'Clear cache'}))) return;
         pruneOne(r.name, b);
         return;
       }
       act(a, r.name, b);
     });
   });
+  return el;
+}
+
+// Elsewhere cards: name, status, labels, version - and nothing else. No
+// meters (CPU/memory/build cache all come from `docker stats`/`docker exec`
+// against a container that does not exist here - rendering a dash or a zero
+// for them would read as "measured, and it is zero"), no actions row (these
+// are not in ops.list_runner_names(), so nothing here could ever act on
+// them - see the sentence in the section header instead), and the name is
+// plain text, not a link: there is no /runner/<name> page for something that
+// is not a container on this engine.
+function makeElseCard(r, i) {
+  const el = document.createElement('article');
+  el.style.animationDelay = (i * 45) + 'ms';
+  el.innerHTML =
+    `<div class="chead">
+       <span class="cname" style="cursor:default"></span>
+       <span class="badge"></span>
+     </div>
+     <div class="creg elabels"></div>
+     <div class="creg ever"></div>`;
   return el;
 }
 
@@ -290,85 +388,137 @@ function render(d) {
   $('f-count').textContent = rs.length + ' runners';
   $('f-gen').textContent = 'Updated ' + (d.generated || '').replace('T', ' ').replace('Z', ' UTC');
 
-  const grid = $('grid');
-  const skel = grid.querySelector('.skel');
-  if (rs.length && skel) skel.remove();
-  if (!rs.length && !skel) grid.innerHTML = '<div class="skel">No runners</div>';
+  const byProvider = {github: [], forgejo: []};
+  rs.forEach(r => (byProvider[r.provider] || byProvider.github).push(r));
 
   const host = d.host || {ncpu: 0, mem_total_bytes: 0};
   const ncpu = Number(host.ncpu) || 0;
   // Fallback only used when `docker info` failed (ncpu === 0): scale each
   // bar against the busiest runner in the fleet rather than divide by zero
-  // or claim "of 0 cores".
+  // or claim "of 0 cores". Scaled against the whole fleet, not just one
+  // section, so the two grids stay on a comparable scale.
   const cpuScale = Math.max(100, ...rs.map(x => Number(x.cpu_percent) || 0));
-  rs.forEach((r, i) => {
-    let card = cards.get(r.name);
-    if (!card) { card = makeCard(r, i); cards.set(r.name, card); grid.appendChild(card); }
 
-    const cls = 'card ' + r.state;
-    if (card.className !== cls) card.className = cls;
+  Object.keys(GRIDS).forEach(key => {
+    const grid = GRIDS[key];
+    const list = byProvider[key];
 
-    const nameLink = card.querySelector('.cname');
-    const dispName = r.name.replace('github-runner-', 'Runner ');
-    if (nameLink.textContent !== dispName) nameLink.textContent = dispName;
-    const href = '/runner/' + r.name;
-    if (nameLink.getAttribute('href') !== href) nameLink.setAttribute('href', href);
+    // An empty fleet hides its whole section, heading and buttons included:
+    // a "Recreate fleet" button above nothing has nothing safe to do, and a
+    // GitHub-only deployment should not grow an empty Forgejo heading.
+    grid.closest('.fleet').style.display = list.length ? '' : 'none';
 
-    const badge = card.querySelector('.badge');
-    if (badge.textContent !== r.state) { badge.textContent = r.state; badge.className = 'badge ' + r.state; }
+    const skel = grid.querySelector('.skel');
+    if (list.length && skel) skel.remove();
+    if (!list.length && !skel) grid.innerHTML = '<div class="skel">No runners</div>';
 
-    const reg = `${r.registration} · ${r.uptime || '?'}`;
-    const regEl = card.querySelector('.creg');
-    if (regEl.textContent !== reg) regEl.textContent = reg;
+    list.forEach((r, i) => {
+      let card = cards.get(r.name);
+      if (!card) { card = makeCard(r, i); cards.set(r.name, card); grid.appendChild(card); }
 
-    const jobEl = card.querySelector('.cjob');
-    const jt = r.state === 'draining' && !r.job ? 'draining - waiting for idle'
-             : (r.job || 'no active job');
-    if (jobEl.textContent !== jt) jobEl.textContent = jt;
-    const jc = 'cjob' + (r.job ? '' : ' none');
-    if (jobEl.className !== jc) jobEl.className = jc;
+      const cls = 'card ' + r.state;
+      if (card.className !== cls) card.className = cls;
 
-    const cpu = Math.max(0, Number(r.cpu_percent) || 0);
-    const mu = toBytes(r.mem_used), ml = toBytes(r.mem_limit);
-    const cache = toBytes(r.build_cache);
-    // docker stats is per-core: 400% means four cores busy, not an error.
-    // Scaled against the host's real core count so the bar reflects actual
-    // machine load - 1.3/56 cores draws nearly empty, not nearly full. Only
-    // when ncpu is unknown (docker info failed) do we fall back to scaling
-    // against the busiest runner in the fleet.
-    const cpuText = ncpu > 0
-      ? cpu.toFixed(1) + '%  ·  ' + (cpu / 100).toFixed(1) + ' / ' + ncpu + ' cores'
-      : cpu.toFixed(0) + '%';
-    const cpuPct = ncpu > 0 ? (cpu / ncpu) : (cpu / cpuScale) * 100;
-    setMeter(card, 'cpu', cpuText, cpuPct);
-    // Percentage first on all three meters, so the eye reads the same shape
-    // down the card instead of hunting for the number in a different position.
-    const memPct = ml > 0 ? (mu / ml) * 100 : 0;
-    const memText = (ml > 0 ? memPct.toFixed(1) + '%  ·  ' : '') +
-      (r.mem_used || '0B') + ' / ' + (r.mem_limit || '?');
-    setMeter(card, 'mem', memText, memPct);
-    const cachePct = (cache / (CACHE_CAP_GB * 1e9)) * 100;
-    setMeter(card, 'cache',
-             cachePct.toFixed(1) + '%  ·  ' + fmtGB(cache) + ' / ' + CACHE_CAP_GB + ' GB',
-             cachePct);
+      const nameLink = card.querySelector('.cname');
+      const dn = dispName(r);
+      if (nameLink.textContent !== dn) nameLink.textContent = dn;
+      const href = '/runner/' + r.name;
+      if (nameLink.getAttribute('href') !== href) nameLink.setAttribute('href', href);
 
-    // Only offer what makes sense for the current state.
-    const stopped = r.state === 'stopped', draining = r.state === 'draining';
-    const set = (a, show) => {
-      const b = card.querySelector(`[data-a="${a}"]`);
-      b.style.display = show ? '' : 'none';
-    };
-    set('drain', !stopped && !draining);
-    set('canceldrain', draining);
-    set('stop', !stopped);
-    set('start', stopped);
-    set('restart', !stopped);
-    set('remove', true);
-    set('prune', true);
+      const badge = card.querySelector('.badge');
+      if (badge.textContent !== r.state) { badge.textContent = r.state; badge.className = 'badge ' + r.state; }
+
+      const reg = `${r.registration} · ${r.uptime || '?'}`;
+      const regEl = card.querySelector('.creg');
+      if (regEl.textContent !== reg) regEl.textContent = reg;
+
+      const jobEl = card.querySelector('.cjob');
+      const jt = r.state === 'draining' && !r.job ? 'draining - waiting for idle'
+               : (r.job || 'no active job');
+      if (jobEl.textContent !== jt) jobEl.textContent = jt;
+      const jc = 'cjob' + (r.job ? '' : ' none');
+      if (jobEl.className !== jc) jobEl.className = jc;
+
+      const cpu = Math.max(0, Number(r.cpu_percent) || 0);
+      const mu = toBytes(r.mem_used), ml = toBytes(r.mem_limit);
+      const cache = toBytes(r.build_cache);
+      // docker stats is per-core: 400% means four cores busy, not an error.
+      // Scaled against the host's real core count so the bar reflects actual
+      // machine load - 1.3/56 cores draws nearly empty, not nearly full. Only
+      // when ncpu is unknown (docker info failed) do we fall back to scaling
+      // against the busiest runner in the fleet.
+      const cpuText = ncpu > 0
+        ? cpu.toFixed(1) + '%  ·  ' + (cpu / 100).toFixed(1) + ' / ' + ncpu + ' cores'
+        : cpu.toFixed(0) + '%';
+      const cpuPct = ncpu > 0 ? (cpu / ncpu) : (cpu / cpuScale) * 100;
+      setMeter(card, 'cpu', cpuText, cpuPct);
+      // Percentage first on all three meters, so the eye reads the same shape
+      // down the card instead of hunting for the number in a different position.
+      const memPct = ml > 0 ? (mu / ml) * 100 : 0;
+      const memText = (ml > 0 ? memPct.toFixed(1) + '%  ·  ' : '') +
+        (r.mem_used || '0B') + ' / ' + (r.mem_limit || '?');
+      setMeter(card, 'mem', memText, memPct);
+      const cachePct = (cache / (CACHE_CAP_GB * 1e9)) * 100;
+      setMeter(card, 'cache',
+               cachePct.toFixed(1) + '%  ·  ' + fmtGB(cache) + ' / ' + CACHE_CAP_GB + ' GB',
+               cachePct);
+
+      // Only offer what makes sense for the current state.
+      const stopped = r.state === 'stopped', draining = r.state === 'draining';
+      const set = (a, show) => {
+        const b = card.querySelector(`[data-a="${a}"]`);
+        b.style.display = show ? '' : 'none';
+      };
+      set('drain', !stopped && !draining);
+      set('canceldrain', draining);
+      set('stop', !stopped);
+      set('start', stopped);
+      set('restart', !stopped);
+      set('remove', true);
+      set('prune', true);
+    });
   });
 
   for (const [name, el] of cards) {
     if (!rs.some(r => r.name === name)) { el.remove(); cards.delete(name); }
+  }
+
+  // --- Elsewhere: forge-known runners with no container on this engine ----
+  // A separate grid rather than a third entry in GRIDS/byProvider above:
+  // those two carry per-fleet Add/Recreate/Clear-cache buttons this section
+  // deliberately has none of, and folding it into that loop would mean
+  // special-casing every one of those buttons for a "fleet" that has none.
+  const elsewhere = d.elsewhere || [];
+  $('fleet-elsewhere').style.display = elsewhere.length ? '' : 'none';
+
+  const elseSkel = gridElsewhere.querySelector('.skel');
+  if (elsewhere.length && elseSkel) elseSkel.remove();
+  if (!elsewhere.length && !elseSkel) gridElsewhere.innerHTML = '<div class="skel">No runners</div>';
+
+  elsewhere.forEach((r, i) => {
+    let card = elseCards.get(r.uuid);
+    if (!card) { card = makeElseCard(r, i); elseCards.set(r.uuid, card); gridElsewhere.appendChild(card); }
+
+    const cls = 'card ' + r.status;
+    if (card.className !== cls) card.className = cls;
+
+    const nameEl = card.querySelector('.cname');
+    if (nameEl.textContent !== r.name) nameEl.textContent = r.name;
+
+    const badge = card.querySelector('.badge');
+    if (badge.textContent !== r.status) { badge.textContent = r.status; badge.className = 'badge ' + r.status; }
+
+    const labelsEl = card.querySelector('.elabels');
+    const labelsText = r.labels || 'no labels';
+    if (labelsEl.textContent !== labelsText) labelsEl.textContent = labelsText;
+
+    const verEl = card.querySelector('.ever');
+    const verText = 'v' + (r.version || '?');
+    if (verEl.textContent !== verText) verEl.textContent = verText;
+  });
+
+  for (const [uuid, el] of elseCards) {
+    if (!elsewhere.some(r => r.uuid === uuid)) { el.remove(); elseCards.delete(uuid); }
   }
 
   const dk = d.disk || {}, dp = Number(dk.percent) || 0;
@@ -381,6 +531,83 @@ function render(d) {
 function setStale(on) {
   $('live').classList.toggle('stale', on);
   $('live-txt').textContent = on ? 'Stale' : 'Live';
+}
+
+// --- live transport -------------------------------------------------------
+// The socket carries a baseline once and then only what changed, so a quiet
+// fleet is a quiet connection. `state` is the client's copy of the picture,
+// because a delta can only be applied to something.
+let state = null, ws = null, wsTries = 0, pollTimer = null;
+
+function applyDelta(s, d) {
+  if (!s) return s;
+  if (d.runners) {
+    for (const [name, fields] of Object.entries(d.runners)) {
+      const i = s.runners.findIndex(r => r.name === name);
+      if (i === -1) s.runners.push(fields);      // arrives whole, not as a diff
+      else Object.assign(s.runners[i], fields);
+    }
+  }
+  if (d.gone) s.runners = s.runners.filter(r => !d.gone.includes(r.name));
+  if (d.disk) s.disk = d.disk;
+  if (d.host) s.host = d.host;
+  if (d.elsewhere) s.elsewhere = d.elsewhere;
+  return s;
+}
+
+function transport(txt) { $('live-txt').textContent = txt; }
+
+function startPolling() {
+  if (pollTimer) return;
+  tick();
+  pollTimer = setInterval(tick, 5000);
+}
+
+function stopPolling() {
+  if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+}
+
+// nginx does not forward Upgrade unless it is told to, so the socket can work
+// on the LAN address and fail through the proxy. Polling stays as the floor:
+// silently showing five-minute-old numbers is the worst thing an operations
+// dashboard can do, and worse than any amount of polling.
+function connect() {
+  const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  let sock;
+  try {
+    sock = new WebSocket(proto + '//' + location.host + '/ws/fleet');
+  } catch (e) {
+    startPolling();
+    return;
+  }
+  ws = sock;
+
+  sock.onopen = () => { wsTries = 0; stopPolling(); setStale(false); transport('Live'); };
+
+  sock.onmessage = ev => {
+    let m;
+    try { m = JSON.parse(ev.data); } catch (e) { return; }
+    if (m.type === 'snapshot') state = m.data;
+    else if (m.type === 'update') state = applyDelta(state, m.data);
+    else return;
+    if (!state) return;
+    render(state);
+    lastGood = Date.now();
+    setStale(false);
+    transport('Live');
+  };
+
+  sock.onerror = () => { try { sock.close(); } catch (e) {} };
+
+  sock.onclose = () => {
+    ws = null;
+    startPolling();                 // cover the gap before retrying
+    transport('Polling');
+    wsTries += 1;
+    // Backed off, so a dashboard left open against a stopped container does
+    // not hammer it the moment it comes back.
+    setTimeout(connect, Math.min(30000, 1000 * 2 ** Math.min(wsTries, 5)));
+  };
 }
 
 async function tick() {
@@ -396,14 +623,28 @@ async function tick() {
   }
 }
 
-$('btn-add').addEventListener('click', e => act('add', null, e.target));
-$('btn-recreate').addEventListener('click', e => {
-  if (!confirm('Recreate every runner? Each is removed and rebuilt with current settings. Running jobs will be lost.')) return;
-  act('recreate', null, e.target);
-});
-$('btn-prune-all').addEventListener('click', e => pruneAll(e.target));
+// Every fleet action names its own provider - /api/runner/add, /api/recreate
+// and /api/prune-all all 400 without one, and with two fleets on one engine a
+// button that did not say which fleet it meant would be a button that could
+// destroy the wrong one.
+document.querySelectorAll('[id^="btn-add-"]').forEach(b =>
+  b.addEventListener('click', () => act('add', null, b, b.dataset.provider)));
 
+document.querySelectorAll('[id^="btn-recreate-"]').forEach(b =>
+  b.addEventListener('click', async () => {
+    if (!(await confirmDialog({
+          title: `Recreate the ${PROVIDER_LABEL[b.dataset.provider] || b.dataset.provider} fleet?`,
+          body: 'Each runner is removed and rebuilt with the current settings. '
+              + 'Running jobs will be lost.',
+          confirm: 'Recreate'}))) return;
+    act('recreate', null, b, b.dataset.provider);
+  }));
+
+document.querySelectorAll('[id^="btn-prune-"]').forEach(b =>
+  b.addEventListener('click', () => pruneAll(b, b.dataset.provider)));
+
+// One HTTP fetch so the grid paints immediately, then the socket takes over.
 tick();
-setInterval(tick, 5000);
+connect();
 </script>
 {% endblock %}

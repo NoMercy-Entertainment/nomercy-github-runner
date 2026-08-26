@@ -1,0 +1,163 @@
+{% extends "base.html" %}
+{% block title %}Access - NoMercy Runners{% endblock %}
+
+{% block style %}
+.tbl{width:100%;border-collapse:collapse;font-size:12px}
+.tbl th{text-align:left;font-family:var(--label);font-size:10px;
+  letter-spacing:.15em;text-transform:uppercase;color:var(--text-faint);
+  border-bottom:1px solid var(--rule);padding:8px 10px;font-weight:400}
+.tbl td{padding:9px 10px;border-bottom:1px solid var(--rule)}
+.tbl tr:last-child td{border-bottom:0}
+.sub-id{font-size:10px;color:var(--text-faint)}
+.role{font-family:var(--label);font-size:10px;letter-spacing:.14em;
+  text-transform:uppercase}
+.role.admin{color:var(--signal)} .role.operator{color:var(--drain)}
+.role.viewer{color:var(--text-dim)}
+.row-actions{display:flex;gap:6px;justify-content:flex-end}
+select{background:var(--bg-inset);color:var(--text);border:1px solid var(--rule-hot);
+  font-family:var(--label);font-size:10px;letter-spacing:.12em;
+  text-transform:uppercase;padding:6px 8px}
+.empty{padding:14px 10px;color:var(--text-faint);font-size:12px}
+{% endblock %}
+
+{% block body %}
+<header>
+  <div class="brand">
+    <h1>NoMercy Runners</h1>
+    <div class="sub">Access</div>
+  </div>
+  <nav>
+    <a href="/">Fleet</a>
+    <a href="/history">History</a>
+    <a href="/settings">Settings</a>
+    <a href="/logout">Sign out</a>
+  </nav>
+</header>
+
+<div class="notice">
+  <b>Signing in is not access.</b> Anyone with a NoMercy account can
+  authenticate. Only the people listed below can reach this dashboard, and a
+  change here takes effect on their very next request - not when their session
+  expires.
+</div>
+
+<h2 style="margin:22px 0 8px;font-family:var(--label);font-size:11px;
+    letter-spacing:.18em;text-transform:uppercase;color:var(--text-dim)">
+  Waiting for a decision
+</h2>
+<div class="panel">
+  {% if waiting %}
+  <table class="tbl">
+    <tr><th>Who</th><th>Requested</th><th></th></tr>
+    {% for p in waiting %}
+    <tr>
+      <td>{{ p.name }}<div class="sub-id">{{ p.username }} · {{ p.sub }}</div></td>
+      <td>{{ p.first_seen }}</td>
+      <td>
+        <div class="row-actions">
+          <select id="role-{{ loop.index }}">
+            {% for r in roles %}
+            <option value="{{ r }}"{% if r == 'operator' %} selected{% endif %}>{{ r }}</option>
+            {% endfor %}
+          </select>
+          <button data-act="approve" data-sub="{{ p.sub }}"
+                  data-role-from="role-{{ loop.index }}">Approve</button>
+          <button class="danger" data-act="deny" data-sub="{{ p.sub }}">Deny</button>
+        </div>
+      </td>
+    </tr>
+    {% endfor %}
+  </table>
+  {% else %}
+  <div class="empty">Nobody is waiting.</div>
+  {% endif %}
+</div>
+
+<h2 style="margin:22px 0 8px;font-family:var(--label);font-size:11px;
+    letter-spacing:.18em;text-transform:uppercase;color:var(--text-dim)">
+  Has access
+</h2>
+<div class="panel">
+  <table class="tbl">
+    <tr><th>Who</th><th>Role</th><th>Since</th><th></th></tr>
+    {% for u in people %}
+    <tr>
+      <td>{{ u.name }}<div class="sub-id">{{ u.username }} · {{ u.sub }}</div></td>
+      <td><span class="role {{ u.role }}">{{ u.role }}</span></td>
+      <td>{{ u.added }}</td>
+      <td>
+        <div class="row-actions">
+          {% if u.sub != me %}
+          <select id="has-{{ loop.index }}">
+            {% for r in roles %}
+            <option value="{{ r }}"{% if r == u.role %} selected{% endif %}>{{ r }}</option>
+            {% endfor %}
+          </select>
+          <button data-act="approve" data-sub="{{ u.sub }}"
+                  data-role-from="has-{{ loop.index }}">Set role</button>
+          <button class="danger" data-act="revoke" data-sub="{{ u.sub }}">Revoke</button>
+          {% else %}
+          <span class="sub-id">you</span>
+          {% endif %}
+        </div>
+      </td>
+    </tr>
+    {% endfor %}
+  </table>
+</div>
+
+<div id="toast" class="toast"></div>
+
+<script>
+const $ = id => document.getElementById(id);
+
+function toast(msg, bad) {
+  const t = $('toast');
+  t.textContent = msg;
+  t.className = 'toast show' + (bad ? ' err' : '');
+  setTimeout(() => { t.className = 'toast'; }, 4000);
+}
+
+async function call(action, sub, role) {
+  const res = await fetch('/api/users/' + action, {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({sub, role}),
+  });
+  const d = await res.json().catch(() => ({}));
+  if (!res.ok || !d.ok) throw new Error(d.error || ('HTTP ' + res.status));
+}
+
+document.querySelectorAll('button[data-act]').forEach(b => {
+  b.addEventListener('click', async () => {
+    const act = b.dataset.act, sub = b.dataset.sub;
+    const role = b.dataset.roleFrom ? $(b.dataset.roleFrom).value : b.dataset.role;
+
+    const words = {
+      approve: ['Set access?', 'They will be able to use this dashboard as '
+                + (role || 'the chosen role') + (role === 'admin'
+                  ? ', which includes managing access - yours too.'
+                  : '. You can change or revoke it later.')],
+      deny:    ['Deny this request?', 'The request is dropped. They can ask again '
+                + 'by signing in, and you would see it here.'],
+      revoke:  ['Revoke access?', 'They lose access on their very next request, '
+                + 'not when their session expires.'],
+    }[act];
+
+    if (!(await confirmDialog({
+          title: words[0], body: words[1],
+          confirm: act[0].toUpperCase() + act.slice(1),
+          danger: act !== 'approve'}))) return;
+
+    b.disabled = true;
+    try {
+      await call(act, sub, role);
+      location.reload();
+    } catch (e) {
+      toast(e.message, true);
+      b.disabled = false;
+    }
+  });
+});
+</script>
+{% endblock %}

@@ -1,0 +1,16 @@
+{% extends "base.html" %}
+{% block title %}Access requested - NoMercy Runners{% endblock %}
+{% block body %}
+<div class="center">
+  <div class="brand" style="margin-bottom:22px">
+    <h1>NoMercy Runners</h1>
+    <div class="sub">Control dashboard</div>
+  </div>
+  <div class="notice">
+    <b>Access requested.</b> You signed in successfully, but this dashboard
+    keeps its own list of who may use it. Your request is waiting for an
+    admin to approve it. Nothing else to do here.
+  </div>
+  <div style="margin-top:16px"><a href="/login">Back to sign in</a></div>
+</div>
+{% endblock %}
