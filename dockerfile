@@ -72,8 +72,16 @@ RUN sed -i "s|http://archive.ubuntu.com|http://${UBUNTU_MIRROR}|g" /etc/apt/sour
 FROM ubuntu:24.04 AS stage-maven
 ARG MAVEN_VERSION
 ARG UBUNTU_MIRROR
+# archive.apache.org, NOT dlcdn.apache.org. The CDN carries only the releases
+# Apache currently considers live and drops the rest, so a pinned version stops
+# resolving the moment a newer one supersedes it — the download 404s, `tar`
+# exits 2, and the whole image build fails with no code change on our side.
+# That is what broke this build: MAVEN_VERSION was 3.9.14 while dlcdn had moved
+# on to 3.9.16. Bumping the pin would only postpone the next rotation; archive
+# keeps every release permanently, so the pin decides the version and nothing
+# else can take it away.
 RUN sed -i "s|http://archive.ubuntu.com|http://${UBUNTU_MIRROR}|g" /etc/apt/sources.list.d/ubuntu.sources && apt-get update && apt-get install -y curl && \
-    curl -fsSL "https://dlcdn.apache.org/maven/maven-3/${MAVEN_VERSION}/binaries/apache-maven-${MAVEN_VERSION}-bin.tar.gz" \
+    curl -fsSL "https://archive.apache.org/dist/maven/maven-3/${MAVEN_VERSION}/binaries/apache-maven-${MAVEN_VERSION}-bin.tar.gz" \
         | tar -C /opt -xz
 
 # ── AWS CLI v2 ──────────────────────────────────────────────────────────────
