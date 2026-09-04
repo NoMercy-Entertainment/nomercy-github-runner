@@ -8,8 +8,9 @@ cd /root/actions-runner
 export RUNNER_ALLOW_RUNASROOT=1
 
 # Fix Yarn 4 .bin/ permission issue: ensure all new files are created with
-# execute permission when running as root in Docker
-umask 0000
+# execute permission when running as root in Docker. 0022 keeps that bit
+# without making everything world-writable, which breaks dpkg (see dockerfile).
+umask 0022
 
 # ── Runner version ───────────────────────────────────────────────────────────
 # GitHub deprecates old runner versions and refuses to deliver jobs to them:

@@ -355,11 +355,16 @@ RUN chmod +x /root/start.sh
 # Fix file permissions for all shells: Yarn 4 .bin/ shims use #!/bin/sh
 # (dash on Ubuntu) which doesn't inherit bash umask settings.
 # Wrapping both sh and bash ensures umask propagates everywhere.
+#
+# 0022, not 0000. Both keep the execute bit Yarn needs, but 0000 also makes
+# every new file world-writable, and Debian packaging refuses that: dpkg-deb
+# rejects a 777 control directory, and a maintainer script's `umask 022 or die`
+# reads back the previous mask, gets 0 from 0000, and aborts the whole apt run.
 RUN mv /usr/bin/bash /usr/bin/bash.real && \
-    printf '#!/usr/bin/bash.real\numask 0000\nexec /usr/bin/bash.real "$@"\n' > /usr/bin/bash && \
+    printf '#!/usr/bin/bash.real\numask 0022\nexec /usr/bin/bash.real "$@"\n' > /usr/bin/bash && \
     chmod +x /usr/bin/bash && \
     mv /usr/bin/dash /usr/bin/dash.real && \
-    printf '#!/usr/bin/bash.real\numask 0000\nexec /usr/bin/dash.real "$@"\n' > /usr/bin/dash && \
+    printf '#!/usr/bin/bash.real\numask 0022\nexec /usr/bin/dash.real "$@"\n' > /usr/bin/dash && \
     chmod +x /usr/bin/dash
 
 ENTRYPOINT ["/root/start.sh"]
