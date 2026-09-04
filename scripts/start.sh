@@ -12,6 +12,22 @@ export RUNNER_ALLOW_RUNASROOT=1
 # without making everything world-writable, which breaks dpkg (see dockerfile).
 umask 0022
 
+# The image also wraps bash and dash so every shell a job starts gets the same
+# mask, and a container running an older image still carries the 0000 wrappers
+# that abort dpkg. This file is bind-mounted from the host checkout, so
+# rewriting them here means a pull and a restart is enough to repair a runner —
+# no image pull, no recreate. Idempotent: a correct wrapper is rewritten to
+# itself. Replaces via a temp file so the shim currently interpreting this
+# script keeps its own inode.
+for shell in bash dash; do
+  if [ -f "/usr/bin/${shell}.real" ]; then
+    printf '#!/usr/bin/bash.real\numask 0022\nexec /usr/bin/%s.real "$@"\n' "$shell" \
+      > "/usr/bin/${shell}.new"
+    chmod +x "/usr/bin/${shell}.new"
+    mv -f "/usr/bin/${shell}.new" "/usr/bin/${shell}"
+  fi
+done
+
 # ── Runner version ───────────────────────────────────────────────────────────
 # GitHub deprecates old runner versions and refuses to deliver jobs to them:
 #   "Runner version vX is deprecated and cannot receive messages"
