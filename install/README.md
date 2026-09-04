@@ -91,6 +91,30 @@ Useful flags when scripting it (`--non-interactive`):
 | `--min-free N` | Lower the free-space floor from the default 40 GB |
 | `--skip-space-check` | Proceed regardless. Interactive runs can already answer "use it anyway"; this is the same escape hatch for unattended ones |
 | `--group ""` | The org default, stated deliberately. Distinct from omitting the flag, which prompts |
+| `-MinFree N` / `-SkipSpaceCheck` (Windows) | The same two escape hatches as the shell installer |
+| `-RunnerGroup ""` (Windows) | The org default, stated deliberately, same as `--group ""` |
+
+One trap when scripting it, and it depends on the shell you call from rather than
+on `-File`. Only `cmd.exe` mishandles `''`, where quoting is not a thing it does:
+the child receives two literal apostrophes, so `-RunnerGroup ''` asks for a group
+whose name really is `''` instead of the org default. From `cmd.exe` use `""`.
+From PowerShell or bash, `''` and `""` both arrive genuinely empty and bind:
+
+| Called from | Form | Parameter receives |
+|---|---|---|
+| PowerShell 5.1 / pwsh 7 | `-RunnerGroup ''` | empty, bound |
+| bash / WSL | `-RunnerGroup ''` | empty, bound |
+| `cmd.exe` | `-RunnerGroup ""` | empty, bound |
+| `cmd.exe` | `-RunnerGroup ''` | `''` — two characters, not empty |
+
+The argument is never dropped and never shifts onto the next parameter in any of
+them. A splat sidesteps the `cmd.exe` case entirely if you would rather not think
+about the calling shell:
+
+```powershell
+$p = @{ Org = 'YourOrg'; Token = $pat; RunnerGroup = ''; NonInteractive = $true }
+& .\nomercy-github-runners-setup.ps1 @p
+```
 | `--auto-login` / `--no-auto-login` | macOS. Answer the reboot question without a prompt |
 | `--login-password-stdin` | macOS. Reads the login password from stdin for `--auto-login`. There is deliberately no `--password` flag: `argv` is readable through `ps` by any local user and lands in shell history |
 
@@ -149,6 +173,17 @@ auto-login.
 every runner. The keepalive task exists solely to prevent this. If runners
 start cycling every 20-30 seconds, check the task is still running:
 `Get-ScheduledTask -TaskName 'NoMercy Runners - Keep nomercy-runners Alive'`.
+
+**Windows: the disk ceiling needs WSL 2.5 or later.** `wsl --manage <distro>
+--resize` does not exist before that, so on an older WSL the number cannot be
+applied to anything. The installer says so at the time rather than printing a
+limit it never sets. Isolation is unaffected either way, since the runners'
+disk is separate from your own Docker regardless; only the cap is missing.
+`wsl --update` gets you the enforced version.
+
+**Uninstalling a custom distro name needs that name.** `-DistroName` is not
+remembered anywhere, so pass it to the uninstaller too. It refuses and lists
+your installed distributions if the name does not match one exactly.
 
 **Linux: a shared filesystem gives only partial isolation.** If the path you
 choose is on the same filesystem as your existing Docker root, the daemons are
@@ -236,11 +271,36 @@ chosen path, Docker engine install, engine surviving a distro restart,
 keepalive task, runner registration, and complete removal including
 deregistration.
 
+Independently re-run on 2026-07-28 on a second machine (Windows 10 19045, WSL
+2.4.13, Docker Desktop already installed and running, runners given their own
+volume). Two runners registered and a real job ran on one of them. Isolation was
+measured against the install's own 28 GB of work rather than a synthetic
+allocation: the runners' volume dropped by 28.1 GB while the volume holding
+Docker Desktop moved by 0.2 GB of ordinary churn. Teardown removed the runners,
+the task and the distribution, left no orphaned registrations, and returned the
+volume to within 0.4 GB of where it started.
+
+That run produced the uninstaller name-matching bug and the keepalive collision
+described under [Known issues](#known-issues-and-things-to-watch), and showed
+that the disk ceiling was being asked for and never applied.
+
 **Linux — fully tested**, end to end inside a real systemd environment that
 already ran Docker, which is the situation you will be in. Isolated daemon,
 separate data root, runner registration, and complete removal. Isolation was
 verified by observing two containers with the *same name* on the two daemons,
 holding different IDs and separate layer stores.
+
+Independently re-run on 2026-07-28 on a second machine (Ubuntu 24.04, Docker
+already installed, runners given their own 60 GB volume). Two runners
+registered, a real job ran, and isolation was measured rather than inferred:
+20 GB allocated inside the runners' pool moved the system Docker's free space
+by nothing, and after a job had been through it the two roots held 25 GB and
+212 KB respectively.
+
+That run is also what turned up the `grep -q` inversion described under
+[Known issues](#known-issues-and-things-to-watch): the uninstaller reported
+"No systemd service to remove" and left the isolated `dockerd` running against
+a data root it had just deleted.
 
 **macOS — tested by @StoneyEagle on 2026-07-28** (Mac mini, Apple M4, macOS
 26.5.2, arm64). Install, registration, real job execution and teardown all

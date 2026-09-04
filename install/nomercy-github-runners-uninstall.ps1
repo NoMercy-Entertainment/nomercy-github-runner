@@ -95,18 +95,29 @@ Write-Host '  Uninstaller' -ForegroundColor DarkCyan
 
 Write-Head 'Looking for the installation'
 
-$distros = Invoke-Wsl @('--list', '--quiet')
-if ($distros -notmatch [regex]::Escape($DistroName)) {
+# Whole names, not a substring search. `-match` against the raw list means a
+# distribution called 'nomercy-runners-test' satisfies a check for
+# 'nomercy-runners', and the uninstaller then runs every step against a distro
+# that does not exist. Each step reports "none", nothing is removed, and the
+# summary still says all runners were deregistered.
+$distroNames = @((Invoke-Wsl @('--list', '--quiet')) -split "`r?`n" |
+                 ForEach-Object { $_.Trim() } | Where-Object { $_ })
+if ($distroNames -notcontains $DistroName) {
     Write-Warn "No WSL distribution named '$DistroName' was found."
     Write-Info 'Nothing to remove. If you used a different name, pass -DistroName.'
+    if ($distroNames.Count -gt 0) {
+        Write-Info 'Your installed distributions:'
+        foreach ($n in $distroNames) { Write-Info "  $n" }
+    }
     Write-Host ''
-    exit 0
+    exit 1
 }
 Write-Ok "Found distribution '$DistroName'"
 
 $runners = (Invoke-Wsl @('-d', $DistroName, '-u', 'root', '--', 'docker', 'ps', '-a',
                          '--format', '{{.Names}}')).Trim()
 $runnerList = @()
+$script:RemovedAnything = $false
 if ($runners) {
     $runnerList = @($runners -split "`n" | ForEach-Object { $_.Trim() } |
                     Where-Object { $_ -like 'nomercy-runner-*' })
@@ -184,10 +195,11 @@ if ($runnerList.Count -eq 0) {
             if (Remove-RunnerViaApi -Organisation $Org -Pat $Token -AgentName $agent) {
                 $gone = $true
                 Write-Ok "$r ($agent) removed via the GitHub API"
+                $script:RemovedAnything = $true
             }
         }
 
-        if ($gone) { Write-Ok "$r ($agent) deregistered" }
+        if ($gone) { Write-Ok "$r ($agent) deregistered"; $script:RemovedAnything = $true }
         else       { Write-Warn "$r ($agent) could not be deregistered"; $failed += $agent }
     }
 }
@@ -215,8 +227,34 @@ if ($task) {
     Stop-ScheduledTask  -TaskName $taskName -ErrorAction SilentlyContinue
     Unregister-ScheduledTask -TaskName $taskName -Confirm:$false
     Write-Ok "Removed scheduled task"
+    $script:RemovedAnything = $true
 } else {
     Write-Info 'No keepalive task found.'
+}
+
+# The script and its log outlived the task. Named per distro, so removing them
+# leaves any other installation's alone.
+$keepDir = Join-Path $env:LOCALAPPDATA 'NoMercyRunners'
+foreach ($leftover in @("keepalive-$DistroName.ps1", "keepalive-$DistroName.log")) {
+    $p = Join-Path $keepDir $leftover
+    if (Test-Path $p) { Remove-Item $p -Force -ErrorAction SilentlyContinue }
+}
+
+# Installs made before the per-distro rename left an un-suffixed pair. Only
+# remove those once it is confirmed they belong to THIS distro - the script
+# names it on its first line - so an older installation of another distro
+# keeps its own.
+$legacy = Join-Path $keepDir 'keepalive.ps1'
+if (Test-Path $legacy) {
+    $owner = (Get-Content $legacy -TotalCount 1) -match "\`$distro\s*=\s*'([^']+)'"
+    if ($owner -and $Matches[1] -eq $DistroName) {
+        Remove-Item $legacy, (Join-Path $keepDir 'keepalive.log') -Force -ErrorAction SilentlyContinue
+        Write-Ok 'Removed the keepalive script left by an older install'
+    }
+}
+# Only if this was the last one - the directory is shared between installations.
+if ((Test-Path $keepDir) -and -not (Get-ChildItem $keepDir -Force)) {
+    Remove-Item $keepDir -Force -ErrorAction SilentlyContinue
 }
 
 # --------------------------------------------------------------------------
@@ -236,7 +274,7 @@ if ($removeDistro) {
     Invoke-Wsl @('--terminate', $DistroName) | Out-Null
     Start-Sleep -Seconds 2
     $out = Invoke-Wsl @('--unregister', $DistroName)
-    if ($LASTEXITCODE -eq 0) { Write-Ok "Unregistered '$DistroName'" }
+    if ($LASTEXITCODE -eq 0) { Write-Ok "Unregistered '$DistroName'"; $script:RemovedAnything = $true }
     else { Write-Warn "Could not unregister the distribution: $($out.Trim())" }
 } else {
     Write-Info "Left '$DistroName' in place."
@@ -270,6 +308,7 @@ if ($dataPath -and (Test-Path $dataPath)) {
         try {
             Remove-Item $dataPath -Recurse -Force -ErrorAction Stop
             Write-Ok 'Data directory deleted'
+            $script:RemovedAnything = $true
         } catch {
             Write-Warn "Could not delete it: $($_.Exception.Message)"
             Write-Info "Remove it by hand if you want it gone: $dataPath"
@@ -288,6 +327,24 @@ if ($dataPath -and (Test-Path $dataPath)) {
 
 Write-Head 'Done'
 Write-Host ''
+
+# Nothing found is not the same as everything removed. Run against a distro
+# name that does not exist - which is what the installer's own hint did for a
+# custom -DistroName - and every step reports "none", then the summary said
+# "All runners were deregistered from GitHub." The real install was untouched.
+if (-not $script:RemovedAnything) {
+    Write-Warn "Nothing was removed. No runners, no keepalive task and no distribution named '$DistroName' were found."
+    Write-Info 'If you installed under a different name, pass it:'
+    Write-Info "  .\nomercy-github-runners-uninstall.ps1 -DistroName <name>"
+    Write-Info 'Your installed distributions:'
+    foreach ($line in (Invoke-Wsl @('--list', '--quiet')) -split "`r?`n") {
+        $name = $line.Trim()
+        if ($name) { Write-Info "  $name" }
+    }
+    Write-Host ''
+    exit 1
+}
+
 if ($failed.Count -gt 0) {
     Write-Warn 'These runners may still be listed in your organisation:'
     foreach ($f in $failed) { Write-Host "    $f" -ForegroundColor Red }
