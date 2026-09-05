@@ -784,7 +784,13 @@ def diff_status(old, new):
     # changes rarely, so it is sent whole rather than per-entry like runners
     # above - the per-runner diffing there earns its complexity from a fleet
     # that resizes its meters every few seconds; this list does not.
-    for key in ("disk", "host", "elsewhere"):
+    # providers_configured changes at most once in a session (someone saves
+    # Forgejo credentials in Settings) but the Fleet page's whole "does this
+    # empty section still get a heading and an Add button" decision hinges on
+    # it - a key missing from this tuple never reaches a socket subscriber
+    # until their next full poll, which is exactly the bug this list exists
+    # to avoid for the others.
+    for key in ("disk", "host", "elsewhere", "providers_configured"):
         if (old or {}).get(key) != (new or {}).get(key):
             delta[key] = (new or {}).get(key)
 

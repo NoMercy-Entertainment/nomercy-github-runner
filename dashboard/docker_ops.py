@@ -662,6 +662,17 @@ def collect(env=None):
         "host": host_info(),
         "runners": runners,
         "elsewhere": _elsewhere(forge_records, known_forgejo_uuids),
+        # Lets the page tell "this provider has zero runners right now" from
+        # "this provider was never configured" - the two look identical in
+        # `runners` alone (both contribute nothing), but only the first one
+        # should still show its heading and an Add button. GitHub has no
+        # equivalent gate here (it is always usable), so it is always True;
+        # Forgejo reuses the same forge_client(env) config-only check the
+        # Elsewhere gate above already paid for, not a second one.
+        "providers_configured": {
+            "github": True,
+            "forgejo": forge_client is not None,
+        },
     }
 
 

@@ -399,18 +399,52 @@ function render(d) {
   // section, so the two grids stay on a comparable scale.
   const cpuScale = Math.max(100, ...rs.map(x => Number(x.cpu_percent) || 0));
 
+  // GitHub has no equivalent gate - it is always usable - so it is always
+  // treated as configured here even if the key were ever missing from a
+  // payload.
+  const providersConfigured = d.providers_configured || {};
+
   Object.keys(GRIDS).forEach(key => {
     const grid = GRIDS[key];
     const list = byProvider[key];
+    const fleetEl = grid.closest('.fleet');
 
-    // An empty fleet hides its whole section, heading and buttons included:
-    // a "Recreate fleet" button above nothing has nothing safe to do, and a
-    // GitHub-only deployment should not grow an empty Forgejo heading.
-    grid.closest('.fleet').style.display = list.length ? '' : 'none';
+    // The section stays up whenever its provider is CONFIGURED, zero runners
+    // or not: an empty, configured fleet is exactly the state "+ Add runner"
+    // exists to recover from, and hiding the section hid that button along
+    // with everything else - the owner had no way back once the last runner
+    // was removed. A provider that was never configured still grows no
+    // heading, so a GitHub-only deployment does not sprout an empty Forgejo
+    // section either.
+    const configured = key === 'github' || !!providersConfigured[key];
+    fleetEl.style.display = configured ? '' : 'none';
 
+    // Recreate and Clear-all-cache have nothing to act on with zero runners
+    // and stay hidden until there is at least one - Add is the only fleet
+    // button exempt from that rule, because it is the one action an empty
+    // fleet still needs.
+    const hasRunners = list.length > 0;
+    const recreateBtn = $('btn-recreate-' + key);
+    const pruneBtn = $('btn-prune-' + key);
+    if (recreateBtn) recreateBtn.style.display = hasRunners ? '' : 'none';
+    if (pruneBtn) pruneBtn.style.display = hasRunners ? '' : 'none';
+
+    // Configured-but-empty gets its own line pointing at the Add button
+    // above it, rather than the same bare "No runners" an unconfigured
+    // (hidden) section would also carry - text patched in place like every
+    // other field below rather than rebuilt, so it does not replay its
+    // entrance animation on every poll.
     const skel = grid.querySelector('.skel');
-    if (list.length && skel) skel.remove();
-    if (!list.length && !skel) grid.innerHTML = '<div class="skel">No runners</div>';
+    const emptyText = configured
+      ? 'No runners - use + Add runner above to create one'
+      : 'No runners';
+    if (list.length) {
+      if (skel) skel.remove();
+    } else if (skel) {
+      if (skel.textContent !== emptyText) skel.textContent = emptyText;
+    } else {
+      grid.innerHTML = `<div class="skel">${emptyText}</div>`;
+    }
 
     list.forEach((r, i) => {
       let card = cards.get(r.name);
@@ -552,6 +586,7 @@ function applyDelta(s, d) {
   if (d.disk) s.disk = d.disk;
   if (d.host) s.host = d.host;
   if (d.elsewhere) s.elsewhere = d.elsewhere;
+  if (d.providers_configured) s.providers_configured = d.providers_configured;
   return s;
 }
 
