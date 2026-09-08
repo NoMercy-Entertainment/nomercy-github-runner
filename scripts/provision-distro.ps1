@@ -57,6 +57,21 @@ Invoke-Wsl @('--terminate', $DistroName)
 Start-Sleep -Seconds 3
 Invoke-Wsl @('-d', $DistroName, '-u', 'root', '--', 'systemctl', 'is-system-running', '--wait')
 
+Write-Host '== masking systemd-timesyncd ==' -ForegroundColor Cyan
+# WSL2 runs every distro on ONE shared kernel, so there is ONE system clock and
+# this distro does not own it. Hyper-V feeds it the Windows host's time, and a
+# chronyd in the WSL utility VM (outside this distro) already disciplines it.
+# A timesyncd in here is a second, competing disciplinarian steering toward
+# public NTP instead — and when the two references disagree, neither converges:
+# chronyd pins the kernel tick at its 11000 ceiling (+100000 ppm, a clock 10%
+# fast) while timesyncd steps realtime back ~2s every ~27s. Those steps are what
+# made meson see files in the future and let make skip targets (issue #6).
+# Masking it leaves exactly one disciplinarian and the clock tracks the host to
+# within a few ms. Absolute accuracy is then the HOST's job: keep W32Time running
+# (Automatic), or every runner inherits whatever error the host has drifted to.
+Invoke-Wsl @('-d', $DistroName, '-u', 'root', '--', 'systemctl', 'disable', '--now', 'systemd-timesyncd')
+Invoke-Wsl @('-d', $DistroName, '-u', 'root', '--', 'systemctl', 'mask', 'systemd-timesyncd')
+
 Write-Host '== installing Docker Engine ==' -ForegroundColor Cyan
 # Pass the installer as a file rather than an inline string: quoting a bash
 # script through PowerShell -> wsl.exe mangles $(...) and redirections.
