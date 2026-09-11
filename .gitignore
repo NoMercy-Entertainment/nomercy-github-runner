@@ -11,4 +11,5 @@ __pycache__/
 
 # Subagent-driven development scratch: ledgers, briefs, review packages.
 # Working notes for a plan in flight, not part of the deliverable.
-.superpowers/sdd/
+.superpowers/
+.claude/superpowers/
