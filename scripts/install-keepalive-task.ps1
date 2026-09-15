@@ -32,7 +32,14 @@ $trigger = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
 
 # Run as the invoking user. WSL distros are registered per-user, so a task
 # running as SYSTEM would not be able to see 'github-runners' at all.
-$principal = New-ScheduledTaskPrincipal -UserId "$env:USERDOMAIN\$env:USERNAME" -LogonType Interactive
+#
+# RunLevel Highest because the keepalive also re-publishes the dashboard's
+# portproxy, and both netsh portproxy and the firewall rule need admin. A
+# scheduled task elevates without a UAC prompt and without storing a password,
+# so this costs nothing at logon. Without it the distro is still held open but
+# the dashboard silently stays unreachable from the LAN.
+$principal = New-ScheduledTaskPrincipal -UserId "$env:USERDOMAIN\$env:USERNAME" `
+    -LogonType Interactive -RunLevel Highest
 
 $settings = New-ScheduledTaskSettingsSet `
     -AllowStartIfOnBatteries `
