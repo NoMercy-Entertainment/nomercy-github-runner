@@ -811,7 +811,6 @@ def create(index, env, provider=None):
         "--privileged",
         "--restart", "unless-stopped",
         "--stop-timeout", "60",
-        "--tmpfs", "/tmp",
     ]
     if provider is providers.GITHUB:
         args += ["-v", f"{REPO_HOST_PATH}/scripts/start.sh:/root/start.sh:ro"]
@@ -823,7 +822,10 @@ def create(index, env, provider=None):
     if cpu not in ("", "0"):
         args += ["--cpus", cpu]
     if mem not in ("", "0"):
-        args += ["--memory", mem]
+        # Swap capped at the limit itself: the limit is what makes the kernel
+        # reclaim a runner's page cache, and with swap on top it would page
+        # the overflow out to disk instead. See tests/test_runner_memory.py.
+        args += ["--memory", mem, "--memory-swap", mem]
     args.append(provider.image)
 
     ok, out, err = _docker(*args, timeout=180)

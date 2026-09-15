@@ -72,6 +72,15 @@ Write-Host '== masking systemd-timesyncd ==' -ForegroundColor Cyan
 Invoke-Wsl @('-d', $DistroName, '-u', 'root', '--', 'systemctl', 'disable', '--now', 'systemd-timesyncd')
 Invoke-Wsl @('-d', $DistroName, '-u', 'root', '--', 'systemctl', 'mask', 'systemd-timesyncd')
 
+Write-Host '== enabling proactive memory compaction ==' -ForegroundColor Cyan
+# WSL ships this distro with vm.compaction_proactiveness=0. Memory a runner
+# frees is then left in fragments smaller than 2 MB, and WSL only hands back
+# 2 MB blocks to Windows: on 2026-09-15 the VM had 114 GB free while vmmem
+# stayed at 103 GB. 20 is the upstream kernel default; it keeps free memory
+# contiguous so it actually returns to the host. The runners' cache itself is
+# bounded by RUNNER_MEM_LIMIT (see docker-compose.runners.yml).
+Invoke-Wsl @('-d', $DistroName, '-u', 'root', '--', 'bash', '-c', "printf 'vm.compaction_proactiveness = 20\n' > /etc/sysctl.d/90-runner-memory.conf && sysctl --system")
+
 Write-Host '== installing Docker Engine ==' -ForegroundColor Cyan
 # Pass the installer as a file rather than an inline string: quoting a bash
 # script through PowerShell -> wsl.exe mangles $(...) and redirections.

@@ -22,6 +22,11 @@ x-runner: &runner
       limits:
         cpus: "${RUNNER_CPU_LIMIT:-0}"
         memory: "${RUNNER_MEM_LIMIT:-0}"
+  # The memory limit counts page cache, so at the limit the kernel reclaims a
+  # runner's cache instead of letting it grow the WSL VM (vmmem stood at 149 GB
+  # on 2026-09-15, ~16 GB of it process memory). Swap capped at the same value,
+  # or the overflow is paged out to disk instead of reclaimed.
+  memswap_limit: "${RUNNER_MEM_LIMIT:-0}"
   environment:
     GH_TOKEN: ${GH_TOKEN}
     GITHUB_ORG: ${GITHUB_ORG:-NoMercy-Entertainment}
@@ -34,8 +39,9 @@ x-runner: &runner
     # SIGTERMs every container. See scripts/keepalive-distro.ps1.
     # Read-only: start.sh is executed, never written to.
     - ./scripts/start.sh:/root/start.sh:ro
-  tmpfs:
-    - /tmp
+  # No tmpfs on /tmp: that is RAM, counted against the memory limit above and
+  # held by the VM for as long as the container lives. /tmp lives on the
+  # distro's disk on D: like the rest of the container.
   # Docker Engine 29.x creates containers with StopTimeout=1 instead of the
   # documented 10 (moby/moby#52775). start.sh deregisters the runner from
   # GitHub on SIGTERM and needs ~3s to do it; at 1s it is SIGKILLed mid-flight
@@ -102,6 +108,7 @@ services:
         limits:
           cpus: "${RUNNER_CPU_LIMIT:-0}"
           memory: "${RUNNER_MEM_LIMIT:-0}"
+    memswap_limit: "${RUNNER_MEM_LIMIT:-0}"
     labels:
       nomercy.runner: "true"
       nomercy.provider: "forgejo"
@@ -115,8 +122,6 @@ services:
       FORGEJO_RUNNER_NAME: forgejo-runner-1
     volumes:
       - forgejo-runner-1-data:/data
-    tmpfs:
-      - /tmp
     # Not for deregistration - start-forgejo.sh cannot deregister and does not
     # try (see the long comment there). This is for the nested daemon: the
     # script forwards SIGTERM to the runner child and waits for it, and

@@ -592,7 +592,9 @@ EOF
 
   _limits=''
   [ "$CPU_LIMIT" != 0 ] && _limits="$_limits --cpus $CPU_LIMIT"
-  [ "$MEM_LIMIT" != 0 ] && _limits="$_limits --memory $MEM_LIMIT"
+  # Swap capped at the memory limit, so the limit reclaims page cache
+  # instead of paging the overflow out to disk.
+  [ "$MEM_LIMIT" != 0 ] && _limits="$_limits --memory $MEM_LIMIT --memory-swap $MEM_LIMIT"
 
   _n=1
   while [ "$_n" -le "$RUNNER_COUNT" ]; do
@@ -607,7 +609,6 @@ EOF
       --name "$_name" \
       --label nomercy.runner=true \
       --privileged --restart unless-stopped --stop-timeout 60 \
-      --tmpfs /tmp \
       -v "${DATA_PATH}/start.sh:/root/start.sh:ro" \
       -e "GH_TOKEN=${TOKEN}" \
       -e "GITHUB_ORG=${ORG}" \
