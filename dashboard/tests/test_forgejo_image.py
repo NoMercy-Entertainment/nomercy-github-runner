@@ -10,6 +10,7 @@ the two commands the script must and must not run, and the compose service's
 ability to build the image at all - nothing publishes that tag.
 """
 import os
+import re
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(
     os.path.abspath(__file__))))
@@ -216,3 +217,16 @@ def test_the_compose_forgejo_runner_is_capped_like_the_github_fleet():
     forgejo = compose["services"]["forgejo-runner-1"]["deploy"]["resources"]
     github = compose["services"]["github-runner-1"]["deploy"]["resources"]
     assert forgejo["limits"] == github["limits"]
+
+
+def test_the_runner_image_has_git():
+    """forgejo-runner shells out to the git CLI (`git worktree add`) when it
+    materialises an action from its cache. Without git in the image every
+    job that uses actions/checkout dies before its first step with
+    `exec: "git": executable file not found in $PATH` - what took
+    FiLL/telersboek run 15 down on 2026-09-09 once the runner moved off
+    BeastStack's official image, which ships git. The slim image must too."""
+    lines = [l for l in _read(DOCKERFILE).splitlines()
+             if not l.strip().startswith("#")]
+    assert any(re.search(r"(^|\s)git(\s|\\|$)", l) for l in lines), \
+        "git is not installed in forgejo-runner/Dockerfile"

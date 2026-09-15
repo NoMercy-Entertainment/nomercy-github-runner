@@ -3,14 +3,19 @@
 # A slim runner, not the GitHub runner image. Forgejo jobs run inside job
 # containers named by the ubuntu-*:docker:// labels, so the toolchain in the
 # GitHub image would be gigabytes this container never executes.
+#
+# git is the one tool the runner itself needs: it materialises actions from
+# its cache with `git worktree add`, shelled out to the git CLI. Without it
+# every job using actions/checkout fails before its first step with
+# `exec: "git": executable file not found in $PATH`.
 FROM ubuntu:24.04
 
-ARG FORGEJO_RUNNER_VERSION=12.0.1
+ARG FORGEJO_RUNNER_VERSION=13.1.0
 
 ENV DEBIAN_FRONTEND=noninteractive
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        ca-certificates curl procps tzdata \
+        ca-certificates curl git procps tzdata \
     && install -m 0755 -d /etc/apt/keyrings \
     && curl -fsSL https://download.docker.com/linux/ubuntu/gpg \
          -o /etc/apt/keyrings/docker.asc \
