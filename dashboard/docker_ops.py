@@ -765,8 +765,13 @@ def remove(name, provider=None, env=None):
                 # The id in .runner is written at registration. Falling back
                 # to the live map covers a file that is missing or stale.
                 runner_id = rf.get("id")
-                if not runner_id and rf.get("uuid"):
-                    runner_id = (client.runner_ids() or {}).get(rf["uuid"])
+                # A stopped container - every drained one - cannot be exec'd
+                # into, so .runner reads empty. The uuid it last registered
+                # with is remembered for exactly that case.
+                uuid = rf.get("uuid") or (
+                    load_state().get("forgejo_uuids") or {}).get(name)
+                if not runner_id and uuid:
+                    runner_id = (client.runner_ids() or {}).get(uuid)
                 if runner_id:
                     client.delete_runner(runner_id)
         except Exception as e:  # noqa: BLE001 - never blocks the removal

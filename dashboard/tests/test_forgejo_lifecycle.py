@@ -97,6 +97,25 @@ def test_remove_deregisters_before_deleting(monkeypatch):
     assert forge.deleted == [7]
 
 
+def test_removing_a_stopped_runner_still_deregisters_it(monkeypatch, tmp_path):
+    """A drained runner is stopped before it is removed, and docker exec
+    cannot read .runner out of a stopped container. The uuid it last
+    registered with is already remembered in state.json - without falling
+    back to it, drain-then-remove left the old registration "offline" in
+    Forgejo for every runner of a recreate (2026-09-15: three ghosts)."""
+    import json
+    state = tmp_path / "state.json"
+    state.write_text(json.dumps({"forgejo_uuids": {"forgejo-runner-1": "uuid-of-1"}}))
+    monkeypatch.setattr(docker_ops, "STATE_PATH", str(state))
+    forge = _FakeForge()
+    monkeypatch.setattr(providers.FORGEJO, "forge_client", lambda env: forge)
+    monkeypatch.setattr(docker_ops, "_runner_file", lambda n, p: {})
+    _capture(monkeypatch)
+    ok, _, _ = docker_ops.remove("forgejo-runner-1", providers.FORGEJO, {})
+    assert ok is True
+    assert forge.deleted == [7]
+
+
 def test_removal_proceeds_even_when_forgejo_will_not_answer(monkeypatch):
     """A container the operator wants gone must be removable regardless."""
     forge = _FakeForge(fail_delete=True)
