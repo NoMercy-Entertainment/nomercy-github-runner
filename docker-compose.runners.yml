@@ -26,6 +26,14 @@ x-runner: &runner
   # runner's cache instead of letting it grow the WSL VM (vmmem stood at 149 GB
   # on 2026-09-15, ~16 GB of it process memory). Swap capped at the same value,
   # or the overflow is paged out to disk instead of reclaimed.
+  #
+  # Sized at 32g since 2026-09-17. At 16g the cross-compile stages of the
+  # ffmpeg builds were OOM-killed: they peak near 17 GB of process memory
+  # (~55 concurrent cc1plus at -j$(nproc), where nproc reports all host cores).
+  # The limit is a ceiling, not a reservation, so the nominal total across the
+  # fleet may exceed the 160 GB the WSL VM is given in .wslconfig; what has to
+  # fit is the sum of concurrent peaks. Raising this further needs that sum
+  # rechecked, because the VM has no room left for a fleet-wide peak.
   memswap_limit: "${RUNNER_MEM_LIMIT:-0}"
   environment:
     GH_TOKEN: ${GH_TOKEN}
