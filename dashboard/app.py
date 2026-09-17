@@ -187,6 +187,37 @@ def _forbid(why):
 # Reachable without a session: the sign-in page and the round trip to the IdP.
 OPEN_PATHS = {"/login", "/auth/start", "/callback", "/auth/pending"}
 
+#: API versions served. v1 is the existing surface, aliased so the new
+#: id-keyed API can land beside it instead of replacing it in one step.
+API_VERSIONS = ("v1",)
+
+#: The shape of a fleet frame on the websocket, reported by /api/version.
+#:
+#: NOT yet carried in the frame itself. Two existing tests pin the snapshot
+#: frame exactly, and this plan's own rule is that an existing test is not
+#: edited - a change that needs one is reported as a behaviour change instead.
+#: The field earns its keep only when the payload actually changes, which is
+#: T-1401, and that task rewrites those tests for a reason of its own. Adding
+#: it here would have meant editing two tests today to buy nothing until then.
+FLEET_SCHEMA = 1
+
+_VERSION_PREFIXES = tuple(f"/api/{v}/" for v in API_VERSIONS)
+
+
+def policy_path(path):
+    """The path authorisation decisions are made against.
+
+    Version prefixes are stripped first, so `/api/v1/users/approve` is judged
+    exactly as `/api/users/approve`. Without this, aliasing would silently
+    open a second door to every path-scoped rule below: `/api/users/` is
+    admin-only, and an alias that did not match that prefix would be
+    admin-only no longer.
+    """
+    for prefix in _VERSION_PREFIXES:
+        if path.startswith(prefix):
+            return "/api/" + path[len(prefix):]
+    return path
+
 
 @app.context_processor
 def _template_role():
@@ -206,10 +237,14 @@ def guard():
     if request.path in OPEN_PATHS:
         return None
 
+    # Judged on the version-stripped path, so an /api/v1 alias inherits every
+    # rule below rather than slipping past the ones that match on a prefix.
+    path = policy_path(request.path)
+
     role = g.role = current_role()
     if role is None:
         # API callers get JSON; a browser gets the login page.
-        if request.path.startswith(("/api/", "/ws/")):
+        if path.startswith(("/api/", "/ws/")):
             # A WebSocket client cannot read a redirect to a login page.
             return jsonify(error="not authenticated"), 401
         return redirect(url_for("login"))
@@ -218,10 +253,10 @@ def guard():
     # every read a GET, so the general rule is a single condition - but two
     # reads are not for everyone, and they are named rather than left to be
     # noticed later.
-    if request.path == "/users" or request.path.startswith("/api/users/"):
+    if path == "/users" or path.startswith("/api/users/"):
         if role != "admin":
             return _forbid("Only an admin can manage access.")
-    elif request.path == "/settings" and role == "viewer":
+    elif path == "/settings" and role == "viewer":
         return _forbid("Settings are not available with read-only access.")
     elif request.method == "POST" and role == "viewer":
         return _forbid("Your access is read-only.")
@@ -1186,6 +1221,46 @@ def api_recreate():
             return jsonify(ok=False, results=results, aborted_at=new), 500
 
     return jsonify(ok=all(r["ok"] for r in results), results=results)
+
+
+@app.route("/api/version")
+def api_version():
+    """What this dashboard serves, so a client can tell before it calls.
+
+    A client that guesses gets a 404 it cannot distinguish from a route that
+    was removed; this makes the difference visible.
+    """
+    return jsonify(api=list(API_VERSIONS), schema=FLEET_SCHEMA)
+
+
+def _register_version_aliases():
+    """Serve every /api route a second time under /api/v1.
+
+    Done by walking the map rather than by adding a decorator to twenty
+    handlers: one place to read, and no route can be forgotten. The alias
+    reuses the same view function, so the two cannot drift apart.
+
+    /api/version itself is not aliased - it is how a client discovers the
+    versions, so it must not live inside one.
+    """
+    for rule in list(app.url_map.iter_rules()):
+        if not rule.rule.startswith("/api/"):
+            continue
+        if rule.rule == "/api/version":
+            continue
+        if any(rule.rule.startswith(p) for p in _VERSION_PREFIXES):
+            continue
+        for version in API_VERSIONS:
+            alias = f"/api/{version}" + rule.rule[len("/api"):]
+            app.add_url_rule(
+                alias,
+                endpoint=f"{version}__{rule.endpoint}",
+                view_func=app.view_functions[rule.endpoint],
+                methods=sorted(rule.methods - {"HEAD", "OPTIONS"}),
+            )
+
+
+_register_version_aliases()
 
 
 if __name__ == "__main__":
