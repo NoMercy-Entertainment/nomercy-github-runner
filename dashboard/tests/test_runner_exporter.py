@@ -297,3 +297,59 @@ class TestWindowsProbeMeasuresTheTree:
         got = self._probe(monkeypatch, self.PAYLOAD)
         assert got["job"] == ""
         assert got["state"] == "Running"
+
+
+class TestSamplingIsDecoupledFromServing:
+    """A reader must never wait for a probe.
+
+    Sampling on the request took 3.2-3.9s - walking every process on a
+    56-core box, then ssh-ing to another machine - against a client timeout
+    of 5s. Under load a sweep crossed that line, and because the client caches
+    a failure for longer than a success, one slow sweep blanked both cards for
+    fifteen seconds. The exporter samples on its own schedule now.
+    """
+
+    def test_a_reader_gets_an_answer_before_the_first_sample(self):
+        """Not "not measured yet" as an error, but as None per runner."""
+        s = ex.Sampler({"a": lambda: {"cpu_percent": 1.0}}, interval=999)
+        snap = s.snapshot()
+        assert snap["runners"] == {"a": None}
+        assert snap["sampled"] is False
+
+    def test_a_reader_never_runs_a_probe(self):
+        """The regression: snapshot() must not be where the work happens."""
+        calls = []
+
+        def probe():
+            calls.append(1)
+            return {"cpu_percent": 1.0}
+
+        s = ex.Sampler({"a": probe}, interval=999)
+        for _ in range(5):
+            s.snapshot()
+        assert calls == [], "snapshot() must not call any probe"
+
+    def test_a_sample_replaces_the_placeholder(self):
+        s = ex.Sampler({"a": lambda: {"cpu_percent": 2.5}}, interval=999)
+        s.sample_once()
+        snap = s.snapshot()
+        assert snap["runners"]["a"]["cpu_percent"] == 2.5
+        assert snap["sampled"] is True
+
+    def test_a_slow_probe_delays_the_sample_not_the_reader(self):
+        """What the decoupling buys: readers stay fast while a probe hangs."""
+        import time as _t
+
+        s = ex.Sampler({"a": lambda: {"cpu_percent": 1.0}}, interval=999)
+        s.sample_once()
+        s.probes = {"a": lambda: _t.sleep(2) or {"cpu_percent": 9.0}}
+        t0 = _t.monotonic()
+        snap = s.snapshot()
+        assert _t.monotonic() - t0 < 0.5
+        assert snap["runners"]["a"]["cpu_percent"] == 1.0, \
+            "the reader sees the last good sample, not a half-built one"
+
+    def test_the_payload_says_when_it_was_taken(self):
+        """So a reader can see staleness instead of being told a nice lie."""
+        s = ex.Sampler({}, interval=999)
+        assert s.sample_once()["generated"].endswith("Z")

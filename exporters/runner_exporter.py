@@ -25,6 +25,7 @@ import re
 import shutil
 import subprocess
 import sys
+import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -198,14 +199,66 @@ def build_payload(probes):
             "runners": runners}
 
 
+class Sampler:
+    """Collects in the background and hands out the last complete sample.
+
+    Sampling on the request was the original design and it was wrong. Walking
+    every process on a 56-core box and ssh-ing to another machine took 3.2-3.9
+    seconds, against a client timeout of 5. Under load a sweep crossed that
+    line, and because the client caches a failure for longer than a success,
+    one slow sweep blanked both cards for fifteen seconds.
+
+    Decoupling them makes /metrics answer instantly and always: a slow or hung
+    probe delays the next SAMPLE, never a reader. The payload carries the time
+    it was taken, so a reader can see for itself that it has gone stale rather
+    than being told a comfortable lie.
+    """
+
+    def __init__(self, probes, interval=15):
+        self.probes = probes
+        self.interval = interval
+        self._lock = threading.Lock()
+        # Before the first sample lands, every runner is None - "not measured
+        # yet", which is the truth, and the same sentinel a failed probe uses.
+        self._payload = {
+            "generated": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "sampled": False,
+            "runners": {name: None for name in probes},
+        }
+
+    def snapshot(self):
+        with self._lock:
+            return self._payload
+
+    def sample_once(self):
+        payload = build_payload(self.probes)
+        payload["sampled"] = True
+        with self._lock:
+            self._payload = payload
+        return payload
+
+    def _loop(self):
+        while True:
+            try:
+                self.sample_once()
+            except Exception as exc:  # noqa: BLE001 - the loop must not die
+                note("sampler", "%s: %s" % (type(exc).__name__, exc))
+            time.sleep(self.interval)
+
+    def start(self):
+        t = threading.Thread(target=self._loop, name="sampler", daemon=True)
+        t.start()
+        return t
+
+
 class _Handler(BaseHTTPRequestHandler):
-    probes = {}
+    sampler = None
 
     def do_GET(self):  # noqa: N802 - BaseHTTPRequestHandler's spelling
         if self.path.split("?")[0] != "/metrics":
             self.send_error(404)
             return
-        body = json.dumps(build_payload(self.probes)).encode()
+        body = json.dumps(self.sampler.snapshot()).encode()
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(body)))
@@ -216,8 +269,10 @@ class _Handler(BaseHTTPRequestHandler):
         """Silence per-request logging; the service log is for failures."""
 
 
-def serve(address, port, probes):
-    _Handler.probes = probes
+def serve(address, port, probes, interval=15):
+    sampler = Sampler(probes, interval)
+    sampler.start()
+    _Handler.sampler = sampler
     ThreadingHTTPServer((address, port), _Handler).serve_forever()
 
 
