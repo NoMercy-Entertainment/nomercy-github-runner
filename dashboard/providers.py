@@ -9,14 +9,110 @@ Deliberately data and construction, never behaviour that touches Docker:
 docker_ops imports this module, so anything here calling back into it would be
 a circular import. The forge API clients are safe to build here because neither
 of them imports docker_ops.
+
+Since the platform axis was added, this module answers a second question as
+well: which of the six provider x platform combinations actually exist, and on
+what terms. That answer is DATA, not a conditional at a call site - a caller
+asks `supports()` and renders the reason it gets back, rather than knowing
+anything itself about Windows or macOS. It is also honest about provenance:
+Forgejo publishes no Windows or macOS runner binary, so those cells are
+available only when a self-built artefact has been configured, and say so when
+it has not.
+
+Nothing here imports a runtime module. A provider must never learn how a runner
+is executed, exactly as a runtime must never learn which forge it belongs to;
+tests/test_provider_platforms.py asserts both directions.
 """
 
 import os
 import re
+from dataclasses import dataclass
 
 LABEL_PROVIDER = "nomercy.provider"
 
 _NAME_RE = re.compile(r"(?:github|forgejo)-runner-\d+")
+
+#: The platforms a runner instance can run on.
+LINUX, WINDOWS, MACOS = "linux", "windows", "macos"
+PLATFORMS = (LINUX, WINDOWS, MACOS)
+
+#: Architectures. Kept separate from platform because they vary independently
+#: and the forges answer for them separately.
+X64, ARM64 = "x64", "arm64"
+
+#: Field names whose VALUES must never reach a log, an API response or an audit
+#: record. Consumed by the central redaction helper; listed here because this
+#: is the module that produces them, and a token added later without an entry
+#: here is the failure mode that redaction exists to prevent.
+REDACTED_FIELDS = frozenset({
+    "registration_token",
+    "GH_TOKEN",
+    "FORGEJO_API_TOKEN",
+    "FORGEJO_RUNNER_REGISTRATION_TOKEN",
+})
+
+
+@dataclass(frozen=True)
+class Support:
+    """Whether a cell exists, and why not when it does not.
+
+    Truthy when supported, so `if provider.supports(p, a):` reads naturally,
+    while the reason survives for the dashboard to render. A bare False would
+    make an unavailable fleet indistinguishable from a broken one.
+    """
+
+    ok: bool
+    reason: str = ""
+
+    def __bool__(self):
+        return self.ok
+
+
+@dataclass(frozen=True)
+class ArtifactRef:
+    """Where the runner agent for one cell comes from.
+
+    `source` is "vendor" when the forge publishes the binary and "self-built"
+    when it does not. That distinction is not cosmetic: a self-built artefact
+    has no upstream release feed to watch, which is the failure mode that has
+    already bitten this fleet once when a pinned runner version was deprecated.
+    """
+
+    source: str
+    reference: str
+    notes: str = ""
+
+
+@dataclass(frozen=True)
+class RegistrationPlan:
+    """What it takes to register one runner with its forge.
+
+    `token` is short-lived and secret. Its field name is in REDACTED_FIELDS and
+    it is never persisted: it goes into the create call and nowhere else.
+    """
+
+    url: str
+    token: str
+    name: str
+    labels: str
+    runner_group: str = ""
+    extra: tuple = ()
+
+
+@dataclass(frozen=True)
+class DeregistrationPlan:
+    """How a runner is removed from its forge.
+
+    `via_api` matters. forgejo-runner has no `unregister` subcommand, so the
+    only way to delete a Forgejo record is the API - which means a Forgejo
+    container stopped any other way strands its registration, and a removal
+    that cannot reach the forge must be refused rather than forced.
+    """
+
+    via_api: bool
+    registration_id: str = ""
+    registration_uuid: str = ""
+    note: str = ""
 
 
 class Provider:
@@ -56,6 +152,22 @@ class Provider:
         """An API client, or None when the deployment is not configured."""
         raise NotImplementedError
 
+    # ---- the platform axis -------------------------------------------------
+
+    def supports(self, platform, arch=X64, env=None):
+        """Whether this forge can run on that platform, and why not if it
+        cannot. Always answers; never raises on an unknown platform."""
+        raise NotImplementedError
+
+    def agent_artifact(self, platform, arch=X64, env=None):
+        """Where the runner agent for that cell comes from, or None when the
+        cell is unsupported."""
+        raise NotImplementedError
+
+    def deregistration(self, spec):
+        """How to remove this runner from the forge."""
+        raise NotImplementedError
+
 
 class _GitHub(Provider):
     def container_env(self, env, name=None):
@@ -72,6 +184,55 @@ class _GitHub(Provider):
         if not (token and org):
             return None
         return github_api.GitHub(token, org)
+
+    #: What GitHub documents for self-hosted runners: Windows 10/11 and Server
+    #: 2016/2019/2022 64-bit, macOS 11.0 or later, and the Linux list. x64 on
+    #: all three; ARM64 on all three but in public preview.
+    _SUPPORTED = {
+        (LINUX, X64), (LINUX, ARM64),
+        (WINDOWS, X64), (WINDOWS, ARM64),
+        (MACOS, X64), (MACOS, ARM64),
+    }
+
+    def supports(self, platform, arch=X64, env=None):
+        if (platform, arch) in self._SUPPORTED:
+            return Support(True)
+        if platform not in PLATFORMS:
+            return Support(False, f"unknown platform {platform!r}")
+        return Support(
+            False,
+            f"GitHub does not list {platform}/{arch} for self-hosted runners")
+
+    def agent_artifact(self, platform, arch=X64, env=None):
+        """GitHub publishes the runner for every cell it supports.
+
+        The version is pinned in one place and must stay in step with the
+        image: a runner whose version GitHub has deprecated stops being able
+        to register at all, which takes out the whole fleet at once rather
+        than one runner.
+        """
+        if not self.supports(platform, arch, env):
+            return None
+        version = (env or {}).get("RUNNER_VERSION") or os.environ.get(
+            "RUNNER_VERSION", "2.336.0")
+        return ArtifactRef(
+            source="vendor",
+            reference=f"actions/runner@v{version}",
+            notes="published by GitHub; watch its release feed for "
+                  "deprecations")
+
+    def deregistration(self, spec):
+        """GitHub runners deregister themselves.
+
+        scripts/start.sh calls `config.sh remove` on SIGTERM, which is why the
+        container carries a 60s stop timeout. The API path is not used, so a
+        forge that is unreachable does not block a removal here.
+        """
+        return DeregistrationPlan(
+            via_api=False,
+            registration_id=str((spec or {}).get("registration_id") or ""),
+            note="the runner deregisters itself on SIGTERM; give it the "
+                 "full stop timeout")
 
 
 class _Forgejo(Provider):
@@ -120,6 +281,69 @@ class _Forgejo(Provider):
         if not (url and token):
             return None
         return forgejo_api.Forgejo(url, token)
+
+    #: Forgejo publishes linux/amd64 and linux/arm64 and nothing else. Release
+    #: v13.1.0 carries twelve assets, all Linux. The project's Makefile has a
+    #: DARWIN_ARCHS variable that no release target consumes - dead
+    #: configuration inherited upstream, not evidence of a build.
+    _VENDOR_SUPPORTED = {(LINUX, X64), (LINUX, ARM64)}
+
+    #: The env key that names a self-built agent for a platform Forgejo does
+    #: not publish. Set it and the cell becomes available; leave it unset and
+    #: the cell reports itself unavailable with the reason, rather than
+    #: failing later at registration.
+    _ARTIFACT_KEY = {
+        WINDOWS: "FORGEJO_RUNNER_ARTIFACT_WINDOWS",
+        MACOS: "FORGEJO_RUNNER_ARTIFACT_MACOS",
+    }
+
+    def supports(self, platform, arch=X64, env=None):
+        if (platform, arch) in self._VENDOR_SUPPORTED:
+            return Support(True)
+        if platform not in PLATFORMS:
+            return Support(False, f"unknown platform {platform!r}")
+        key = self._ARTIFACT_KEY.get(platform)
+        if key and (env or {}).get(key, "").strip():
+            return Support(True)
+        if key:
+            return Support(
+                False,
+                f"Forgejo publishes no {platform} runner binary; set {key} to "
+                f"a self-built artefact to enable this fleet")
+        return Support(False, f"Forgejo does not publish {platform}/{arch}")
+
+    def agent_artifact(self, platform, arch=X64, env=None):
+        if not self.supports(platform, arch, env):
+            return None
+        if (platform, arch) in self._VENDOR_SUPPORTED:
+            return ArtifactRef(
+                source="vendor",
+                reference=f"forgejo/runner:{platform}-"
+                          f"{'amd64' if arch == X64 else 'arm64'}",
+                notes="published at code.forgejo.org/forgejo/runner/releases")
+        key = self._ARTIFACT_KEY[platform]
+        return ArtifactRef(
+            source="self-built",
+            reference=(env or {}).get(key, "").strip(),
+            notes="built from source; there is no upstream release feed for "
+                  "this platform, so its version has to be tracked by hand")
+
+    def deregistration(self, spec):
+        """Only the API can delete a Forgejo runner record.
+
+        forgejo-runner has no `unregister` subcommand, so a container stopped
+        any other way - `docker stop`, `compose down`, the host going down -
+        leaves an offline runner behind in Forgejo for ever. A removal that
+        cannot reach the API must therefore be refused rather than forced,
+        which is the opposite of the GitHub case.
+        """
+        spec = spec or {}
+        return DeregistrationPlan(
+            via_api=True,
+            registration_id=str(spec.get("registration_id") or ""),
+            registration_uuid=str(spec.get("registration_uuid") or ""),
+            note="forgejo-runner cannot deregister itself; refuse the removal "
+                 "if the API is unreachable rather than stranding the record")
 
 
 GITHUB = _GitHub(
