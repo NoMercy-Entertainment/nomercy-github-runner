@@ -6,6 +6,24 @@
 # shared socket those containers, their images and their build cache land on
 # the engine everything else runs on. That is the failure this whole distro
 # exists to prevent.
+# Refuse to run anywhere but inside a container.
+#
+# This file is a container ENTRYPOINT. Run on the distro itself it overwrites
+# /etc/docker/daemon.json - the HOST engine's config, which now carries
+# live-restore - kills that engine's dockerd, and takes the whole fleet with
+# it. That has happened. The mistake is easy to make because the script sits
+# in the repo, is executable, and does something plausible-looking.
+#
+# /.dockerenv is created by the engine in every container it starts, and does
+# not exist on a host.
+if [ ! -f /.dockerenv ]; then
+  echo "REFUSING: $0 is a container entrypoint, not a host script." >&2
+  echo "Running it here would overwrite /etc/docker/daemon.json and stop the" >&2
+  echo "engine every runner depends on. Start a runner instead:" >&2
+  echo "  docker compose -f docker-compose.runners.yml up -d" >&2
+  exit 1
+fi
+
 set -euo pipefail
 
 : "${FORGEJO_INSTANCE_URL:?FORGEJO_INSTANCE_URL is required}"

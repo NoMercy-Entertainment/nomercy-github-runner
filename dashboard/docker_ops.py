@@ -902,6 +902,21 @@ def remove(name, provider=None, env=None, keep_data=False):
     # removal has been observed to take ~110s. A timeout here is read by the
     # caller as "removal failed" even when it eventually succeeds, so the
     # margin matters more than it looks like it should.
+    # Which volume holds the nested engine's data root, asked BEFORE the
+    # container is removed - afterwards there is nothing left to ask.
+    # Reconstructing the name would be wrong: create() names it
+    # "<runner>-docker" while compose names the same thing
+    # "<project>_<runner>-docker", so a guess leaves every compose-created
+    # runner's volume behind, tens of GB under a name nothing mounts again.
+    data_volume = ""
+    if not keep_data:
+        _, vol, _ = _docker(
+            "inspect", "--format",
+            '{{range .Mounts}}{{if eq .Destination "/var/lib/docker"}}'
+            '{{.Name}}{{end}}{{end}}',
+            name, timeout=30)
+        data_volume = (vol or "").strip()
+
     ok, out, err = _docker("rm", "-f", "-v", name, timeout=180)
 
     # The nested engine's data root is a NAMED volume now (see create()), so
@@ -920,10 +935,12 @@ def remove(name, provider=None, env=None, keep_data=False):
     # reason a failed forge deregistration does not: the operator asked for the
     # container to be gone, and nothing gets to veto that. It stays visible in
     # `docker volume ls`.
-    if not keep_data:
-        vol_ok, _, vol_err = _docker("volume", "rm", f"{name}-docker", timeout=60)
+
+    if data_volume:
+        vol_ok, _, vol_err = _docker("volume", "rm", data_volume, timeout=60)
         if not vol_ok and vol_err:
-            print(f"[volume:{name}] not removed: {vol_err.strip()[:200]}")
+            print(f"[volume:{name}] {data_volume} not removed: "
+                  f"{vol_err.strip()[:200]}")
 
     set_draining(name, False)
     return ok, out, err

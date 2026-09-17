@@ -29,7 +29,16 @@ def _calls(monkeypatch):
 
 
 def test_remove_deletes_the_runners_volume(monkeypatch):
-    seen = _calls(monkeypatch)
+    """The name comes from the container, never from a guess - see below."""
+    seen = []
+
+    def fake(*a, **k):
+        seen.append(a)
+        if a[:2] == ("inspect", "--format"):
+            return (True, "github-runner-7-docker", "")
+        return (True, "", "")
+
+    monkeypatch.setattr(docker_ops, "_docker", fake)
     docker_ops.remove("github-runner-7")
     flat = [" ".join(a) for a in seen]
     assert any("volume rm github-runner-7-docker" in f for f in flat), flat
@@ -77,3 +86,43 @@ def test_removing_one_runner_from_the_page_does_not_keep_it():
         app_src = fh.read()
     single = app_src[app_src.index("ops.remove(name, provider, read_env())"):]
     assert "keep_data" not in single[:120]
+
+
+def test_the_volume_is_found_by_inspecting_the_container(monkeypatch):
+    """Guessing the name is wrong: compose prefixes volumes with the project.
+
+    docker_ops.create() names its volume "<runner>-docker", but compose creates
+    "githubrunners_<runner>-docker" for the same runner. A remove() that
+    guessed would silently leave every compose-created runner's volume behind -
+    tens of GB under a name nothing mounts again, which is the exact failure
+    this volume was introduced to stop.
+    """
+    calls = []
+
+    def fake(*a, **k):
+        calls.append(a)
+        if a[:2] == ("inspect", "--format"):
+            return (True, "githubrunners_github-runner-4-docker", "")
+        return (True, "", "")
+
+    monkeypatch.setattr(docker_ops, "_docker", fake)
+    docker_ops.remove("github-runner-4")
+    flat = [" ".join(a) for a in calls]
+    assert any("volume rm githubrunners_github-runner-4-docker" in f
+               for f in flat), flat
+
+
+def test_a_runner_without_such_a_volume_removes_nothing(monkeypatch):
+    """A runner created before this change has no volume at /var/lib/docker."""
+    calls = []
+
+    def fake(*a, **k):
+        calls.append(a)
+        if a[:2] == ("inspect", "--format"):
+            return (True, "", "")
+        return (True, "", "")
+
+    monkeypatch.setattr(docker_ops, "_docker", fake)
+    docker_ops.remove("github-runner-4")
+    assert not any("volume" in " ".join(a) and "rm" in " ".join(a)
+                   for a in calls), calls
