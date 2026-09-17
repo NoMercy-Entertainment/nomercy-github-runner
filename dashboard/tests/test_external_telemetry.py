@@ -185,7 +185,11 @@ class TestJobIsGatedOnForgeStatus:
         assert "const eactive = r.status === 'active';" in html
         assert "eactive && t.job ? t.job : 'no active job'" in html
 
-    def test_the_job_style_follows_the_same_gate(self):
-        """Otherwise the card is styled busy while reading "no active job"."""
+    def test_the_job_style_uses_the_class_the_stylesheet_dims(self):
+        """The stylesheet dims .cjob.none. ' idle' matched no rule at all, so
+        an idle Elsewhere card kept the bright busy colour and accent bar
+        while its text read "no active job" - the regular cards have always
+        used ' none' (see the makeCard render path)."""
         html = self._else_render()
-        assert "'cjob' + (t && eactive && t.job ? '' : ' idle')" in html
+        assert "'cjob' + (t && eactive && t.job ? '' : ' none')" in html
+        assert ".cjob.none{color:var(--text-faint)" in html,             "the class asserted above must be one the stylesheet actually styles"

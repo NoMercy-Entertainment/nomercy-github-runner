@@ -580,7 +580,10 @@ function render(d) {
     const ejobText = !t ? 'no telemetry'
                         : (eactive && t.job ? t.job : 'no active job');
     if (ejob.textContent !== ejobText) ejob.textContent = ejobText;
-    const ejc = 'cjob' + (t && eactive && t.job ? '' : ' idle');
+    // ' none', the class the stylesheet actually dims (.cjob.none), not
+    // ' idle' - which matched no rule, so an idle Elsewhere card kept the
+    // bright busy colour and its accent bar.
+    const ejc = 'cjob' + (t && eactive && t.job ? '' : ' none');
     if (ejob.className !== ejc) ejob.className = ejc;
 
     if (!t) {
