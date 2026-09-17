@@ -189,3 +189,54 @@ class TestSshResolution:
         monkeypatch.setattr(serve.os.path, "exists",
                             lambda p: p == serve._WINDOWS_SSH)
         assert serve.resolve_ssh() == serve._WINDOWS_SSH
+
+
+class TestPowerShellResolution:
+    """Running as LocalSystem, a bare "powershell.exe" was not found.
+
+    The service's PATH is not the interactive one, so the Windows probe failed
+    on every sweep with WinError 2 while the exporter still answered 200. Same
+    class of bug as the missing ssh, and the same fix: resolve absolutely.
+    """
+
+    def _serve(self):
+        import importlib
+        import os as _os
+        import sys as _sys
+        _sys.path.insert(0, _os.path.join(
+            _os.path.dirname(_os.path.dirname(_os.path.dirname(
+                _os.path.abspath(__file__)))), "exporters", "windows"))
+        return importlib.import_module("serve")
+
+    def test_prefers_the_system32_location(self, monkeypatch):
+        serve = self._serve()
+        monkeypatch.delenv("EXPORTER_POWERSHELL", raising=False)
+        monkeypatch.setattr(serve.os.path, "exists",
+                            lambda p: p == serve._WINDOWS_PS)
+        assert serve.resolve_powershell() == serve._WINDOWS_PS
+
+    def test_a_configured_path_that_is_missing_is_none(self, monkeypatch):
+        serve = self._serve()
+        monkeypatch.setenv("EXPORTER_POWERSHELL", r"C:\nope\powershell.exe")
+        assert serve.resolve_powershell() is None
+
+
+class TestFailuresAreExplained:
+    """A probe that fails silently is the worst outcome: the card reads
+    "unknown", which is correct, and indistinguishable from a machine that is
+    genuinely down. Both real failures here - no ssh on PATH, no powershell
+    for LocalSystem - hid behind a 200 with nulls."""
+
+    def test_a_nonzero_exit_says_so_on_stderr(self, capsys, monkeypatch):
+        class _P:
+            returncode = 255
+            stdout = ""
+            stderr = "Permissions for key are too open."
+
+        monkeypatch.setattr(ex.subprocess, "run", lambda *a, **k: _P())
+        assert ex._run(["x"], 5, "macos") is None
+        assert "too open" in capsys.readouterr().err
+
+    def test_a_raising_probe_names_the_exception(self, capsys):
+        ex.build_payload({"a": lambda: 1 / 0})
+        assert "ZeroDivisionError" in capsys.readouterr().err

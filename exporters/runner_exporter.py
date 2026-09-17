@@ -104,7 +104,18 @@ def parse_df(text):
     return {"total_bytes": total, "used_bytes": used, "percent": pct}
 
 
-def _run(args, timeout):
+def note(what, why):
+    """Say why a probe could not answer, on stderr, where the service log is.
+
+    A probe that fails returns None and the card reads "unknown" - correct,
+    but indistinguishable from a machine that is genuinely down. Without this
+    the exporter answers 200 with nulls and looks healthy while being useless,
+    which is exactly how the missing ssh binary stayed hidden.
+    """
+    print("probe %s: %s" % (what, why), file=sys.stderr, flush=True)
+
+
+def _run(args, timeout, what="command"):
     """A fixed argument list, never a shell string, with a hard timeout.
 
     Returns stdout or None. A hung VM must cost one timeout and not a wedged
@@ -113,9 +124,20 @@ def _run(args, timeout):
     try:
         p = subprocess.run(args, capture_output=True, text=True,
                            timeout=timeout, shell=False)
-    except (OSError, subprocess.SubprocessError):
+    except subprocess.TimeoutExpired:
+        note(what, "timed out after %ss" % timeout)
         return None
-    return p.stdout if p.returncode == 0 else None
+    except OSError as e:
+        note(what, "could not start: %s" % e)
+        return None
+    except subprocess.SubprocessError as e:
+        note(what, "failed: %s" % e)
+        return None
+    if p.returncode != 0:
+        note(what, "exit %s: %s" % (p.returncode,
+                                    (p.stderr or "").strip()[:300]))
+        return None
+    return p.stdout
 
 
 def probe_macos_vm(host, user, key, container, ssh=None, timeout=20):
@@ -127,6 +149,7 @@ def probe_macos_vm(host, user, key, container, ssh=None, timeout=20):
     """
     ssh = ssh or shutil.which("ssh")
     if not ssh:
+        note("macos", "no ssh binary found")
         return None
     script = ("docker stats --no-stream --format "
               "'{{.Name}}\t{{.CPUPerc}}\t{{.MemUsage}}' %s; "
@@ -134,7 +157,7 @@ def probe_macos_vm(host, user, key, container, ssh=None, timeout=20):
               "echo '===CPU==='; nproc" % container)
     out = _run([ssh, "-i", key, "-o", "IdentitiesOnly=yes", "-o", "BatchMode=yes",
                 "-o", "ConnectTimeout=8", "-o", "StrictHostKeyChecking=accept-new",
-                "%s@%s" % (user, host), script], timeout)
+                "%s@%s" % (user, host), script], timeout, "macos")
     if out is None:
         return None
     stats_text, _, rest = out.partition("===DF===")
@@ -143,6 +166,7 @@ def probe_macos_vm(host, user, key, container, ssh=None, timeout=20):
                                if stats_text.strip() else "")
     disk = parse_df(df_text.strip().splitlines()[-1] if df_text.strip() else "")
     if stats is None and disk is None:
+        note("macos", "ssh answered but neither stats nor df parsed")
         return None
     # nproc, so the card can read "1.2 / 8 cores" like every other runner.
     # docker stats reports CPU as a percentage of ONE core, so 113% is healthy
@@ -167,7 +191,8 @@ def build_payload(probes):
     for name, probe in probes.items():
         try:
             runners[name] = probe()
-        except Exception:  # noqa: BLE001 - one bad probe must not hide the rest
+        except Exception as exc:  # noqa: BLE001 - one bad probe must not hide the rest
+            note(name, "raised %s: %s" % (type(exc).__name__, exc))
             runners[name] = None
     return {"generated": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
             "runners": runners}

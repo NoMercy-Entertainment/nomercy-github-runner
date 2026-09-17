@@ -19,6 +19,7 @@
 [CmdletBinding()]
 param(
   [string]$ServiceName = 'forgejo-runner-exporter',
+  [string]$Python      = '',
   [string]$Nssm        = 'C:\forgejo-runner\nssm.exe',
   [string]$Bind        = '0.0.0.0',
   [int]   $Port        = 9101,
@@ -46,8 +47,33 @@ if (-not (Test-Path $Nssm))     { throw "NSSM not found at $Nssm" }
 if (-not (Test-Path $MacosKey)) { throw "SSH key not found at $MacosKey" }
 if (-not (Test-Path $Ssh))      { throw "ssh.exe not found at $Ssh" }
 
-$python = (Get-Command python.exe -ErrorAction SilentlyContinue).Source
-if (-not $python) { throw 'python.exe not on PATH' }
+# The python.exe on PATH here is usually the Microsoft Store execution alias
+# in WindowsApps. That alias is a per-user reparse point: a service running as
+# LocalSystem cannot follow it and dies instantly with "The system cannot find
+# the path specified" and an empty log. Resolve a real interpreter instead.
+function Resolve-RealPython {
+  foreach ($c in (Get-Command python.exe -All -ErrorAction SilentlyContinue)) {
+    if ($c.Source -and $c.Source -notlike '*\WindowsApps\*') { return $c.Source }
+  }
+  foreach ($root in 'HKLM:\SOFTWARE\Python\PythonCore', 'HKCU:\SOFTWARE\Python\PythonCore') {
+    foreach ($v in (Get-ChildItem $root -ErrorAction SilentlyContinue)) {
+      $ip = (Get-ItemProperty "$($v.PSPath)\InstallPath" -ErrorAction SilentlyContinue).'(default)'
+      if ($ip) {
+        $exe = Join-Path $ip 'python.exe'
+        if (Test-Path $exe) { return $exe }
+      }
+    }
+  }
+  return $null
+}
+
+$python = if ($Python) { $Python } else { Resolve-RealPython }
+if (-not $python) {
+  throw ('No python.exe usable by a service was found. The Store alias in ' +
+         'WindowsApps does not work for LocalSystem. Install Python from ' +
+         'python.org, or pass -Python <path> to a real interpreter.')
+}
+Write-Host "Interpreter: $python"
 
 $serve = Join-Path $PSScriptRoot 'serve.py'
 if (-not (Test-Path $serve)) { throw "serve.py not found next to this script" }
@@ -70,16 +96,36 @@ Write-Host "Registering $ServiceName"
 
 # Configuration through the environment, not the command line: a command line
 # is readable by every process on the box, and the key path is in here.
-$envBlock = @(
+# OpenSSH refuses a private key it considers world-readable, and running as
+# LocalSystem it judged the user's own key "too open" - the macOS probe
+# failed on every sweep with UNPROTECTED PRIVATE KEY FILE while the exporter
+# still answered 200. Give the service its own copy, owned by SYSTEM and
+# readable by nobody else, rather than loosening the user's own key.
+$svcKey = Join-Path (Split-Path $Nssm -Parent) 'exporter_macos_key'
+Copy-Item -Path $MacosKey -Destination $svcKey -Force
+$acl = New-Object System.Security.AccessControl.FileSecurity
+$acl.SetAccessRuleProtection($true, $false)   # drop inherited folder rights
+$system = New-Object System.Security.Principal.NTAccount('NT AUTHORITY\SYSTEM')
+$acl.SetOwner($system)
+$acl.AddAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule(
+  $system, 'FullControl', 'Allow')))
+Set-Acl -Path $svcKey -AclObject $acl
+Write-Host "Service key: $svcKey (SYSTEM only)"
+
+# Each variable as its OWN argument. Joined with spaces, NSSM stores the whole
+# string as the value of the FIRST variable, so the exporter was handed a bind
+# address of "0.0.0.0 EXPORTER_PORT=9101 ..." and died on getaddrinfo.
+$envVars = @(
   "EXPORTER_BIND=$Bind"
   "EXPORTER_PORT=$Port"
   "EXPORTER_WINDOWS_LOG=$WindowsLog"
   "EXPORTER_MACOS_HOST=$MacosHost"
   "EXPORTER_MACOS_USER=$MacosUser"
-  "EXPORTER_MACOS_KEY=$MacosKey"
+  "EXPORTER_MACOS_KEY=$svcKey"
+  "EXPORTER_POWERSHELL=$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe"
   "EXPORTER_SSH=$Ssh"
-) -join ' '
-& $Nssm set $ServiceName AppEnvironmentExtra $envBlock | Out-Null
+)
+& $Nssm set $ServiceName AppEnvironmentExtra @envVars | Out-Null
 
 $rule = "$ServiceName ($Port)"
 Get-NetFirewallRule -DisplayName $rule -ErrorAction SilentlyContinue |

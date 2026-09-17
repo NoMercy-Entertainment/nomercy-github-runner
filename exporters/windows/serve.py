@@ -47,17 +47,26 @@ def probe_windows_service(log_path, drive="C:", timeout=20):
     be mistaken for.
     """
     env = dict(os.environ, EXPORTER_DRIVE=drive)
+    powershell = resolve_powershell()
+    if not powershell:
+        ex.note("windows", "no powershell binary found")
+        return None
     try:
         p = subprocess.run(
-            ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", _PS],
+            [powershell, "-NoProfile", "-NonInteractive", "-Command", _PS],
             capture_output=True, text=True, timeout=timeout, shell=False, env=env)
-    except (OSError, subprocess.SubprocessError):
+    except (OSError, subprocess.SubprocessError) as exc:
+        ex.note("windows", "powershell could not run: %s" % exc)
         return None
     if p.returncode != 0 or not p.stdout.strip():
+        ex.note("windows", "powershell exit %s: %s"
+                % (p.returncode, (p.stderr or "").strip()[:300]))
         return None
     try:
         d = json.loads(p.stdout)
     except ValueError:
+        ex.note("windows", "powershell output was not JSON: %s"
+                % p.stdout.strip()[:200])
         return None
 
     job = ""
@@ -95,6 +104,21 @@ def probe_windows_service(log_path, drive="C:", timeout=20):
 # None for every sweep - the exporter looked healthy while half of what it
 # exists for was missing. Resolve it explicitly and let the service override.
 _WINDOWS_SSH = r"C:\Windows\System32\OpenSSH\ssh.exe"
+
+# Absolute, for the same reason as ssh: running as LocalSystem the service
+# got "[WinError 2] The system cannot find the file specified" for a bare
+# "powershell.exe". A service PATH is not the interactive one.
+_WINDOWS_PS = r"C:\Windows\System32\WindowsPowerShell1.0\powershell.exe"
+
+
+def resolve_powershell():
+    """The powershell binary to use, or None if there is genuinely none."""
+    configured = os.environ.get("EXPORTER_POWERSHELL")
+    if configured:
+        return configured if os.path.exists(configured) else None
+    if os.path.exists(_WINDOWS_PS):
+        return _WINDOWS_PS
+    return shutil.which("powershell.exe")
 
 
 def resolve_ssh():
