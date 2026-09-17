@@ -20,13 +20,26 @@ cd "$DATA"
 #
 # builder.gc caps the build cache. Without it the nested daemons grow without
 # limit - the GitHub fleet once filled a 1 TB disk this way.
-# BuildKit cachemounts break with overlay2 in nested containers, so disable
-# the containerd snapshotter to route BuildKit through the daemon's
-# fuse-overlayfs snapshotter.
+# The containerd snapshotter stays off so BuildKit goes through the daemon's
+# own snapshotter, which is what makes the gc policy above apply to it.
+# Driver chosen from what is ACTUALLY under /var/lib/docker, not hard-coded.
+# overlay2 cannot stack on another overlay, and the container's own writable
+# layer is one - but mount a volume at /var/lib/docker and the filesystem
+# underneath is ext4, where overlay2 works. Verified on 2026-09-17, including
+# that BuildKit cache mounts persist, which the comment above claimed they
+# would not. Detecting rather than switching means a runner without the volume
+# is untouched. See scripts/start.sh for the fuller note.
+DOCKER_DATA_FSTYPE="$(stat -f -c %T /var/lib/docker 2>/dev/null || echo unknown)"
+case "$DOCKER_DATA_FSTYPE" in
+  overlayfs|overlay|unknown) STORAGE_DRIVER=fuse-overlayfs ;;
+  *)                         STORAGE_DRIVER=overlay2 ;;
+esac
+echo "Nested Docker: /var/lib/docker is ${DOCKER_DATA_FSTYPE} -> ${STORAGE_DRIVER}"
+
 mkdir -p /etc/docker
-cat > /etc/docker/daemon.json <<'JSON'
+cat > /etc/docker/daemon.json <<JSON
 {
-  "storage-driver": "fuse-overlayfs",
+  "storage-driver": "${STORAGE_DRIVER}",
   "features": {
     "containerd-snapshotter": false
   },

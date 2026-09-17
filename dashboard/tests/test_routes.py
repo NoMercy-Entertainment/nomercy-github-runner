@@ -243,7 +243,7 @@ def test_recreate_happy_path_removes_and_recreates_every_runner(client, monkeypa
     monkeypatch.setattr(docker_ops, "list_runner_names", lambda: list(names))
     remove_calls = []
 
-    def fake_remove(name):
+    def fake_remove(name, **kw):
         remove_calls.append(name)
         return True, "", ""
 
@@ -279,7 +279,7 @@ def test_removal_reported_as_failed_but_container_gone_still_creates_replacement
     monkeypatch.setattr(docker_ops, "list_runner_names",
                         lambda: list(state["names"]))
 
-    def fake_remove(name):
+    def fake_remove(name, **kw):
         # Slow-but-successful removal: the container is gone, but the
         # command itself reports failure (e.g. a timeout).
         state["names"].remove(name)
@@ -316,7 +316,7 @@ def test_removal_that_leaves_the_container_present_aborts_the_sweep(client, monk
 
     remove_calls = []
 
-    def fake_remove(name):
+    def fake_remove(name, **kw):
         remove_calls.append(name)
         # Reports failure AND the container is still present (not removed
         # from `names`) - the exact shape of the wedged/Dead-state removal
@@ -351,7 +351,7 @@ def test_failing_create_also_aborts_the_sweep(client, monkeypatch):
 
     remove_calls = []
 
-    def fake_remove(name):
+    def fake_remove(name, **kw):
         remove_calls.append(name)
         names.remove(name)
         return True, "", ""

@@ -93,10 +93,47 @@ fi
 # is a single filterless rule capping total build cache at 20 GB per runner.
 # There is no time-based rule: BuildKit evicts by its own least-recently-used
 # ordering once the 20 GB ceiling is crossed, and by nothing else.
+# Storage driver: chosen from what is ACTUALLY mounted at /var/lib/docker,
+# not hard-coded.
+#
+# overlay2 cannot stack on another overlay, and a DinD container's own
+# writable layer IS an overlay mount - that is the whole reason this used
+# fuse-overlayfs. But the constraint is about what lies underneath, not about
+# the nesting itself: give the container a volume at /var/lib/docker and the
+# filesystem under it is ext4, where overlay2 works normally.
+#
+# Measured on 2026-09-17 in a throwaway DinD container with a volume there:
+# overlay2 started cleanly, BuildKit cache mounts persisted across three
+# builds (the comment this replaces claimed they would not), and
+# `docker system df` reported 8.4 MB against 11 MB actually on disk. The same
+# call on a fuse-overlayfs runner reported 1.3 GB against 59 GB, which is how
+# the shared disk filled with nothing on the dashboard warning about it.
+#
+# Detecting rather than switching means no flag day: a runner still running on
+# its own writable layer keeps fuse-overlayfs and is unaffected, and rolling a
+# runner back is just removing the volume again.
+DOCKER_DATA_FSTYPE="$(stat -f -c %T /var/lib/docker 2>/dev/null || echo unknown)"
+case "$DOCKER_DATA_FSTYPE" in
+  overlayfs|overlay|unknown)
+    STORAGE_DRIVER=fuse-overlayfs
+    echo "Nested Docker: /var/lib/docker is ${DOCKER_DATA_FSTYPE} -> fuse-overlayfs"
+    ;;
+  *)
+    STORAGE_DRIVER=overlay2
+    echo "Nested Docker: /var/lib/docker is ${DOCKER_DATA_FSTYPE} -> overlay2"
+    ;;
+esac
+
+# Build-cache GC: six independent daemons each hoarded every layer forever,
+# reaching ~149 GB per runner and filling the disk. A single filterless rule
+# caps total build cache; BuildKit evicts by its own least-recently-used
+# ordering once the ceiling is crossed, and by nothing else. With overlay2 the
+# daemon finally accounts for that space correctly, so the ceiling is enforced
+# rather than merely declared.
 mkdir -p /etc/docker
-cat > /etc/docker/daemon.json <<'EOF'
+cat > /etc/docker/daemon.json <<EOF
 {
-  "storage-driver": "fuse-overlayfs",
+  "storage-driver": "${STORAGE_DRIVER}",
   "features": {
     "containerd-snapshotter": false
   },

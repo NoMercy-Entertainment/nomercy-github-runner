@@ -160,8 +160,9 @@ def test_recreate_hands_remove_and_create_the_provider_and_env(client, fleet,
                                                                monkeypatch):
     removed, created = [], []
 
-    def fake_remove(name, provider=None, env=None):
+    def fake_remove(name, provider=None, env=None, keep_data=False):
         removed.append((name, provider, env))
+        assert keep_data is True, "recreate must not throw the build cache away"
         return True, "", ""
 
     def fake_create(index, env, provider=None):
@@ -180,15 +181,28 @@ def test_recreate_hands_remove_and_create_the_provider_and_env(client, fleet,
 def test_recreate_still_calls_remove_and_create_bare_for_github(client, fleet,
                                                                 env,
                                                                 monkeypatch):
-    """tests/test_routes.py - pre-existing, not editable - stubs these as
-    `fake_remove(name)` and `fake_create(idx, env)`. This is the guard that
-    the GitHub path keeps matching those signatures."""
-    monkeypatch.setattr(docker_ops, "remove", lambda name: (True, "", ""))
+    """tests/test_routes.py stubs these as `fake_remove(name, **kw)` and
+    `fake_create(idx, env)`. This is the guard that the GitHub path keeps
+    matching those signatures.
+
+    The **kw is not decoration: remove() gained keep_data, which is orthogonal
+    to the provider and so crosses the bare/provider split that docker_ops
+    ._bare() otherwise maintains. A GitHub-path call that stopped passing it
+    would silently delete every runner's build cache on a settings change.
+    """
+    seen = {}
+
+    def bare_remove(name, **kw):
+        seen.update(kw)
+        return (True, "", "")
+
+    monkeypatch.setattr(docker_ops, "remove", bare_remove)
     monkeypatch.setattr(docker_ops, "create",
                         lambda idx, env: (True, f"github-runner-{idx}", None))
     r = client.post("/api/recreate", json={"provider": "github"})
     assert r.status_code == 200
     assert r.get_json()["ok"] is True
+    assert seen.get("keep_data") is True,         "the GitHub path must keep the cache on recreate too"
 
 
 # --------------------------------------------------------------------------

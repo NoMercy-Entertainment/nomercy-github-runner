@@ -40,10 +40,55 @@ def test_the_runner_has_its_own_docker_daemon():
     assert "dockerd" in _read(START)
 
 
-def test_the_daemon_uses_fuse_overlayfs():
-    """The kernel cannot stack native overlay2 on the host's overlay."""
-    assert "fuse-overlayfs" in _read(START)
+def test_the_daemon_picks_its_driver_from_the_filesystem():
+    """Not a fixed driver: the right one depends on what is under /var/lib/docker.
+
+    overlay2 cannot stack on another overlay, and a DinD container's own
+    writable layer is one - which is why this was fuse-overlayfs. Mount a
+    volume at /var/lib/docker and the filesystem underneath is ext4, where
+    overlay2 works, BuildKit cache mounts persist, and `docker system df`
+    reports the truth instead of a fortieth of it.
+
+    The old test asserted only that the string "fuse-overlayfs" appeared
+    somewhere in the script, so it kept passing after the driver stopped being
+    hard-coded. This asserts the decision instead.
+    """
+    start = _read(START)
+    assert "stat -f -c %T /var/lib/docker" in start, "the driver must be detected"
+    assert "STORAGE_DRIVER=fuse-overlayfs" in start, "overlay must still fall back"
+    assert "STORAGE_DRIVER=overlay2" in start, "a real filesystem gets overlay2"
+    assert '"storage-driver": "${STORAGE_DRIVER}"' in start
+    # The image keeps shipping fuse-overlayfs: a runner without the volume
+    # still falls back to it.
     assert "fuse-overlayfs" in _read(DOCKERFILE)
+
+
+def test_a_runner_without_the_volume_is_unaffected():
+    """Run the real decision rather than trusting it by reading it.
+
+    A runner that has not been given a volume at /var/lib/docker must behave
+    exactly as before. That is what makes rolling this out one runner at a time
+    safe, and what lets a runner be rolled back by removing the volume again.
+    """
+    import subprocess
+
+    start = _read(START)
+    begin = start.index("DOCKER_DATA_FSTYPE=")
+    end = start.index("esac", begin) + len("esac")
+    block = start[begin:end].replace(
+        "stat -f -c %T /var/lib/docker 2>/dev/null || echo unknown",
+        'echo "$FSTYPE_UNDER_TEST"')
+
+    cases = [("overlayfs", "fuse-overlayfs"), ("overlay", "fuse-overlayfs"),
+             ("unknown", "fuse-overlayfs"), ("ext2/ext3", "overlay2"),
+             ("xfs", "overlay2")]
+    for fstype, expected in cases:
+        out = subprocess.run(
+            ["bash", "-c", block + '\necho "$STORAGE_DRIVER"'],
+            capture_output=True, text=True,
+            env={"FSTYPE_UNDER_TEST": fstype, "PATH": "/usr/bin:/bin"})
+        got = out.stdout.strip().splitlines()[-1] if out.stdout.strip() else ""
+        assert got == expected, (fstype, got, out.stderr)
 
 
 def test_the_build_cache_is_capped():

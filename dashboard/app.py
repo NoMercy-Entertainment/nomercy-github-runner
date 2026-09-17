@@ -1163,7 +1163,13 @@ def api_recreate():
         # ops.remove_runner()/ops.create_runner() apply the same convention
         # ops.idle_check() does - see docker_ops._bare(). This route does not
         # restate it.
-        ok, _, rm_err = ops.remove_runner(name, provider, env)
+        # keep_data: this is remove + create under the SAME name, to apply
+        # settings changes. The nested engine's data root is a named volume
+        # now, and dropping it here would make every settings change throw the
+        # runner's whole build cache away - the opposite of why that volume
+        # exists. An operator deleting a runner outright still takes it with
+        # them; see docker_ops.remove().
+        ok, _, rm_err = ops.remove_runner(name, provider, env, keep_data=True)
         if not ok and name in ops.list_runner_names():
             # remove() failed AND the container is still there: it is not
             # safe to assume anything about the rest of the fleet. Stop here

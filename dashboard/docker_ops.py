@@ -855,7 +855,7 @@ def restart(name, timeout=60):
     return _docker("restart", "-t", str(timeout), name, timeout=timeout + 30)
 
 
-def remove(name, provider=None, env=None):
+def remove(name, provider=None, env=None, keep_data=False):
     """Remove a runner, deregistering it from its forge first where needed.
 
     start.sh deregisters a GitHub runner on SIGTERM, so that side needs
@@ -903,6 +903,28 @@ def remove(name, provider=None, env=None):
     # caller as "removal failed" even when it eventually succeeds, so the
     # margin matters more than it looks like it should.
     ok, out, err = _docker("rm", "-f", "-v", name, timeout=180)
+
+    # The nested engine's data root is a NAMED volume now (see create()), so
+    # -v above cannot touch it. That is deliberate and it cuts both ways:
+    #
+    #   keep_data=True is the recreate path. Recreate exists to apply settings
+    #   changes, and it is remove + create under the same name; deleting the
+    #   volume there would mean every settings change silently threw the whole
+    #   build cache away, which is the opposite of why the volume was added.
+    #
+    #   keep_data=False is an operator deleting a runner. Leaving tens of GB
+    #   behind under a name nothing will mount again is precisely the silent
+    #   disk growth this volume was introduced to end.
+    #
+    # A volume that will not delete never blocks the removal, for the same
+    # reason a failed forge deregistration does not: the operator asked for the
+    # container to be gone, and nothing gets to veto that. It stays visible in
+    # `docker volume ls`.
+    if not keep_data:
+        vol_ok, _, vol_err = _docker("volume", "rm", f"{name}-docker", timeout=60)
+        if not vol_ok and vol_err:
+            print(f"[volume:{name}] not removed: {vol_err.strip()[:200]}")
+
     set_draining(name, False)
     return ok, out, err
 
@@ -930,6 +952,26 @@ def create(index, env, provider=None):
     ]
     if provider is providers.GITHUB:
         args += ["-v", f"{REPO_HOST_PATH}/scripts/start.sh:/root/start.sh:ro"]
+
+    # The nested daemon's data root gets its own volume, named after the runner.
+    #
+    # Without it the data root is the container's own writable layer, which is
+    # an overlay mount, and overlay2 cannot stack on another overlay - so the
+    # daemon falls back to fuse-overlayfs. That cost gigabytes of kernel slab
+    # per building runner and, worse, broke its accounting: `docker system df`
+    # reported 1.3 GB where 59 GB sat on disk, so both the cache meter on the
+    # page and the builder gc ceiling were reading a number that did not
+    # exist, and the shared volume filled with nothing warning about it.
+    #
+    # scripts/start.sh detects which filesystem it actually has and picks the
+    # driver, so this is additive: a runner created without the volume still
+    # works exactly as before, and removing it rolls one back.
+    #
+    # Named, not anonymous: an anonymous volume is thrown away on every
+    # recreate along with the whole build cache, and leaves an orphan behind -
+    # the mess `docker rm -f -v` in remove() already has to clean up after the
+    # Forgejo image's own `VOLUME /data`.
+    args += ["-v", f"{name}-docker:/var/lib/docker"]
     for k, v in container_env.items():
         args += ["-e", f"{k}={v}"]
 
@@ -1020,6 +1062,10 @@ def _bare(provider):
 
     `provider is None` takes the GitHub branch, because all three default it
     that way themselves.
+
+    keep_data is the one argument that does cross this line: it is orthogonal
+    to the provider, and remove() needs it on both branches. The stubs in
+    test_routes.py take **kw for exactly that reason.
     """
     return provider is None or provider is providers.GITHUB
 
@@ -1035,11 +1081,14 @@ def idle_check(name, provider=None, env=None):
     return is_idle(name, provider, env=env)
 
 
-def remove_runner(name, provider=None, env=None):
-    """remove() under the convention _bare() documents."""
+def remove_runner(name, provider=None, env=None, keep_data=False):
+    """remove() under the convention _bare() documents.
+
+    keep_data is passed through for the recreate path; see remove().
+    """
     if _bare(provider):
-        return remove(name)
-    return remove(name, provider, env)
+        return remove(name, keep_data=keep_data)
+    return remove(name, provider, env, keep_data=keep_data)
 
 
 def create_runner(index, env, provider=None):
