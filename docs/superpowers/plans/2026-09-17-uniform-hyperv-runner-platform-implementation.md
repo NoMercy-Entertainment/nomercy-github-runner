@@ -16,9 +16,16 @@ defined in spec section 4 and traced in spec section 8.
 **Tech stack:** Python 3.12, Flask 3.0.3, flask-sock, sqlite3, pytest, the
 `docker` CLI, Hyper-V PowerShell cmdlets, GitHub REST, Forgejo REST v1.
 
-**Status:** nothing in this plan has been implemented. No task below has been
-started. This document was written together with the spec and neither has been
-executed.
+**Status:** Phase 0 is complete — T-0001 to T-0005 are implemented and
+committed. Nothing beyond Phase 0 has been started, and no infrastructure has
+been touched: every Phase 0 task is LOCAL, the running fleet was not altered,
+and no VM, service or forge registration was created, stopped or removed.
+
+Phase 0 changed no behaviour by design. What exists now is the seam: a runtime
+contract, the Docker adapter behind it, a platform axis on the providers, the
+API served under `/api/v1`, and the nine WSL couplings recorded as strict
+xfail tests in `dashboard/tests/test_wsl_couplings.py`. Those nine are the
+progress bar for the migration, and T-1708 removes their markers.
 
 ---
 
@@ -45,7 +52,8 @@ A task with several gates needs all of them.
 
 These hold for every task and are not repeated per task.
 
-- **The 437 tests in `dashboard/tests/` must stay green.** Run
+- **The tests in `dashboard/tests/` must stay green** — 437 when this plan was
+  written, 530 passing and 9 expected-to-fail after Phase 0. Run
   `cd dashboard && python -m pytest tests/ -q` before and after every task.
   A task that would require weakening an existing test must stop and report it
   as a behaviour change instead.
@@ -100,8 +108,8 @@ These hold for every task and are not repeated per task.
 
 ## Phase 0 — Preparatory abstraction
 
-Behaviour must not change. Every task ends with the same 437 tests green and
-the running fleet untouched.
+Behaviour must not change. Every task ends with the suite green and the running
+fleet untouched. **Done:** T-0001 to T-0005, all five committed.
 
 ### T-0001 — Extract a RuntimeAdapter contract
 
