@@ -24,6 +24,7 @@ tests use directly.
 """
 from __future__ import annotations
 
+import re
 from typing import Any, Mapping, Optional
 
 from .base import (
@@ -278,13 +279,24 @@ class DockerRuntimeAdapter:
         unless the buildx prune itself timed out, in which case issuing a
         second one while the daemon is still sweeping makes things worse.
 
-        Nothing here names a path outside this container.
+        Measures `docker system df` either side so the caller can report a real
+        number rather than "done". A failed measurement is reported as
+        `measured=False`, never read as "0B": that would fabricate an empty
+        after-state and report the whole before-figure as reclaimed.
+
+        Generous timeout: discarding tens of gigabytes of build cache is not
+        fast, and a premature kill leaves the daemon mid-sweep.
+
+        Nothing here names a path outside this container. Whether the unit is
+        idle is the caller's business, not this method's - that is policy, and
+        this is the runtime.
         """
+        import docker_ops
+
         timeout = int(policy.get("timeout", 300))
         per_scope: dict[str, int] = {}
         errors: dict[str, str] = {}
 
-        import docker_ops
         before = docker_ops._df_sizes(docker_ops._df_rows(ref.handle))
 
         ok1, _, err1 = self._docker("exec", ref.handle, "docker", "buildx",
@@ -292,19 +304,45 @@ class DockerRuntimeAdapter:
         if not ok1:
             errors["engine-build-cache"] = (err1 or "").strip()[:200]
             if "timed out" in (err1 or ""):
-                return Freed(per_scope=per_scope, errors=errors, total_bytes=0)
+                # The exec client was killed; the daemon is very likely still
+                # sweeping. A second prune now would race it, and measuring df
+                # would report a number that means nothing.
+                return Freed(per_scope=per_scope, errors=errors,
+                             total_bytes=0, before=before, after=None,
+                             measured=False, still_working=True)
 
+        # Independent of the first: reclaiming one of the two beats neither.
         ok2, _, err2 = self._docker("exec", ref.handle, "docker", "image",
                                     "prune", "-af", timeout=timeout)
         if not ok2:
             errors["engine-images-unused"] = (err2 or "").strip()[:200]
 
         after = docker_ops._df_sizes(docker_ops._df_rows(ref.handle))
-        total = 0
-        if before is not None and after is not None:
-            total = max(0, (before or 0) - (after or 0))
-            per_scope["engine-build-cache"] = total
-        return Freed(per_scope=per_scope, errors=errors, total_bytes=total)
+        if before is None or after is None:
+            return Freed(per_scope=per_scope, errors=errors, total_bytes=0,
+                         before=before, after=after, measured=False)
+
+        # _df_sizes hands back display strings per scope, not bytes.
+        #
+        # The total is the difference of the two whole measurements, not the
+        # sum of the clamped per-scope figures, and the two are not the same
+        # arithmetic: a prune that frees cache while an image grows must report
+        # the net, or freeing 10 and gaining 3 would be reported as 10. The
+        # per-scope figures are clamped individually because a negative entry
+        # in something called "freed" reads as nonsense, so they are detail for
+        # display and `total_bytes` is the number that is true.
+        size = docker_ops.parse_size
+        for scope, key in (("engine-build-cache", "build_cache"),
+                           ("engine-images-unused", "images")):
+            per_scope[scope] = max(0, size(before[key]) - size(after[key]))
+
+        # A build running elsewhere on the same daemon can grow the cache while
+        # this one prunes, which would otherwise report a negative amount.
+        total = ((size(before["build_cache"]) + size(before["images"]))
+                 - (size(after["build_cache"]) + size(after["images"])))
+        return Freed(per_scope=per_scope, errors=errors,
+                     total_bytes=max(0, total),
+                     before=before, after=after, measured=True)
 
     def capabilities(self) -> Capabilities:
         return Capabilities(
@@ -318,17 +356,33 @@ class DockerRuntimeAdapter:
         )
 
 
-_UNITS = {"B": 1, "KIB": 1024, "MIB": 1024 ** 2, "GIB": 1024 ** 3,
-          "TIB": 1024 ** 4, "KB": 1000, "MB": 1000 ** 2, "GB": 1000 ** 3}
+#: The units `docker stats` and `docker system df` print. Both the decimal and
+#: the binary spellings, because the two commands do not agree with each other.
+#:
+#: This is the one table. There used to be a second copy in docker_ops, and the
+#: two had already drifted - this one was missing TB, so a terabyte-sized build
+#: cache read as unparsable here while the other module read it correctly.
+_UNITS = {"B": 1,
+          "KB": 1000, "MB": 1000 ** 2, "GB": 1000 ** 3, "TB": 1000 ** 4,
+          "KIB": 1024, "MIB": 1024 ** 2, "GIB": 1024 ** 3, "TIB": 1024 ** 4}
+
+_SIZE_RE = re.compile(r"\s*([0-9.]+)\s*([KMGT]?I?B)\s*$", re.I)
 
 
 def _to_bytes(s: str) -> Optional[int]:
-    """`docker stats` sizes. None when unparsable, never 0."""
-    import re
-    m = re.match(r"\s*([0-9.]+)\s*([A-Za-z]+)\s*$", s or "")
+    """A docker size string in bytes. None when unparsable, never 0.
+
+    The distinction is the point: a runner whose memory could not be sampled
+    is not a runner using no memory. Callers that need arithmetic instead of
+    honesty go through `docker_ops.parse_size`, which folds None to 0.
+    """
+    m = _SIZE_RE.match(s or "")
     if not m:
         return None
     unit = _UNITS.get(m.group(2).upper())
     if unit is None:
         return None
-    return int(float(m.group(1)) * unit)
+    try:
+        return int(float(m.group(1)) * unit)
+    except ValueError:
+        return None

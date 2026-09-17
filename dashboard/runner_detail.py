@@ -13,10 +13,18 @@ import os
 import time
 
 import docker_ops
+import providers
 
 # Values that must never be rendered. FORGEJO_API_TOKEN mints registration
 # tokens and deletes runners, so it is exactly as sensitive as GH_TOKEN.
-SECRET_KEYS = {"GH_TOKEN", "FORGEJO_API_TOKEN"}
+#
+# Derived from providers, not retyped: providers is the module that PRODUCES
+# these values, so that is where a new token gets added, and a second
+# hand-maintained set here is how one goes unmasked. That is not hypothetical -
+# it already happened. FORGEJO_RUNNER_REGISTRATION_TOKEN is in every Forgejo
+# runner's environment and was rendered in full on this page, because it was
+# declared secret in providers while this set still listed two names.
+SECRET_KEYS = set(providers.REDACTED_FIELDS)
 
 # Same source app.py's read_env() uses. Duplicated rather than imported: app.py
 # already imports this module, so importing app back here would be circular.

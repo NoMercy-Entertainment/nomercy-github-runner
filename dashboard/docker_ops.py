@@ -19,7 +19,7 @@ import time
 import external_telemetry
 import forgejo_api
 import providers
-from runtime.docker_adapter import DockerRuntimeAdapter
+from runtime.docker_adapter import DockerRuntimeAdapter, _to_bytes
 from runtime.base import ExecUnitRef, ExecUnitKind
 
 # The one place a `docker` argv is built. Everything below that used to build
@@ -1125,12 +1125,7 @@ def logs_since(name, seconds=45):
     out of view and lose the run entirely. Bounding by time cannot miss
     anything as long as the window exceeds the poll interval.
     """
-    ok, out, _ = _docker_logs("logs", "--since", f"{seconds}s", name, timeout=20)
-    return out if ok else ""
-
-
-_UNITS = {"B": 1, "KB": 10**3, "MB": 10**6, "GB": 10**9, "TB": 10**12,
-          "KIB": 1024, "MIB": 1024**2, "GIB": 1024**3, "TIB": 1024**4}
+    return _RUNTIME.logs(_ref(name), since_seconds=seconds)
 
 
 def _df_sizes(rows):
@@ -1146,19 +1141,17 @@ def _df_sizes(rows):
 def prune(name, timeout=300, provider=None, env=None):
     """Reclaim build cache and unused images inside one runner.
 
-    Measures `docker system df` either side so the caller can report a real
-    number rather than "done". Both prunes are attempted even if the first
-    fails - they are independent, and reclaiming one of the two is better than
-    neither - UNLESS the buildx prune itself times out, in which case a
-    second prune is not issued (see below).
+    Two jobs, and only the first of them is this function's own: decide whether
+    the runner may be pruned at all, then ask the runtime to do it and shape
+    the answer for the API. The pruning itself lives in the runtime adapter,
+    because it is the part that differs per platform - a Windows runner has no
+    nested engine to prune, and a macOS appliance reclaims by reverting a
+    snapshot.
 
     `measured` tells the caller whether "before"/"after"/"freed_bytes" can be
-    trusted. A failed `docker system df` is not read as "0B" here: that would
-    either fabricate an empty after-state (inflating freed_bytes to the whole
-    before-figure) or otherwise misreport what was reclaimed.
-
-    Generous timeout: discarding tens of gigabytes of build cache is not fast,
-    and a premature kill leaves the daemon mid-sweep.
+    trusted. A failed `docker system df` is never read as "0B": that would
+    fabricate an empty after-state and inflate freed_bytes to the whole
+    before-figure.
     """
     # Narrow the check-then-act window the route opened. This cannot close it -
     # a job can still start between this check and the prune - but BuildKit
@@ -1170,63 +1163,43 @@ def prune(name, timeout=300, provider=None, env=None):
                 "before": None, "after": None,
                 "freed_bytes": None, "measured": False}
 
-    before = _df_sizes(_df_rows(name))
+    freed = _RUNTIME.clear_cache(_ref(name), {"timeout": timeout})
 
-    ok1, _, err1 = _docker("exec", name, "docker", "buildx", "prune", "-af",
-                           timeout=timeout)
-    timed_out = not ok1 and "timed out" in (err1 or "")
-    if timed_out:
-        # The exec client was killed; the daemon is very likely still sweeping.
-        # Issuing a second prune now would race it, and measuring df would
-        # report a number that means nothing.
+    # A prune that was abandoned part-way is reported differently from one that
+    # merely failed: the runner's own daemon is probably still sweeping, so the
+    # operator is told to look again rather than that nothing happened.
+    if freed.still_working:
+        detail = next((e for e in freed.errors.values() if e), "was abandoned")
         return {
             "name": name, "ok": False,
-            "error": f"buildx prune {err1}; the runner's daemon may still be "
-                     f"pruning. Re-check its usage in a few minutes.",
-            "before": before,
+            "error": f"buildx prune {detail}; the runner's daemon may still "
+                     f"be pruning. Re-check its usage in a few minutes.",
+            "before": freed.before,
             "after": None, "freed_bytes": None, "measured": False,
         }
 
-    ok2, _, err2 = _docker("exec", name, "docker", "image", "prune", "-af",
-                           timeout=timeout)
-
-    after = _df_sizes(_df_rows(name))
-
-    if before is None or after is None:
-        return {
-            "name": name,
-            "ok": ok1 and ok2,
-            "error": (err1 or err2) or None,
-            "before": before,
-            "after": after,
-            "freed_bytes": None,
-            "measured": False,
-        }
-
-    freed = ((parse_size(before["build_cache"]) + parse_size(before["images"]))
-             - (parse_size(after["build_cache"]) + parse_size(after["images"])))
-
+    error = next((e for e in freed.errors.values() if e), None)
     return {
         "name": name,
-        "ok": ok1 and ok2,
-        "error": (err1 or err2) or None,
-        "before": before,
-        "after": after,
-        # A build running elsewhere on the same daemon can grow the cache while
-        # we prune, which would otherwise report a negative "freed".
-        "freed_bytes": max(0, freed),
-        "measured": True,
+        "ok": not freed.errors,
+        "error": error,
+        "before": freed.before,
+        "after": freed.after,
+        "freed_bytes": freed.total_bytes if freed.measured else None,
+        "measured": freed.measured,
     }
 
 
 def parse_size(s):
-    """'1.41GiB' -> bytes. Returns 0 on anything unparseable."""
-    if not s:
-        return 0
-    m = re.match(r"^\s*([\d.]+)\s*([KMGT]?i?B)\s*$", str(s), re.I)
-    if not m:
-        return 0
-    try:
-        return int(float(m.group(1)) * _UNITS.get(m.group(2).upper(), 1))
-    except ValueError:
-        return 0
+    """'1.41GiB' -> bytes. Returns 0 on anything unparseable.
+
+    The same parser the runtime adapter uses, folded to 0 for the callers that
+    need arithmetic rather than honesty. There used to be a second unit table
+    here and the two had already drifted, which is the failure a single
+    lifecycle module is supposed to make impossible.
+
+    Use the adapter's _to_bytes directly wherever "could not read" must stay
+    distinguishable from "zero" - a runner whose memory could not be sampled is
+    not a runner using no memory.
+    """
+    return _to_bytes(str(s)) or 0

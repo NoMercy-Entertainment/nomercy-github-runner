@@ -124,11 +124,32 @@ class Freed:
     Partial failure is normal and must be reported rather than hidden: a scope
     that could not be cleared appears in `errors` while the others still count
     toward `total_bytes`.
+
+    `measured` is the other half of that honesty. A runtime that could not read
+    its usage either side must say so, because "could not measure" and "0B" are
+    not the same answer: reading a failed measurement as zero turns an unknown
+    after-state into "everything was reclaimed" and reports the entire
+    before-figure as freed.
     """
 
     per_scope: Mapping[str, int] = field(default_factory=dict)
     errors: Mapping[str, str] = field(default_factory=dict)
     total_bytes: int = 0
+
+    #: Usage either side, in whatever units the runtime reports, for display.
+    #: None when it could not be read.
+    before: Optional[Mapping[str, str]] = None
+    after: Optional[Mapping[str, str]] = None
+
+    #: Whether `total_bytes` means anything. False and it must not be shown.
+    measured: bool = False
+
+    #: The clear was abandoned part-way and the unit may still be reclaiming on
+    #: its own. A caller must not retry immediately, must not report a figure,
+    #: and should tell the operator to look again shortly. A flag rather than a
+    #: phrase in `errors`, so no caller has to match on message text to find
+    #: out - that is the coupling this contract exists to remove.
+    still_working: bool = False
 
 
 @dataclass(frozen=True)

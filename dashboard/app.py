@@ -191,14 +191,13 @@ OPEN_PATHS = {"/login", "/auth/start", "/callback", "/auth/pending"}
 #: id-keyed API can land beside it instead of replacing it in one step.
 API_VERSIONS = ("v1",)
 
-#: The shape of a fleet frame on the websocket, reported by /api/version.
+#: The shape of a fleet frame on the websocket. Reported by /api/version and
+#: stamped on every frame by wire_frame().
 #:
-#: NOT yet carried in the frame itself. Two existing tests pin the snapshot
-#: frame exactly, and this plan's own rule is that an existing test is not
-#: edited - a change that needs one is reported as a behaviour change instead.
-#: The field earns its keep only when the payload actually changes, which is
-#: T-1401, and that task rewrites those tests for a reason of its own. Adding
-#: it here would have meant editing two tests today to buy nothing until then.
+#: Bump this whenever the meaning of `data` changes in a way a client cannot
+#: absorb silently. A socket outlives a deploy: a browser tab that connected
+#: before an upgrade keeps receiving frames written by the new code, and
+#: without a number in the frame its only way to notice is to misread them.
 FLEET_SCHEMA = 1
 
 _VERSION_PREFIXES = tuple(f"/api/{v}/" for v in API_VERSIONS)
@@ -862,6 +861,20 @@ def fleet_frames(authorised, wait_for_change, current):
             yield {"type": "update", "data": delta}
 
 
+def wire_frame(frame):
+    """A frame as it goes on the wire.
+
+    `fleet_frames` decides WHAT changed; this decides how it is framed. Keeping
+    the two apart is what lets the envelope gain fields without the diff logic
+    and its tests having an opinion about the transport.
+
+    The schema number rides on every frame, not only the snapshot, so a frame
+    is self-describing on its own - in a log line, in a replay, or after a
+    reconnect that lands on a freshly deployed dashboard.
+    """
+    return {"schema": FLEET_SCHEMA, **frame}
+
+
 @sock.route("/ws/fleet")
 def ws_fleet(ws):
     sub = session.get("sub")
@@ -884,7 +897,7 @@ def ws_fleet(ws):
 
     try:
         for frame in fleet_frames(authorised, wait_for_change, current):
-            ws.send(json.dumps(frame))
+            ws.send(json.dumps(wire_frame(frame)))
     except Exception:      # noqa: BLE001 - a closed browser tab is not an error
         pass
 

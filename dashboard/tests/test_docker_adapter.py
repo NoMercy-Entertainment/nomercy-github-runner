@@ -232,3 +232,122 @@ class TestCapabilities:
         assert c.kind is base.ExecUnitKind.LINUX_CONTAINER
         assert c.job_containers is True
         assert c.resettable_os is False
+
+
+class TestClearCache:
+    """The verb that had no test at all, and was broken because of it.
+
+    `_df_sizes` returns display strings per scope - {"build_cache": "36GB",
+    "images": "24GB"} - and the first version of clear_cache subtracted those
+    two dicts as though they were byte counts. Every successful measurement
+    raised TypeError. Nothing caught it because docker_ops.prune still carried
+    its own copy of the body, so the adapter's copy was never executed.
+    """
+
+    def df(self, cache, images):
+        return {"Build Cache": {"Size": cache}, "Images": {"Size": images}}
+
+    def build(self, monkeypatch, dfs=(), reply=(True, "", ""), record=None):
+        """An adapter whose df measurements are scripted in order.
+
+        df is stubbed at `docker_ops._df_rows`, not through the engine stub,
+        because that is the seam clear_cache actually reads through. An empty
+        script means df never answers, which is the unmeasurable case.
+        """
+        import docker_ops
+        seq = list(dfs)
+        monkeypatch.setattr(docker_ops, "_df_rows",
+                            lambda name: seq.pop(0) if seq else None)
+        return adapter(reply=reply, record=record)
+
+    def test_it_reports_a_real_number(self, monkeypatch):
+        a = self.build(monkeypatch,
+                       [self.df("36GB", "24GB"), self.df("0B", "24GB")])
+        freed = a.clear_cache(REF, {})
+        assert freed.measured is True
+        assert freed.total_bytes == 36 * 10 ** 9
+        assert freed.before["build_cache"] == "36GB"
+        assert freed.after["build_cache"] == "0B"
+
+    def test_both_prunes_are_issued(self, monkeypatch):
+        calls = []
+        a = self.build(monkeypatch,
+                       [self.df("1GB", "1GB"), self.df("0B", "0B")],
+                       record=calls)
+        a.clear_cache(REF, {})
+        joined = [" ".join(c) for c in calls]
+        assert any("buildx prune" in c for c in joined)
+        assert any("image prune" in c for c in joined)
+
+    def test_an_unreadable_measurement_is_not_a_zero(self, monkeypatch):
+        """The failure this class exists to prevent: reading a failed df as 0B
+        turns an unknown after-state into "everything was reclaimed"."""
+        freed = self.build(monkeypatch).clear_cache(REF, {})
+        assert freed.measured is False
+        assert freed.after is None
+
+    def test_a_timed_out_buildx_prune_issues_no_second_prune(self, monkeypatch):
+        """The client was killed; the daemon is very likely still sweeping, and
+        a second prune would race it."""
+        calls = []
+
+        def reply(*args, **kwargs):
+            if "buildx" in args:
+                return False, "", "timed out after 300s"
+            return True, "", ""
+
+        a = self.build(monkeypatch, [self.df("1GB", "1GB")], reply=reply,
+                       record=calls)
+        freed = a.clear_cache(REF, {})
+        joined = [" ".join(c) for c in calls]
+        assert any("buildx prune" in c for c in joined)
+        assert not any("image prune" in c for c in joined)
+        assert freed.still_working is True
+        assert freed.measured is False
+
+    def test_still_working_is_a_flag_not_a_phrase(self, monkeypatch):
+        """A caller must not have to match on message text to learn this."""
+        freed = self.build(monkeypatch).clear_cache(REF, {})
+        assert freed.still_working is False
+
+    def test_a_concurrent_build_never_produces_a_negative(self, monkeypatch):
+        """Another build on the same daemon can grow the cache mid-prune."""
+        a = self.build(monkeypatch,
+                       [self.df("1GB", "1GB"), self.df("5GB", "5GB")])
+        freed = a.clear_cache(REF, {})
+        assert freed.total_bytes == 0
+        assert all(v >= 0 for v in freed.per_scope.values())
+
+    def test_the_total_is_the_net_not_the_sum_of_the_clamps(self, monkeypatch):
+        """Cache down 10GB while images grow 3GB is 7GB freed, not 10GB. The
+        per-scope figures are clamped for display; the total is the truth."""
+        a = self.build(monkeypatch,
+                       [self.df("10GB", "1GB"), self.df("0B", "4GB")])
+        freed = a.clear_cache(REF, {})
+        assert freed.total_bytes == 7 * 10 ** 9
+        assert freed.per_scope["engine-images-unused"] == 0
+
+    def test_a_failed_prune_still_reports_the_other_scope(self, monkeypatch):
+        """They are independent; reclaiming one of the two beats neither."""
+        def reply(*args, **kwargs):
+            if "image" in args:
+                return False, "", "daemon refused"
+            return True, "", ""
+
+        a = self.build(monkeypatch,
+                       [self.df("10GB", "1GB"), self.df("0B", "1GB")],
+                       reply=reply)
+        freed = a.clear_cache(REF, {})
+        assert "engine-images-unused" in freed.errors
+        assert freed.measured is True
+        assert freed.per_scope["engine-build-cache"] == 10 * 10 ** 9
+
+    def test_nothing_outside_the_unit_is_named(self, monkeypatch):
+        """Every argv must address this container and nothing else."""
+        calls = []
+        a = self.build(monkeypatch,
+                       [self.df("1GB", "1GB"), self.df("0B", "0B")],
+                       record=calls)
+        a.clear_cache(REF, {})
+        for c in calls:
+            assert c[0] == "exec" and c[1] == REF.handle, c

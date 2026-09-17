@@ -41,9 +41,11 @@ PLATFORMS = (LINUX, WINDOWS, MACOS)
 X64, ARM64 = "x64", "arm64"
 
 #: Field names whose VALUES must never reach a log, an API response or an audit
-#: record. Consumed by the central redaction helper; listed here because this
-#: is the module that produces them, and a token added later without an entry
-#: here is the failure mode that redaction exists to prevent.
+#: record. This is the single source: `runner_detail.SECRET_KEYS` is derived
+#: from it, so adding a name here is what makes it masked. Listed in this
+#: module because this is the module that produces these values, and a token
+#: added later without an entry here is the failure mode redaction exists to
+#: prevent.
 REDACTED_FIELDS = frozenset({
     "registration_token",
     "GH_TOKEN",

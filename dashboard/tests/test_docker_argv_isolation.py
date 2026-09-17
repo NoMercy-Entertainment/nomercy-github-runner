@@ -86,5 +86,49 @@ def test_docker_ops_no_longer_runs_a_lifecycle_verb_itself():
     with open(os.path.join(DASH, "docker_ops.py"), encoding="utf-8") as fh:
         src = fh.read()
     for gone in ('_docker("start"', '_docker("stop"', '_docker("restart"',
-                 '_docker("rm"', '_docker(*args, timeout=180)'):
+                 '_docker("rm"', '_docker(*args, timeout=180)',
+                 # Cache clearing and log reading were left behind on the
+                 # first pass, so two copies of the prune body existed at
+                 # once. They drifted immediately: the adapter's copy
+                 # subtracted two dicts as if they were byte counts and raised
+                 # TypeError on every successful measurement, and nothing
+                 # caught it because only the docker_ops copy ever ran.
+                 '_docker("exec", name, "docker", "buildx"',
+                 '_docker("exec", name, "docker", "image"',
+                 '_docker_logs("logs", "--since"'):
         assert gone not in src, f"{gone} should now go through the adapter"
+
+
+def test_the_adapter_owns_the_only_prune_body():
+    """One body, because two had already drifted into disagreement."""
+    adapter = os.path.join(DASH, "runtime", "docker_adapter.py")
+    with open(adapter, encoding="utf-8") as fh:
+        src = fh.read()
+    assert '"buildx"' in src and '"image"' in src
+
+
+def test_the_log_reads_that_remain_are_named():
+    """Two `docker logs --tail` reads stay in the collector, and that is a
+    decision rather than an oversight.
+
+    `logs_since` is the lifecycle read and it delegates. These two ask a
+    different question - "what is this runner working on right now" - by
+    scanning the last 200 lines, and the contract's `logs(ref, since_seconds)`
+    has no tail form. Widening the ten verbs to fit a collector call would undo
+    the closed contract for a caller that moves behind the seam in phase 4
+    anyway, so the count is pinned here instead: a third one has to be argued
+    for rather than added quietly.
+    """
+    with open(os.path.join(DASH, "docker_ops.py"), encoding="utf-8") as fh:
+        src = fh.read()
+    assert src.count('_docker_logs("logs", "--tail", "200"') == 2
+
+
+def test_there_is_one_unit_table():
+    """docker_ops kept a second copy that was missing TB, so a terabyte-sized
+    build cache parsed in one module and not in the other."""
+    with open(os.path.join(DASH, "docker_ops.py"), encoding="utf-8") as fh:
+        src = fh.read()
+    assert "_UNITS = {" not in src, (
+        "the unit table lives in the runtime adapter; a second copy is how "
+        "the two drifted")

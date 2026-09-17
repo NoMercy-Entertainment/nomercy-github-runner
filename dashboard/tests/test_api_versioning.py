@@ -137,3 +137,46 @@ class TestTheAliasInheritsAuthorisation:
             s["sub"] = "sub-viewer2"
         r = client.post("/api/v1/recreate", json={"provider": "github"})
         assert r.status_code == 403
+
+
+class TestTheWebsocketFrameCarriesItsSchema:
+    """A socket outlives a deploy.
+
+    A tab that connected before an upgrade keeps receiving frames written by
+    the new code. Without a number in the frame its only way to notice a
+    changed payload is to misread it.
+
+    The number is stamped by the transport rather than by `fleet_frames`,
+    because what changed and how it is framed are two decisions. That also
+    leaves the diff generator's tests speaking only about diffs.
+    """
+
+    def test_a_snapshot_frame_says_which_schema_it_is(self):
+        framed = dash.wire_frame({"type": "snapshot", "data": {"runners": []}})
+        assert framed["schema"] == dash.FLEET_SCHEMA
+        assert framed["type"] == "snapshot"
+        assert framed["data"] == {"runners": []}
+
+    def test_an_update_frame_carries_it_too(self):
+        """Not only the snapshot: a frame must be readable on its own."""
+        framed = dash.wire_frame({"type": "update", "data": {"disk": {}}})
+        assert framed["schema"] == dash.FLEET_SCHEMA
+
+    def test_the_original_frame_is_not_mutated(self):
+        """fleet_frames yields dicts it may still hold; stamping must copy."""
+        original = {"type": "snapshot", "data": {}}
+        dash.wire_frame(original)
+        assert "schema" not in original
+
+    def test_the_number_matches_what_the_version_route_reports(self, client):
+        """Two places naming the schema would drift; they must agree."""
+        reported = client.get("/api/version").get_json()["schema"]
+        assert dash.wire_frame({"type": "update"})["schema"] == reported
+
+    def test_the_diff_generator_still_yields_bare_frames(self):
+        """The separation itself. If the generator started stamping, the
+        envelope and the diff would be one decision again."""
+        gen = dash.fleet_frames(lambda: True, lambda: None,
+                                lambda: {"runners": []})
+        first = next(gen)
+        assert set(first) == {"type", "data"}
