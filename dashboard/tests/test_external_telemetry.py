@@ -193,3 +193,19 @@ class TestJobIsGatedOnForgeStatus:
         html = self._else_render()
         assert "'cjob' + (t && eactive && t.job ? '' : ' none')" in html
         assert ".cjob.none{color:var(--text-faint)" in html,             "the class asserted above must be one the stylesheet actually styles"
+
+
+class TestTimeoutMargins:
+    """The exporter was measured at 3.2-3.9s before it sampled in the
+    background. A 5s timeout left roughly a second of headroom, and a failure
+    is cached for longer than a success, so one slow sweep blanked both cards
+    for fifteen seconds."""
+
+    def test_the_timeout_clears_the_measured_worst_case(self):
+        assert et.TIMEOUT >= 8, "less than this and a slow sweep blanks the cards"
+
+    def test_a_failure_still_costs_the_sweep_less_than_one_poll_each_time(self):
+        """The collector runs every 5s and also carries the GitHub fleet, so a
+        hung exporter must not be retried on every one of them."""
+        assert et.FAIL_BACKOFF > et.TIMEOUT
+        assert et.FAIL_BACKOFF >= 15

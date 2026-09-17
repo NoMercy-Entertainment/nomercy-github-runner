@@ -27,7 +27,18 @@ import urllib.error
 import urllib.request
 
 # Same shape as _FORGE_STATUS_TTL/_FORGE_STATUS_FAIL_BACKOFF in docker_ops.
-TIMEOUT = 5
+#
+# The timeout is 10s, not the 5s this started with. Measured, the exporter
+# answered in 3.2-3.9s while it still sampled on the request, so a sweep under
+# load crossed 5s, and a failure is cached for longer than a success - one slow
+# sweep blanked both cards for fifteen seconds. The exporter samples in the
+# background now and answers in about a millisecond, so this margin should
+# never be reached; it is here so that an exporter running an older build, or
+# one briefly slowed by a restart, degrades to a late answer rather than to a
+# blank card. FAIL_BACKOFF still bounds what a genuinely hung exporter costs
+# the sweep that also carries the GitHub fleet: one timeout per 20s, not one
+# per 5s poll.
+TIMEOUT = 10
 TTL = 10
 FAIL_BACKOFF = TIMEOUT + TTL
 
