@@ -612,30 +612,48 @@ top of the legal one.
 | C | AWS EC2 Mac, bare metal on a Dedicated Host | SLA section 3; AWS states the 24-hour minimum is "to comply with the Apple macOS Software License Agreement" | 1 instance per host, plus up to 2 VMs on Apple silicon | Per-second with a 24-hour floor |
 | D | MacStadium, bare metal or Orka | SLA section 3 plus 2B(iii); they document "Apple's software license agreement limits each host to two concurrent macOS VMs" | ceil(peak concurrent jobs / 2) hosts | Subscription |
 
-**Recommendation: B**, one Apple silicon Mac mini on-site running up to two
-macOS guests.
+**Decision taken, 2026-09-17: the existing QEMU appliance on Hyper-V is the
+destination, not a transition.**
 
-It is the closest structural match to the stated goal. `uniform.md` line 391
-already specifies this outcome: *"Ontwerp in dat geval dezelfde runner-appliance
-en control-plane voor een compliant Apple-host, terwijl de overige platformen
-onder Hyper-V blijven."* So this is not a weakening of the requirement; it is
-the branch the requirement itself defines.
+The operator, who owns the hardware and the licence relationship with Apple,
+was shown the finding above in full and decided to continue on the existing
+arrangement. That decision is recorded here rather than argued with, and the
+evidence stays in place so that whoever reads this later sees both the finding
+and the choice. It is tracked as an accepted risk (R-1), not as an open
+question.
 
-What is preserved: the macOS runner stops being a read-only "Elsewhere" entry
-(MIG-4), gets the same RunnerSpec, the same lifecycle verbs, the same control
-agent and the same dashboard card as every other runner. The appliance contract
-in section 10.6 is written so the transport underneath it is replaceable - the
-control agent speaks the same protocol whether it reaches a macOS guest on a
-Mac mini or, during the transition, the existing QEMU guest.
+What follows from it, and it simplifies the architecture:
 
-What changes: `macos_host` becomes a second entry in the worker inventory
-alongside the Hyper-V host. CON-1 holds for everything Hyper-V can lawfully
-carry; the worker inventory is the seam that lets one non-Hyper-V worker exist
-without a second control plane, a second protocol or a second dashboard.
+- **CON-1 is fully satisfied.** Hyper-V is the only infrastructure layer.
+  There is no Apple host and therefore no second worker kind, no second
+  control path and no split in the worker inventory.
+- **The macOS appliance is the `macos-sequoia` QEMU guest** inside the
+  `macos-runner` Hyper-V VM, brought under the control agent so it carries a
+  RunnerSpec, the lifecycle verbs, telemetry and the same dashboard card as
+  every other runner (MIG-4, ACC-12).
+- **Both macOS cells are delivered on it**: a second runner instance is added
+  for GitHub alongside the existing Forgejo one.
+- **OPEN-1 is closed.** Apple hardware is not being bought.
 
-**OPEN-1** in section 20 records the hardware purchase as a decision for a
-human. Until it is made, section 16.4 defines an explicitly time-boxed
-transitional path that does not extend the current arrangement.
+The alternatives in the table above are kept for reference, because the
+decision may be revisited if Apple, Microsoft or the workload changes.
+
+### 9.3.1 What the design must do about the unsupported layers
+
+Deciding to keep the arrangement does not make it reliable, and two of the
+three unsupported layers have already produced outages recorded in this
+repository. The design carries specific mitigations rather than hoping:
+
+| Known failure | Mitigation in this design |
+| --- | --- |
+| The OpenCore restart loop: the container dies on a leftover `/var/tmp/opencore-image-ng.sh-*` after any hard stop | The appliance runtime's `start` verb clears that path before boot, making the recovery automatic instead of manual |
+| VM root disk exhaustion while the container stays Up and QEMU idles, which reads as "runner offline" | Health is the two-part check of 18.5, and appliance telemetry reports the VM's disk, so the real cause is on the card |
+| QEMU/KVM inside Hyper-V is unsupported by Microsoft, so a host or hypervisor update can break it without warning | The appliance is the only runner class whose `runtime_template` pins a hypervisor-level dependency; it is listed in the version-deprecation runbook alongside the runner version |
+| No upstream release feed for the self-built `forgejo-runner-darwin-*` | Provenance recorded on the spec; same runbook |
+
+These are the reasons the appliance contract in 10.6 exists as a contract
+rather than as a special case: the controller treats it identically, while the
+runtime adapter absorbs everything that is peculiar to it.
 
 ### 9.4 What this means for the four Windows and macOS cells
 
@@ -643,8 +661,8 @@ transitional path that does not extend the current arrangement.
 | --- | --- | --- |
 | GitHub x Windows | **Deliverable as documented** | GitHub supports the runner on Windows Server x64 |
 | Forgejo x Windows | **Deliverable only as a self-built artefact** | No `windows` release asset; see 9.2 |
-| GitHub x macOS | **Deliverable on compliant Apple hardware** | GitHub supports macOS 11+ x64/arm64 |
-| Forgejo x macOS | **Deliverable on compliant Apple hardware, as a self-built artefact** | No `darwin` release asset; the repository already builds its own |
+| GitHub x macOS | **Deliverable on the existing appliance** | GitHub supports macOS 11+ x64/arm64; a second instance is added beside the Forgejo one |
+| Forgejo x macOS | **Running today, to be brought under the lifecycle** | No `darwin` release asset; the repository already builds its own |
 
 **DOCUMENTED**, on the Forgejo artefacts: release v13.1.0 publishes twelve
 assets, all `linux-amd64` or `linux-arm64`
@@ -671,7 +689,7 @@ the artefact.
 | --- | --- | --- |
 | **Linux x64** | Supported. Runner in a container on a Hyper-V Linux worker. | Supported. Same worker, same runtime adapter. |
 | **Windows x64** | Supported. Runner on the OS of a Hyper-V Windows Server worker. Not in a Windows container - see 9.2. | Self-built. No `windows` release asset; requires a maintained `GOOS=windows` build and the `host` executor. |
-| **macOS arm64** | Supported by GitHub, on compliant Apple hardware only. | Self-built, on compliant Apple hardware only. |
+| **macOS x64** | Supported by GitHub. Runs in the QEMU appliance inside the Hyper-V Linux VM. | Self-built `darwin` artefact, same appliance. |
 
 Capability differences that the RunnerSpec carries as data rather than the UI
 hiding:
@@ -704,7 +722,8 @@ flowchart TB
       LE["container engine"]
       LR1["runner instance<br/>github / linux"]
       LR2["runner instance<br/>forgejo / linux"]
-      LA --- LE --- LR1 & LR2
+      MAC["macOS appliance<br/>QEMU guest - see 9.3<br/>github + forgejo instances"]
+      LA --- LE --- LR1 & LR2 & MAC
     end
     subgraph WW["windows-worker VM (Windows Server)"]
       WA["control agent"]
@@ -713,15 +732,9 @@ flowchart TB
       WA --- WR1 & WR2
     end
   end
-  subgraph MAC["Apple hardware - see 9.3"]
-    MA["control agent"]
-    MR1["runner instance<br/>github / macos"]
-    MR2["runner instance<br/>forgejo / macos"]
-    MA --- MR1 & MR2
-  end
+
   CTL -- "mTLS, closed verb set" --> LA
   CTL -- "mTLS, closed verb set" --> WA
-  CTL -- "mTLS, closed verb set" --> MA
   CTL -- "REST" --> GH["GitHub API"]
   CTL -- "REST" --> FJ["Forgejo API"]
 ```
@@ -732,8 +745,9 @@ Three things to read out of it:
   engine, a Windows service or a launchd job. It speaks to agents (FR-8, FR-9).
   This is what replaces "a dashboard that only drives one Docker socket"
   (CON-2, `uniform.md` 34, 226).
-- **The Apple host is a worker like any other.** Same agent, same protocol,
-  same card. Only its location differs, for the reason in 9.3.
+- **The macOS appliance is an execution unit on the Linux worker**, not a
+  separate host. It is reached through that worker's agent, and it is not a
+  container (CON-7); section 10.6 is the contract that makes it uniform.
 - **The forges are reached from the controller, never from a worker.** Tokens
   stay in one process (NFR-4).
 
@@ -809,7 +823,7 @@ supports.**
 | --- | --- | --- | --- |
 | Linux | One container per instance on a shared Linux worker | Native, cheap, already proven here | Own container, own `/var/lib/docker` volume, own workspace volume, own cache volume, cgroup CPU and memory limits |
 | Windows | One runner **process tree** per instance on a Windows Server worker, under its own local account, own directory tree with ACLs, own Job Object for CPU and memory | Windows containers on this host reach only out-of-mainstream images under Hyper-V isolation, and GitHub does not document the runner in a Windows container (9.2) | Own account, own ACL-scoped directories, own Job Object caps, own service |
-| macOS | One macOS guest per instance on Apple hardware | A macOS runner cannot be a container; and calling a guest a container is forbidden (CON-7) | Whole-OS isolation, resettable to a snapshot between jobs |
+| macOS | One macOS guest per instance, as a QEMU appliance on the Linux worker | A macOS runner cannot be a container, and calling a guest a container is forbidden (CON-7) | Whole-OS isolation, resettable to a snapshot between jobs |
 
 **This satisfies CON-5** - a shared worker never means a shared writable
 workspace, shared registration data or unbounded cache - on all three, by
@@ -898,7 +912,7 @@ The rule from now on:
 ### 11.3 Other tables
 
 **`workers`** - the inventory of FR-8: `host_id`, `display_name`, `kind`
-(`hyperv-linux`, `hyperv-windows`, `apple-host`), `endpoint`, `agent_version`,
+(`hyperv-linux`, `hyperv-windows`), `endpoint`, `agent_version`,
 `capabilities`, `last_seen_at`, `state`, `certificate_fingerprint`.
 
 **`fleets`** - the six of FR-15: `fleet_id`, `provider`, `platform`,
@@ -1290,20 +1304,56 @@ restores the old runner.
 
 ### 16.4 macOS (MIG-4)
 
-Depends on OPEN-1.
+The destination is the existing QEMU appliance, per the decision in 9.3. There
+is no hardware move and no second worker kind.
 
-**If Apple hardware is approved:** stand up the Mac, install the agent, create
-the two instances, move the labels, and retire the QEMU guest by the same
-drain/deregister/remove sequence.
+1. Install the control agent in the macOS guest and register the appliance as
+   an execution unit of the `linux-worker`.
+2. Create a RunnerSpec for the Forgejo instance that is already running, with
+   `display_name` carrying its current name and `registration_id` and
+   `registration_uuid` read from the forge, so the existing registration is
+   adopted rather than replaced. Nothing is re-registered and no job is
+   interrupted.
+3. Confirm the card renders it like any other runner, with the full action set,
+   and delete the "Elsewhere" section (ACC-12).
+4. Add the GitHub macOS instance as a second runner on the same appliance, or
+   as a second appliance, per the isolation rule in 10.5.
 
-**Until then**, an explicitly time-boxed transitional path: the existing QEMU
-guest is brought under the control agent so it stops being a read-only
-"Elsewhere" entry and gains the uniform lifecycle (MIG-4 is satisfied), while
-section 9.3 records that the arrangement is outside Apple's licence and is not
-a destination. This adds no new macOS instances and no new hardware dependency
-on the non-compliant path. The transition ends when OPEN-1 is decided either
-way; if it is declined, the macOS fleets are marked unavailable in the
-dashboard with the reason, rather than quietly continuing.
+Rollback at any step: uninstall the agent. The runner keeps working exactly as
+it does today, because adoption never touched its registration.
+
+### 16.4.1 What is identical to the other platforms, and what is not
+
+This is the check for `uniform.md` line 452, stated so it can be verified
+rather than believed.
+
+**Identical, and asserted by test:**
+
+| | How it is the same |
+| --- | --- |
+| Worker | The same `linux-worker` row in the inventory; no `apple-host` kind exists |
+| Agent | The same binary, the same closed verb set, the same mTLS certificate scheme |
+| Protocol | The same `/v1/op` endpoint, the same idempotency and operation semantics |
+| RunnerSpec | The same table, the same columns, the same stable `runner_id` |
+| Lifecycle | The same state machine of 12.2; every one of the eighteen verbs |
+| Provisioning | The same nine steps of 12.4 and the same compensations of 12.5 |
+| Storage | The same per-instance workspace, cache, registration and logs of 15.1 |
+| Cache | The same generic `clear_cache` with the same ownership rule |
+| Telemetry | The same fields on the same heartbeat |
+| Dashboard | The same card, the same detail page, the same action set, the same fleet controls |
+| Tests | The same conformance suite of 19.2, run unmodified |
+
+**Different, and only here:**
+
+| | Why |
+| --- | --- |
+| `MacApplianceRuntime` | One of three runtime adapters, exactly parallel to `LinuxContainerRuntime` and `WindowsProcessRuntime`. This is the seam FR-20 permits |
+| `capabilities.job_containers = false` | A property of GitHub Actions on macOS, reported as data, not hidden by the UI |
+| `runtime_template` names a QEMU appliance snapshot | The same field Linux uses for an image reference |
+
+That is the whole of the difference. If anything else ever diverges - a route,
+a template branch, a second lifecycle path, a separate button - it is a defect
+against CON-8, and the grep tests in T-1401 and T-1405 fail on it.
 
 ### 16.5 New GitHub Windows and macOS fleets (MIG-5)
 
@@ -1517,15 +1567,15 @@ does not exist yet.
 
 | ID | Decision | Why it needs a human | Blocks |
 | --- | --- | --- | --- |
-| **OPEN-1** | Buy Apple silicon hardware for the macOS fleets, or declare them unavailable | Money, and the licence finding in 9.3 | MIG-4, the two macOS cells, ACC-2 and ACC-3 in part |
+| ~~OPEN-1~~ | **Closed 2026-09-17.** The operator decided to keep the existing QEMU appliance; see 9.3. No Apple hardware is bought and the macOS cells run under Hyper-V | - | nothing |
 | **OPEN-2** | Windows Server licensing for the Windows worker guest | Licence cost; Windows 10 as the guest is possible but loses process isolation and the ltsc2022 image line (9.2) | Phase 6 |
 | **OPEN-3** | Windows isolation: one worker hosting several runner process trees, or one VM per runner | Memory and licence cost against isolation strength | T-0701 sizing |
 | **OPEN-4** | Maintain a self-built `GOOS=windows` Forgejo runner | Ongoing maintenance at every upstream release, with no upstream support | The Forgejo x Windows cell |
 | **OPEN-5** | Control-plane memory reservation, given the host has no pagefile and Hyper-V static memory is a reservation rather than a ceiling | Capacity planning against 255.9 GB with Docker Desktop still resident | Phase 5 sizing |
 | **OPEN-6** | Whether the LAN publication moves to an External vSwitch with a static address, replacing the portproxy | A new External switch briefly interrupts host networking | T-0604 |
 
-Nothing in this design is blocked on OPEN-1 except the macOS cells; the other
-four fleets can be delivered while it is decided.
+With OPEN-1 closed, no fleet is blocked on an open decision. OPEN-2 and
+OPEN-3 shape the Windows worker but do not prevent it from being built.
 
 ---
 
@@ -1533,7 +1583,7 @@ four fleets can be delivered while it is decided.
 
 | ID | Risk | Likelihood | Impact | Mitigation |
 | --- | --- | --- | --- | --- |
-| R-1 | The macOS licence finding is not accepted and the QEMU path is extended | medium | Operationalised licence breach | 9.3 states it plainly; 16.4 time-boxes the transition; OPEN-1 forces the decision |
+| R-1 | **Accepted 2026-09-17.** macOS runs outside Apple's licence on this hardware, and on two vendor-unsupported layers beneath it | certain, it is the current state | Licence exposure; a host or hypervisor update can break the guest with no vendor recourse | The finding and its evidence stay in 9.3; the concrete failure modes have named mitigations in 9.3.1; the arrangement is listed in the version-deprecation runbook |
 | R-2 | Host commit exhaustion returns, now with more VMs | medium | Windows kills a VM, as on 2026-09-14 and 2026-09-17 | Static reservations sized in OPEN-5; the control plane is separate so the operator keeps visibility |
 | R-3 | Windows worker on out-of-mainstream base images | low if no containers are used | Security exposure | 9.2 recommends no Windows containers; if they are ever needed, Windows Server 2022 as the guest |
 | R-4 | Self-built Forgejo artefacts for Windows and macOS drift from upstream | high | A runner version deprecation breaks a fleet with no upstream feed to watch | Record the artefact and its provenance on the spec; add it to the version-deprecation runbook |

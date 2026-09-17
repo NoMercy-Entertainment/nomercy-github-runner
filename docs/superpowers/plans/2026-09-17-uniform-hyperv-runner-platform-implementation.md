@@ -82,7 +82,7 @@ These hold for every task and are not repeated per task.
 | 4. Runtime adapters | T-0501..T-0503 | LOCAL | Docker adapter behind the new interface |
 | 5. Linux Hyper-V worker | T-0601..T-0604 | HYPERV | The first non-WSL worker |
 | 6. Windows worker | T-0701..T-0705 | HYPERV, WINDOWS-INFRA | Windows Server guest, runner on the OS |
-| 7. macOS appliance | T-0801..T-0805 | HYPERV, MACOS-ENV | The appliance contract |
+| 7. macOS appliance | T-0801..T-0805 | MACOS-ENV | The appliance contract, on the existing QEMU guest |
 | 8. GitHub provider across platforms | T-0901..T-0903 | FORGE-LIVE | GitHub on Linux, Windows, macOS |
 | 9. Forgejo provider across platforms | T-1001..T-1003 | FORGE-LIVE | Forgejo on Linux, Windows, macOS |
 | 10. Dashboard and API | T-1401..T-1407 | LOCAL | One card, one detail page, one route family |
@@ -480,35 +480,48 @@ the running fleet untouched.
 - **Verify:** `cd agent && python -m pytest tests/test_macos_runtime.py -q`
 - **Done when:** the suite passes with a fake backend, before any hardware exists.
 
-### T-0802 — Bring the existing QEMU guest under the agent
+### T-0802 — Adopt the running macOS runner, without touching its registration
 
-- **Gate:** MACOS-ENV, NEVER-AUTO · **Requirements:** MIG-4 · **Depends on:** T-0801 · **Decision:** OPEN-1
-- **Steps:** install the agent inside the macOS guest; enrol the Ubuntu VM as a worker of kind `apple-host` marked `transitional`; the guest becomes a runner instance with a RunnerSpec.
-- **Verify:** the macOS runner appears as an ordinary card with the full action set; the "Elsewhere" section no longer renders it.
-- **Explicitly:** this adds no macOS instances and buys no new dependency on the non-compliant path. Spec 9.3 and 16.4 govern; the transition ends when OPEN-1 is decided.
-- **Rollback:** uninstall the agent; the runner keeps working as before.
-- **Done when:** MIG-4 is satisfied and ACC-12 is unblocked for macOS.
+- **Gate:** MACOS-ENV, NEVER-AUTO · **Requirements:** MIG-4, ACC-12 · **Depends on:** T-0801
+- **Goal:** the Forgejo macOS runner that is online today becomes an ordinary managed runner, with no re-registration and no interrupted job.
+- **Steps:** (1) install the control agent inside the macOS guest, as a launchd service beside the runner; (2) register the appliance as an execution unit of the existing `linux-worker` — no new worker kind; (3) write a RunnerSpec whose `display_name` is the runner's current name and whose `registration_id` and `registration_uuid` are **read from the forge**, so the record is adopted rather than recreated; (4) confirm the controller reports it `idle`.
+- **Tests:** an adoption test asserting no registration call is made and the forge record is unchanged before and after.
+- **Verify:** the card renders with the full action set; `GET /api/v2/runners/{id}` returns the spec; the forge still lists the same `uuid`.
+- **Expected:** the runner never leaves `idle` and takes jobs throughout.
+- **Rollback:** uninstall the agent; nothing about the runner or its registration changed.
+- **Security:** the agent runs as the runner's own user, not root; its certificate is scoped to this appliance.
+- **Done when:** MIG-4 holds and the "Elsewhere" section can be deleted (T-1405).
 
-### T-0803 — Apple host worker
+### T-0803 — MacApplianceRuntime against the real appliance
 
-- **Gate:** MACOS-ENV · **Requirements:** FR-1 · **Depends on:** OPEN-1 approved
-- **Steps:** install the agent on the Mac; enrol as `apple-host`; create instances as macOS guests via Virtualization.framework, up to the two the licence permits per host.
-- **Verify:** two instances reach `idle`; the conformance suite passes on the real runtime.
-- **Done when:** the macOS fleets run on compliant hardware.
+- **Gate:** MACOS-ENV · **Requirements:** FR-20, ACC-11 · **Depends on:** T-0802
+- **Goal:** the contract of T-0801 verified against the QEMU guest rather than a fake.
+- **Steps:** (1) implement `create`, `start`, `stop`, `remove`, `status`, `telemetry`, `logs`, `exec_probe`, `clear_cache`, `capabilities` over the appliance; (2) `start` clears a leftover `/var/tmp/opencore-image-ng.sh-*` before boot, which is the recorded cause of the restart loop after any hard stop; (3) `telemetry` reports the VM's root-disk usage, which is the recorded cause of "offline runner, container Up, QEMU idle"; (4) `capabilities` declares `job_containers=false`.
+- **Tests:** `pytest agent/tests/contract --runtime=macos` on the real appliance.
+- **Verify:** every scenario of spec 19.2 passes, or the corresponding capability is declared false and the suite asserts the correspondence.
+- **Rollback:** the adapter is only reached for this appliance; disabling it returns the runner to T-0802 behaviour.
+- **Done when:** the same suite that passes for Linux passes here, unmodified.
 
-### T-0804 — GitHub macOS runner
+### T-0804 — GitHub macOS instance
 
 - **Gate:** MACOS-ENV, FORGE-LIVE · **Requirements:** FR-1, MIG-5 · **Depends on:** T-0803
-- **Steps:** install the runner as a launchd service inside the guest, configured from the provider adapter.
-- **Verify:** online in the org; a trivial workflow succeeds.
+- **Goal:** the sixth cell, on the same appliance.
+- **Steps:** (1) create a second runner instance through the generic flow; (2) the GitHub runner installs as a launchd service inside the guest with its own per-instance directories per spec 15.1; (3) labels and runner group come from the fleet.
+- **Verify:** the runner appears online in the GitHub org; a trivial workflow with `runs-on: [self-hosted, macos]` succeeds.
+- **Expected:** the existing Forgejo instance is unaffected throughout — asserted by watching its state during the run.
+- **Rollback:** remove through the dashboard, which deregisters first.
+- **Security:** the registration token arrives in the verb payload and is never written to the guest's disk.
 - **Done when:** ACC-2 is evidenced for macOS.
 
-### T-0805 — Forgejo macOS artefact
+### T-0805 — Formalise the self-built Forgejo darwin artefact
 
-- **Gate:** MACOS-ENV, FORGE-LIVE · **Requirements:** FR-1 · **Depends on:** T-0803
-- **Steps:** as T-0705 but `GOOS=darwin`; record provenance; the repository already does this informally, so formalise the existing build.
-- **Verify:** online in Forgejo; a trivial workflow succeeds.
-- **Done when:** ACC-3 is evidenced for macOS.
+- **Gate:** LOCAL to build, MACOS-ENV to install · **Requirements:** FR-1, R-4 · **Depends on:** T-0803
+- **Goal:** the artefact that is already running becomes reproducible and traceable instead of incidental.
+- **Files:** create `images/macos/build-forgejo-runner.md`, `images/macos/manifest.json`.
+- **Steps:** (1) document the exact `GOOS=darwin` build from `code.forgejo.org/forgejo/runner` at a pinned tag, with the toolchain version; (2) record the commit, tag and SHA-256 in the manifest; (3) point `RunnerSpec.runtime_template` at that manifest entry; (4) add the artefact to the version-deprecation runbook, because there is no upstream release feed to watch for darwin.
+- **Verify:** rebuilding from the documented steps reproduces the recorded hash.
+- **Expected:** the running runner's binary matches the manifest, or the difference is recorded.
+- **Done when:** ACC-3 is evidenced for macOS and R-4 has a named owner.
 
 ---
 
@@ -760,7 +773,7 @@ Every task here is **NEVER-AUTO**. Each names its rollback.
 ### T-1706 — macOS into the lifecycle
 
 - **Gate:** NEVER-AUTO, MACOS-ENV · **Requirements:** MIG-4 · **Depends on:** T-0802 or T-0803
-- **Steps:** per OPEN-1: either move to the Apple host, or bring the existing guest under the agent as the time-boxed transition of spec 16.4.
+- **Steps:** adopt the running runner per T-0802, then add the GitHub instance per T-0804. No hardware move; spec 16.4 is the procedure.
 - **Done when:** the macOS runner has a RunnerSpec and the full action set.
 
 ### T-1707 — Verify what was preserved
