@@ -141,3 +141,51 @@ class TestCoreCount:
     def test_unreachable_ssh_is_none_for_the_whole_probe(self, monkeypatch):
         monkeypatch.setattr(ex, "_run", lambda *a, **k: None)
         assert ex.probe_macos_vm("h", "u", "k", "c", ssh="/usr/bin/ssh") is None
+
+
+class TestSshResolution:
+    """The macOS probe silently returned None because ssh was not on PATH.
+
+    Windows ships OpenSSH in System32 without adding it to PATH, so
+    shutil.which("ssh") finds nothing. The exporter still answered 200 and
+    still listed the runner - with null - so it looked healthy while half of
+    what it exists for was missing. Resolution is explicit now.
+    """
+
+    def _serve(self):
+        import importlib
+        import os as _os
+        import sys as _sys
+        _sys.path.insert(0, _os.path.join(
+            _os.path.dirname(_os.path.dirname(_os.path.dirname(
+                _os.path.abspath(__file__)))), "exporters", "windows"))
+        return importlib.import_module("serve")
+
+    def test_an_explicit_path_is_used_when_it_exists(self, monkeypatch, tmp_path):
+        serve = self._serve()
+        fake = tmp_path / "ssh.exe"
+        fake.write_text("")
+        monkeypatch.setenv("EXPORTER_SSH", str(fake))
+        assert serve.resolve_ssh() == str(fake)
+
+    def test_a_configured_path_that_is_missing_is_none_not_a_guess(
+            self, monkeypatch):
+        """Silently falling back would hide a typo in the service config."""
+        serve = self._serve()
+        monkeypatch.setenv("EXPORTER_SSH", r"C:\nope\ssh.exe")
+        assert serve.resolve_ssh() is None
+
+    def test_path_lookup_wins_when_nothing_is_configured(self, monkeypatch):
+        serve = self._serve()
+        monkeypatch.delenv("EXPORTER_SSH", raising=False)
+        monkeypatch.setattr(serve.shutil, "which", lambda n: "/usr/bin/ssh")
+        assert serve.resolve_ssh() == "/usr/bin/ssh"
+
+    def test_falls_back_to_the_system32_location(self, monkeypatch):
+        """The regression: nothing on PATH must not mean no ssh at all."""
+        serve = self._serve()
+        monkeypatch.delenv("EXPORTER_SSH", raising=False)
+        monkeypatch.setattr(serve.shutil, "which", lambda n: None)
+        monkeypatch.setattr(serve.os.path, "exists",
+                            lambda p: p == serve._WINDOWS_SSH)
+        assert serve.resolve_ssh() == serve._WINDOWS_SSH

@@ -26,6 +26,10 @@ param(
   [string]$MacosUser   = 'runner',
   [string]$MacosKey    = "$env:USERPROFILE\.ssh\macos_runner",
   [string]$WindowsLog  = 'C:\forgejo-runner\runner.err.log',
+  # Windows ships OpenSSH in System32 but does not put it on PATH, so the
+  # exporter cannot find it by name and would silently skip the macOS probe
+  # while still answering 200 and still listing the runner, as null.
+  [string]$Ssh         = "$env:SystemRoot\System32\OpenSSH\ssh.exe",
   # The WSL subnet, so the port is not offered to the LAN. WSL's address is
   # assigned per boot, so the whole /20 is allowed rather than one address.
   [string]$AllowFrom   = '172.28.192.0/20'
@@ -40,6 +44,7 @@ if (-not ([Security.Principal.WindowsPrincipal] `
 }
 if (-not (Test-Path $Nssm))     { throw "NSSM not found at $Nssm" }
 if (-not (Test-Path $MacosKey)) { throw "SSH key not found at $MacosKey" }
+if (-not (Test-Path $Ssh))      { throw "ssh.exe not found at $Ssh" }
 
 $python = (Get-Command python.exe -ErrorAction SilentlyContinue).Source
 if (-not $python) { throw 'python.exe not on PATH' }
@@ -72,6 +77,7 @@ $envBlock = @(
   "EXPORTER_MACOS_HOST=$MacosHost"
   "EXPORTER_MACOS_USER=$MacosUser"
   "EXPORTER_MACOS_KEY=$MacosKey"
+  "EXPORTER_SSH=$Ssh"
 ) -join ' '
 & $Nssm set $ServiceName AppEnvironmentExtra $envBlock | Out-Null
 

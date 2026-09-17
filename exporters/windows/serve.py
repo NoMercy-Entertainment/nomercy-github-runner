@@ -9,6 +9,7 @@ lands in a command line visible to every process on the box.
 """
 import json
 import os
+import shutil
 import subprocess
 import sys
 
@@ -89,6 +90,24 @@ def probe_windows_service(log_path, drive="C:", timeout=20):
     }
 
 
+# Windows ships OpenSSH in System32 but does not put it on PATH, so
+# shutil.which("ssh") finds nothing and the macOS probe silently returned
+# None for every sweep - the exporter looked healthy while half of what it
+# exists for was missing. Resolve it explicitly and let the service override.
+_WINDOWS_SSH = r"C:\Windows\System32\OpenSSH\ssh.exe"
+
+
+def resolve_ssh():
+    """The ssh binary to use, or None if there is genuinely none."""
+    configured = os.environ.get("EXPORTER_SSH")
+    if configured:
+        return configured if os.path.exists(configured) else None
+    found = shutil.which("ssh")
+    if found:
+        return found
+    return _WINDOWS_SSH if os.path.exists(_WINDOWS_SSH) else None
+
+
 def main():
     windows_name = os.environ.get("EXPORTER_WINDOWS_RUNNER",
                                   "beaststack-windows-runner")
@@ -105,7 +124,9 @@ def main():
         user = os.environ.get("EXPORTER_MACOS_USER", "runner")
         key = os.environ.get("EXPORTER_MACOS_KEY", "")
         container = os.environ.get("EXPORTER_MACOS_CONTAINER", "macos-sequoia")
-        probes[macos_name] = lambda: ex.probe_macos_vm(host, user, key, container)
+        ssh = resolve_ssh()
+        probes[macos_name] = lambda: ex.probe_macos_vm(
+            host, user, key, container, ssh=ssh)
 
     ex.serve(os.environ.get("EXPORTER_BIND", "0.0.0.0"),
              int(os.environ.get("EXPORTER_PORT", "9101")), probes)
