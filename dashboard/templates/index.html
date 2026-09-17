@@ -571,9 +571,16 @@ function render(d) {
     // empty rather than showing a confident 0%.
     const t = r.telemetry;
     const ejob = card.querySelector('.cjob');
-    const ejobText = t ? (t.job || 'no active job') : 'no telemetry';
+    // The forge decides busy/idle, the log only names the job - exactly as
+    // _forgejo_job_state() already does for the containerised runners. The
+    // daemon logs a task STARTING and never logs it finishing, so the last
+    // task line outlives the task by days; showing it while the forge says
+    // idle put a day-old job on an idle card.
+    const eactive = r.status === 'active';
+    const ejobText = !t ? 'no telemetry'
+                        : (eactive && t.job ? t.job : 'no active job');
     if (ejob.textContent !== ejobText) ejob.textContent = ejobText;
-    const ejc = 'cjob' + (t && t.job ? '' : ' idle');
+    const ejc = 'cjob' + (t && eactive && t.job ? '' : ' idle');
     if (ejob.className !== ejc) ejob.className = ejc;
 
     if (!t) {

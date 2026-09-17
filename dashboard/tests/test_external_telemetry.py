@@ -162,3 +162,30 @@ class TestElsewhereMerge:
         import docker_ops
 
         assert docker_ops._elsewhere(None, set(), {"x": {"cpu_percent": 1}}) == []
+
+
+class TestJobIsGatedOnForgeStatus:
+    """A task line outlives its task, so the log alone cannot say "busy".
+
+    The forgejo-runner daemon logs a task starting and never logs it
+    finishing. docker_ops._forgejo_job_state() already handles this by taking
+    busy/idle from the forge and only the NAME from the log; the Elsewhere
+    card showed a day-old job beside an IDLE badge until it did the same.
+    """
+
+    def _else_render(self):
+        import os
+        here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        with open(os.path.join(here, "templates", "index.html"),
+                  encoding="utf-8") as fh:
+            return fh.read()
+
+    def test_the_job_name_is_shown_only_when_the_forge_says_active(self):
+        html = self._else_render()
+        assert "const eactive = r.status === 'active';" in html
+        assert "eactive && t.job ? t.job : 'no active job'" in html
+
+    def test_the_job_style_follows_the_same_gate(self):
+        """Otherwise the card is styled busy while reading "no active job"."""
+        html = self._else_render()
+        assert "'cjob' + (t && eactive && t.job ? '' : ' idle')" in html
