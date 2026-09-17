@@ -23,14 +23,64 @@ import runner_exporter as ex  # noqa: E402
 # without elevation, which is what lets this run as an ordinary service.
 _PS = r"""
 $ErrorActionPreference = 'Stop'
-$p = Get-CimInstance Win32_PerfFormattedData_PerfProc_Process -Filter "Name='forgejo-runner'"
+
+# The DAEMON alone is not the runner's footprint. forgejo-runner.exe spawns the
+# job's work - git, docker, compilers - as child processes, so measuring only
+# the daemon reported ~10 MB and 0% no matter how hard the machine was working.
+# Sum the whole tree instead, which is the honest analogue of the cgroup figure
+# every other card on the page shows.
+$all  = Get-CimInstance Win32_Process
+$perf = @{}
+foreach ($x in (Get-CimInstance Win32_PerfFormattedData_PerfProc_Process)) {
+  $perf[[int]$x.IDProcess] = [double]$x.PercentProcessorTime
+}
+
+$byParent = @{}
+foreach ($x in $all) {
+  $k = [int]$x.ParentProcessId
+  if (-not $byParent.ContainsKey($k)) { $byParent[$k] = New-Object System.Collections.ArrayList }
+  [void]$byParent[$k].Add($x)
+}
+
+$roots = @($all | Where-Object { $_.Name -eq 'forgejo-runner.exe' })
+$tree  = New-Object System.Collections.ArrayList
+$queue = New-Object System.Collections.Queue
+foreach ($r in $roots) { $queue.Enqueue($r) }
+$seen = @{}
+while ($queue.Count -gt 0) {
+  $p = $queue.Dequeue()
+  $id = [int]$p.ProcessId
+  if ($seen.ContainsKey($id)) { continue }   # a pid cannot be its own ancestor
+  $seen[$id] = $true
+  [void]$tree.Add($p)
+  if ($byParent.ContainsKey($id)) {
+    foreach ($c in $byParent[$id]) { $queue.Enqueue($c) }
+  }
+}
+
+$mem = 0
+$cpu = 0.0
+foreach ($p in $tree) {
+  $mem += [int64]$p.WorkingSetSize
+  $id = [int]$p.ProcessId
+  if ($perf.ContainsKey($id)) { $cpu += $perf[$id] }
+}
+
 $d = Get-CimInstance Win32_LogicalDisk -Filter "DeviceID='$env:EXPORTER_DRIVE'"
 $s = Get-CimInstance Win32_Service -Filter "Name='forgejo-runner'"
 $c = Get-CimInstance Win32_ComputerSystem
+$root = $roots | Select-Object -First 1
+$up = 0
+if ($root) { $up = [int64]((Get-Date) - $root.CreationDate).TotalSeconds }
+
 [pscustomobject]@{
-  cpu_percent   = [double]$p.PercentProcessorTime
-  mem_used      = [int64]$p.WorkingSetPrivate
-  uptime_seconds= [int64]$p.ElapsedTime
+  cpu_percent   = [double]$cpu
+  mem_used      = [int64]$mem
+  # A service has no cgroup ceiling, so the machine is the ceiling. Without a
+  # denominator the card showed a bare "0.01 GB" and read as broken.
+  mem_limit     = [int64]$c.TotalPhysicalMemory
+  process_count = [int]$tree.Count
+  uptime_seconds= $up
   disk_total    = [int64]$d.Size
   disk_free     = [int64]$d.FreeSpace
   state         = [string]$s.State
@@ -90,7 +140,9 @@ def probe_windows_service(log_path, drive="C:", timeout=20):
         "reachable": True,
         "cpu_percent": round(float(d.get("cpu_percent") or 0.0), 2),
         "mem_used_bytes": int(d.get("mem_used") or 0),
-        "mem_limit_bytes": None,      # a service has no cgroup ceiling
+        # The machine, since a service has no cgroup ceiling of its own.
+        "mem_limit_bytes": int(d.get("mem_limit") or 0) or None,
+        "process_count": int(d.get("process_count") or 0),
         "cpu_cores": int(d.get("cpu_cores") or 0) or None,
         "uptime_seconds": int(d.get("uptime_seconds") or 0),
         "state": d.get("state") or "",

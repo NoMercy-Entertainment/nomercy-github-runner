@@ -240,3 +240,60 @@ class TestFailuresAreExplained:
     def test_a_raising_probe_names_the_exception(self, capsys):
         ex.build_payload({"a": lambda: 1 / 0})
         assert "ZeroDivisionError" in capsys.readouterr().err
+
+
+class TestWindowsProbeMeasuresTheTree:
+    """The daemon alone is not the runner's footprint.
+
+    forgejo-runner.exe spawns a job's real work - git, docker, compilers - as
+    child processes. Measuring only the daemon reported ~10 MB and 0% however
+    hard the machine was working, so the card looked broken beside the macOS
+    one, which measures a whole container. And a service has no cgroup
+    ceiling, so without a denominator the memory row read a bare "0.01 GB".
+    """
+
+    PAYLOAD = ('{"cpu_percent":412.5,"mem_used":8589934592,'
+               '"mem_limit":274751803392,"process_count":37,'
+               '"uptime_seconds":428158,"disk_total":479423455232,'
+               '"disk_free":141285547032,"state":"Running","cpu_cores":56}')
+
+    def _probe(self, monkeypatch, stdout):
+        import importlib
+        import os as _os
+        import sys as _sys
+        _sys.path.insert(0, _os.path.join(
+            _os.path.dirname(_os.path.dirname(_os.path.dirname(
+                _os.path.abspath(__file__)))), "exporters", "windows"))
+        serve = importlib.import_module("serve")
+
+        class _P:
+            returncode = 0
+            stderr = ""
+
+        _P.stdout = stdout
+        monkeypatch.setattr(serve, "resolve_powershell", lambda: "pwsh")
+        monkeypatch.setattr(serve.subprocess, "run", lambda *a, **k: _P())
+        return serve.probe_windows_service("nope.log", "C:")
+
+    def test_the_whole_tree_is_reported(self, monkeypatch):
+        got = self._probe(monkeypatch, self.PAYLOAD)
+        assert got["cpu_percent"] == 412.5
+        assert got["process_count"] == 37
+        assert got["mem_used_bytes"] == 8589934592
+
+    def test_memory_has_a_denominator(self, monkeypatch):
+        """The machine, since the service has no ceiling of its own."""
+        got = self._probe(monkeypatch, self.PAYLOAD)
+        assert got["mem_limit_bytes"] == 274751803392
+
+    def test_an_absent_limit_stays_none_rather_than_zero(self, monkeypatch):
+        """0 would make the card divide by it."""
+        got = self._probe(monkeypatch, self.PAYLOAD.replace(
+            '"mem_limit":274751803392', '"mem_limit":0'))
+        assert got["mem_limit_bytes"] is None
+
+    def test_an_unreadable_log_still_yields_the_rest(self, monkeypatch):
+        """A missing log must cost the job name, not the whole probe."""
+        got = self._probe(monkeypatch, self.PAYLOAD)
+        assert got["job"] == ""
+        assert got["state"] == "Running"
