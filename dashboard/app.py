@@ -49,6 +49,10 @@ EDITABLE = {
     "GH_TOKEN", "GITHUB_ORG", "RUNNER_LABELS",
     "RUNNER_GROUP", "RUNNER_CPU_LIMIT", "RUNNER_MEM_LIMIT",
     "FORGEJO_INSTANCE_URL", "FORGEJO_API_TOKEN", "FORGEJO_RUNNER_LABELS",
+    # Where to read telemetry for the runners that are not containers on this
+    # engine. Empty disables the feature and the Elsewhere cards render
+    # exactly as they did before it existed.
+    "EXTERNAL_EXPORTER_URL",
 }
 
 app = Flask(__name__)

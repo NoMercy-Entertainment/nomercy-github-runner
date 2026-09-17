@@ -74,16 +74,41 @@ def test_elsewhere_section_is_hidden_when_empty_like_the_other_two():
         in html
 
 
-def test_elsewhere_omits_the_container_only_metrics():
-    """CPU/memory/build cache/uptime/job all depend on `docker stats` and
-    `docker exec` against a container that does not exist for these - the
-    card-building code must never reference them."""
+def test_elsewhere_cards_stay_read_only():
+    """These runners are not containers on this engine, so nothing on their
+    card may offer to act on one.
+
+    _elsewhere() never feeds ops.list_runner_names(), so a button here could
+    not work even if it were wired up; the guarantee is that none is drawn.
+
+    Build cache stays out for the original reason: it is read with
+    `docker exec` against a container that does not exist for these. CPU,
+    memory and disk no longer are - they come from the exporter on the host
+    (see test_external_telemetry.py), which is why the meters below are now
+    expected rather than forbidden."""
     html = _html()
     fn = html[html.index("function makeElseCard"):]
     fn = fn[:fn.index("function render(d)")]
-    for forbidden in ("meterHTML", "cpu_percent", "mem_used", "build_cache",
-                      'data-a="stop"', 'data-a="remove"', 'data-a="prune"'):
-        assert forbidden not in fn
+    for forbidden in ("build_cache", 'data-a="stop"', 'data-a="remove"',
+                      'data-a="prune"', 'data-a="drain"', 'data-a="restart"'):
+        assert forbidden not in fn, f"Elsewhere card must not carry {forbidden}"
+
+
+def test_elsewhere_cards_carry_the_same_meters_as_the_rest():
+    """The point of the exporter: these cards stop being blank next to every
+    other runner on the page."""
+    html = _html()
+    fn = html[html.index("function makeElseCard"):]
+    fn = fn[:fn.index("function render(d)")]
+    for meter in ("meterHTML('cpu'", "meterHTML('mem'", "meterHTML('disk'"):
+        assert meter in fn, f"missing {meter}"
+
+
+def test_absent_telemetry_reads_unknown_rather_than_zero():
+    """A confident 0% would render an unreachable machine as an idle one."""
+    html = _html()
+    assert "setMeter(card, 'cpu', 'unknown', 0)" in html
+    assert "setMeter(card, 'disk', 'unknown', 0)" in html
 
 
 def test_elsewhere_card_name_is_not_a_link():

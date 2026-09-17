@@ -376,7 +376,13 @@ function makeElseCard(r, i) {
        <span class="badge"></span>
      </div>
      <div class="creg elabels"></div>
-     <div class="creg ever"></div>`;
+     <div class="creg ever"></div>
+     <div class="cjob"></div>` +
+    // The same three meters the other cards carry, so the eye reads one page
+    // instead of two. Disk rather than build cache: these runners have no
+    // build cache this engine can see, and the macOS runner's actual failure
+    // has been its VM root disk filling while the container stayed up.
+    meterHTML('cpu', 'CPU') + meterHTML('mem', 'Memory') + meterHTML('disk', 'Disk');
   return el;
 }
 
@@ -557,6 +563,48 @@ function render(d) {
     const verEl = card.querySelector('.ever');
     const verText = 'v' + (r.version || '?');
     if (verEl.textContent !== verText) verEl.textContent = verText;
+
+    // Telemetry comes from the exporter on the host, not from this engine -
+    // these runners are not containers here. null means the exporter is
+    // absent, unreachable, or its probe for this runner failed. It never
+    // means a healthy runner at zero, so the meters read "unknown" and draw
+    // empty rather than showing a confident 0%.
+    const t = r.telemetry;
+    const ejob = card.querySelector('.cjob');
+    const ejobText = t ? (t.job || 'no active job') : 'no telemetry';
+    if (ejob.textContent !== ejobText) ejob.textContent = ejobText;
+    const ejc = 'cjob' + (t && t.job ? '' : ' idle');
+    if (ejob.className !== ejc) ejob.className = ejc;
+
+    if (!t) {
+      setMeter(card, 'cpu', 'unknown', 0);
+      setMeter(card, 'mem', 'unknown', 0);
+      setMeter(card, 'disk', 'unknown', 0);
+    } else {
+      const ecpu = Math.max(0, Number(t.cpu_percent) || 0);
+      const ecores = Number(t.cpu_cores) > 0 ? Number(t.cpu_cores) : 0;
+      setMeter(card, 'cpu',
+        ecores > 0
+          ? ecpu.toFixed(1) + '%  ·  ' + (ecpu / 100).toFixed(1) + ' / ' + ecores + ' cores'
+          : ecpu.toFixed(1) + '%',
+        ecores > 0 ? ecpu / ecores : 0);
+
+      const emu = Number(t.mem_used_bytes) || 0;
+      const eml = Number(t.mem_limit_bytes) || 0;
+      // A Windows service has no cgroup ceiling, so there is nothing to draw
+      // a percentage against - show the figure and leave the bar empty
+      // rather than invent a denominator.
+      setMeter(card, 'mem',
+        eml > 0 ? ((emu / eml) * 100).toFixed(1) + '%  ·  ' + fmtGB(emu) + ' / ' + fmtGB(eml)
+                : fmtGB(emu),
+        eml > 0 ? (emu / eml) * 100 : 0);
+
+      const ed = t.disk;
+      setMeter(card, 'disk',
+        ed ? ed.percent + '%  ·  ' + fmtGB(ed.used_bytes) + ' / ' + fmtGB(ed.total_bytes)
+           : 'unknown',
+        ed ? ed.percent : 0);
+    }
   });
 
   for (const [uuid, el] of elseCards) {

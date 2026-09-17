@@ -59,7 +59,11 @@ def test_a_record_with_no_matching_container_uuid_is_elsewhere():
     got = docker_ops._elsewhere(records, known_uuids=set())
     assert got == [{"uuid": WINDOWS_UUID, "name": "beaststack-windows-runner",
                     "status": "idle", "labels": "self-hosted, windows",
-                    "version": "6.2.0"}]
+                    "version": "6.2.0",
+                    # Carried for every record, None unless an exporter
+                    # answered about this runner by name. See
+                    # test_external_telemetry.py.
+                    "telemetry": None}]
 
 
 def test_a_record_whose_uuid_matches_a_container_is_excluded():
@@ -180,6 +184,10 @@ def test_elsewhere_carries_no_container_only_fields(monkeypatch):
         "status": "idle",
         "labels": "self-hosted, windows",
         "version": "6.2.0",
+        # None, not zeros: no exporter is configured in this test, and an
+        # unconfigured exporter must read as "could not ask" rather than as
+        # a runner sitting idle at 0%.
+        "telemetry": None,
     }
     for absent in ("cpu_percent", "mem_used", "mem_limit", "build_cache",
                   "images", "uptime", "job", "state"):

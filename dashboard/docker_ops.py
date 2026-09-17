@@ -16,6 +16,7 @@ import re
 import subprocess
 import time
 
+import external_telemetry
 import forgejo_api
 import providers
 
@@ -761,7 +762,8 @@ def collect(env=None):
         "disk": _disk(),
         "host": host_info(),
         "runners": runners,
-        "elsewhere": _elsewhere(forge_records, known_forgejo_uuids),
+        "elsewhere": _elsewhere(forge_records, known_forgejo_uuids,
+                                external_telemetry.telemetry(env)),
         # Lets the page tell "this provider has zero runners right now" from
         # "this provider was never configured" - the two look identical in
         # `runners` alone (both contribute nothing), but only the first one
@@ -776,7 +778,7 @@ def collect(env=None):
     }
 
 
-def _elsewhere(forge_records, known_uuids):
+def _elsewhere(forge_records, known_uuids, telemetry=None):
     """Forgejo runners the forge knows about that are not one of the
     containers on this engine - read-only cards on the status page, never a
     target for start/stop/prune/remove (those all reach a runner through
@@ -794,12 +796,21 @@ def _elsewhere(forge_records, known_uuids):
     """
     if forge_records is None:
         return []
+    # Matched on NAME, not uuid, unlike every other comparison here: the
+    # exporter reads machines, not forge records, and the runner's name is
+    # the only identifier it and the forge both hold. A name collision would
+    # mis-attribute a reading, so a runner the exporter does not name keeps
+    # None rather than borrowing another one's numbers.
+    tel = telemetry if isinstance(telemetry, dict) else {}
     return [{
         "uuid": r.get("uuid"),
         "name": r.get("name") or "-",
         "status": r.get("status") or "unknown",
         "labels": ", ".join(r.get("labels") or []),
         "version": r.get("version") or "",
+        # None means "could not ask" - the exporter is absent, unreachable,
+        # or its probe for this runner failed. It never means "idle at zero".
+        "telemetry": tel.get(r.get("name") or "") or None,
     } for r in forge_records if r.get("uuid") not in known_uuids]
 
 
