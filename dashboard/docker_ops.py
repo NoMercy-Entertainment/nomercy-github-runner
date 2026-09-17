@@ -244,6 +244,95 @@ def _stats_map():
     return m
 
 
+def _cpuset_count(spec):
+    """How many CPUs a --cpuset-cpus spec allows; 0 when unset or unparsable.
+
+    Docker hands the spec back exactly as it was given ("0-15",
+    "43-55,0-2"), so this has to handle both ranges and bare indices, and a
+    wrapped set is just two ranges. 0 means "no answer" rather than "no
+    CPUs": callers fall back to the quota or the host count, and an
+    unparsable spec must not be reported as a zero-core ceiling.
+    """
+    n = 0
+    for part in (spec or "").split(","):
+        part = part.strip()
+        if not part:
+            continue
+        if "-" in part:
+            lo_s, _, hi_s = part.partition("-")
+            try:
+                lo, hi = int(lo_s), int(hi_s)
+            except ValueError:
+                return 0
+            if hi < lo:
+                return 0
+            n += hi - lo + 1
+        else:
+            try:
+                int(part)
+            except ValueError:
+                return 0
+            n += 1
+    return n
+
+
+def cpu_ceiling(cpuset, nano_cpus):
+    """Cores this container may actually use, or None for "unlimited".
+
+    Two different knobs can cap CPU and they are NOT interchangeable:
+
+      --cpus (NanoCpus) is a CFS quota. It caps how much CPU time the
+      container gets, but it does not change its affinity mask, so `nproc`
+      inside still reports every host core. A build running -j$(nproc) will
+      still spawn one job per HOST core and use the memory to match.
+
+      --cpuset-cpus pins the affinity mask, so `nproc` reports the width of
+      the set and -j$(nproc) scales down with it. A nested container (how
+      buildx builds actually run) inherits it, because a child cgroup's
+      cpuset.cpus.effective can never exceed its parent's.
+
+    Whichever is lower is what the container can really use, so the smaller
+    of the two wins when both are set.
+    """
+    caps = []
+    n = _cpuset_count(cpuset)
+    if n:
+        caps.append(float(n))
+    if nano_cpus:
+        caps.append(nano_cpus / 1e9)
+    return min(caps) if caps else None
+
+
+def _cpu_caps_map(names):
+    """One `docker inspect` for every runner's CPU ceiling.
+
+    Batched for the reason _stats_map() documents: per-container calls turn
+    a refresh into seconds of dead page. Returns {name: (cpuset, cores)}.
+    """
+    if not names:
+        return {}
+    ok, out, _ = _docker(
+        "inspect", "--format",
+        "{{.Name}}	{{.HostConfig.CpusetCpus}}	{{.HostConfig.NanoCpus}}",
+        *names, timeout=25)
+    m = {}
+    if not ok:
+        return m
+    for line in out.splitlines():
+        parts = line.split("	")
+        if len(parts) < 3:
+            continue
+        # `docker inspect` returns .Name with a leading slash; every other
+        # map in this module is keyed on the bare name.
+        name = parts[0].lstrip("/")
+        try:
+            nano = int(parts[2])
+        except ValueError:
+            nano = 0
+        m[name] = (parts[1], cpu_ceiling(parts[1], nano))
+    return m
+
+
 # "2026-08-20 13:27:33Z: Running job: build-base / docker-build" - the
 # runner stamps its own lines, so the age of an event can be read straight off
 # the line that was matched, without a second `docker logs --timestamps` pass.
@@ -571,6 +660,10 @@ def collect(env=None):
     persisted_forgejo_uuids = st.get("forgejo_uuids") or {}
     runners = []
     found = list_runners()
+    # Read once for the whole fleet, stopped containers included: a stopped
+    # runner still has a configured ceiling, and showing it is how an
+    # operator sees that a limit was set but never applied.
+    cpu_caps = _cpu_caps_map([n for n, _ in found])
 
     # One API call for the whole Forgejo fleet, not one per runner. Gated on
     # Forgejo being CONFIGURED - forge_client(env) can build a client at all
@@ -612,6 +705,8 @@ def collect(env=None):
                 "state": "stopped", "job": "", "uptime": status,
                 "cpu_percent": 0, "mem_used": "0B", "mem_limit": "-",
                 "build_cache": "0B", "images": "0B",
+                "cpuset": cpu_caps.get(name, ("", None))[0],
+                "cpu_cores": cpu_caps.get(name, ("", None))[1],
             })
             continue
 
@@ -654,6 +749,11 @@ def collect(env=None):
             "mem_limit": mem_limit or "-",
             "build_cache": cache,
             "images": images,
+            # The ceiling this runner actually has, so the page can say
+            # "11.8 / 16 cores" instead of dividing every runner by the host
+            # count and implying headroom that the cpuset forbids.
+            "cpuset": cpu_caps.get(name, ("", None))[0],
+            "cpu_cores": cpu_caps.get(name, ("", None))[1],
         })
 
     return {

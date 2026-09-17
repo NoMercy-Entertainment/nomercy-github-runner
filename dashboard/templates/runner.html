@@ -452,11 +452,18 @@ function renderCapacity() {
   setCap('cap-host', ncpu > 0 ? `${ncpu} cores · ${fmtGB(memTotal)} RAM` : '—');
 
   if (lastInspectData) {
+    // cpu_limit is the EFFECTIVE ceiling (see docker_ops.cpu_ceiling): the
+    // lower of the cpuset width and the --cpus quota. The cpuset is named
+    // alongside it because the two caps behave differently - only a cpuset
+    // narrows what `nproc` reports inside, and that is what decides how many
+    // jobs a -j$(nproc) build will spawn.
     const cpuLimit = lastInspectData.cpu_limit;
+    const cpuset = lastInspectData.cpuset || '';
     setCap('cap-cpu-allowance', cpuLimit == null
       ? (ncpu > 0 ? `unlimited (all ${ncpu} cores)` : 'unlimited')
       : `${Number.isInteger(cpuLimit) ? cpuLimit : cpuLimit.toFixed(2)} cores` +
-        (ncpu > 0 ? ` of ${ncpu}` : ''));
+        (ncpu > 0 ? ` of ${ncpu}` : '') +
+        (cpuset ? ` · pinned to ${cpuset}` : ''));
 
     const memLimit = lastInspectData.mem_limit_bytes;
     setCap('cap-mem-allowance', memLimit == null
@@ -467,8 +474,12 @@ function renderCapacity() {
   if (lastStatusRunner) {
     const r = lastStatusRunner;
     const cpu = Math.max(0, Number(r.cpu_percent) || 0);
-    setCap('cap-cpu-current', ncpu > 0
-      ? `${cpu.toFixed(1)}% · ${(cpu / 100).toFixed(1)} of ${ncpu} cores`
+    // Measured against this runner's own ceiling, not the host's, for the
+    // reason the tile grid documents: with a cpuset the host count implies
+    // headroom the container cannot reach.
+    const cpuCap = Number(r.cpu_cores) > 0 ? Number(r.cpu_cores) : ncpu;
+    setCap('cap-cpu-current', cpuCap > 0
+      ? `${cpu.toFixed(1)}% · ${(cpu / 100).toFixed(1)} of ${Number.isInteger(cpuCap) ? cpuCap : cpuCap.toFixed(1)} cores`
       : `${cpu.toFixed(1)}%`);
 
     const mu = toBytes(r.mem_used), ml = toBytes(r.mem_limit);
@@ -627,6 +638,7 @@ const FIELDS = [
   ['finished_at', 'Finished', fmtTime],
   ['pid', 'PID', v => (v ? String(v) : '—')],
   ['cpu_limit', 'CPU limit', v => (v == null ? 'unlimited' : (Number.isInteger(v) ? v : v.toFixed(2)) + ' cores')],
+  ['cpuset', 'CPU pinning', v => (v ? v : 'none (all cores)')],
   ['mem_limit_bytes', 'Memory limit', v => (v == null ? 'unlimited' : fmtGB(v))],
   ['restart_policy', 'Restart policy', v => v || '—'],
   // The seconds between SIGTERM and SIGKILL on `docker stop`/`restart`.

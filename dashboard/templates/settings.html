@@ -97,7 +97,12 @@ code{background:var(--bg-inset);padding:1px 5px;border:1px solid var(--rule);fon
     <div class="field">
       <label for="RUNNER_CPU_LIMIT">CPU limit</label>
       <input type="text" id="RUNNER_CPU_LIMIT" value="{{ env.get('RUNNER_CPU_LIMIT','0') }}">
-      <div class="hint">Cores, e.g. <code>4</code>. <code>0</code> means unlimited.</div>
+      <div class="hint">Cores, e.g. <code>4</code>. <code>0</code> means unlimited.
+        This is a CPU-time quota: it caps how much CPU a runner gets, but
+        <code>nproc</code> inside still reports every host core, so a build
+        running <code>-j$(nproc)</code> keeps spawning one job per host core
+        and uses the memory to match. To narrow what <code>nproc</code>
+        reports, pin the runner with <code>--cpuset-cpus</code> instead.</div>
     </div>
     <div class="field">
       <label for="RUNNER_MEM_LIMIT">Memory limit</label>

@@ -69,6 +69,7 @@ def inspect(name):
     config = c.get("Config") or {}
 
     nano = host.get("NanoCpus") or 0
+    cpuset = host.get("CpusetCpus") or ""
     mem = host.get("Memory") or 0
 
     return _ok({
@@ -84,7 +85,15 @@ def inspect(name):
         # Reported from HostConfig, not from .env: the point is to show what
         # the daemon actually enforced, which is the only way to notice that a
         # limit was set but never applied.
-        "cpu_limit": (nano / 1e9) if nano else None,
+        # Deliberately NOT NanoCpus alone. --cpus is a CFS quota that leaves
+        # the affinity mask untouched, so `nproc` keeps reporting every host
+        # core and a -j$(nproc) build still spawns one job per host core.
+        # --cpuset-cpus is what actually narrows nproc. Reporting only the
+        # quota called a cpuset-pinned runner "unlimited", which is the exact
+        # failure this block exists to make visible. See docker_ops.cpu_ceiling.
+        "cpu_limit": docker_ops.cpu_ceiling(cpuset, nano),
+        "cpu_quota": (nano / 1e9) if nano else None,
+        "cpuset": cpuset,
         "mem_limit_bytes": mem or None,
         "restart_policy": (host.get("RestartPolicy") or {}).get("Name", ""),
         # Lives under Config, not HostConfig - `docker inspect -f
