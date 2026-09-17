@@ -19,6 +19,18 @@ import time
 import external_telemetry
 import forgejo_api
 import providers
+from runtime.docker_adapter import DockerRuntimeAdapter
+from runtime.base import ExecUnitRef, ExecUnitKind
+
+# The one place a `docker` argv is built. Everything below that used to build
+# one now goes through here, so there is a single lifecycle rather than two.
+# The adapter resolves `_docker` through this module at call time, which is
+# what keeps the existing tests' monkeypatching effective.
+_RUNTIME = DockerRuntimeAdapter()
+
+
+def _ref(name):
+    return ExecUnitRef(kind=ExecUnitKind.LINUX_CONTAINER, handle=name)
 
 # Path to the repo AS THE DOCKER DAEMON SEES IT, not as this container sees it.
 # Bind mounts are resolved by the daemon, so a path valid only inside the
@@ -836,8 +848,22 @@ def _disk():
 # lifecycle
 # --------------------------------------------------------------------------
 
+def _ok(fn, *a, **k):
+    """Run a runtime verb and keep this module's (ok, out, err) convention.
+
+    The adapter raises on failure because the controller needs to tell "did
+    not work" from "nothing to do"; every caller here still expects a triple,
+    so the translation happens once, in one place.
+    """
+    try:
+        fn(*a, **k)
+        return True, "", ""
+    except Exception as e:  # noqa: BLE001 - translated, not swallowed
+        return False, "", str(e)
+
+
 def start(name):
-    return _docker("start", name)
+    return _ok(_RUNTIME.start, _ref(name))
 
 
 def stop(name, timeout=60):
@@ -848,11 +874,11 @@ def stop(name, timeout=60):
     StopTimeout=1, which kills deregistration mid-flight and orphans the
     registration.
     """
-    return _docker("stop", "-t", str(timeout), name, timeout=timeout + 20)
+    return _ok(_RUNTIME.stop, _ref(name), timeout)
 
 
 def restart(name, timeout=60):
-    return _docker("restart", "-t", str(timeout), name, timeout=timeout + 30)
+    return _ok(_RUNTIME.restart, _ref(name), timeout)
 
 
 def remove(name, provider=None, env=None, keep_data=False):
@@ -902,45 +928,17 @@ def remove(name, provider=None, env=None, keep_data=False):
     # removal has been observed to take ~110s. A timeout here is read by the
     # caller as "removal failed" even when it eventually succeeds, so the
     # margin matters more than it looks like it should.
-    # Which volume holds the nested engine's data root, asked BEFORE the
-    # container is removed - afterwards there is nothing left to ask.
-    # Reconstructing the name would be wrong: create() names it
-    # "<runner>-docker" while compose names the same thing
-    # "<project>_<runner>-docker", so a guess leaves every compose-created
-    # runner's volume behind, tens of GB under a name nothing mounts again.
-    data_volume = ""
-    if not keep_data:
-        _, vol, _ = _docker(
-            "inspect", "--format",
-            '{{range .Mounts}}{{if eq .Destination "/var/lib/docker"}}'
-            '{{.Name}}{{end}}{{end}}',
-            name, timeout=30)
-        data_volume = (vol or "").strip()
-
-    ok, out, err = _docker("rm", "-f", "-v", name, timeout=180)
-
-    # The nested engine's data root is a NAMED volume now (see create()), so
-    # -v above cannot touch it. That is deliberate and it cuts both ways:
+    # The container and its data volume are the runtime's business; the
+    # deregistration above is the provider's. Keeping the two apart here is
+    # what lets one runtime serve both forges.
     #
-    #   keep_data=True is the recreate path. Recreate exists to apply settings
-    #   changes, and it is remove + create under the same name; deleting the
-    #   volume there would mean every settings change silently threw the whole
-    #   build cache away, which is the opposite of why the volume was added.
-    #
-    #   keep_data=False is an operator deleting a runner. Leaving tens of GB
-    #   behind under a name nothing will mount again is precisely the silent
-    #   disk growth this volume was introduced to end.
-    #
-    # A volume that will not delete never blocks the removal, for the same
-    # reason a failed forge deregistration does not: the operator asked for the
-    # container to be gone, and nothing gets to veto that. It stays visible in
-    # `docker volume ls`.
-
-    if data_volume:
-        vol_ok, _, vol_err = _docker("volume", "rm", data_volume, timeout=60)
-        if not vol_ok and vol_err:
-            print(f"[volume:{name}] {data_volume} not removed: "
-                  f"{vol_err.strip()[:200]}")
+    # keep_data=True is the recreate path. Recreate exists to apply settings
+    # changes, and it is remove + create under the same name; dropping the
+    # volume there would mean every settings change silently threw the whole
+    # build cache away, which is the opposite of why the volume was added.
+    # keep_data=False is an operator deleting a runner, who must not be left
+    # with tens of GB under a name nothing will mount again.
+    ok, out, err = _ok(_RUNTIME.remove, _ref(name), keep_data)
 
     set_draining(name, False)
     return ok, out, err
@@ -958,17 +956,14 @@ def create(index, env, provider=None):
         # ever under `restart: unless-stopped`.
         return False, name, err
 
-    args = [
-        "run", "-d",
-        "--name", name,
-        "--label", LABEL,
-        "--label", f"{providers.LABEL_PROVIDER}={provider.key}",
-        "--privileged",
-        "--restart", "unless-stopped",
-        "--stop-timeout", "60",
-    ]
+    # Everything below is RESOLVED here and executed by the runtime adapter.
+    # The split is deliberate: which forge this runner belongs to, what its
+    # image is and what environment it needs are provider questions, and a
+    # runtime that could answer them would no longer be forge-ignorant - the
+    # property tests/test_runtime_contract.py asserts.
+    mounts = []
     if provider is providers.GITHUB:
-        args += ["-v", f"{REPO_HOST_PATH}/scripts/start.sh:/root/start.sh:ro"]
+        mounts.append(f"{REPO_HOST_PATH}/scripts/start.sh:/root/start.sh:ro")
 
     # The nested daemon's data root gets its own volume, named after the runner.
     #
@@ -988,23 +983,30 @@ def create(index, env, provider=None):
     # recreate along with the whole build cache, and leaves an orphan behind -
     # the mess `docker rm -f -v` in remove() already has to clean up after the
     # Forgejo image's own `VOLUME /data`.
-    args += ["-v", f"{name}-docker:/var/lib/docker"]
-    for k, v in container_env.items():
-        args += ["-e", f"{k}={v}"]
+    mounts.append(f"{name}-docker:/var/lib/docker")
 
-    cpu = (env.get("RUNNER_CPU_LIMIT") or "0").strip()
-    mem = (env.get("RUNNER_MEM_LIMIT") or "0").strip()
-    if cpu not in ("", "0"):
-        args += ["--cpus", cpu]
-    if mem not in ("", "0"):
-        # Swap capped at the limit itself: the limit is what makes the kernel
-        # reclaim a runner's page cache, and with swap on top it would page
-        # the overflow out to disk instead. See tests/test_runner_memory.py.
-        args += ["--memory", mem, "--memory-swap", mem]
-    args.append(provider.image)
-
-    ok, out, err = _docker(*args, timeout=180)
-    return ok, name, (err or out)
+    spec = {
+        "name": name,
+        "image": provider.image,
+        "labels": {
+            LABEL.split("=")[0]: LABEL.split("=")[1],
+            providers.LABEL_PROVIDER: provider.key,
+        },
+        "env": container_env,
+        "mounts": mounts,
+        "cpus": (env.get("RUNNER_CPU_LIMIT") or "0").strip(),
+        # Swap is capped at the memory limit by the adapter: the limit is what
+        # makes the kernel reclaim a runner's page cache, and with swap on top
+        # it would page the overflow out to disk instead.
+        "memory": (env.get("RUNNER_MEM_LIMIT") or "0").strip(),
+        "stop_timeout": 60,
+        "restart": "unless-stopped",
+    }
+    try:
+        _RUNTIME.create(spec)
+    except Exception as e:  # noqa: BLE001 - translated to this module's triple
+        return False, name, str(e)
+    return True, name, ""
 
 
 def started_at(name):
