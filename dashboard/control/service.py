@@ -255,7 +255,7 @@ class RunnerService:
                 f"{verb} would abort the job this runner is running "
                 f"({current}); drain it first - drain lets the job finish "
                 f"and takes no other" + self._why_not(verb, current))
-        if not states.allows(verb, current):
+        if not states.allows(verb, current) and not                 self._drains_first(spec, verb, current):
             raise Refused(
                 f"{verb} is not possible while the runner is {current!r}"
                 + self._why_not(verb, current))
@@ -302,6 +302,15 @@ class RunnerService:
                 f"{existing['verb']} on {existing['runner_id']}; a key "
                 f"identifies one request, not a family of them")
         return existing
+
+    @staticmethod
+    def _drains_first(spec, verb, current):
+        """FR-17: a cache clear skips an active runner - or, when its cache
+        policy says `drain-first`, drains it and clears once its job is done.
+        Skipping is the default; the reconciler does the draining."""
+        policy = spec.get("cache_policy") or {}
+        return (verb == "clear_cache" and current in states.AT_WORK
+                and policy.get("on_clear") == "drain-first")
 
     def _why_not(self, verb, current):
         if verb in states.GUARDED:

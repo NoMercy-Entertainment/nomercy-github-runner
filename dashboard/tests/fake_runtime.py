@@ -113,3 +113,49 @@ class UnitRuntime:
         from runtime.base import Freed
         UnitRuntime.log.append(("clear_cache", ref.handle))
         return Freed(total_bytes=2048, measured=True)
+
+
+class CacheUnitRuntime(UnitRuntime):
+    """UnitRuntime whose units each hold a cache, for T-1602 and T-1603.
+
+    Per unit, per scope, a number of bytes - cleared scope by scope, measured
+    before and after, with `fail_scopes` failing on purpose. `cleared` lists
+    every unit a clear was run in, in order, which is how a test sees that a
+    clear touched no other runner. Class-level for the same reason as
+    UnitRuntime; `reset_caches()` between tests.
+    """
+
+    caches = {}
+    fail_scopes = set()
+    cleared = []
+    measure_fails = False
+
+    @classmethod
+    def reset_caches(cls):
+        cls.caches = {}
+        cls.fail_scopes = set()
+        cls.cleared = []
+        cls.measure_fails = False
+
+    def clear_cache(self, ref, policy):
+        from runtime.base import Freed
+        cls = CacheUnitRuntime
+        cls.cleared.append(ref.handle)
+        mine = cls.caches.setdefault(ref.handle, {})
+        scopes = list((policy or {}).get("scopes")
+                      or ("engine-build-cache", "workspace"))
+        before = {s: mine.get(s, 0) for s in scopes}
+        per_scope, errors = {}, {}
+        for scope in scopes:
+            if scope in cls.fail_scopes:
+                errors[scope] = f"{scope} could not be cleared"
+                continue
+            per_scope[scope] = mine.get(scope, 0)
+            mine[scope] = 0
+        after = {s: mine.get(s, 0) for s in scopes}
+        if cls.measure_fails:
+            return Freed(per_scope={}, errors=errors, total_bytes=0,
+                         before=None, after=None, measured=False)
+        return Freed(per_scope=per_scope, errors=errors,
+                     total_bytes=sum(per_scope.values()), before=before,
+                     after=after, measured=True)

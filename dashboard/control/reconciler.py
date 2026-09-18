@@ -743,6 +743,15 @@ def decide(spec, operation=None, progress=None):
 
     # -- operations that are more than a desired state ----------------------
     if verb == "clear_cache":
+        # Under a drain-first policy a runner at work is drained, and cleared
+        # once its job is done - never under it. Under the default it is
+        # skipped: the clear step refuses a runner that took a job meanwhile.
+        policy = spec.get("cache_policy") or {}
+        if policy.get("on_clear") == "drain-first":
+            if actual == "busy":
+                return "drain"
+            if actual == "draining":
+                return "observe"
         return "clear_cache"
 
     if verb == "restart" and "started" not in done:

@@ -553,8 +553,19 @@ class ProvisioningFlow:
                    keep_data=keep_data)
 
     def clear_cache(self, spec):
+        """One clear, whatever the runtime (T-1602): what each scope freed,
+        what each failing scope said, usage before and after, and whether
+        any of it was measured. A scope that failed does not hide the ones
+        that did not, and "could not measure" is never reported as zero."""
         freed = retry.call(AGENT_SLOW, self._runtime(spec).clear_cache,
                            self._ref(spec), spec.get("cache_policy") or {})
-        return {"total_bytes": getattr(freed, "total_bytes", 0),
-                "measured": getattr(freed, "measured", False),
-                "errors": dict(getattr(freed, "errors", {}) or {})}
+        get = (freed.get if isinstance(freed, dict)
+               else lambda k, d=None: getattr(freed, k, d))
+        errors = dict(get("errors", {}) or {})
+        measured = bool(get("measured", False))
+        return {"per_scope": dict(get("per_scope", {}) or {}),
+                "errors": errors,
+                "total_bytes": get("total_bytes", 0) if measured else None,
+                "measured": measured,
+                "before": get("before"), "after": get("after"),
+                "partial": bool(errors)}
