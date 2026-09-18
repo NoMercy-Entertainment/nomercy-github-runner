@@ -76,6 +76,40 @@ class GitHub:
             print(f"[github] POST {path}: {type(e).__name__}")
             return None
 
+    def _delete(self, path):
+        """A DELETE, returning the HTTP status, or None when there was no
+        answer at all. The status, not a bool, because 404 on a delete means
+        the thing is already gone - which is the outcome asked for."""
+        req = urllib.request.Request(API + path, method="DELETE", headers={
+            "Authorization": f"Bearer {self.token}",
+            "Accept": "application/vnd.github+json",
+            "X-GitHub-Api-Version": "2022-11-28",
+            "User-Agent": "nomercy-runner-dashboard",
+        })
+        try:
+            with urllib.request.urlopen(req, timeout=20) as r:
+                return r.status
+        except urllib.error.HTTPError as e:
+            print(f"[github] {e.code} DELETE {path}")
+            return e.code
+        except Exception as e:  # noqa: BLE001
+            print(f"[github] DELETE {path}: {type(e).__name__}")
+            return None
+
+    def delete_runner(self, runner_id):
+        """Remove one self-hosted runner's record from the org, by its id.
+
+        True when GitHub deleted it (204) or had no such runner (404): either
+        way the record is gone, and a retried delete must not read as a
+        failure. False for anything else, including no answer - a removal
+        that could not confirm this must not proceed as if it had.
+        """
+        rid = str(runner_id or "").strip()
+        if not rid.isdigit():
+            return False
+        status = self._delete(f"/orgs/{self.org}/actions/runners/{rid}")
+        return status in (204, 404)
+
     def registration_token(self):
         """A one-hour token for registering one self-hosted runner.
 

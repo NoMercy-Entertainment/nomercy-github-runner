@@ -221,6 +221,21 @@ class Provider:
         """
         raise NotImplementedError
 
+    def default_labels(self, platform, arch=X64, env=None):
+        """The labels a runner of that cell registers with when its fleet
+        names none."""
+        raise NotImplementedError
+
+    def forge_records(self, env):
+        """Every runner record the forge holds for this deployment, as a list,
+        or None when the forge could not be asked."""
+        raise NotImplementedError
+
+    def delete_record(self, env, registration_id):
+        """Delete one record at the forge. True when the forge confirmed it
+        or it was already gone; False otherwise, never an exception."""
+        raise NotImplementedError
+
     def job_state(self, spec, forge_records):
         """busy, idle, offline or unknown, from the forge's own record.
 
@@ -284,8 +299,41 @@ class _GitHub(Provider):
             notes="published by GitHub; watch its release feed for "
                   "deprecations")
 
+    #: The labels GitHub itself gives a self-hosted runner - `self-hosted`,
+    #: the OS and the architecture, in GitHub's spelling - used when a fleet
+    #: names none. The one platform table in this class, and the only thing
+    #: about a platform registration needs to know (T-0901).
+    _DEFAULT_LABELS = {
+        (LINUX, X64): "self-hosted,Linux,X64",
+        (LINUX, ARM64): "self-hosted,Linux,ARM64",
+        (WINDOWS, X64): "self-hosted,Windows,X64",
+        (WINDOWS, ARM64): "self-hosted,Windows,ARM64",
+        (MACOS, X64): "self-hosted,macOS,X64",
+        (MACOS, ARM64): "self-hosted,macOS,ARM64",
+    }
+
+    #: A deployment's own default per platform, when it sets one.
+    #: RUNNER_LABELS is what the Linux fleet has always read; a Windows or
+    #: macOS runner must not inherit it, or it registers as Linux and takes
+    #: Linux jobs.
+    _LABELS_ENV = {LINUX: "RUNNER_LABELS", WINDOWS: "RUNNER_LABELS_WINDOWS",
+                   MACOS: "RUNNER_LABELS_MACOS"}
+
+    #: GitHub's `os` field on a runner record, in this platform's words.
+    _OS = {"linux": LINUX, "windows": WINDOWS, "macos": MACOS}
+
+    def default_labels(self, platform, arch=X64, env=None):
+        configured = (env or {}).get(self._LABELS_ENV.get(platform, ""), "")
+        return configured.strip() or self._DEFAULT_LABELS.get(
+            (platform, arch), "self-hosted")
+
+    def platform_of(self, record):
+        """Which platform GitHub says a registered runner is on, or None."""
+        return self._OS.get(str((record or {}).get("os") or "").lower())
+
     def registration(self, spec, env):
         env = env or {}
+        spec = spec or {}
         client = self.forge_client(env)
         if client is None:
             return None, ("GH_TOKEN and GITHUB_ORG are both required to "
@@ -299,11 +347,26 @@ class _GitHub(Provider):
             url=f"https://github.com/{client.org}",
             token=token,
             name=_forge_name(spec),
-            labels=_labels(spec, env.get("RUNNER_LABELS",
-                                         "self-hosted,Linux,X64")),
-            runner_group=(spec or {}).get("runner_group")
+            labels=_labels(spec, self.default_labels(
+                spec.get("platform") or LINUX,
+                spec.get("architecture") or X64, env)),
+            runner_group=spec.get("runner_group")
             or env.get("RUNNER_GROUP", ""),
         ), None
+
+    def forge_records(self, env):
+        """The org's runners as GitHub reports them, or None when it could
+        not be asked - never [] for a failure."""
+        client = self.forge_client(env or {})
+        return client.runners() if client is not None else None
+
+    def delete_record(self, env, registration_id):
+        """Delete one runner's record at GitHub by its id. True only when
+        GitHub confirmed it, or said it was already gone."""
+        client = self.forge_client(env or {})
+        if client is None or not registration_id:
+            return False
+        return client.delete_runner(registration_id)
 
     def job_state(self, spec, forge_records):
         """From GitHub's runner list, matched on the registration id.
