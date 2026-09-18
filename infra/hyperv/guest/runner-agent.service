@@ -1,0 +1,17 @@
+[Unit]
+Description=Runner platform agent (the closed verb set, over mutual TLS)
+After=network-online.target docker.service
+Wants=network-online.target
+Requires=docker.service
+
+[Service]
+WorkingDirectory=/opt/runner-agent
+ExecStart=/usr/bin/python3 -m agent --config /etc/runner-agent/agent.json
+# SIGTERM stops the agent and leaves every runner running: runners are units
+# of their own, and an agent restart must not become a fleet restart.
+KillMode=process
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

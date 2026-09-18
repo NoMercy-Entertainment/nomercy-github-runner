@@ -1,0 +1,13 @@
+version: 2
+ethernets:
+  primary:
+    # Hyper-V's synthetic adapter, whatever the kernel names it.
+    match:
+      driver: hv_netvsc
+    set-name: eth0
+    addresses: [{{ADDRESS}}/{{PREFIX_LENGTH}}]
+    routes:
+      - to: default
+        via: {{GATEWAY}}
+    nameservers:
+      addresses: [{{DNS}}]

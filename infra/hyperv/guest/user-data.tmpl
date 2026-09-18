@@ -1,0 +1,27 @@
+#cloud-config
+# The first boot of a runner-platform guest. Deliberately small: an admin
+# account reached by one key, a static address (network-config), and the few
+# packages the provisioning over SSH needs. No secret and no code is on the
+# seed image - both arrive over SSH (Initialize-RunnerPlatform.ps1), so the
+# ISO left on the host's disk holds nothing worth taking.
+hostname: {{HOSTNAME}}
+manage_etc_hosts: true
+users:
+  - name: {{ADMIN}}
+    sudo: "ALL=(ALL) NOPASSWD:ALL"
+    shell: /bin/bash
+    lock_passwd: true
+    ssh_authorized_keys:
+      - {{SSH_KEY}}
+ssh_pwauth: false
+disable_root: true
+package_update: true
+packages:
+  - python3
+  - jq
+  - ca-certificates
+  - curl
+# No swap, as on the WSL distro: a runner that runs out of memory must fail
+# where it can be seen, not page the host.
+swap:
+  size: 0

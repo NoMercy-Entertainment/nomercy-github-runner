@@ -1,0 +1,23 @@
+# The control plane's controller: the reconciler and the receiver agents
+# report to. Its dashboard arrives with the state store (T-0603); until then
+# the WSL dashboard keeps serving the live fleet, and this is driven with
+# `docker exec rnr-controller python -m control status|capacity`.
+name: runner-platform
+services:
+  controller:
+    image: nomercy/runner-dashboard:platform
+    container_name: rnr-controller
+    entrypoint: ["python", "-m", "control", "run"]
+    env_file: /etc/runner-platform/controller.env
+    environment:
+      DASH_DATA: /data
+      # Inside the container every address; outside, only the control plane's
+      # management address is published (13.2).
+      CONTROL_RECEIVER: "0.0.0.0:8444"
+    ports:
+      - "{{ADDRESS}}:8444:8444"
+    volumes:
+      - controller-data:/data
+    restart: unless-stopped
+volumes:
+  controller-data:

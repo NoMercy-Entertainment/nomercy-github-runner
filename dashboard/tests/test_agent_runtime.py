@@ -59,6 +59,17 @@ class TestTheUnitSpec:
         rt.create(self.SPEC)
         assert client.calls[0][2]["spec"]["image"] == "actions/runner@v2"
 
+    def test_a_unit_gets_its_cells_memory_limit_when_it_names_none(self):
+        client = Client({"exec_unit.create": {"handle": f"rnr-{RID}"}})
+        rt = ar.AgentRuntime(ar.AgentWiring(
+            client, memory={("github", "linux"): "6g"}), "linux-1")
+        rt.create(dict(self.SPEC, memory_limit=None))
+        assert client.calls[0][2]["spec"]["memory"] == "6g"
+        client.calls.clear()
+        rt.create(self.SPEC)
+        assert client.calls[0][2]["spec"]["memory"] == str(32 * 2 ** 30), \
+            "the runner's own limit wins"
+
     def test_nothing_to_make_it_from_is_refused_before_sending(self):
         rt, client = runtime()
         with pytest.raises(ar.NotBound, match="made from"):
@@ -181,6 +192,19 @@ class TestTheAuthority:
                                               "ca.pem"]
         assert not os.path.exists(os.path.join(bundle, "ca.key"))
 
+    def test_every_command_works_on_a_store_nothing_has_made_yet(
+            self, tmp_path):
+        """Found running it in the controller's image: an enrolment that
+        beats the controller's first start failed on a missing table."""
+        tls, db = str(tmp_path / "tls"), str(tmp_path / "fresh.db")
+        main.init_pki(tls)
+        main.enrol("linux-1", "hyperv-linux", "https://10.77.0.20:8443",
+                   db=db, tls_dir=tls)
+        assert main.status(db=str(tmp_path / "other.db")).startswith(
+            "workers:")
+        assert "linux-1" in main.status(db=db)
+        main.capacity("forgejo-linux-x64", 0, db=str(tmp_path / "third.db"))
+
     def test_a_worker_is_never_enrolled_over_plain_http(self, tmp_path):
         with pytest.raises(ValueError, match="https"):
             main.enrol("linux-1", "hyperv-linux", "http://10.77.0.20:8443",
@@ -190,6 +214,30 @@ class TestTheAuthority:
         assert len(ar.TABLE) == 6
         assert set(ar.TABLE.values()) == {
             "control.agent_runtime:AgentRuntime"}
+
+    def test_status_reads_the_store_and_says_what_is_there(self, tmp_path):
+        from control.inventory import Inventory
+        from store import schema
+        from store.fleets import FleetStore
+        db = str(tmp_path / "c.db")
+        schema.init(db)
+        FleetStore(db).seed({})
+        Inventory(db).register_worker("linux-1", "hyperv-linux")
+        main.capacity("github-linux-x64", 2, db=db)
+        text = main.status(db=db)
+        assert "linux-1" in text and "unknown" in text
+        assert "github-linux-x64       capacity 2" in text
+        assert "runners:" in text
+
+    def test_capacity_on_an_unavailable_fleet_is_refused(self, tmp_path):
+        from control.service import Refused
+        from store import schema
+        from store.fleets import FleetStore
+        db = str(tmp_path / "c.db")
+        schema.init(db)
+        FleetStore(db).seed({})     # no Forgejo artefact for Windows
+        with pytest.raises(Refused):
+            main.capacity("forgejo-windows-x64", 1, db=db)
 
     def test_unit_images_come_from_the_deployment(self):
         assert main.unit_images({

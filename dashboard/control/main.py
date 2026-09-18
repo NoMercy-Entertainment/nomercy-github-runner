@@ -6,6 +6,10 @@
                              pinned to it, its verbs permitted
     run                      the reconciler loop and the receiver for
                              heartbeats and events, until told to stop
+    status                   workers, fleets and runners, as the store has
+                             them - read-only
+    capacity FLEET N         set a fleet's desired capacity; the running
+                             controller does the rest, never aborting a job
 
 Everything a pass does is the reconciler's (control/reconciler.py); this file
 only builds the parts and keeps them running. The parts are the ones the tests
@@ -103,6 +107,7 @@ def enrol(host_id, kind, endpoint, db=None, tls_dir=None, out_dir=None):
     if not endpoint.startswith("https://"):
         raise ValueError("a worker is reached over https only")
     authority = (_read(_path("ca", tls_dir)), _read(_path("ca_key", tls_dir)))
+    _store(db)
     bundle = out_dir or os.path.join(tls_dir, "workers", host_id)
     os.makedirs(bundle, mode=0o700, exist_ok=True)
     cert, key = ca.issue(*authority, host_id, "agent")
@@ -120,23 +125,46 @@ def enrol(host_id, kind, endpoint, db=None, tls_dir=None, out_dir=None):
     return bundle
 
 
+def _store(db=None):
+    """The store, made if it is not there yet. Idempotent. Every command
+    that reads or writes it calls this first: one run before the controller
+    ever has - an enrolment while it starts, say - would otherwise fail on a
+    table that does not exist yet."""
+    from store import schema
+    from store.fleets import FleetStore
+    path = db or schema.DB_PATH
+    schema.init(path)
+    FleetStore(path).seed(_env())
+    return path
+
+
 def _address(text):
     host, _, port = text.rpartition(":")
     return host, int(port)
 
 
-def unit_images(env):
-    """What each cell's units are made from, from RUNNER_UNIT_IMAGE_<PROVIDER>
-    _<PLATFORM> - an image for Linux, a template name for Windows and macOS."""
+def _per_cell(env, prefix):
     import providers
     out = {}
     for provider in providers.ALL:
         for platform in providers.PLATFORMS:
-            value = (env.get(f"RUNNER_UNIT_IMAGE_{provider.key.upper()}_"
+            value = (env.get(f"{prefix}_{provider.key.upper()}_"
                              f"{platform.upper()}") or "").strip()
             if value:
                 out[(provider.key, platform)] = value
     return out
+
+
+def unit_images(env):
+    """What each cell's units are made from, from RUNNER_UNIT_IMAGE_<PROVIDER>
+    _<PLATFORM> - an image for Linux, a template name for Windows and macOS."""
+    return _per_cell(env, "RUNNER_UNIT_IMAGE")
+
+
+def unit_memory(env):
+    """Each cell's default unit memory limit, from RUNNER_UNIT_MEMORY_
+    <PROVIDER>_<PLATFORM>, in the engine's own syntax ("6g")."""
+    return _per_cell(env, "RUNNER_UNIT_MEMORY")
 
 
 class Controller:
@@ -169,7 +197,7 @@ class Controller:
         self.service = RunnerService(self.db, runtimes=agent_runtime.TABLE)
         self.service.agents = agent_runtime.AgentWiring(
             client, operations=self.service.operations,
-            images=unit_images(env))
+            images=unit_images(env), memory=unit_memory(env))
         self.flow = ProvisioningFlow(self.service,
                                      agent_runtime.FlowAgent(
                                          self.service.agents),
@@ -216,6 +244,40 @@ class Controller:
         self._stop.set()
 
 
+def status(db=None):
+    """Workers, fleets and runners as lines of text. Reads the store only."""
+    from .inventory import Inventory
+    from .service import RunnerService
+    db = _store(db)
+    service = RunnerService(db)
+    lines = ["workers:"]
+    for w in Inventory(db).summary():
+        lines.append(f"  {w['host_id']:<16} {w['kind']:<15} {w['health']:<9}"
+                     f" seen {w['last_seen_at'] or 'never'}"
+                     + (f" - {w['reason']}" if w.get("reason") else ""))
+    lines.append("fleets:")
+    for f in service.fleets.list():
+        if f["desired_capacity"] or not f["available"]:
+            lines.append(f"  {f['fleet_id']:<22} capacity "
+                         f"{f['desired_capacity']}"
+                         + ("" if f["available"] else
+                            f" - unavailable: {f['unavailable_reason']}"))
+    lines.append("runners:")
+    for r in service.specs.list():
+        lines.append(f"  {r['runner_id']} {r['fleet_id']:<22} "
+                     f"{r['actual_state']:<13} want {r['desired_state']:<8}"
+                     f" on {r['host_id'] or '-'}"
+                     + (f" - {r['last_error']}" if r.get("last_error") else
+                        ""))
+    return "\n".join(lines)
+
+
+def capacity(fleet, count, db=None, who="cli"):
+    from .service import RunnerService
+    return RunnerService(_store(db)).set_capacity(fleet, int(count),
+                                                  requested_by=who)
+
+
 def _env():
     """The deployment's settings: the process environment, which compose
     fills from the same `.env` the dashboard reads."""
@@ -231,7 +293,18 @@ def main(argv=None):
     e.add_argument("kind", choices=("hyperv-linux", "hyperv-windows"))
     e.add_argument("endpoint", help="https://address:port of its agent")
     sub.add_parser("run")
+    sub.add_parser("status")
+    c = sub.add_parser("capacity")
+    c.add_argument("fleet", help="e.g. forgejo-linux-x64")
+    c.add_argument("count", type=int)
     args = parser.parse_args(argv)
+
+    if args.command == "status":
+        print(status())
+        return 0
+    if args.command == "capacity":
+        print(f"operation {capacity(args.fleet, args.count)}")
+        return 0
 
     if args.command == "init-pki":
         print(init_pki())

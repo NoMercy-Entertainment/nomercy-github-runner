@@ -63,6 +63,10 @@ class AgentWiring:
     client: Any
     operations: Any = None
     images: Mapping = field(default_factory=dict)
+    #: The memory limit a cell's units get when their spec names none, keyed
+    #: like `images`. A unit with no limit can take its whole worker down,
+    #: agent and all, so a deployment names one for every cell it runs.
+    memory: Mapping = field(default_factory=dict)
     deadline: float = DEADLINE
 
     def call(self, host_id, verb, body=None, operation_id=None):
@@ -128,6 +132,11 @@ class AgentRuntime:
             unit["cpus"] = str(spec["cpu_limit"])
         if spec.get("memory_limit"):
             unit["memory"] = str(int(spec["memory_limit"]))
+        else:
+            default = self.wiring.memory.get((spec.get("provider"),
+                                              spec.get("platform")))
+            if default:
+                unit["memory"] = str(default)
         return unit
 
     def create(self, spec: Mapping[str, Any]):
