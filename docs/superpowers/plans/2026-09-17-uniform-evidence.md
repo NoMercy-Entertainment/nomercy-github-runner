@@ -132,3 +132,50 @@ actually done" has one answer (ACC-19).
   was stopped by PID only after its path was checked to be the scratchpad
   copy. The live `forgejo-runner` service was never touched and was
   `Running` afterwards.
+
+## 2026-09-18 - phase 5 deployed (elevated, by the operator)
+
+- **Decided and run by:** the operator, `infra\hyperv\Deploy-RunnerPlatform.ps1`
+  at 15:32:52 local. The log is `D:\HyperV\runner-platform\deploy-20260918-153254.log`.
+- **Output:**
+  - `rnr-control` was created: 4 GB static, 2 vCPU, 10.77.0.10. Commit free
+    afterwards: 107.9 GB.
+  - `rnr-linux-1` was created: 16 GB static, 8 vCPU, 10.77.0.20. Commit free
+    afterwards: 91.8 GB.
+  - The controller was up at `8c83fa7`, with its authority made on the
+    control plane.
+  - `rnr-linux-1` was enrolled, with the unit image
+    `nomercy/runner-unit-forgejo:8c83fa7` built on it. Its agent is active
+    and serving on 10.77.0.20:8443.
+  - `beast-unit` (this host) was enrolled. The service `rnr-agent` is running.
+  - `python -m control status`: both workers `healthy`, no runners, every
+    fleet at capacity 0.
+- **Checked afterwards:** `vEthernet (rnr-internal)` is up beside the Default
+  Switch and WSL adapters. Commit free: 93.2 GB. The Windows runner is
+  `Running`.
+
+## 2026-09-18 - github-runner-1 stopped mid-job, by something outside this work
+
+- **Seen at** 13:59Z, in the check after the deploy: `github-runner-1`
+  `Exited (143)`. Its restart policy is `unless-stopped`, and it had not
+  restarted.
+- **Facts:**
+  - dockerd logged `stopping restart-manager` for container `1a6cc29157d0`
+    at 15:54:35 local (13:54:35Z). That is the mark of an explicit stop
+    request through the engine's API.
+  - The container exited at 15:54:52, 41 min of CPU consumed.
+  - Its log shows `Running job: build-base / docker-build` from 12:57:49Z,
+    then `Received SIGTERM`. The job was aborted.
+- **Not the cause:**
+  - The dashboard's request log has only the `/api/v2/fleet` poll between
+    13:50Z and 13:58Z.
+  - No systemd timer, cron entry or scheduled task in the distro stops
+    containers.
+  - No script in this repository does.
+  - The deploy finished at about 13:37Z, and this session ran nothing
+    between then and 13:59Z.
+- **Not established:** who sent the stop. Two other interactive Claude
+  sessions (FillCitiesKitV2) were running on this machine, one of them busy.
+  A person using Docker Desktop or the CLI is also possible.
+- **Action:** none. The runner was left stopped, pending the operator's
+  word, because it may have been stopped on purpose.
