@@ -23,3 +23,27 @@ class NeverBuilt:
 
 class Placeholder:
     """An arbitrary but real class, for proving the lookup reads the table."""
+
+
+class RecordingRuntime:
+    """Answers reads and remembers what it was asked.
+
+    `calls` is a class attribute so a test can inspect what the service did to
+    an instance the service built for itself. It lives here, not in a test
+    file, for the same double-import reason as the classes above: a second
+    copy of a test module would carry a second, always-empty `calls`.
+    """
+
+    calls = []
+
+    def status(self, ref):
+        RecordingRuntime.calls.append(("status", ref.handle, ref.kind.value))
+        return {"running": True}
+
+    def logs(self, ref, since_seconds=45):
+        RecordingRuntime.calls.append(("logs", ref.handle, since_seconds))
+        return "a log line"
+
+    def telemetry(self, ref):
+        RecordingRuntime.calls.append(("telemetry", ref.handle))
+        return {"cpu_percent": 3.0}

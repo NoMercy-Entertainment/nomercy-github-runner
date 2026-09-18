@@ -21,12 +21,22 @@ is data-driven by replacing the table. The moment this becomes an `if platform
 import importlib
 
 import providers
-from store.fleets import FleetStore, fleet_id
+from store.fleets import FleetStore
 from store.specs import SpecStore
 
 from . import states
 from .inventory import Inventory
 from .operations import OperationStore
+
+#: Which kind of execution unit a platform runs in. A table rather than a
+#: conditional for the same reason RUNTIMES is one. Strings, resolved in
+#: `_runtime_and_ref()`, so the service does not load the runtime package
+#: just to plan.
+EXEC_KINDS = {
+    providers.LINUX: "linux-container",
+    providers.WINDOWS: "windows-process",
+    providers.MACOS: "macos-appliance",
+}
 
 #: (provider, platform) -> the runtime that executes that cell, as
 #: "module:attribute". Strings rather than imports so this stays a table of
@@ -297,6 +307,140 @@ class RunnerService:
             froms = sorted(f for f, _ in edges if f)
             return f"; {verb} starts from {froms}"
         return ""
+
+    # ---- the eighteen verbs -------------------------------------------------
+    #
+    # One method per verb of `uniform.md` 162-181, and every mutating one is a
+    # single line into `act`. That is what "no verb is implemented twice for
+    # different platforms" means in practice: there is nowhere for a Windows
+    # version of `stop` to go. A test walks this class's source and fails on
+    # any platform name appearing in a verb.
+    #
+    # The composites carry no logic here either. `restart` and `recreate` are
+    # recorded as themselves, and what they decompose into is written once, in
+    # `states.COMPOSITE`, for the provisioner to follow.
+
+    def create(self, fid, count=1, requested_by=None, idempotency_key=None,
+               env=None):
+        """`create` is the edge into `planned`, which is what planning is."""
+        return self.plan(fid, count, requested_by=requested_by,
+                         idempotency_key=idempotency_key, env=env)
+
+    def provision(self, runner_id, **kw):
+        return self.act(runner_id, "provision", **kw)
+
+    def register(self, runner_id, **kw):
+        return self.act(runner_id, "register", **kw)
+
+    def start(self, runner_id, **kw):
+        return self.act(runner_id, "start", **kw)
+
+    def stop(self, runner_id, **kw):
+        return self.act(runner_id, "stop", **kw)
+
+    def restart(self, runner_id, **kw):
+        """Stop, then start - once, in `states.COMPOSITE`."""
+        return self.act(runner_id, "restart", **kw)
+
+    def drain(self, runner_id, **kw):
+        return self.act(runner_id, "drain", **kw)
+
+    def cancel_drain(self, runner_id, **kw):
+        return self.act(runner_id, "cancel_drain", **kw)
+
+    def recreate(self, runner_id, **kw):
+        """Remove keeping the data volume, then create. Keeping the data is
+        the entire difference from `remove` followed by `create`."""
+        return self.act(runner_id, "recreate", **kw)
+
+    def remove(self, runner_id, **kw):
+        return self.act(runner_id, "remove", **kw)
+
+    def deregister(self, runner_id, **kw):
+        return self.act(runner_id, "deregister", **kw)
+
+    def repair(self, runner_id, **kw):
+        """The `failed -> provisioning` edge. Also what `reconcile` means for
+        one runner: make it what its spec says, from wherever it is."""
+        return self.act(runner_id, "repair", **kw)
+
+    def clear_cache(self, runner_id, **kw):
+        """Refused unless idle or drained; see `states.GUARDED`."""
+        return self.act(runner_id, "clear_cache", **kw)
+
+    def scale_up(self, fid, by=1, requested_by=None):
+        return self._scale(fid, by, requested_by)
+
+    def scale_down(self, fid, by=1, requested_by=None):
+        """Lowers the target. The reconciler chooses which runner goes, and
+        only an idle or drained one - a scale-down never aborts a job."""
+        return self._scale(fid, -by, requested_by)
+
+    def _scale(self, fid, delta, requested_by):
+        if delta == 0:
+            raise ValueError("scaling by zero is not a change")
+        fleet = self.fleets.get(fid)
+        if fleet is None:
+            raise Refused(f"no fleet {fid}")
+        target = fleet["desired_capacity"] + delta
+        if target < 0:
+            raise Refused(
+                f"{fid} wants {fleet['desired_capacity']}; it cannot go "
+                f"{abs(delta)} lower")
+        try:
+            return self.fleets.set_capacity(fid, target,
+                                            requested_by=requested_by)
+        except Exception as e:      # FleetUnavailable, UnknownFleet
+            raise Refused(str(e)) from e
+
+    # ---- reads -------------------------------------------------------------
+    #
+    # The three reads ARE synchronous, and that is not a lapse in "the service
+    # never performs work". Design 12.2 calls them reads and 18.5 says logs are
+    # fetched on demand: there is nothing to schedule, nothing to retry, and an
+    # operator asking for logs wants them now. They change nothing, so the
+    # properties operations exist for - safe retry, observable progress,
+    # recovery after a crash - have nothing to protect. A test asserts these
+    # three are the only methods that construct a runtime.
+
+    def fetch_status(self, runner_id):
+        """What the spec says, and what the execution unit says, side by side.
+
+        Both, because they can disagree, and the disagreement is the
+        interesting part - it is what the reconciler exists to close.
+        """
+        spec = self._spec(runner_id)
+        observed = None
+        if spec["exec_unit_ref"]:
+            runtime, ref = self._runtime_and_ref(spec)
+            observed = runtime.status(ref)
+        return {"runner_id": runner_id,
+                "desired_state": spec["desired_state"],
+                "actual_state": spec["actual_state"],
+                "current_operation": spec["current_operation"],
+                "last_error": spec["last_error"],
+                "observed": observed}
+
+    def fetch_logs(self, runner_id, since_seconds=300):
+        spec = self._spec(runner_id)
+        if not spec["exec_unit_ref"]:
+            return ""
+        runtime, ref = self._runtime_and_ref(spec)
+        return runtime.logs(ref, since_seconds=since_seconds)
+
+    def inspect_resources(self, runner_id):
+        spec = self._spec(runner_id)
+        if not spec["exec_unit_ref"]:
+            return None
+        runtime, ref = self._runtime_and_ref(spec)
+        return runtime.telemetry(ref)
+
+    def _runtime_and_ref(self, spec):
+        from runtime.base import ExecUnitKind, ExecUnitRef
+        runtime = self.runtime_for(spec["provider"], spec["platform"])()
+        ref = ExecUnitRef(kind=ExecUnitKind(EXEC_KINDS[spec["platform"]]),
+                          handle=spec["exec_unit_ref"])
+        return runtime, ref
 
     # ---- helpers -----------------------------------------------------------
 
