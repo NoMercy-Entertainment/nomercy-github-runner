@@ -267,6 +267,33 @@ class LinuxContainerRuntime:
             result["mem_limit_bytes"] = _bytes(limit)
         return result
 
+    def telemetry_all(self, runner_ids):
+        """CPU and memory of several units in one `docker stats` call - one
+        per unit would take longer than a heartbeat's interval on a full
+        worker. A unit missing from the answer is left out: unknown."""
+        names = {naming.unit_name(r): r for r in runner_ids}
+        if not names:
+            return {}
+        ok, out, _ = self._run(["stats", "--no-stream", "--format",
+                                "{{.Name}}	{{.CPUPerc}}	{{.MemUsage}}",
+                                *sorted(names)], timeout=25)
+        found = {}
+        for line in (out.splitlines() if ok else []):
+            parts = line.split("	")
+            if len(parts) != 3 or parts[0] not in names:
+                continue
+            entry = {"cpu_percent": None, "mem_used_bytes": None,
+                     "mem_limit_bytes": None}
+            try:
+                entry["cpu_percent"] = float(parts[1].strip().rstrip("%"))
+            except ValueError:
+                pass
+            used, _, limit = parts[2].partition("/")
+            entry["mem_used_bytes"] = _bytes(used)
+            entry["mem_limit_bytes"] = _bytes(limit)
+            found[names[parts[0]]] = entry
+        return found
+
     def logs(self, runner_id, since_seconds):
         """The unit's own output, stdout and stderr merged in order - the
         GitHub runner logs to one and forgejo-runner to the other."""

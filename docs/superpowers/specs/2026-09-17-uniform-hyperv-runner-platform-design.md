@@ -890,6 +890,9 @@ Stored in the control plane's SQLite database, one row per runner instance.
 | `fleet_id` | TEXT FK | The fleet this instance satisfies |
 | `spec_version` | INTEGER | Bumped on every accepted change, for optimistic concurrency |
 | `unit_state` | TEXT | What the worker last reported about the execution unit: `running`, `stopped`, `absent` or `unknown`. Written by heartbeats and outside `spec_version`, because an observation every 10 s must not make every human change a stale-version conflict. Added in T-0404 |
+| `telemetry` | TEXT (JSON) | What the unit last used, from heartbeats: CPU and memory every beat, storage and cache every thirtieth, each with its time. An observation, outside `spec_version` like `unit_state`. Added in T-1803 |
+| `forge_state` | TEXT | What the forge last said of the runner: `idle`, `busy`, `offline`, or `unknown` when it could not be asked. Written by the reconciler's observation. Added in T-1803 |
+| `forge_seen_at` | TEXT | When the forge last answered about the runner at all. `ready` needs it recent as well as the unit running (18.5). Added in T-1803 |
 | `deleted_at` | TEXT | Soft delete, so history keeps a referent (NFR-11) |
 
 ### 11.2 Identity, and the problem it solves

@@ -29,8 +29,42 @@ INTERVAL = 10
 TIMEOUT = 5
 
 
-def build(agent, server=None):
-    """One heartbeat's payload."""
+#: Every how many beats the storage and cache of each unit are measured as
+#: well - about every five minutes. They mean walking a directory tree or
+#: asking a nested engine, which is too slow to do every ten seconds.
+DEEP_EVERY = 30
+
+
+def _telemetry(runtime, runner_ids):
+    """CPU and memory of the running units, all at once where the runtime can
+    do that. A unit it could not read is left out - unknown - rather than
+    reported as idle at zero."""
+    if not runner_ids:
+        return {}
+    try:
+        if hasattr(runtime, "telemetry_all"):
+            return dict(runtime.telemetry_all(runner_ids) or {})
+        return {rid: dict(runtime.telemetry(rid) or {}) for rid in runner_ids}
+    except Exception:                       # noqa: BLE001
+        return {}
+
+
+def _depth(runtime, runner_id):
+    """Storage and cache of one unit, from the closed probe set."""
+    out = {}
+    for probe, key in (("disk_usage", "storage_bytes"),
+                       ("cache_size", "cache_bytes")):
+        try:
+            got = runtime.probe(runner_id, probe) or {}
+        except Exception:                   # noqa: BLE001
+            continue
+        if got.get("ok") and isinstance(got.get("value"), int):
+            out[key] = got["value"]
+    return out
+
+
+def build(agent, server=None, deep=False):
+    """One heartbeat's payload. `deep` adds each unit's storage and cache."""
     beat = {
         "host_id": agent.host_id,
         "agent_version": agent.version,
@@ -51,6 +85,20 @@ def build(agent, server=None):
     except Exception:                       # noqa: BLE001
         # Not an empty list: that would say "I run nothing".
         beat["instances_error"] = True
+    else:
+        # What each unit uses (T-1803): CPU and memory every beat for the
+        # running ones, storage and cache on a deep beat for every one.
+        running = [u["runner_id"] for u in beat["instances"]
+                   if u["state"] == "running"]
+        used = _telemetry(agent.runtime, running)
+        for unit in beat["instances"]:
+            t = {k: v for k, v in (used.get(unit["runner_id"]) or {}).items()
+                 if k in ("cpu_percent", "mem_used_bytes", "mem_limit_bytes",
+                          "root_disk_used_bytes", "root_disk_total_bytes")}
+            if deep:
+                t.update(_depth(agent.runtime, unit["runner_id"]))
+            if t:
+                unit["telemetry"] = t
     beat["counters"] = {
         "refused_connections": len(server.refusals) if server else 0,
     }
@@ -76,8 +124,11 @@ class HeartbeatSender:
         self._thread = None
 
     def send_once(self):
-        """Send one beat. True when the controller took it."""
-        ok = self.link.post(self.path, build(self.agent, self.server))
+        """Send one beat. True when the controller took it. The first, and
+        every DEEP_EVERY-th after it, also measures storage and cache."""
+        deep = (self.sent + self.failed) % DEEP_EVERY == 0
+        ok = self.link.post(self.path, build(self.agent, self.server,
+                                             deep=deep))
         if ok:
             self.sent += 1
         else:

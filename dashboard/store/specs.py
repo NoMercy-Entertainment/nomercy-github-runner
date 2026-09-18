@@ -58,7 +58,7 @@ WRITABLE = (
 )
 
 #: Stored as JSON text, decoded on the way out so callers never parse.
-JSON_FIELDS = ("labels", "cache_policy", "capabilities")
+JSON_FIELDS = ("labels", "cache_policy", "capabilities", "telemetry")
 
 REQUIRED = ("provider", "platform")
 

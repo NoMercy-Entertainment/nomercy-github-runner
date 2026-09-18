@@ -254,6 +254,14 @@ class FakeDocker:
         return True, "\n".join(lines), ""
 
     def _stats(self, args, input):
+        if "--format" in args and "{{.Name}}" in args[args.index("--format")
+                                                     + 1]:
+            # Several at once, as a heartbeat asks: one line per unit that
+            # is running, nothing for one that is not.
+            names = args[args.index("--format") + 2:]
+            return True, "\n".join(
+                f"{n}\t1.50%\t100MiB / 32GiB" for n in names
+                if self.containers.get(n, {}).get("state") == "running"), ""
         name = args[-1]
         return self._need(name) or (True, "1.50%\t100MiB / 32GiB", "")
 

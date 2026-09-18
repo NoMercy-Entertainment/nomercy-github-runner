@@ -147,6 +147,8 @@ class ProvisioningFlow:
         self.sleep = sleep
         #: What the flow did, in order, for the tests that assert the order.
         self.trail = []
+        #: runner_id -> what the forge last said of it in `observe`.
+        self.forge_words = {}
 
     # ---- the two adapters, looked up per cell ------------------------------
 
@@ -517,6 +519,9 @@ class ProvisioningFlow:
             return None
         provider = self._provider(spec)
         seen = provider.job_state(spec, self._records(provider))
+        # What the forge said, kept for the reconciler to record as an
+        # observation: readiness needs it, not only the machine (T-1803).
+        self.forge_words[spec["runner_id"]] = seen
         if actual == "registering":
             # A registration interrupted during the wait to come online. If
             # the forge now shows the runner and the agent says it is up, the

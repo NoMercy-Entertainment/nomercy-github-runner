@@ -310,12 +310,102 @@ def from_unmanaged(entry, generated=None):
 #: card's styling has one. Everything else is shown as it is.
 _SPEC_STATES = {"drained": "draining", "stopped": "stopped", "failed": "failed"}
 
+#: How recent an observation must be to count (T-1803). Heartbeats come
+#: every 10 s and three missed make a worker degraded; the reconciler asks
+#: the forge on every pass.
+HEARTBEAT_FRESH = 30
+FORGE_FRESH = 120
 
-def from_spec(spec, telemetry=None, worker_reachable=None):
+#: Lifecycle states in which the runner should be taking or doing work, and
+#: so in which "ready" is the question.
+SERVING = frozenset({"idle", "busy", "draining", "drained"})
+
+
+def _age(stamp, now):
+    from datetime import datetime, timezone
+    if not stamp:
+        return None
+    try:
+        then = datetime.strptime(stamp, "%Y-%m-%dT%H:%M:%SZ").replace(
+            tzinfo=timezone.utc)
+    except (TypeError, ValueError):
+        return None
+    return (now - then).total_seconds()
+
+
+def readiness(spec, now=None):
+    """Whether the runner is ready, from both halves (design 18.5).
+
+    Ready is the unit running, as its worker last reported within a
+    heartbeat's reach, AND the forge showing it online, as it last said
+    within a few passes. Either alone has been wrong on this fleet: a
+    process healthy for hours while the forge had it offline. A healthy
+    process whose forge cannot be asked is `unknown`, never ready.
+    """
+    from datetime import datetime, timezone
+    now = now or datetime.now(timezone.utc)
+    unit, seen = spec.get("unit_state"), _age(spec.get("last_seen_at"), now)
+    fresh = seen is not None and seen <= HEARTBEAT_FRESH
+    process = ("up" if unit == "running" and fresh else
+               "down" if unit in ("stopped", "absent") and fresh else
+               "unknown")
+    word = spec.get("forge_state")
+    heard = _age(spec.get("forge_seen_at"), now)
+    recent = heard is not None and heard <= FORGE_FRESH
+    forge = ("online" if word in ("idle", "busy") and recent else
+             "offline" if word == "offline" and recent else "unknown")
+    return {"process": process, "forge": forge,
+            "ready": process == "up" and forge == "online"}
+
+
+def _shown_state(lifecycle, ready):
+    """What the card's badge says: the lifecycle state when the runner is
+    confirmed ready, and otherwise the honest word for why it is not."""
+    if lifecycle not in SERVING or ready["ready"]:
+        return _SPEC_STATES.get(lifecycle, lifecycle)
+    if ready["forge"] == "offline":
+        return "offline"
+    if ready["process"] == "down":
+        return "stopped"
+    return "unknown"
+
+
+def _measured(spec, override, now):
+    """What the unit last used, from heartbeats - None where it was not
+    reported, or not recently: unknown, never zero."""
+    from datetime import datetime, timezone
+    now = now or datetime.now(timezone.utc)
+    t = dict(spec.get("telemetry") or {})
+    t.update(override or {})
+    age = _age(t.get("at"), now)
+    live = override is not None or (age is not None and
+                                    age <= HEARTBEAT_FRESH)
+    cpu = {"percent": t.get("cpu_percent") if live else None,
+           "cores": None, "host_cores": None}
+    memory = {"used_bytes": t.get("mem_used_bytes") if live else None,
+              "limit_bytes": t.get("mem_limit_bytes")}
+    if t.get("root_disk_total_bytes"):
+        # The appliance's own root disk: the recorded "offline, but the
+        # hypervisor side looks fine" failure is this filling up.
+        storage = {"used_bytes": t.get("root_disk_used_bytes"),
+                   "total_bytes": t.get("root_disk_total_bytes")}
+    elif t.get("storage_bytes") is not None:
+        storage = {"used_bytes": t.get("storage_bytes"), "total_bytes": None}
+    else:
+        storage = None
+    policy = spec.get("cache_policy") or {}
+    cache = ({"used_bytes": t.get("cache_bytes"),
+              "cap_bytes": policy.get("max_bytes") or CACHE_CAP_BYTES}
+             if t.get("cache_bytes") is not None else None)
+    return cpu, memory, storage, cache
+
+
+def from_spec(spec, telemetry=None, worker_reachable=None, now=None):
     """A card for a runner the controller manages, from its RunnerSpec."""
     rid = spec["runner_id"]
     caps = dict(spec.get("capabilities") or {})
     state = spec.get("actual_state") or "unknown"
+    ready = readiness(spec, now)
     forge = {"github": "GitHub", "forgejo": "Forgejo"}.get(
         spec.get("provider"), spec.get("provider"))
     who = spec.get("display_name") or f"rnr-{rid[:8]}"
@@ -340,7 +430,8 @@ def from_spec(spec, telemetry=None, worker_reachable=None):
             verb, visible=visible[verb],
             url=f"/api/v2/runners/{rid}/actions/{verb}", body={},
             confirm=_confirm(verb, who, forge), idempotent=True))
-    t = telemetry or {}
+    cpu, memory, storage, cache = _measured(spec, telemetry, now)
+    reachable = None if worker_reachable is None else         bool(worker_reachable) and ready["process"] == "up"
     return _card(
         runner_id=rid,
         display_name=who,
@@ -349,15 +440,14 @@ def from_spec(spec, telemetry=None, worker_reachable=None):
         architecture=spec.get("architecture"),
         worker=spec.get("host_id"),
         runtime=caps.get("kind"),
-        state=_SPEC_STATES.get(state, state),
-        job=t.get("job"),
-        cpu={"percent": t.get("cpu_percent"), "cores": None,
-             "host_cores": None},
-        memory={"used_bytes": t.get("mem_used_bytes"),
-                "limit_bytes": t.get("mem_limit_bytes")},
-        storage=t.get("storage"),
-        cache=t.get("cache"),
-        reachable=worker_reachable,
+        state=_shown_state(state, ready),
+        job=(telemetry or {}).get("job"),
+        cpu=cpu,
+        memory=memory,
+        storage=storage,
+        cache=cache,
+        reachable=reachable,
+        readiness=ready,
         last_seen_at=spec.get("last_seen_at"),
         current_operation=spec.get("current_operation"),
         last_error=spec.get("last_error"),

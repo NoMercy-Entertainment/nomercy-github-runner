@@ -107,6 +107,12 @@ CREATE TABLE IF NOT EXISTS runner_specs (
   -- outside spec_version - an observation arriving every ten seconds must not
   -- turn every change a person makes into a stale-version conflict.
   unit_state       TEXT,
+  -- T-1803, observations of the same kind: what the unit last used (JSON,
+  -- from heartbeats), what the forge last said of the runner, and when it
+  -- last said anything (from the reconciler's observation).
+  telemetry        TEXT,
+  forge_state      TEXT,
+  forge_seen_at    TEXT,
   -- Soft delete. History keeps a referent, so a run from a runner that no
   -- longer exists still resolves to something that says what it was.
   deleted_at       TEXT
@@ -213,6 +219,12 @@ def _migrate(c):
         # T-0404. Nullable: a runner no heartbeat has mentioned yet has no
         # observed unit state, which is not the same as any value.
         c.execute("ALTER TABLE runner_specs ADD COLUMN unit_state TEXT")
+    for column in ("telemetry", "forge_state", "forge_seen_at"):
+        # T-1803. Observations, like unit_state: what the unit last used,
+        # what the forge last said of the runner, and when it last said
+        # anything. Null until observed, which is not any value.
+        if column not in have:
+            c.execute(f"ALTER TABLE runner_specs ADD COLUMN {column} TEXT")
 
 
 def init(path=None):

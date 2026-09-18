@@ -106,6 +106,23 @@ def _decode(row):
     return worker
 
 
+#: What a heartbeat may say a unit uses, and nothing else: numbers, or null.
+TELEMETRY_KEYS = ("cpu_percent", "mem_used_bytes", "mem_limit_bytes",
+                  "root_disk_used_bytes", "root_disk_total_bytes",
+                  "storage_bytes", "cache_bytes")
+
+
+def _telemetry(value):
+    """A unit's reported usage, kept to the known keys and to numbers - a
+    beat is data from a worker, and only what the card can show is taken."""
+    if not isinstance(value, dict):
+        return {}
+    return {k: value[k] for k in TELEMETRY_KEYS
+            if k in value and (value[k] is None or (
+                isinstance(value[k], (int, float))
+                and not isinstance(value[k], bool)))}
+
+
 class Inventory:
     def __init__(self, path=None):
         self.path = path or schema.DB_PATH
@@ -240,7 +257,7 @@ class Inventory:
                        capabilities=declared if isinstance(declared, dict)
                        else None, at=moment)
 
-        seen = {}
+        seen, used = {}, {}
         for unit in payload.get("instances") or []:
             if not isinstance(unit, dict):
                 continue
@@ -249,6 +266,9 @@ class Inventory:
             if not isinstance(runner_id, str):
                 continue
             seen[runner_id] = state if state in UNIT_STATES else "unknown"
+            t = _telemetry(unit.get("telemetry"))
+            if t:
+                used[runner_id] = t
 
         recorded = {}
         with self._conn() as c:
@@ -260,9 +280,34 @@ class Inventory:
                     "UPDATE runner_specs SET last_seen_at = ?,"
                     " unit_state = ? WHERE runner_id = ? AND host_id = ?",
                     (_iso(moment), state, runner_id, host_id))
-                if cur.rowcount:
-                    recorded[runner_id] = state
+                if not cur.rowcount:
+                    continue
+                recorded[runner_id] = state
+                if runner_id in used:
+                    self._merge_telemetry(c, runner_id, used[runner_id],
+                                          _iso(moment))
         return recorded
+
+    def _merge_telemetry(self, c, runner_id, fresh, at):
+        """What a unit uses, as last reported (T-1803). CPU and memory are
+        replaced every beat; storage and cache only arrive on a deep beat and
+        are kept, with their own time, until the next one."""
+        row = c.execute("SELECT telemetry FROM runner_specs"
+                        " WHERE runner_id = ?", (runner_id,)).fetchone()
+        try:
+            current = json.loads(row["telemetry"]) if row and                 row["telemetry"] else {}
+        except ValueError:
+            current = {}
+        for key in ("cpu_percent", "mem_used_bytes", "mem_limit_bytes",
+                    "root_disk_used_bytes", "root_disk_total_bytes"):
+            current[key] = fresh.get(key)
+        current["at"] = at
+        if "storage_bytes" in fresh or "cache_bytes" in fresh:
+            current["storage_bytes"] = fresh.get("storage_bytes")
+            current["cache_bytes"] = fresh.get("cache_bytes")
+            current["deep_at"] = at
+        c.execute("UPDATE runner_specs SET telemetry = ? WHERE runner_id = ?",
+                  (json.dumps(current), runner_id))
 
     def get(self, host_id):
         with self._conn() as c:

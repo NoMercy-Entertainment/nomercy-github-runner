@@ -211,6 +211,8 @@ class TestTheSchemaMatchesTheDesign:
         "spec_version": "INTEGER", "deleted_at": "TEXT",
         # Added in T-0404, and to the design's table with it.
         "unit_state": "TEXT",
+        # Added in T-1803, and to the design's table with them.
+        "telemetry": "TEXT", "forge_state": "TEXT", "forge_seen_at": "TEXT",
     }
 
     def columns(self, store, table="runner_specs"):

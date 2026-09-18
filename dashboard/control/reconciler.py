@@ -642,6 +642,8 @@ class Reconciler:
             seen = self.executor.observe(spec)
         except Exception:                       # noqa: BLE001
             return
+        finally:
+            self._record_forge(spec)
         if not seen or seen == spec["actual_state"]:
             return
         edge = (spec["actual_state"], seen)
@@ -651,6 +653,31 @@ class Reconciler:
             return
         self._move(spec, seen)
         report.did("observed", spec["runner_id"], seen)
+
+    #: The forge's words that are an answer about the runner. "unknown" is
+    #: the forge not answering, and does not move `forge_seen_at`.
+    FORGE_ANSWERS = frozenset({"idle", "busy", "offline"})
+
+    def _record_forge(self, spec):
+        """What the forge said of this runner on this pass, and when it last
+        said anything - an observation, written outside spec_version like
+        unit_state, so it never collides with a change a person is making.
+        Readiness is read from it: process up is not ready while the forge
+        cannot confirm the runner (T-1803)."""
+        words = getattr(self.executor, "forge_words", None)
+        if not isinstance(words, dict) or spec["runner_id"] not in words:
+            return
+        word = words.pop(spec["runner_id"])
+        from store import schema
+        with schema.connect(self.service.specs.path) as c:
+            if word in self.FORGE_ANSWERS:
+                c.execute("UPDATE runner_specs SET forge_state = ?,"
+                          " forge_seen_at = ? WHERE runner_id = ?",
+                          (word, _iso(_now()), spec["runner_id"]))
+            else:
+                c.execute("UPDATE runner_specs SET forge_state = ?"
+                          " WHERE runner_id = ?",
+                          ("unknown", spec["runner_id"]))
 
     # ---- operations --------------------------------------------------------
 
