@@ -16,16 +16,29 @@ defined in spec section 4 and traced in spec section 8.
 **Tech stack:** Python 3.12, Flask 3.0.3, flask-sock, sqlite3, pytest, the
 `docker` CLI, Hyper-V PowerShell cmdlets, GitHub REST, Forgejo REST v1.
 
-**Status:** Phase 0 is complete — T-0001 to T-0005 are implemented and
-committed. Nothing beyond Phase 0 has been started, and no infrastructure has
-been touched: every Phase 0 task is LOCAL, the running fleet was not altered,
-and no VM, service or forge registration was created, stopped or removed.
+**Status:** Phases 0 and 1 are complete — T-0001 to T-0005 and T-0201 to
+T-0204 are implemented and committed. Nothing beyond that has been started, and
+no infrastructure has been touched: every task so far is LOCAL, the running
+fleet was not altered, and no VM, service or forge registration was created,
+stopped or removed. The dashboard runs from its image rather than from the
+repository mount, so none of this is live until the image is rebuilt.
 
-Phase 0 changed no behaviour by design. What exists now is the seam: a runtime
+Phase 0 changed no behaviour by design. What exists is the seam: a runtime
 contract, the Docker adapter behind it, a platform axis on the providers, the
 API served under `/api/v1`, and the nine WSL couplings recorded as strict
 xfail tests in `dashboard/tests/test_wsl_couplings.py`. Those nine are the
 progress bar for the migration, and T-1708 removes their markers.
+
+Phase 1 added the data model, still unused: `dashboard/store/` holds the
+RunnerSpec table with minted identity and optimistic concurrency, the six
+fleets seeded from `provider.supports()`, and per-instance storage naming.
+`runs` gained a nullable `runner_id` with an explicit, idempotent backfill that
+is not run automatically.
+
+**One deviation from the file lists below.** T-0202 is `store/fleets.py` rather
+than an addition to `store/specs.py`: that module carries one table's rules —
+minted identity, optimistic concurrency, soft delete — and none of the three
+apply to a fleet.
 
 ---
 
@@ -53,7 +66,7 @@ A task with several gates needs all of them.
 These hold for every task and are not repeated per task.
 
 - **The tests in `dashboard/tests/` must stay green** — 437 when this plan was
-  written, 530 passing and 9 expected-to-fail after Phase 0. Run
+  written, 642 passing and 9 expected-to-fail after Phase 1. Run
   `cd dashboard && python -m pytest tests/ -q` before and after every task.
   A task that would require weakening an existing test must stop and report it
   as a behaviour change instead.
@@ -173,6 +186,9 @@ fleet untouched. **Done:** T-0001 to T-0005, all five committed.
 ---
 
 ## Phase 1 — RunnerSpec and state store
+
+**Done:** T-0201 to T-0204, all four committed. The store is written and tested but nothing calls it yet; the controller in phase 2 is its
+first caller.
 
 ### T-0201 — The schema
 
