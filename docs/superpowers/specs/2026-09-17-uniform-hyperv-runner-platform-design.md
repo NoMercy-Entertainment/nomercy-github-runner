@@ -1136,12 +1136,19 @@ acceptable for lifecycle control.
 ### 13.3 Request shape
 
 ```
-POST /v1/op
+POST /v1/op/exec_unit.create
 Idempotency-Key: <uuid>
 X-Operation-Id: <uuid>
 X-Protocol-Version: 1
-{ "verb": "exec_unit.create", "runner_id": "...", "spec": { ... }, "deadline_ms": 120000 }
+{ "runner_id": "...", "spec": { ... } }
 ```
+
+The verb is in the path, not the body (changed during T-0401, 2026-09-18). The
+plan requires an unknown verb to be refused before any parsing, and a verb
+inside the body cannot be known without parsing the body. With it in the path
+the agent answers 404 from the request line alone and never reads a body it is
+not going to act on. Each verb takes a closed set of body fields, and a field
+it does not take is refused rather than ignored.
 
 The agent answers `202` with a local operation handle and reports progress via
 `event`. Long work is never done inside the request (FR-11).
