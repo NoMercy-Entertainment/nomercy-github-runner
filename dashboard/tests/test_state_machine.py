@@ -242,8 +242,38 @@ class TestTheTableIsTheDiagram:
     def test_the_diagram_actually_parsed(self):
         """Guards against a silent pass if the spec moves or the block is
         renamed: an empty parse would make every comparison above vacuous."""
-        assert len(diagram_edges()) == 24
+        assert len(diagram_edges()) == 26
 
     def test_no_state_exists_only_in_the_code(self):
         drawn = {s for edge in diagram_edges() for s in edge if s}
         assert states.STATES == drawn
+
+
+class TestTheTwoEdgesAddedWhileBuildingTheReconciler:
+    """Each closes a path the verbs promised and the first diagram lacked."""
+
+    def test_a_runner_that_exists_only_on_paper_can_be_withdrawn(self):
+        """Before this, the only way out of `planned` was to build the runner.
+        A scale-down issued before anything was built could only be carried
+        out by first building what it meant to cancel - and with no healthy
+        worker, never at all."""
+        assert states.can("planned", "absent")
+        assert states.allows("remove", "planned")
+        assert states.verb_target("remove", "planned") == "absent"
+
+    def test_withdrawing_skips_deregistration_because_nothing_registered(self):
+        assert ("planned", "absent") in states.COMMANDED
+
+    def test_recreate_has_a_route_that_keeps_its_storage(self):
+        """Storage is named from runner_id alone, so a new runner could not
+        take kept storage over. The same runner goes back into provisioning
+        and finds its storage by name."""
+        path = ["drained", "deregistering", "removing", "provisioning",
+                "provisioned", "registering", "idle"]
+        for frm, to in zip(path, path[1:]):
+            states.check(frm, to)
+
+    def test_that_route_is_observed_not_requested(self):
+        """The reconciler takes it when the unit is gone and a recreate is in
+        flight. Nobody can ask for it directly."""
+        assert ("removing", "provisioning") in states.OBSERVED

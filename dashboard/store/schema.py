@@ -127,6 +127,17 @@ CREATE TABLE IF NOT EXISTS operations (
 CREATE INDEX IF NOT EXISTS idx_ops_runner ON operations(runner_id);
 CREATE INDEX IF NOT EXISTS idx_ops_state  ON operations(state, requested_at);
 
+-- One row per exclusive role, held by one process until it expires. The
+-- reconciler takes one per pass so that two passes can never both decide a
+-- fleet is short and both plan the missing runner - which is the overshoot
+-- the design forbids. A new table, so CREATE TABLE IF NOT EXISTS is enough for
+-- an existing database; only new columns on old tables need an ALTER.
+CREATE TABLE IF NOT EXISTS leases (
+  name       TEXT PRIMARY KEY,
+  holder     TEXT NOT NULL,
+  expires_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS audit (
   id           INTEGER PRIMARY KEY AUTOINCREMENT,
   at           TEXT NOT NULL,

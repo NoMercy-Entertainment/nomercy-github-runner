@@ -16,12 +16,21 @@ store or the web layer. The machine is the same whether the thing being driven
 is a container, a Windows process tree or a macOS appliance, and the cheapest
 way to keep it that way is to give it nothing to be specific about.
 
-Two kinds of edge, and the difference decides who may write:
+Two kinds of edge, and the difference is why a transition happens:
 
   COMMANDED - something asked for it. `stop`, `drain`, `remove`.
   OBSERVED  - the world turned out that way. A job started, a unit came up, an
-              error happened. Only the reconciler writes these, because they
-              are reports rather than requests.
+              error happened. A report, not a request.
+
+The reconciler writes both. It is the only writer of `actual_state` at all -
+the service records what is wanted and never what is - so the split is not
+about who holds the pen. It is about whether the transition may be asked for:
+a route that could ask for `idle -> busy` would be claiming a job started that
+nobody saw start.
+
+Two edges were added while building the reconciler, and the design records why:
+`planned -> absent` so a runner that exists only on paper can be withdrawn, and
+`removing -> provisioning` so `recreate` can keep its storage. See spec 12.2.
 
 `unknown` is deliberately not a state here. It is the database default for a
 row whose actual state has never been observed, which is a different statement
@@ -40,6 +49,7 @@ TERMINAL = "absent"
 TRANSITIONS = {
     (START, "planned"): "create",
     ("planned", "provisioning"): "reconcile",
+    ("planned", "absent"): "withdraw",
     ("provisioning", "provisioned"): "exec unit exists",
     ("provisioning", "failed"): "error",
     ("provisioned", "registering"): "provider.register",
@@ -60,6 +70,7 @@ TRANSITIONS = {
     ("stopped", "deregistering"): "remove",
     ("deregistering", "removing"): "forge confirms",
     ("removing", "absent"): "exec unit and storage gone",
+    ("removing", "provisioning"): "exec unit gone, storage kept",
     ("failed", "provisioning"): "repair",
     ("failed", "removing"): "remove",
 }
@@ -78,9 +89,9 @@ TRANSITIONAL = frozenset({
 #: States where the runner is alive and answering.
 LIVE = frozenset({"idle", "busy", "draining", "drained"})
 
-#: Edges driven by an observation rather than by a request. Only the reconciler
-#: writes these; a route that wrote one would be reporting something it did not
-#: witness.
+#: Edges driven by an observation rather than by a request. Nothing may ask for
+#: one of these: a route that could would be reporting something it did not
+#: witness. (The reconciler writes every edge; see the module docstring.)
 OBSERVED = frozenset({
     ("planned", "provisioning"),
     ("provisioning", "provisioned"),
@@ -94,6 +105,7 @@ OBSERVED = frozenset({
     ("starting", "idle"),
     ("deregistering", "removing"),
     ("removing", "absent"),
+    ("removing", "provisioning"),
 })
 
 COMMANDED = frozenset(TRANSITIONS) - OBSERVED
@@ -168,8 +180,10 @@ VERB_EDGES = {
     "stop": {("idle", "stopping"), ("drained", "stopping")},
     "drain": {("idle", "draining"), ("busy", "draining")},
     "cancel_drain": {("drained", "idle")},
-    "remove": {("drained", "deregistering"), ("stopped", "deregistering"),
-               ("failed", "removing")},
+    # From `planned` nothing exists yet, so removal is a withdrawal with no
+    # deregistration and nothing to delete.
+    "remove": {("planned", "absent"), ("drained", "deregistering"),
+               ("stopped", "deregistering"), ("failed", "removing")},
     "deregister": {("deregistering", "removing")},
     "repair": {("failed", "provisioning")},
 }

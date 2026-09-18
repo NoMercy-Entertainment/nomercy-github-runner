@@ -987,6 +987,7 @@ One machine for all six cells (FR-6, ACC-6).
 stateDiagram-v2
   [*] --> planned: create
   planned --> provisioning: reconcile
+  planned --> absent: withdraw
   provisioning --> provisioned: exec unit exists
   provisioning --> failed: error
   provisioned --> registering: provider.register
@@ -1007,6 +1008,7 @@ stateDiagram-v2
   stopped --> deregistering: remove
   deregistering --> removing: forge confirms
   removing --> absent: exec unit and storage gone
+  removing --> provisioning: exec unit gone, storage kept
   failed --> provisioning: repair
   failed --> removing: remove
   absent --> [*]
@@ -1020,6 +1022,25 @@ keeping storage, then create), `remove`, `deregister`; `scale up` and
 `inspect resources` are reads; `clear cache` is an operation that requires
 `idle` or `drained`; `repair`/`reconcile` is the `failed -> provisioning`
 edge.
+
+**Two edges added during implementation (T-0302), 2026-09-18.** Both close a
+path the verbs above promised and the first version of this diagram did not
+have.
+
+- `planned --> absent: withdraw`. A planned runner exists only on paper, and
+  the only way out of `planned` used to be `provisioning`. A scale-down issued
+  before the reconciler had built anything could therefore only be carried out
+  by first building the runner it was meant to cancel - and with no healthy
+  worker, planned runners could never be withdrawn at all. Nothing external
+  exists yet, so withdrawing one is safe and needs no compensation.
+- `removing --> provisioning: exec unit gone, storage kept`. `recreate` is
+  "remove keeping storage, then create", but `removing` led only to `absent`,
+  which is terminal. Storage is named from `runner_id` alone (15.1), so a new
+  runner could not take the kept storage over. The runner therefore goes back
+  into provisioning under the same `runner_id`, finds its storage by name, and
+  registers afresh. It is an observed edge: the reconciler takes it when the
+  unit is gone and a `recreate` is the operation in flight, and takes
+  `removing --> absent` otherwise.
 
 ### 12.3 Operations, idempotency and tracing
 

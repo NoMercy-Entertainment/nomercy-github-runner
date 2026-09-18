@@ -186,6 +186,33 @@ class OperationStore:
         """Add to the trace without counting an attempt."""
         return self._append(operation_id, text)
 
+    def progress(self, operation_id):
+        """Where a multi-step operation has got to, or {} if nowhere yet.
+
+        Stored in `result` while the operation is open and replaced by the
+        outcome when it closes. A restart is idle before it starts and idle
+        again when it finishes, so the runner's state alone cannot say which;
+        this can.
+        """
+        operation = self.get(operation_id)
+        if not operation or operation["state"] in CLOSED:
+            return {}
+        try:
+            return json.loads(operation["result"]) if operation["result"] \
+                else {}
+        except (ValueError, TypeError):
+            return {}
+
+    def set_progress(self, operation_id, progress):
+        """Record how far a multi-step operation has got. Ignored once it is
+        closed, for the same reason a late reply cannot rewrite an outcome."""
+        with self._conn() as c:
+            c.execute(
+                "UPDATE operations SET result = ? WHERE operation_id = ?"
+                " AND state NOT IN (?, ?, ?)",
+                (json.dumps(progress), operation_id,
+                 SUCCEEDED, FAILED, CANCELLED))
+
     def succeed(self, operation_id, result=None):
         return self._close(operation_id, SUCCEEDED, result=result)
 

@@ -41,7 +41,7 @@ def service(tmp_path):
 
 
 def runner_in(service, state):
-    runner_id = service.planned_ids(service.create(GH_LINUX))[0]
+    runner_id = service.planned_ids(service.plan(GH_LINUX, 1))[0]
     service.specs.update(runner_id, 1, actual_state=state)
     return runner_id
 
@@ -51,9 +51,22 @@ class TestEveryVerbHasAMethod:
         for verb in states.VERBS:
             assert callable(getattr(RunnerService, verb, None)), verb
 
-    def test_create_plans(self, service):
+    def test_create_raises_the_fleets_capacity(self, service):
+        """Capacity is the only source of "how many". A runner planned while
+        the fleet still wanted zero was withdrawn by the next reconciler pass,
+        so creating one means asking the fleet for one more."""
         operation_id = service.create(GH_LINUX, 2)
-        assert len(service.planned_ids(operation_id)) == 2
+        assert service.fleets.get(GH_LINUX)["desired_capacity"] == 2
+        assert service.operations.get(operation_id)["verb"] == "set_capacity"
+
+    def test_create_does_not_plan_behind_capacitys_back(self, service):
+        service.create(GH_LINUX, 2)
+        assert service.specs.list() == [], (
+            "the reconciler plans; create only states the wish")
+
+    def test_create_of_nothing_is_a_mistake(self, service):
+        with pytest.raises(ValueError):
+            service.create(GH_LINUX, 0)
 
 
 class TestEachVerbFromEachState:
@@ -180,7 +193,7 @@ class TestReads:
                 "tests.fake_runtime:RecordingRuntime"})
 
     def a_live_runner(self, service):
-        runner_id = service.planned_ids(service.create(GH_LINUX))[0]
+        runner_id = service.planned_ids(service.plan(GH_LINUX, 1))[0]
         service.specs.update(runner_id, 1, actual_state="idle",
                              exec_unit_ref="github-runner-4")
         return runner_id
@@ -209,7 +222,7 @@ class TestReads:
     def test_a_runner_with_no_unit_yet_reads_as_nothing(self, reading):
         """Planned runners exist only on paper; asking the runtime about them
         would be asking about something that is not there."""
-        runner_id = reading.planned_ids(reading.create(GH_LINUX))[0]
+        runner_id = reading.planned_ids(reading.plan(GH_LINUX, 1))[0]
         assert reading.fetch_logs(runner_id) == ""
         assert reading.inspect_resources(runner_id) is None
         assert reading.fetch_status(runner_id)["observed"] is None

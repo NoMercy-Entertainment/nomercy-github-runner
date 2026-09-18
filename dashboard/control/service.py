@@ -320,11 +320,22 @@ class RunnerService:
     # recorded as themselves, and what they decompose into is written once, in
     # `states.COMPOSITE`, for the provisioner to follow.
 
-    def create(self, fid, count=1, requested_by=None, idempotency_key=None,
-               env=None):
-        """`create` is the edge into `planned`, which is what planning is."""
-        return self.plan(fid, count, requested_by=requested_by,
-                         idempotency_key=idempotency_key, env=env)
+    def create(self, fid, count=1, requested_by=None):
+        """One more runner for a fleet: which is to say, a higher capacity.
+
+        Not a direct `plan`, and the first version was one. A runner planned
+        straight into existence while the fleet still wanted zero was withdrawn
+        by the very next reconciler pass - two sources of truth for "how many"
+        fighting each other, with the operator's click losing. Capacity is the
+        only source, so creating a runner raises it and the reconciler takes
+        the `create` edge into `planned` itself.
+
+        `plan` stays as the primitive the reconciler uses to fill a gap. It is
+        not a way round capacity.
+        """
+        if count < 1:
+            raise ValueError("create needs a positive count")
+        return self._scale(fid, count, requested_by)
 
     def provision(self, runner_id, **kw):
         return self.act(runner_id, "provision", **kw)

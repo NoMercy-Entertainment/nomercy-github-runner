@@ -279,3 +279,28 @@ class TestInitIsSafeToRepeat:
         runner_id = store.create(**a_spec())
         schema.init(store.path)
         assert store.get(runner_id) is not None
+
+
+class TestAControlDatabaseFromBeforeTheLeaseTable:
+    """The lease table arrived with the reconciler (T-0302), after the store.
+
+    A new table needs no ALTER - CREATE TABLE IF NOT EXISTS creates it in a
+    database that lacks it - but "needs no migration" is a claim, and the plan
+    asks for every schema change to be shown to migrate, not asserted to.
+    """
+
+    def test_init_adds_the_table_and_keeps_the_specs(self, tmp_path):
+        path = str(tmp_path / "control.db")
+        schema.init(path)
+        store = SpecStore(path)
+        runner_id = store.create(**a_spec())
+        with schema.connect(path) as c:
+            c.execute("DROP TABLE leases")
+
+        schema.init(path)
+
+        with schema.connect(path) as c:
+            tables = {r["name"] for r in c.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'")}
+        assert "leases" in tables
+        assert store.get(runner_id) is not None
