@@ -542,15 +542,48 @@ class _Forgejo(Provider):
             notes="built from source; there is no upstream release feed for "
                   "this platform, so its version has to be tracked by hand")
 
+    #: A deployment's label default per platform. FORGEJO_RUNNER_LABELS is
+    #: what the Linux fleet has always read; a Windows or macOS runner must
+    #: not inherit it - its `docker://` labels would send it jobs it has no
+    #: engine to run.
+    _LABELS_ENV = {LINUX: "FORGEJO_RUNNER_LABELS",
+                   WINDOWS: "FORGEJO_RUNNER_LABELS_WINDOWS",
+                   MACOS: "FORGEJO_RUNNER_LABELS_MACOS"}
+
+    def default_labels(self, platform, arch=X64, env=None):
+        return ((env or {}).get(self._LABELS_ENV.get(platform, ""))
+                or "").strip()
+
+    def forge_records(self, env):
+        """This user's runner records, or None when Forgejo could not be
+        asked - never [] for a failure."""
+        client = self.forge_client(env or {})
+        return client.runner_statuses() if client is not None else None
+
+    def delete_record(self, env, registration_id):
+        """The only way a Forgejo record is ever deleted: forgejo-runner has
+        no `unregister` (T-1002)."""
+        client = self.forge_client(env or {})
+        if client is None or not registration_id:
+            return False
+        return client.delete_runner(registration_id)
+
     def registration(self, spec, env):
         """Checked in the same order as container_env, and for the same
         reason: every refusal that needs no network comes before the token is
         minted, so a registration that cannot succeed does not burn one."""
         env = env or {}
+        spec = spec or {}
+        platform = spec.get("platform") or LINUX
+        arch = spec.get("architecture") or X64
+        support = self.supports(platform, arch, env)
+        if not support:
+            # An unavailable cell is an answer, not a crash (T-1001).
+            return None, support.reason
         url = (env.get("FORGEJO_INSTANCE_URL") or "").strip()
         if not url:
             return None, "FORGEJO_INSTANCE_URL is not set"
-        labels = _labels(spec, env.get("FORGEJO_RUNNER_LABELS", ""))
+        labels = _labels(spec, self.default_labels(platform, arch, env))
         if not labels:
             return None, ("no labels for this runner - a runner with no "
                           "labels registers, looks healthy, and never picks "

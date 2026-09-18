@@ -47,6 +47,10 @@ BUILT = {"FORGEJO_RUNNER_ARTIFACT_WINDOWS": "forgejo-runner-windows.exe",
          "FORGEJO_RUNNER_ARTIFACT_MACOS": "forgejo-runner-darwin",
          "FORGEJO_INSTANCE_URL": "https://git.example",
          "FORGEJO_RUNNER_LABELS": "docker:docker://node:20",
+         # Windows and macOS read their own: they must not inherit Linux's
+         # docker:// labels, having no engine to run them (T-1001).
+         "FORGEJO_RUNNER_LABELS_WINDOWS": "windows:host",
+         "FORGEJO_RUNNER_LABELS_MACOS": "macos:host",
          "GH_TOKEN": "x", "GITHUB_ORG": "NoMercy-Entertainment"}
 
 

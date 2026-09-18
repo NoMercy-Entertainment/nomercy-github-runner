@@ -126,11 +126,31 @@ class Forgejo:
         return data.get("token") or None
 
     def delete_runner(self, runner_id):
+        """Delete one runner record by its id. True when Forgejo deleted it,
+        or answered 404 - the record is gone either way, and a retried delete
+        must not read as a failure. False for anything else, including no
+        answer at all."""
         if not runner_id:
             return False
-        got = self._request(
-            f"/api/v1/user/actions/runners/{runner_id}", "DELETE")
-        return got is not None
+        rid = str(runner_id).strip()
+        if not rid.isdigit():
+            return False
+        req = urllib.request.Request(
+            f"{self.base}/api/v1/user/actions/runners/{rid}", method="DELETE",
+            headers={"Authorization": f"token {self.token}",
+                     "Accept": "application/json",
+                     "User-Agent": "nomercy-runner-dashboard"})
+        try:
+            # urlopen raises for every status >= 400, so an answer that
+            # returns at all is a success.
+            with urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT):
+                return True
+        except urllib.error.HTTPError as e:
+            print(f"[forgejo] {e.code} DELETE runner {rid}")
+            return e.code == 404
+        except Exception as e:  # noqa: BLE001 - surfaced, not raised
+            print(f"[forgejo] DELETE runner {rid}: {type(e).__name__}")
+            return False
 
     # ---------------------------------------------------------------- tasks
     def find_task(self, repo, task_id, started_at):
