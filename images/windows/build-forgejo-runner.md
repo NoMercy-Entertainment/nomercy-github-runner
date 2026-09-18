@@ -30,11 +30,40 @@ affected, and no recorded way to build its successor.
 `images/windows/manifest.json` records it as it is: hash known, provenance
 unknown.
 
+## Built, 2026-09-18
+
+`build-forgejo-runner.sh` (next to this file) is the recipe below, made into
+a script. It runs in `golang:1.26.7` on the WSL engine, so no Go toolchain is
+installed on the host. Go 1.26.7 is the `toolchain` line of tag v13.1.0's
+`go.mod`, and the script refuses to build with any other version.
+
+```
+docker run --rm -v <out>:/out -v images/windows:/build:ro golang:1.26.7 \
+  bash /build/build-forgejo-runner.sh v13.1.0
+```
+
+Built from tag v13.1.0, commit `6095cb17bfdbded5aa4ea84c18a4b69fd9574cca`:
+
+| Binary | SHA-256 |
+| --- | --- |
+| `forgejo-runner-v13.1.0-windows-amd64.exe` | `82ea01bc63c3ba60526576f3d8ac491a1e77db0f8d3d55cc37bd39666a5f04c8` |
+| `forgejo-runner-v13.1.0-darwin-amd64` | `f9f9ed421d6d1e71436b92e9b8891fb03b44c713e87e545c6e86423be2edb07a` |
+| `forgejo-runner-v13.1.0-darwin-arm64` | `c5f4bff75398edc6961f21a8f6c5916008a3b9ce9895fd627b95bf9d4fc5706b` |
+
+- **MEASURED:** the Windows binary prints `forgejo-runner version v13.1.0` on
+  this host. The binary running today prints `dev`.
+- **MEASURED:** a second build in a fresh container gave the same three
+  hashes. Both builds ran on the same machine; a build on a second machine has
+  not been done yet.
+- The binaries are kept under `D:\HyperV\runner-platform\artefacts\`, not in
+  the repository. Their record is `manifest.json`.
+- **Not yet deployed.** The running Windows runner is still the `dev` binary.
+  Replacing it means restarting its service, which cancels a job it is
+  running, so it waits for an idle moment and an operator's go.
+
 ## How a traceable build is made
 
-**Not run here.** This machine has no Go toolchain, and installing one is a
-change to the host that this task was not asked to make. The recipe below
-follows upstream's own `Makefile` (fetched 2026-09-18 from
+The recipe follows upstream's own `Makefile` (fetched 2026-09-18 from
 `code.forgejo.org/forgejo/runner`, branch `main`), whose build line is:
 
 ```

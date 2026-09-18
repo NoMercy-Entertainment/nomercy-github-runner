@@ -11,6 +11,43 @@
       "commit": null,
       "go": null,
       "measured": "2026-09-18, read-only: Get-FileHash and --version"
+    },
+    {
+      "status": "built, not deployed",
+      "where": "D:\\HyperV\\runner-platform\\artefacts\\forgejo-runner-v13.1.0\\forgejo-runner-v13.1.0-windows-amd64.exe",
+      "sha256": "82ea01bc63c3ba60526576f3d8ac491a1e77db0f8d3d55cc37bd39666a5f04c8",
+      "size": 22066176,
+      "reports_version": "v13.1.0",
+      "tag": "v13.1.0",
+      "commit": "6095cb17bfdbded5aa4ea84c18a4b69fd9574cca",
+      "go": "go1.26.7",
+      "built": "2026-09-18T12:54:14Z",
+      "recipe": "images/windows/build-forgejo-runner.sh in golang:1.26.7",
+      "reproduced": "a second build in a fresh container on the same machine gave the same SHA-256; a second machine is not yet checked"
+    }
+  ],
+  "forgejo-runner-darwin-amd64": [
+    {
+      "status": "built, not deployed",
+      "sha256": "f9f9ed421d6d1e71436b92e9b8891fb03b44c713e87e545c6e86423be2edb07a",
+      "tag": "v13.1.0",
+      "commit": "6095cb17bfdbded5aa4ea84c18a4b69fd9574cca",
+      "go": "go1.26.7",
+      "built": "2026-09-18T12:54:14Z",
+      "recipe": "images/windows/build-forgejo-runner.sh in golang:1.26.7",
+      "reproduced": "same SHA-256 from a second build in a fresh container on the same machine"
+    }
+  ],
+  "forgejo-runner-darwin-arm64": [
+    {
+      "status": "built, not deployed",
+      "sha256": "c5f4bff75398edc6961f21a8f6c5916008a3b9ce9895fd627b95bf9d4fc5706b",
+      "tag": "v13.1.0",
+      "commit": "6095cb17bfdbded5aa4ea84c18a4b69fd9574cca",
+      "go": "go1.26.7",
+      "built": "2026-09-18T12:54:14Z",
+      "recipe": "images/windows/build-forgejo-runner.sh in golang:1.26.7",
+      "reproduced": "same SHA-256 from a second build in a fresh container on the same machine"
     }
   ]
 }
