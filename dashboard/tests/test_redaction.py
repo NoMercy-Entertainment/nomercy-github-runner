@@ -107,6 +107,18 @@ class TestLogLines:
         redact.RedactingStream(out, broken).write("still logged\n")
         assert out.getvalue() == "still logged\n"
 
+    def test_it_is_a_text_stream_to_whoever_asks(self):
+        """click probes a stream by writing b"" to it; one that accepts it is
+        taken for binary and sent bytes. Measured on the live dashboard: its
+        banner came out as b'...'."""
+        import click
+        out = io.StringIO()
+        stream = redact.RedactingStream(out, lambda: [SENTINEL])
+        with pytest.raises(TypeError):
+            stream.write(b"")
+        click.echo(" * Serving Flask app 'app'", file=stream)
+        assert out.getvalue() == " * Serving Flask app 'app'\n"
+
     def test_the_dashboard_installs_it_when_it_starts(self):
         with open(os.path.join(HERE, "app.py"), encoding="utf-8") as fh:
             tree = ast.parse(fh.read())

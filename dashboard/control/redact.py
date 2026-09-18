@@ -115,6 +115,12 @@ class RedactingStream:
         self._secrets = secrets
 
     def write(self, text):
+        # A text stream refuses bytes, and so must this one: click decides
+        # whether a stream is binary by writing b"" to it, and a stream that
+        # took it was then sent bytes - the Flask banner came out as b'...'.
+        if not isinstance(text, str):
+            raise TypeError(f"write() argument must be str, not "
+                            f"{type(text).__name__}")
         try:
             values = self._secrets() or ()
         except Exception:           # noqa: BLE001 - never lose a log line
