@@ -78,4 +78,27 @@
     # The admin account cloud-init makes in every guest, reached by SSH with
     # a key made for this platform only.
     AdminUser     = 'rnr-admin'
+
+    # OPEN-2 and OPEN-3: the Windows worker is this host, its runners process
+    # trees under their own virtual accounts. Everything it installs is under
+    # Root, and every binary is checked against the hash pinned here.
+    Windows = @{
+        HostId        = 'beast-unit'
+        Root          = 'C:\ProgramData\nomercy'
+        # A Python of its own: the one on this host is a per-user Store app,
+        # which a service's virtual account cannot run.
+        PythonUrl     = 'https://www.python.org/ftp/python/3.13.14/python-3.13.14-embed-amd64.zip'
+        PythonSha256  = '90b4e5b9898b72d744650524bff92377c367f44bd5fbd09e3148656c080ad907'
+        # A copy of the NSSM the Windows runner already runs under, 2.24,
+        # identified by hash - never by running it (`nssm version` opens a
+        # window and blocks).
+        NssmSource    = 'C:\forgejo-runner\nssm.exe'
+        NssmSha256    = 'f689ee9af94b00e9e3f0bb072b34caaf207f32dcb4f5782fc9ca351df9a06c97'
+        Template      = 'forgejo-runner-v13.1.0-windows'
+        RunnerBinary  = 'D:\HyperV\runner-platform\artefacts\forgejo-runner-v13.1.0\forgejo-runner-v13.1.0-windows-amd64.exe'
+        RunnerSha256  = '82ea01bc63c3ba60526576f3d8ac491a1e77db0f8d3d55cc37bd39666a5f04c8'
+        MaxRunners    = 2
+        RunnerMemGB   = 8
+        PilotLabel    = 'rnr-pilot-windows:host'
+    }
 }

@@ -68,10 +68,17 @@ try {
     # Each unit is held to what a worker declared room for per runner, so one
     # runaway job cannot take its worker - and the agent on it - down.
     $unitMemGB = ($workers | ForEach-Object { $s.VMs[$_].RunnerMemGB } | Measure-Object -Minimum).Minimum
+    $win = $s.Windows
     $controllerEnv = ($wanted | ForEach-Object { "$_=$($values[$_])" }) + @(
         "FORGEJO_RUNNER_LABELS=$PilotLabel",
         "RUNNER_UNIT_IMAGE_FORGEJO_LINUX=nomercy/runner-unit-forgejo:$version",
         "RUNNER_UNIT_MEMORY_FORGEJO_LINUX=${unitMemGB}g",
+        # The Windows cell (Install-WindowsWorker.ps1): available once its
+        # self-built artefact is named, units made from its template.
+        "FORGEJO_RUNNER_ARTIFACT_WINDOWS=$($win.Template) sha256:$($win.RunnerSha256)",
+        "FORGEJO_RUNNER_LABELS_WINDOWS=$($win.PilotLabel)",
+        "RUNNER_UNIT_IMAGE_FORGEJO_WINDOWS=$($win.Template)",
+        "RUNNER_UNIT_MEMORY_FORGEJO_WINDOWS=$($win.RunnerMemGB)g",
         "CONTROL_INTERVAL=15")
 
     # --- the control plane ------------------------------------------------------

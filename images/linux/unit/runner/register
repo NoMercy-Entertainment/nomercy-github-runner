@@ -63,9 +63,12 @@ case "$RUNNER_KIND" in
     ./config.sh --unattended --replace --disableupdate >&2
     ;;
   forgejo)
+    # Bounded: forgejo-runner pings an unreachable instance for ever, and the
+    # agent gives up on this after 120 s, leaving it running in the unit.
     cd "$RUNNER_REG_DIR"
-    "$FORGEJO_RUNNER_BIN" register --no-interactive --instance "$url" \
-      --token "$(field token)" --name "$name" --labels "$labels" >&2
+    timeout 90 "$FORGEJO_RUNNER_BIN" register --no-interactive \
+      --instance "$url" --token "$(field token)" --name "$name" \
+      --labels "$labels" >&2
     ;;
 esac
 

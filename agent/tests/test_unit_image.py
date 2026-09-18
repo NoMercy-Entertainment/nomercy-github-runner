@@ -105,3 +105,10 @@ class TestDeregistration:
 def test_every_script_parses(script):
     subprocess.run(["bash", "-n", os.path.join(UNIT, "runner", script)],
                    check=True)
+
+
+def test_forgejo_registration_is_bounded():
+    """It pings an unreachable instance for ever; the agent stops waiting
+    after 120 s and would leave it running in the unit."""
+    assert re.search(r"timeout 90 \"\$FORGEJO_RUNNER_BIN\" register",
+                     branch(read("runner", "register"), "forgejo"))
