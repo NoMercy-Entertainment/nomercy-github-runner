@@ -437,9 +437,16 @@ class Reconciler:
             self._fail(spec, operation, e, report, "register")
             return
         spec = self.service.specs.get(spec["runner_id"])
+        extra = {}
+        if result.get("drift"):
+            # Registered and online, but not with what the fleet asked for.
+            # Not a failure - the runner works - and not silent either.
+            extra["last_error"] = (f"{_iso(_now())} registered with other "
+                                   f"labels than the fleet's: "
+                                   f"{result['drift']}"[:500])
         self._move(spec, "idle",
                    registration_id=result.get("registration_id"),
-                   registration_uuid=result.get("registration_uuid"))
+                   registration_uuid=result.get("registration_uuid"), **extra)
         report.did("register", spec["runner_id"])
 
     def _do_start(self, spec, operation, report):

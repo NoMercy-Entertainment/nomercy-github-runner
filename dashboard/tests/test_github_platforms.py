@@ -264,3 +264,90 @@ class TestTheAdapterKnowsNothingElseAboutPlatforms:
                 imported.add(node.module.split(".")[0])
         assert not imported & {"runtime", "docker_ops", "app", "control",
                                "agent"}
+
+
+# ---------------------------------------------------------------------------
+# T-0902: the fleet's labels and group reach the forge, and a drift shows
+# ---------------------------------------------------------------------------
+
+from tests.test_partial_failure import GH as GH_FLEET  # noqa: E402
+from tests.test_partial_failure import passes, the_runner  # noqa: E402,F401
+from tests.test_partial_failure import world  # noqa: E402,F401
+
+
+class TestLabelDrift:
+    def test_githubs_own_labels_are_not_drift(self):
+        record = {"labels": ["self-hosted", "Linux", "X64", "gpu"]}
+        assert GH.registration_drift({"labels": "gpu"}, record) is None
+
+    def test_a_missing_label_is(self):
+        record = {"labels": ["self-hosted", "Linux", "X64"]}
+        assert "missing labels gpu" in GH.registration_drift(
+            {"labels": "self-hosted,gpu"}, record)
+
+    def test_an_extra_one_is(self):
+        record = {"labels": ["self-hosted", "Linux", "X64", "windows-only"]}
+        assert "unexpected labels windows-only" in GH.registration_drift(
+            {"labels": "self-hosted"}, record)
+
+    def test_a_different_group_is(self):
+        record = {"labels": ["self-hosted"], "runner_group": "Default"}
+        assert "runner group is 'Default'" in GH.registration_drift(
+            {"labels": "self-hosted", "runner_group": "Stoney"}, record)
+
+    def test_a_record_that_says_nothing_is_not_drift(self):
+        """Unknown proves nothing either way."""
+        assert GH.registration_drift({"labels": "gpu"}, {"id": 1}) is None
+        assert GH.registration_drift({"labels": "gpu"}, None) is None
+
+    def test_forgejo_compares_names_not_how_they_run(self):
+        record = {"labels": ["docker", "ubuntu-latest"]}
+        assert P.FORGEJO.registration_drift(
+            {"labels": "docker:docker://node:20,ubuntu-latest:docker://x"},
+            record) is None
+        assert "missing labels arm" in P.FORGEJO.registration_drift(
+            {"labels": "docker:docker://node:20,arm:host"}, record)
+
+
+class TestADriftIsVisible:
+    def _with_labels(self, forges, labels, group=None):
+        plain = forges.records
+
+        def records(provider):
+            return [dict(r, labels=list(labels),
+                         **({"runner_group": group} if group else {}))
+                    for r in plain(provider)]
+        forges.records = records
+
+    def test_the_fleets_labels_reach_the_registration(self, world):
+        service, flow, agent, forges, reconciler = world
+        from store import schema as _schema
+        with _schema.connect(service.specs.path) as c:
+            c.execute("UPDATE fleets SET labels = ?, runner_group = ?"
+                      " WHERE fleet_id = ?",
+                      ('["self-hosted", "gpu"]', "Stoney", GH_FLEET))
+        seen = []
+        real = agent.register
+        agent.register = lambda h, ref, plan: (
+            seen.append((plan.labels, plan.runner_group)),
+            real(h, ref, plan))[1]
+        self._with_labels(forges, ["self-hosted", "Linux", "X64", "gpu"],
+                          "Stoney")
+        service.create(GH_FLEET)
+        passes(service, reconciler)
+        assert seen == [("self-hosted,gpu", "Stoney")]
+        assert the_runner(service)["last_error"] is None
+
+    def test_a_drift_is_recorded_on_the_runner_and_it_still_serves(
+            self, world):
+        service, flow, agent, forges, reconciler = world
+        from store import schema as _schema
+        with _schema.connect(service.specs.path) as c:
+            c.execute("UPDATE fleets SET labels = ? WHERE fleet_id = ?",
+                      ('["self-hosted", "gpu"]', GH_FLEET))
+        self._with_labels(forges, ["self-hosted", "Linux", "X64"])
+        service.create(GH_FLEET)
+        passes(service, reconciler)
+        runner = the_runner(service)
+        assert runner["actual_state"] == "idle"
+        assert "missing labels gpu" in runner["last_error"]

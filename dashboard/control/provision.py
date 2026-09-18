@@ -274,6 +274,10 @@ class ProvisioningFlow:
             "registration_id": str(result.get("registration_id") or ""),
             "registration_uuid": result.get("registration_uuid"),
         }
+        # What was asked for, kept to compare with what the forge then shows
+        # (T-0902). Labels and group only - not the token.
+        state["expect"] = {"labels": state["plan"].labels,
+                           "runner_group": state["plan"].runner_group}
         # The plan has done its one job; nothing after this step needs it.
         state["plan"] = None
 
@@ -287,8 +291,19 @@ class ProvisioningFlow:
         waited = 0
         while True:
             if self._ready(state["host_id"], state["ref"]):
-                seen = provider.job_state(probe, self._records(provider))
+                records = self._records(provider)
+                seen = provider.job_state(probe, records)
                 if seen in (providers.IDLE, providers.BUSY):
+                    # Online. Whether it registered with what the fleet
+                    # asked for is a separate question, answered here and
+                    # recorded rather than failed on: a runner with a wrong
+                    # label still works, it just takes the wrong jobs, and
+                    # that has to be visible (T-0902).
+                    drift = provider.registration_drift(
+                        state.get("expect") or {},
+                        provider.record_for(probe, records))
+                    if drift:
+                        state["registration"]["drift"] = drift
                     return
             if waited >= self.verify_timeout:
                 raise TimeoutError(

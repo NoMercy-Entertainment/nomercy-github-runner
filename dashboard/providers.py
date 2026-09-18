@@ -236,6 +236,17 @@ class Provider:
         or it was already gone; False otherwise, never an exception."""
         raise NotImplementedError
 
+    def record_for(self, spec, forge_records):
+        """This runner's own record in the forge's list, or None."""
+        raise NotImplementedError
+
+    def registration_drift(self, expected, record):
+        """How the forge's record differs from what the runner was registered
+        with - labels and runner group - as one line, or None when they agree
+        or the record says nothing either way (T-0902). Unknown is not drift:
+        a record without labels proves nothing about them."""
+        raise NotImplementedError
+
     def job_state(self, spec, forge_records):
         """busy, idle, offline or unknown, from the forge's own record.
 
@@ -368,6 +379,42 @@ class _GitHub(Provider):
             return False
         return client.delete_runner(registration_id)
 
+    def record_for(self, spec, forge_records):
+        """Matched on the registration id GitHub gave it - never the name,
+        which GitHub does not keep unique."""
+        rid = str((spec or {}).get("registration_id") or "")
+        if not rid or not forge_records:
+            return None
+        return next((r for r in forge_records
+                     if isinstance(r, dict) and str(r.get("id")) == rid),
+                    None)
+
+    #: Labels GitHub adds to every self-hosted runner by itself. Their being
+    #: there is not drift.
+    _AUTOMATIC = frozenset({"self-hosted", "Linux", "Windows", "macOS", "X64",
+                            "ARM64", "ARM"})
+
+    def registration_drift(self, expected, record):
+        if not isinstance(record, dict):
+            return None
+        expected = expected or {}
+        parts = []
+        if isinstance(record.get("labels"), list):
+            want = {x.strip() for x in (expected.get("labels") or "").split(",")
+                    if x.strip()}
+            have = {str(x) for x in record["labels"]}
+            missing = sorted(want - have)
+            extra = sorted(have - want - self._AUTOMATIC)
+            if missing:
+                parts.append("missing labels " + ", ".join(missing))
+            if extra:
+                parts.append("unexpected labels " + ", ".join(extra))
+        group, seen = expected.get("runner_group"), record.get("runner_group")
+        if group and seen and seen != group:
+            parts.append(f"runner group is {seen!r}, the fleet asks for "
+                         f"{group!r}")
+        return "; ".join(parts) or None
+
     def job_state(self, spec, forge_records):
         """From GitHub's runner list, matched on the registration id.
 
@@ -376,14 +423,7 @@ class _GitHub(Provider):
         completion line scrolled out of the tail used to read as still
         running.
         """
-        if forge_records is None:
-            return UNKNOWN
-        rid = str((spec or {}).get("registration_id") or "")
-        if not rid:
-            return UNKNOWN
-        record = next((r for r in forge_records
-                       if isinstance(r, dict) and str(r.get("id")) == rid),
-                      None)
+        record = self.record_for(spec, forge_records)
         if record is None:
             return UNKNOWN
         if record.get("busy"):
@@ -540,17 +580,37 @@ class _Forgejo(Provider):
         the forge says offline is the failure that has already been missed
         once on this fleet.
         """
-        if forge_records is None:
-            return UNKNOWN
-        uuid = (spec or {}).get("registration_uuid")
-        if not uuid:
-            return UNKNOWN
-        record = next((r for r in forge_records
-                       if isinstance(r, dict) and r.get("uuid") == uuid),
-                      None)
+        record = self.record_for(spec, forge_records)
         if record is None:
             return UNKNOWN
         return self._STATUS.get(record.get("status") or "", UNKNOWN)
+
+    def record_for(self, spec, forge_records):
+        """Matched on the registration uuid, which Forgejo's records carry
+        and its ids alone do not identify across instances."""
+        uuid = (spec or {}).get("registration_uuid")
+        if not uuid or not forge_records:
+            return None
+        return next((r for r in forge_records
+                     if isinstance(r, dict) and r.get("uuid") == uuid), None)
+
+    def registration_drift(self, expected, record):
+        """Forgejo keeps a label's name; the `:docker://image` part tells the
+        runner how to run it and is not what a job matches on. So names are
+        compared, both sides reduced to the part before the first colon."""
+        if not isinstance(record, dict) or not isinstance(
+                record.get("labels"), list):
+            return None
+        want = {x.split(":", 1)[0].strip()
+                for x in ((expected or {}).get("labels") or "").split(",")
+                if x.strip()}
+        have = {str(x).split(":", 1)[0] for x in record["labels"]}
+        parts = []
+        if want - have:
+            parts.append("missing labels " + ", ".join(sorted(want - have)))
+        if have - want:
+            parts.append("unexpected labels " + ", ".join(sorted(have - want)))
+        return "; ".join(parts) or None
 
     def deregistration(self, spec):
         """Only the API can delete a Forgejo runner record.
