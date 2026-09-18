@@ -179,3 +179,48 @@ actually done" has one answer (ACC-19).
   A person using Docker Desktop or the CLI is also possible.
 - **Action:** none. The runner was left stopped, pending the operator's
   word, because it may have been stopped on purpose.
+
+## 2026-09-18 - github-runner-1: why its docker-build jobs hang at "Check Available Space"
+
+- **Reported by:** the operator. Job
+  <https://github.com/NoMercy-Entertainment/nomercy-ffmpeg/actions/runs/35347449994/job/105607264536>
+  printed "Checking available disk space..." and nothing more. This solves
+  the previous entry: that job was on `github-runner-1`, which is registration
+  `nomercy-vn6jx`. It hung from 12:57:59Z until the container was stopped at
+  13:54:35Z.
+- **The step** (nomercy-ffmpeg `reusable-docker-build.yml`) runs `df -h`,
+  `free -h` and `df -h /tmp`.
+- **Only runner-1, and every docker-build job on it** (dashboard history plus
+  its own log):
+  - 17 Sept, 11:14Z (`nomercy-efi7l`, runner-1): hung for 4 h, then
+    cancelled.
+  - 17 Sept, 20:53Z (runner-1): ran until the container was stopped at
+    00:40Z.
+  - 18 Sept, 12:57Z (runner-1): hung until 13:54Z.
+
+  Its short jobs, which have no `df` step, succeeded. Across the last 34
+  nomercy-ffmpeg runs, no other runner had a slow disk check. The re-run of
+  the job succeeded on github-runner-9 at 14:04Z.
+- **What runner-1 is:**
+  - Its configuration is identical to github-runner-2's apart from cpuset
+    (0-15 against 4-19).
+  - Like runners 2, 3 and 5-10, the live container has no volume for its
+    nested engine. The engine runs fuse-overlayfs on the container's own
+    writable layer. `docker-compose.runners.yml` already declares a volume
+    for runners 1-6, but only github-runner-4 has been recreated with one.
+  - The writable layers of runners 1 and 2 are too large for `du` to finish
+    in 120 s. Runner-4's layer is 705 MB.
+- **Started again at 14:35Z** (the operator's go) and probed at once:
+  - `df -h` answered, and every mount answered `statfs` within 5 s.
+  - The nested dockerd sat in D state (`submit_bio_wait`,
+    `folio_wait_bit_common`). Loading the graphdriver took 27 s, where it
+    takes 1-2 s elsewhere.
+  - It came up. The runner has been `Listening for Jobs` since 14:37:03Z.
+- **Conclusion, and its limit:** the hang belongs to runner-1's own
+  persistent state, its fuse-overlayfs data root in an oversized writable
+  layer, and it survives restarts. The stall could not be caught live, so
+  which call blocks `df` is inferred, not observed.
+- **Fix proposed, not applied:** recreate runner-1 with the volume the compose
+  file declares (overlay2, a fresh layer, as runner-4), then put cpuset 0-15
+  back. The recreate was refused by this session's permission check, and it
+  waits for the operator.
