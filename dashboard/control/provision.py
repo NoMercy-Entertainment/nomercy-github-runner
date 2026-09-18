@@ -158,8 +158,13 @@ class ProvisioningFlow:
 
     # ---- the two adapters, looked up per cell ------------------------------
 
-    def _runtime(self, spec):
-        return self.service.runtime_for(spec["provider"], spec["platform"])()
+    def _runtime(self, spec, host_id=None):
+        """The cell's runtime, bound to the runner's worker - `host_id` when
+        the caller knows it before the spec records it, as the steps of one
+        pass do."""
+        if host_id and not spec.get("host_id"):
+            spec = dict(spec, host_id=host_id)
+        return self.service.runtime(spec)
 
     def _provider(self, spec):
         return providers.by_key(spec["provider"])
@@ -218,7 +223,7 @@ class ProvisioningFlow:
         collision with itself.
         """
         from store import storage
-        runtime = self._runtime(spec)
+        runtime = self._runtime(spec, state["host_id"])
         name = storage.unit_name(spec["runner_id"])
         ref = self._ref(spec, handle=name)
         try:
@@ -430,8 +435,8 @@ class ProvisioningFlow:
             ref = self._ref(spec)
         if ref is None:
             ref = self._ref(spec, handle=storage.unit_name(spec["runner_id"]))
-        retry.call(AGENT_SLOW, self._runtime(spec).remove, ref,
-                   keep_data=False)
+        retry.call(AGENT_SLOW, self._runtime(spec, state.get("host_id")).remove,
+                   ref, keep_data=False)
 
     def _undo_deregister(self, spec, state):
         """Safe if nothing was registered. A registration whose reply was lost

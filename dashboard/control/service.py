@@ -85,13 +85,16 @@ class UnknownRunner(Exception):
 
 class RunnerService:
     def __init__(self, path=None, specs=None, fleets=None, operations=None,
-                 inventory=None, runtimes=None):
+                 inventory=None, runtimes=None, agents=None):
         self.specs = specs or SpecStore(path)
         self.fleets = fleets or FleetStore(path)
         self.operations = operations or OperationStore(path)
         self.inventory = inventory or Inventory(path)
         #: Injectable so a test can prove the lookup is data-driven.
         self.runtimes = RUNTIMES if runtimes is None else runtimes
+        #: How workers are reached (control/agent_runtime.AgentWiring), set by
+        #: the controller process. None where nothing runs on a worker.
+        self.agents = agents
 
     # ---- which runtime runs a cell -----------------------------------------
 
@@ -111,6 +114,14 @@ class RunnerService:
         module_name, _, attribute = target.partition(":")
         module = importlib.import_module(module_name)
         return getattr(module, attribute)
+
+    def runtime(self, spec):
+        """The runtime adapter for one runner. One whose units live on a
+        worker is bound to that runner's worker (`for_runner`); one that runs
+        where the controller runs is simply made."""
+        factory = self.runtime_for(spec["provider"], spec["platform"])
+        bind = getattr(factory, "for_runner", None)
+        return bind(self, spec) if bind is not None else factory()
 
     def can_execute(self, provider_key, platform):
         return (provider_key, platform) in self.runtimes
@@ -518,7 +529,7 @@ class RunnerService:
 
     def _runtime_and_ref(self, spec):
         from runtime.base import ExecUnitKind, ExecUnitRef
-        runtime = self.runtime_for(spec["provider"], spec["platform"])()
+        runtime = self.runtime(spec)
         ref = ExecUnitRef(kind=ExecUnitKind(EXEC_KINDS[spec["platform"]]),
                           handle=spec["exec_unit_ref"])
         return runtime, ref

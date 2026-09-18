@@ -480,10 +480,16 @@ class Reconciler:
             extra["last_error"] = (f"{_iso(_now())} registered with other "
                                    f"labels than the fleet's: "
                                    f"{result['drift']}"[:500])
-        self._move(spec, "idle",
-                   registration_id=result.get("registration_id"),
-                   registration_uuid=result.get("registration_uuid"), **extra)
+        spec = self._move(spec, "idle",
+                          registration_id=result.get("registration_id"),
+                          registration_uuid=result.get("registration_uuid"),
+                          **extra)
         report.did("register", spec["runner_id"])
+        # Closed now rather than on the next pass: a runner that is serving
+        # with its creation still "in flight" refuses every action asked of
+        # it until then, for no reason anyone could see.
+        if operation:
+            self._close_if_fulfilled(spec, operation, report)
 
     def _do_start(self, spec, operation, report):
         self._attempt(operation, "starting")
