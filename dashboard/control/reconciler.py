@@ -530,7 +530,10 @@ class Reconciler:
         except Exception as e:                  # noqa: BLE001
             self._fail(spec, operation, e, report, "deregister")
             return
-        self._move(spec, "removing")
+        # The record is gone, so the spec stops naming it: a later step that
+        # finds ids here takes them to mean a record still exists.
+        self._move(spec, "removing", registration_id=None,
+                   registration_uuid=None)
         report.did("deregister", spec["runner_id"])
 
     def _do_remove(self, spec, operation, report):
@@ -540,6 +543,23 @@ class Reconciler:
         under the same runner_id, which is what lets it find its storage by
         name. Anything else removes the storage too and ends at absent.
         """
+        if spec.get("registration_id") or spec.get("registration_uuid"):
+            # Still registered. The machine takes `failed` straight to
+            # `removing`, and a runner can fail with its record intact - so
+            # the record goes first, before the runner even moves, and a
+            # removal that cannot get rid of it keeps the unit rather than
+            # stranding the record (T-0903).
+            self._attempt(operation, "deregistering before removal")
+            try:
+                self.executor.deregister(spec)
+            except Exception as e:              # noqa: BLE001
+                self._fail(spec, operation, e, report,
+                           "deregister before remove - the unit is kept")
+                return
+            self.service.specs.update(spec["runner_id"], spec["spec_version"],
+                                      registration_id=None,
+                                      registration_uuid=None)
+            spec = self.service.specs.get(spec["runner_id"])
         if spec["actual_state"] == "failed":
             spec = self._move(spec, "removing")
         recreating = bool(operation and operation["verb"] == "recreate")

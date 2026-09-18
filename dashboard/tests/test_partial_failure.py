@@ -440,3 +440,174 @@ class TestAnOverdueOperationIsCarriedOnAfterARestart:
             "stopped"
         assert service.operations.get(operation_id)["state"] == "succeeded"
         assert service.operations.overdue() == []
+
+
+class TestNoUnitIsRemovedBeforeItsRecord:
+    """T-0903. The reverse order is what strands a registration: once the
+    unit is gone, the runner's own credentials are gone with it, and for
+    Forgejo nothing but the API can delete the record at all. So every path
+    that removes a unit removes the record first, and a record that cannot be
+    removed keeps the unit - a half instance that can still be cleaned up,
+    rather than an orphan that cannot."""
+
+    @pytest.fixture
+    def events(self, world, monkeypatch):
+        """One ordered log of what happened to records and units."""
+        service, flow, agent, forges, reconciler = world
+        seen = []
+        real_dereg, real_delete = agent.deregister, forges.delete
+        real_remove = UnitRuntime.remove
+
+        def dereg(host, ref):
+            seen.append(("record", "agent"))
+            return real_dereg(host, ref)
+
+        def delete(provider, rid):
+            seen.append(("record", "api"))
+            return real_delete(provider, rid)
+
+        def remove(self, ref, keep_data=False):
+            seen.append(("unit", ref.handle))
+            return real_remove(self, ref, keep_data)
+
+        agent.deregister = dereg
+        forges.delete = delete
+        monkeypatch.setattr(UnitRuntime, "remove", remove)
+        return seen
+
+    def serving(self, world, fid=GH):
+        service, flow, agent, forges, reconciler = world
+        service.scale_up(fid)
+        passes(service, reconciler)
+        spec = the_runner(service, fid)
+        assert spec["actual_state"] == "idle"
+        return spec
+
+    def stopped(self, world, fid=GH):
+        """Serving, then stopped: where an ordinary remove starts from."""
+        service, flow, agent, forges, reconciler = world
+        spec = self.serving(world, fid)
+        service.stop(spec["runner_id"])
+        passes(service, reconciler)
+        spec = the_runner(service, fid)
+        assert spec["actual_state"] == "stopped"
+        return spec
+
+    def failed_but_registered(self, world, fid=GH):
+        """A runner that failed with its record still at the forge."""
+        service, flow, agent, forges, reconciler = world
+        spec = self.serving(world, fid)
+        with schema.connect(service.specs.path) as c:
+            c.execute("UPDATE runner_specs SET actual_state = 'failed'"
+                      " WHERE runner_id = ?", (spec["runner_id"],))
+        return service.specs.get(spec["runner_id"])
+
+    @staticmethod
+    def gone(forges, spec):
+        """This runner's unit and record are both gone. Not `nothing_left`:
+        the fleet still wants its capacity and plans a replacement."""
+        unit = storage.unit_name(spec["runner_id"])
+        return unit not in UnitRuntime.units and             unit not in forges.live_handles()
+
+    @staticmethod
+    def record_first(events):
+        units = [i for i, e in enumerate(events) if e[0] == "unit"]
+        records = [i for i, e in enumerate(events) if e[0] == "record"]
+        return bool(records) and all(r < u for u in units for r in records[:1])
+
+    # ---- every removal path ---------------------------------------------
+
+    def test_an_ordinary_remove(self, world, events):
+        service, flow, agent, forges, reconciler = world
+        spec = self.stopped(world)
+        service.remove(spec["runner_id"])
+        passes(service, reconciler)
+        assert self.record_first(events), events
+        assert self.gone(forges, spec)
+
+    def test_a_recreate(self, world, events):
+        service, flow, agent, forges, reconciler = world
+        spec = self.stopped(world)
+        service.recreate(spec["runner_id"])
+        passes(service, reconciler)
+        assert self.record_first(events), events
+
+    @pytest.mark.parametrize("fid", [GH, FJ])
+    def test_a_remove_from_failed_deregisters_first(self, world, events, fid):
+        """The machine takes `failed` straight to `removing`. A runner can
+        fail with its record intact, so the removal must not skip it."""
+        service, flow, agent, forges, reconciler = world
+        spec = self.failed_but_registered(world, fid)
+        service.remove(spec["runner_id"])
+        passes(service, reconciler)
+        assert self.record_first(events), events
+        assert self.gone(forges, spec)
+
+    def test_a_compensation(self, world, events):
+        service, flow, agent, forges, reconciler = world
+        forges.online = False
+        service.scale_up(GH)
+        passes(service, reconciler, 2)
+        assert self.record_first(events), events
+
+    # ---- a record that cannot be removed keeps the unit ------------------
+
+    def test_a_failed_remove_keeps_the_unit(self, world, events):
+        service, flow, agent, forges, reconciler = world
+        spec = self.failed_but_registered(world, FJ)
+        forges.delete_ok = False
+        service.remove(spec["runner_id"])
+        passes(service, reconciler)
+        assert not any(e[0] == "unit" for e in events), events
+        spec = service.specs.get(spec["runner_id"])
+        assert spec["registration_id"], "the record is still named"
+        assert "the unit is kept" in spec["last_error"]
+
+    def test_a_failed_compensation_keeps_the_unit(self, world, events):
+        """Forgejo's record cannot be deleted, so the unit it belongs to is
+        not removed either - and the error says both."""
+        service, flow, agent, forges, reconciler = world
+        forges.online = False
+        forges.delete_ok = False
+        spec = service.specs.get(service.planned_ids(
+            service.plan(FJ, 1, env=ENV))[0])
+        result = flow.provision(spec)
+        service.specs.update(spec["runner_id"], spec["spec_version"],
+                             actual_state="provisioned", **result)
+        spec = service.specs.get(spec["runner_id"])
+        from control.provision import StepFailed
+        with pytest.raises(StepFailed) as caught:
+            flow.register(spec)
+        assert "remove_unit" not in caught.value.compensated
+        assert "not run" in str(caught.value)
+        assert storage.unit_name(spec["runner_id"]) in UnitRuntime.units
+
+    # ---- GitHub, which deregisters itself ---------------------------------
+
+    def test_a_runner_that_cannot_deregister_itself_is_removed_by_id(
+            self, world, events):
+        """Its unit is gone, its worker is silent, or it holds no credential
+        to do it with. The record is deleted through the API, which needs
+        nothing from the unit - and only then is the unit removed."""
+        service, flow, agent, forges, reconciler = world
+        spec = self.stopped(world)
+        agent.fail_on = {"deregister"}
+        service.remove(spec["runner_id"])
+        passes(service, reconciler)
+        assert ("record", "api") in events
+        assert self.record_first(events), events
+        assert self.gone(forges, spec)
+
+    def test_but_never_from_under_a_job(self, world, events):
+        """MIG-9: deleting the record of a runner the forge shows busy would
+        abort its job."""
+        service, flow, agent, forges, reconciler = world
+        spec = self.failed_but_registered(world)
+        agent.fail_on = {"deregister"}
+        forges.busy.add(spec["registration_id"])
+        service.remove(spec["runner_id"])
+        passes(service, reconciler)
+        assert ("record", "api") not in events
+        assert not any(e[0] == "unit" for e in events)
+        assert "running a job" in service.specs.get(
+            spec["runner_id"])["last_error"]

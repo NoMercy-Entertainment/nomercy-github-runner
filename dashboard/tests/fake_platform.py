@@ -37,8 +37,10 @@ class FakeAgent:
                 "registration_uuid": f"uuid-{ref.handle}"}
 
     def deregister(self, host_id, ref):
-        self.calls.append(("deregister", host_id, ref.handle))
+        # Recorded only once it has happened: the forge's view is built from
+        # these calls, and a deregistration that failed left the record there.
         self._maybe_fail("deregister")
+        self.calls.append(("deregister", host_id, ref.handle))
 
     def drain(self, host_id, ref):
         self.calls.append(("drain", host_id, ref.handle))

@@ -353,8 +353,24 @@ class ProvisioningFlow:
         return result()
 
     def _compensate(self, spec, failed_step, state):
+        return self._undo(spec, COMPENSATIONS[failed_step], state)
+
+    def _undo(self, spec, actions, state):
+        """Run compensations in order. **A unit is never removed after its
+        deregistration failed** (T-0903): the unit is where the runner's own
+        credentials are, and with the record still at the forge, removing it
+        is what strands a registration for good. Both are left, and the error
+        says so - a half instance that can still be cleaned up, rather than
+        an orphan that cannot."""
         done, errors = [], []
-        for action in COMPENSATIONS[failed_step]:
+        for action in actions:
+            if action == "remove_unit" and any(
+                    e.startswith("deregister:") for e in errors):
+                self.trail.append("skip:remove_unit")
+                errors.append("remove_unit: not run - the forge record is "
+                              "still there, and the unit is kept so it can "
+                              "still be removed")
+                continue
             self.trail.append(f"undo:{action}")
             try:
                 getattr(self, f"_undo_{action}")(spec, state)
@@ -404,8 +420,33 @@ class ProvisioningFlow:
                     f"than strand it")
         else:
             # GitHub: the runner deregisters itself when told to.
-            retry.call(AGENT_SLOW, self.agent.deregister,
-                       spec.get("host_id"), ref or self._ref(spec))
+            try:
+                retry.call(AGENT_SLOW, self.agent.deregister,
+                           spec.get("host_id"), ref or self._ref(spec))
+                return
+            except Exception as e:              # noqa: BLE001
+                own = e
+            self._delete_record_instead(provider, spec, plan, own)
+
+    def _delete_record_instead(self, provider, spec, plan, cause):
+        """A runner that could not deregister itself - its unit is gone, or
+        its worker is not answering, or it holds no credential to do it with
+        - still has a record the forge can delete by id, needing nothing from
+        the unit. Done only when the forge does not show it running a job:
+        deleting the record from under one would abort it (MIG-9)."""
+        if not plan.registration_id:
+            raise cause
+        if provider.job_state(spec, self._records(provider)) == \
+                providers.BUSY:
+            raise RuntimeError(
+                f"the runner could not deregister itself ({cause}) and the "
+                f"forge shows it running a job; its record is not deleted "
+                f"from under it")
+        if not retry.call(FORGE_DELETE, self.forges.delete, provider,
+                          plan.registration_id):
+            raise RuntimeError(
+                f"the runner could not deregister itself ({cause}) and the "
+                f"forge did not delete registration {plan.registration_id}")
 
     def deregister(self, spec):
         self._deregister(spec)
@@ -426,13 +467,7 @@ class ProvisioningFlow:
                      "registration_uuid": spec.get("registration_uuid")}}
         if spec.get("exec_unit_ref"):
             state["ref"] = self._ref(spec)
-        done, errors = [], []
-        for action in COMPENSATIONS["verify_online"]:
-            try:
-                getattr(self, f"_undo_{action}")(spec, state)
-                done.append(action)
-            except Exception as e:          # noqa: BLE001
-                errors.append(f"{action}: {e}")
+        done, errors = self._undo(spec, COMPENSATIONS["verify_online"], state)
         if errors:
             raise StepFailed("abandon", "could not finish undoing", done,
                              errors)
