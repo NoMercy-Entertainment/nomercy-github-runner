@@ -1,0 +1,222 @@
+{% extends "base.html" %}
+{% block title %}NoMercy Runners · v2{% endblock %}
+
+{% block style %}
+.fleet{margin-bottom:22px}
+.fleet-head{font-family:var(--label);font-size:12px;letter-spacing:.18em;
+  text-transform:uppercase;color:var(--text-dim);margin-bottom:8px;font-weight:600;
+  display:flex;gap:10px;align-items:baseline}
+.fcount{font-size:10px;letter-spacing:.08em;color:var(--text-faint);text-transform:none;font-weight:400}
+.fleet-actions{display:flex;gap:8px;margin-bottom:14px;flex-wrap:wrap;align-items:center}
+.fleet-actions input{width:5em}
+.unavailable{margin-bottom:8px}
+.grid{display:grid;gap:12px;grid-template-columns:repeat(auto-fill,minmax(330px,1fr))}
+.card{background:var(--bg-panel);border:1px solid var(--rule);padding:14px 15px 13px;
+  position:relative;overflow:hidden;animation:rise .45s cubic-bezier(.2,.7,.3,1) backwards}
+@keyframes rise{from{opacity:0;transform:translateY(9px)}to{opacity:1;transform:none}}
+.card::before{content:"";position:absolute;left:0;top:0;bottom:0;width:2px;background:var(--rule-hot)}
+.card.busy::before{background:var(--busy)}
+.card.idle::before{background:var(--signal-dk)}
+.card.draining::before{background:var(--drain)}
+.card.stopped::before,.card.offline::before,.card.failed::before{background:var(--alert-dk)}
+.card.stopped,.card.offline{opacity:.72}
+.chead{display:flex;align-items:baseline;gap:9px;margin-bottom:3px}
+.cname{font-family:var(--label);font-size:15px;font-weight:600;letter-spacing:.09em;
+  text-transform:uppercase;color:var(--drain);text-decoration:none}
+a.cname:hover{text-decoration:underline}
+.badge{margin-left:auto;font-size:9px;letter-spacing:.16em;text-transform:uppercase;
+  padding:2px 7px;border:1px solid currentColor;color:var(--text-dim)}
+.badge.busy{color:var(--busy)} .badge.draining{color:var(--drain)}
+.badge.stopped,.badge.offline,.badge.failed{color:var(--alert)}
+.creg{font-size:11px;color:var(--text-faint)}
+.annots{display:flex;gap:6px;flex-wrap:wrap;margin-top:6px}
+.annot{font-size:9.5px;letter-spacing:.06em;color:var(--text-dim);border:1px dashed var(--rule);padding:1px 6px}
+.cjob{margin:9px 0 11px;font-size:11.5px;color:var(--busy);
+  border-left:2px solid var(--busy-dk);padding-left:8px;white-space:nowrap;
+  overflow:hidden;text-overflow:ellipsis}
+.cjob.none{color:var(--text-faint);border-color:var(--rule)}
+.cstatus{margin-top:9px}
+.cerr{margin-top:6px;font-size:11px;color:var(--alert)}
+.meter{margin-top:9px}
+.mrow{display:flex;justify-content:space-between;align-items:baseline;font-size:9.5px;
+  letter-spacing:.15em;text-transform:uppercase;color:var(--text-faint);margin-bottom:4px}
+.mval{color:var(--text-dim);font-size:10.5px;font-variant-numeric:tabular-nums;
+  text-transform:none;letter-spacing:.02em}
+.track{position:relative;height:7px;background:var(--bg-inset);border:1px solid var(--rule);overflow:hidden}
+.fill{height:100%;width:0;transition:width .6s cubic-bezier(.2,.7,.3,1);background:var(--signal)}
+.fill.warn{background:var(--busy)} .fill.crit{background:var(--alert)}
+.actions{display:flex;flex-wrap:wrap;gap:6px;margin-top:13px;padding-top:12px;border-top:1px solid var(--rule)}
+.actions button{padding:5px 9px;font-size:9px}
+button[disabled]{opacity:.45;cursor:not-allowed}
+.plane{font-size:11px;color:var(--text-faint);margin-bottom:16px}
+.skel{color:var(--text-faint);padding:18px 0;letter-spacing:.2em;text-transform:uppercase;font-size:11px}
+#toast{position:fixed;right:18px;bottom:18px;max-width:380px;background:var(--bg-panel);
+  border:1px solid var(--rule);border-left:3px solid var(--signal);padding:11px 14px;
+  font-size:11.5px;display:none;z-index:9}
+#toast.show{display:block}
+#toast.bad{border-left-color:var(--alert);color:var(--alert)}
+{% endblock %}
+
+{% block body %}
+<header>
+  <div class="brand">
+    <h1>NoMercy Runners</h1>
+    <div class="sub">Six fleets &middot; one card</div>
+  </div>
+  <div class="stat"><div class="n ok" id="s-online">&mdash;</div><div class="k">Running</div></div>
+  <div class="stat"><div class="n work" id="s-busy">&mdash;</div><div class="k">Busy</div></div>
+  <nav>
+    <a href="/">Fleet</a>
+    <a href="/v2" class="on">Fleet v2</a>
+    <a href="/history">History</a>
+    <a href="/settings">Settings</a>
+    <a href="/logout">Sign out</a>
+  </nav>
+</header>
+
+<div class="plane" id="plane">&mdash;</div>
+<div id="fleets"><div class="skel">Awaiting telemetry</div></div>
+
+<footer><span id="f-gen">Updated &mdash;</span></footer>
+<div id="toast"></div>
+
+<script>
+{% include "_card.js" %}
+
+const $ = id => document.getElementById(id);
+let state = {fleets: [], runners: []};
+const drawn = new Map();        // element id -> the HTML it was last given
+
+function toast(msg, bad) {
+  const t = $('toast');
+  t.textContent = msg;
+  t.className = 'show' + (bad ? ' bad' : '');
+  clearTimeout(t._h);
+  t._h = setTimeout(() => { t.className = ''; }, 6000);
+}
+
+function patch(el, html) {
+  if (drawn.get(el.id) !== html) { el.innerHTML = html; drawn.set(el.id, html); }
+}
+
+function safeId(s) { return String(s).replace(/[^A-Za-z0-9_-]/g, '_'); }
+
+function render(d) {
+  state = d;
+  const byKey = new Map((d.runners || []).map(c => [c.key, c]));
+  $('s-online').textContent = (d.runners || []).filter(c => c.reachable).length;
+  $('s-busy').textContent = (d.runners || []).filter(c => c.state === 'busy').length;
+  $('f-gen').textContent = 'Updated ' + String(d.generated || '').replace('T', ' ').replace('Z', ' UTC');
+  const plane = d.control_plane || {};
+  $('plane').textContent = plane.running ? 'Control plane running'
+    : 'Control plane: ' + (plane.note || 'not running') +
+      ' - showing the runners the v1 collector sees';
+
+  const root = $('fleets');
+  const skel = root.querySelector('.skel');
+  if (skel) skel.remove();
+  const seenFleets = new Set();
+  (d.fleets || []).forEach(f => {
+    const fid = 'fleet-' + safeId(f.fleet_id);
+    seenFleets.add(fid);
+    let sec = document.getElementById(fid);
+    if (!sec) {
+      sec = document.createElement('section');
+      sec.id = fid; sec.className = 'fleet';
+      sec.innerHTML = `<div id="${fid}-head"></div><div class="grid" id="${fid}-grid"></div>`;
+      root.appendChild(sec);
+    }
+    sec.dataset.fleet = f.fleet_id;
+    patch(document.getElementById(fid + '-head'), fleetHeadHTML(f));
+    const grid = document.getElementById(fid + '-grid');
+    const keys = new Set();
+    (f.runners || []).forEach((key, i) => {
+      const c = byKey.get(key);
+      if (!c) return;
+      const cid = 'card-' + safeId(key);
+      keys.add(cid);
+      let el = document.getElementById(cid);
+      if (!el) {
+        el = document.createElement('article');
+        el.id = cid; el.style.animationDelay = (i * 45) + 'ms';
+        grid.appendChild(el);
+      }
+      el.dataset.key = key;
+      const cls = 'card ' + c.state;
+      if (el.className !== cls) el.className = cls;
+      patch(el, cardHTML(c));
+    });
+    [...grid.children].forEach(el => {
+      if (!keys.has(el.id)) { el.remove(); drawn.delete(el.id); }
+    });
+    if (!(f.runners || []).length && !grid.querySelector('.skel')) {
+      grid.innerHTML = '<div class="skel">No runners</div>';
+    } else if ((f.runners || []).length) {
+      const s = grid.querySelector('.skel'); if (s) s.remove();
+    }
+  });
+  [...root.children].forEach(el => {
+    if (el.id && !seenFleets.has(el.id)) el.remove();
+  });
+}
+
+function newKey() {
+  if (window.crypto && crypto.randomUUID) return crypto.randomUUID();
+  return Date.now().toString(36) + '-' + Math.random().toString(36).slice(2);
+}
+
+// Runs one action exactly as its data describes it: where it goes, with what
+// body, whether it needs confirming and whether it carries an idempotency key.
+async function run(a, btn, extraBody) {
+  if (!a.enabled) { toast(a.reason || 'not available', true); return; }
+  if (a.method === 'LINK') { location.href = a.url; return; }
+  if (a.confirm && !(await confirmDialog(a.confirm))) return;
+  if (btn) btn.disabled = true;
+  try {
+    const headers = {'Content-Type': 'application/json'};
+    if (a.idempotent) headers['Idempotency-Key'] = newKey();
+    const res = await fetch(a.url, {method: 'POST', headers,
+      body: JSON.stringify(Object.assign({}, a.body || {}, extraBody || {}))});
+    const d = await res.json().catch(() => ({}));
+    if (!res.ok || d.ok === false) throw new Error(d.error || ('HTTP ' + res.status));
+    toast(a.label + ': ' + (d.note || d.operation_id || 'ok'));
+    tick();
+  } catch (e) {
+    toast(a.label + ' failed - ' + e.message, true);
+  } finally {
+    if (btn) btn.disabled = !a.enabled;
+  }
+}
+
+document.addEventListener('click', ev => {
+  const b = ev.target.closest('button');
+  if (!b) return;
+  if (b.dataset.action !== undefined) {
+    const card = b.closest('article');
+    const c = (state.runners || []).find(x => x.key === card.dataset.key);
+    if (c) run(c.actions[Number(b.dataset.action)], b);
+  } else if (b.dataset.fleetAction !== undefined) {
+    const sec = b.closest('section');
+    const f = (state.fleets || []).find(x => x.fleet_id === sec.dataset.fleet);
+    if (!f) return;
+    const i = Number(b.dataset.fleetAction);
+    const input = sec.querySelector(`[data-capacity="${i}"]`);
+    run(f.actions[i], b, input ? {desired: Number(input.value)} : null);
+  }
+});
+
+async function tick() {
+  try {
+    const res = await fetch('/api/v2/fleet?t=' + Date.now(), {cache: 'no-store'});
+    if (res.status === 401) { location.href = '/login'; return; }
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    render(await res.json());
+  } catch (e) {
+    $('plane').textContent = 'Could not load the fleet - ' + e.message;
+  }
+}
+
+tick();
+setInterval(tick, 5000);
+</script>
+{% endblock %}

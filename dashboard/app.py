@@ -28,6 +28,7 @@ from flask.sessions import SecureCookieSessionInterface
 from flask_sock import Sock
 from itsdangerous import BadSignature
 
+import api_v2
 import docker_ops as ops
 import github_api
 import history
@@ -201,6 +202,10 @@ API_VERSIONS = ("v1",)
 FLEET_SCHEMA = 1
 
 _VERSION_PREFIXES = tuple(f"/api/{v}/" for v in API_VERSIONS)
+
+#: Every API version this dashboard serves. v2 is its own route family
+#: (api_v2.py), keyed by runner_id and fleet_id, not an alias of v1.
+SERVED_VERSIONS = API_VERSIONS + ("v2",)
 
 
 def policy_path(path):
@@ -1267,7 +1272,7 @@ def api_version():
     A client that guesses gets a 404 it cannot distinguish from a route that
     was removed; this makes the difference visible.
     """
-    return jsonify(api=list(API_VERSIONS), schema=FLEET_SCHEMA)
+    return jsonify(api=list(SERVED_VERSIONS), schema=FLEET_SCHEMA)
 
 
 def _register_version_aliases():
@@ -1298,6 +1303,22 @@ def _register_version_aliases():
 
 
 _register_version_aliases()
+
+
+def _status_snapshot():
+    with _status_lock:
+        return _status
+
+
+# Registered after the aliases, so no v2 route is ever served again under v1.
+api_v2.init(app, _status_snapshot)
+
+
+@app.route("/v2")
+def fleet_v2_page():
+    """The v2 fleet page: six fleets from data, one card for every runner.
+    Beside `/`, not in place of it, until T-1407 retires v1."""
+    return render_template("fleet_v2.html")
 
 
 if __name__ == "__main__":

@@ -1,0 +1,371 @@
+"""One runner card: design 14.1's payload, the only shape the v2 page renders.
+
+Every runner the dashboard can see becomes the same eighteen fields, whatever
+it is and wherever it runs, and the page renders those fields and nothing else
+(FR-12, CON-4, CON-8). Where platforms differ, the difference arrives as data:
+`capabilities` says what the runner can do, `annotations` says in words what
+it cannot, and `actions` says for each of design 14.2's actions whether it is
+offered, whether it is enabled, and why not. The template never tests a
+provider or a platform; tests/test_generic_card.py reads it and fails if it
+does.
+
+Three sources feed it during the transition (design 14.6, MIG-6):
+
+* **controller runners**, from a RunnerSpec - the destination. Their actions
+  go to `/api/v2/runners/<runner_id>/actions/<verb>`.
+* **today's containers**, from the v1 status snapshot. They have no
+  runner_id yet, so their actions go to the v1 routes they always used, and
+  each card says where - as data, in `actions`, not as a branch in the page.
+* **runners the forge knows that are not managed here** - the Windows service
+  and the macOS appliance, until they are adopted (T-0802). Their cards carry
+  every action, each disabled with the reason.
+
+Nothing here talks to Docker or a forge. It translates what the collectors
+already measured.
+"""
+import re
+
+import providers
+
+#: Design 14.1, in its order. Every card carries every one of these keys.
+FIELDS = ("runner_id", "display_name", "provider", "platform",
+          "architecture", "worker", "runtime", "state", "job", "cpu",
+          "memory", "storage", "cache", "reachable", "last_seen_at",
+          "current_operation", "last_error", "capabilities")
+
+#: Design 14.2's actions, plus cancelling a drain, in the order a card shows
+#: them.
+ACTIONS = ("drain", "cancel_drain", "start", "stop", "restart", "recreate",
+           "remove", "clear_cache", "logs")
+
+LABELS = {"drain": "Drain", "cancel_drain": "Cancel drain", "start": "Start",
+          "stop": "Stop", "restart": "Restart", "recreate": "Recreate",
+          "remove": "Remove", "clear_cache": "Clear cache", "logs": "Logs"}
+
+#: How each action looks, so danger is data too.
+TONES = {"drain": "warn", "cancel_drain": "warn", "stop": "danger",
+         "recreate": "warn", "remove": "danger", "clear_cache": "warn"}
+
+#: What each capability's absence means, in words. A capability that is false
+#: renders its annotation on the card: the page shows the difference instead
+#: of hiding it (design 14.1).
+ANNOTATIONS = {
+    "job_containers": "no job containers",
+    "nested_builds": "no nested builds",
+    "supports_drain": "cannot be drained",
+    "clear_cache": "cache cannot be cleared",
+}
+
+#: The build-cache ceiling a Linux runner's builder enforces.
+CACHE_CAP_BYTES = 40 * 10 ** 9
+
+#: Today's containers: one runner each on the WSL engine, with the v1
+#: dashboard's own drain.
+LEGACY_CAPABILITIES = {"kind": "linux-container", "job_containers": True,
+                       "nested_builds": True, "resettable_os": False,
+                       "supports_drain": True, "clear_cache": True}
+
+#: A runner the forge knows that is not managed here. What it cannot do is
+#: known from its platform; everything it could do is not reachable yet.
+UNMANAGED_CAPABILITIES = {
+    providers.WINDOWS: {"kind": "windows-process", "job_containers": False,
+                        "nested_builds": False, "resettable_os": False,
+                        "supports_drain": False, "clear_cache": False},
+    providers.MACOS: {"kind": "macos-appliance", "job_containers": False,
+                      "nested_builds": False, "resettable_os": False,
+                      "supports_drain": False, "clear_cache": False},
+    None: {"kind": "unknown", "supports_drain": False, "clear_cache": False},
+}
+
+#: A forge label that names a platform outright. Forge records carry no
+#: platform field, so this is the only evidence; a runner whose labels name
+#: none reads as platform unknown rather than being guessed at.
+PLATFORM_LABELS = {"windows": providers.WINDOWS, "macos": providers.MACOS,
+                   "osx": providers.MACOS, "darwin": providers.MACOS,
+                   "linux": providers.LINUX}
+
+#: Forgejo's words for a runner's state, in this page's.
+FORGE_STATES = {"active": "busy", "idle": "idle", "offline": "offline"}
+
+UNMANAGED_REASON = ("not managed from here yet: this runner is outside the "
+                    "control plane until it is adopted (T-0802)")
+
+_UNITS = {"B": 1, "KB": 1000, "MB": 1000 ** 2, "GB": 1000 ** 3,
+          "TB": 1000 ** 4, "KIB": 1024, "MIB": 1024 ** 2, "GIB": 1024 ** 3,
+          "TIB": 1024 ** 4}
+
+
+def to_bytes(text):
+    """A docker size string in bytes, or None when it cannot be read."""
+    m = re.match(r"\s*([0-9.]+)\s*([KMGT]?I?B)\s*$", str(text or ""), re.I)
+    if not m:
+        return None
+    return int(float(m.group(1)) * _UNITS[m.group(2).upper()])
+
+
+def annotations(capabilities):
+    caps = capabilities or {}
+    return [text for key, text in ANNOTATIONS.items()
+            if caps.get(key) is False]
+
+
+def fleet_of(provider, platform, architecture):
+    """The fleet a card belongs to, in store/fleets.py's own id form."""
+    if not (provider and platform and architecture):
+        return None
+    return f"{provider}-{platform}-{architecture}"
+
+
+def _card(**fields):
+    card = {key: fields.pop(key, None) for key in FIELDS}
+    card["annotations"] = annotations(card["capabilities"])
+    card["fleet_id"] = fields.pop("fleet_id", None) or fleet_of(
+        card["provider"], card["platform"], card["architecture"])
+    card.update(fields)
+    return card
+
+
+def _action(verb, visible=True, enabled=True, reason=None, method="POST",
+            url=None, body=None, confirm=None, idempotent=False):
+    return {"verb": verb, "label": LABELS[verb], "tone": TONES.get(verb, ""),
+            "visible": bool(visible), "enabled": bool(enabled and url),
+            "reason": None if (enabled and url) else
+            (reason or "not available for this runner"),
+            "method": method, "url": url, "body": body, "confirm": confirm,
+            "idempotent": idempotent}
+
+
+def _visible(state):
+    """Which actions make sense in which state - the v1 card's rule."""
+    stopped, draining = state == "stopped", state == "draining"
+    return {"drain": not stopped and not draining, "cancel_drain": draining,
+            "start": stopped, "stop": not stopped, "restart": not stopped,
+            "recreate": True, "remove": True, "clear_cache": True,
+            "logs": True}
+
+
+def _confirm(verb, who, forge):
+    return {
+        "remove": {"title": f"Remove {who}?",
+                   "body": f"It is deregistered from {forge} and deleted.",
+                   "confirm": "Remove"},
+        "stop": {"title": f"Stop {who}?",
+                 "body": "A running job would be killed.", "confirm": "Stop"},
+        "recreate": {"title": f"Recreate {who}?",
+                     "body": "It is removed and rebuilt with a fresh "
+                             "workspace and registration.",
+                     "confirm": "Recreate"},
+        "clear_cache": {"title": f"Clear {who}'s cache?",
+                        "body": "The cache is deleted. This cannot be "
+                                "undone.", "confirm": "Clear cache"},
+    }.get(verb)
+
+
+# ---------------------------------------------------------------------------
+# today's containers
+# ---------------------------------------------------------------------------
+
+def display_name(name, provider_key):
+    """"github-runner-3" -> "Runner 3", as the v1 page has always shown it."""
+    return re.sub(rf"^{re.escape(provider_key or 'github')}-runner-",
+                  "Runner ", name or "")
+
+
+def from_legacy(runner, host=None, generated=None):
+    """A card for one of today's containers, from the v1 status snapshot."""
+    name = runner.get("name")
+    provider = runner.get("provider") or "github"
+    state = runner.get("state") or "unknown"
+    forge = {"github": "GitHub", "forgejo": "Forgejo"}.get(provider, provider)
+    who = name
+    host = host or {}
+    caps = dict(LEGACY_CAPABILITIES)
+    visible = _visible(state)
+
+    urls = {
+        "drain": ("/api/runner/drain", {"name": name}),
+        "cancel_drain": ("/api/runner/canceldrain", {"name": name}),
+        "start": ("/api/runner/start", {"name": name}),
+        "stop": ("/api/runner/stop", {"name": name}),
+        "restart": ("/api/runner/restart", {"name": name}),
+        "remove": ("/api/runner/remove", {"name": name}),
+        "clear_cache": (f"/api/runner/{name}/prune", None),
+    }
+    actions = []
+    for verb in ACTIONS:
+        if verb == "logs":
+            actions.append(_action("logs", method="LINK",
+                                   url=f"/runner/{name}"))
+            continue
+        if verb == "recreate":
+            actions.append(_action(
+                "recreate", enabled=False,
+                reason="one runner at a time comes with the control plane; "
+                       "until then, recreate the whole fleet"))
+            continue
+        url, body = urls[verb]
+        actions.append(_action(verb, visible=visible[verb], url=url,
+                               body=body, confirm=_confirm(verb, who, forge)))
+
+    cores = runner.get("cpu_cores")
+    mem_used = to_bytes(runner.get("mem_used"))
+    mem_limit = to_bytes(runner.get("mem_limit"))
+    stopped = state == "stopped"
+    return _card(
+        runner_id=None,
+        display_name=display_name(name, provider),
+        provider=provider,
+        platform=providers.LINUX,
+        architecture=providers.X64,
+        worker="wsl:github-runners",
+        runtime="linux-container",
+        state=state,
+        job=runner.get("job") or None,
+        cpu={"percent": None if stopped else runner.get("cpu_percent"),
+             "cores": cores or None,
+             "host_cores": host.get("ncpu") or None},
+        memory={"used_bytes": None if stopped else mem_used,
+                "limit_bytes": mem_limit},
+        storage=None,
+        cache={"used_bytes": None if stopped else
+               to_bytes(runner.get("build_cache")),
+               "cap_bytes": CACHE_CAP_BYTES},
+        reachable=not stopped,
+        last_seen_at=generated,
+        current_operation=None,
+        last_error=None,
+        capabilities=caps,
+        key=f"v1:{name}",
+        source="v1",
+        registration=runner.get("registration"),
+        uptime=runner.get("uptime"),
+        href=f"/runner/{name}",
+        actions=actions,
+    )
+
+
+# ---------------------------------------------------------------------------
+# runners the forge knows that are not managed here
+# ---------------------------------------------------------------------------
+
+def platform_from_labels(labels):
+    words = labels if isinstance(labels, (list, tuple)) else \
+        str(labels or "").split(",")
+    for word in words:
+        name = str(word).strip().split(":", 1)[0].lower()
+        if name in PLATFORM_LABELS:
+            return PLATFORM_LABELS[name]
+    return None
+
+
+def from_unmanaged(entry, generated=None):
+    """A card for a runner registered with Forgejo that no worker here runs:
+    the Windows service and the macOS appliance, until T-0802 adopts them."""
+    platform = platform_from_labels(entry.get("labels"))
+    caps = dict(UNMANAGED_CAPABILITIES.get(platform,
+                                           UNMANAGED_CAPABILITIES[None]))
+    t = entry.get("telemetry") or None
+    disk = (t or {}).get("disk") or None
+    state = FORGE_STATES.get(entry.get("status") or "", "unknown")
+    return _card(
+        runner_id=None,
+        display_name=entry.get("name") or "-",
+        provider="forgejo",
+        platform=platform,
+        architecture=providers.X64 if platform else None,
+        worker=None,
+        runtime=caps.get("kind"),
+        state=state,
+        job=(t or {}).get("job") if state == "busy" else None,
+        cpu={"percent": (t or {}).get("cpu_percent"),
+             "cores": (t or {}).get("cpu_cores") or None,
+             "host_cores": None},
+        memory={"used_bytes": (t or {}).get("mem_used_bytes"),
+                "limit_bytes": (t or {}).get("mem_limit_bytes") or None},
+        storage=({"used_bytes": disk.get("used_bytes"),
+                  "total_bytes": disk.get("total_bytes")} if disk else None),
+        cache=None,
+        reachable=t is not None,
+        last_seen_at=generated if t is not None else None,
+        current_operation=None,
+        last_error=None if t is not None else
+        "no telemetry: the exporter did not answer for this runner",
+        capabilities=caps,
+        key=f"forge:{entry.get('uuid')}",
+        source="forge",
+        registration=entry.get("version") and f"v{entry['version']}",
+        labels=entry.get("labels"),
+        href=None,
+        actions=[_action(verb, enabled=False, reason=UNMANAGED_REASON,
+                         visible=_visible(state)[verb])
+                 for verb in ACTIONS],
+    )
+
+
+# ---------------------------------------------------------------------------
+# controller runners
+# ---------------------------------------------------------------------------
+
+#: The controller's lifecycle states, in the page's fewer words where the
+#: card's styling has one. Everything else is shown as it is.
+_SPEC_STATES = {"drained": "draining", "stopped": "stopped", "failed": "failed"}
+
+
+def from_spec(spec, telemetry=None, worker_reachable=None):
+    """A card for a runner the controller manages, from its RunnerSpec."""
+    rid = spec["runner_id"]
+    caps = dict(spec.get("capabilities") or {})
+    state = spec.get("actual_state") or "unknown"
+    forge = {"github": "GitHub", "forgejo": "Forgejo"}.get(
+        spec.get("provider"), spec.get("provider"))
+    who = spec.get("display_name") or f"rnr-{rid[:8]}"
+    visible = _visible("stopped" if state in ("stopped", "failed")
+                       else "draining" if state in ("draining", "drained")
+                       else state)
+    needs = {"drain": "supports_drain", "cancel_drain": "supports_drain",
+             "clear_cache": "clear_cache"}
+    actions = []
+    for verb in ACTIONS:
+        if verb == "logs":
+            actions.append(_action("logs", method="LINK",
+                                   url=f"/runners/{rid}"))
+            continue
+        capability = needs.get(verb)
+        if capability and caps.get(capability) is False:
+            actions.append(_action(verb, enabled=False,
+                                   visible=visible[verb],
+                                   reason=ANNOTATIONS[capability]))
+            continue
+        actions.append(_action(
+            verb, visible=visible[verb],
+            url=f"/api/v2/runners/{rid}/actions/{verb}", body={},
+            confirm=_confirm(verb, who, forge), idempotent=True))
+    t = telemetry or {}
+    return _card(
+        runner_id=rid,
+        display_name=who,
+        provider=spec.get("provider"),
+        platform=spec.get("platform"),
+        architecture=spec.get("architecture"),
+        worker=spec.get("host_id"),
+        runtime=caps.get("kind"),
+        state=_SPEC_STATES.get(state, state),
+        job=t.get("job"),
+        cpu={"percent": t.get("cpu_percent"), "cores": None,
+             "host_cores": None},
+        memory={"used_bytes": t.get("mem_used_bytes"),
+                "limit_bytes": t.get("mem_limit_bytes")},
+        storage=t.get("storage"),
+        cache=t.get("cache"),
+        reachable=worker_reachable,
+        last_seen_at=spec.get("last_seen_at"),
+        current_operation=spec.get("current_operation"),
+        last_error=spec.get("last_error"),
+        capabilities=caps,
+        key=f"rnr:{rid}",
+        source="controller",
+        lifecycle_state=state,
+        href=f"/runners/{rid}",
+        fleet_id=spec.get("fleet_id"),
+        actions=actions,
+    )

@@ -50,13 +50,20 @@ class TestTheAliasesExist:
         unversioned = {
             r for r in rules
             if r.startswith("/api/")
-            and not r.startswith("/api/v1/")
+            and not r.startswith(("/api/v1/", "/api/v2/"))
             and r != "/api/version"
         }
         assert unversioned, "sanity: there should be API routes to alias"
         missing = [r for r in unversioned
                    if "/api/v1" + r[len("/api"):] not in rules]
         assert missing == [], missing
+
+    def test_v2_is_its_own_family_and_never_aliased_under_v1(self):
+        """v2 is keyed by runner_id; serving it again under v1 would put an
+        id-keyed route inside the name-keyed version."""
+        rules = self._rules()
+        assert any(r.startswith("/api/v2/") for r in rules)
+        assert not any(r.startswith("/api/v1/v2/") for r in rules)
 
     def test_the_alias_reuses_the_same_view_function(self):
         """Two handlers would drift; one cannot."""
@@ -87,7 +94,9 @@ class TestTheAliasBehavesLikeTheOriginal:
         r = client.get("/api/version")
         assert r.status_code == 200
         body = r.get_json()
-        assert body["api"] == list(dash.API_VERSIONS)
+        # v1 is still served, and v2 now beside it (T-1401, api_v2.py).
+        assert body["api"] == list(dash.SERVED_VERSIONS)
+        assert body["api"] == ["v1", "v2"]
         assert body["schema"] == dash.FLEET_SCHEMA
 
     def test_an_alias_answers_like_the_unprefixed_route(self, client):
