@@ -1321,6 +1321,19 @@ def fleet_v2_page():
     return render_template("fleet_v2.html")
 
 
+@app.route("/runners/<runner_id>")
+def runner_v2_page(runner_id):
+    """One runner by its runner_id, read from the controller (T-1406).
+    Beside the v1 page at /runner/<name>, which today's containers keep."""
+    try:
+        import store.storage as storage
+        runner_id = storage.check(runner_id)
+    except Exception:   # noqa: BLE001 - not a runner id is not a runner
+        return render_template("forbidden.html",
+                               why="That is not a runner id."), 404
+    return render_template("runner_v2.html", runner_id=runner_id)
+
+
 if __name__ == "__main__":
     history.init()
     threading.Thread(target=_backfill, daemon=True).start()

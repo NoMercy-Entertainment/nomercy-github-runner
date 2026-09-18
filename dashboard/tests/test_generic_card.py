@@ -307,6 +307,8 @@ def test_the_page_renders_all_six_fleets_in_a_real_browser(tmp_path,
     monkeypatch.setattr(api_v2, "_db_path",
                         lambda: str(tmp_path / "control.db"))
     stub = Flask("stub", template_folder=os.path.join(HERE, "templates"))
+    # init() sets the module's status source; restored after the test.
+    monkeypatch.setitem(api_v2._status, "fn", api_v2._status["fn"])
     api_v2.init(stub, lambda: SNAPSHOT)
     stub.add_url_rule("/v2", "page",
                       lambda: render_template("fleet_v2.html", role="admin"))

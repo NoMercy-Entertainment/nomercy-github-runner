@@ -1,0 +1,143 @@
+{% extends "base.html" %}
+{% block title %}Runner · v2{% endblock %}
+
+{% block style %}
+.wrap{max-width:1100px}
+.card{background:var(--bg-panel);border:1px solid var(--rule);padding:14px 15px 13px;margin-bottom:18px}
+.chead{display:flex;align-items:baseline;gap:9px;margin-bottom:3px}
+.cname{font-family:var(--label);font-size:17px;font-weight:600;letter-spacing:.09em;
+  text-transform:uppercase;color:var(--drain);text-decoration:none}
+.badge{margin-left:auto;font-size:9px;letter-spacing:.16em;text-transform:uppercase;
+  padding:2px 7px;border:1px solid currentColor;color:var(--text-dim)}
+.creg{font-size:11px;color:var(--text-faint)}
+.annots{display:flex;gap:6px;flex-wrap:wrap;margin-top:6px}
+.annot{font-size:9.5px;color:var(--text-dim);border:1px dashed var(--rule);padding:1px 6px}
+.cjob{margin:9px 0 11px;font-size:11.5px;color:var(--busy);border-left:2px solid var(--busy-dk);padding-left:8px}
+.cjob.none{color:var(--text-faint);border-color:var(--rule)}
+.cerr{margin-top:6px;font-size:11px;color:var(--alert)}
+.meter{margin-top:9px}
+.mrow{display:flex;justify-content:space-between;font-size:9.5px;letter-spacing:.15em;
+  text-transform:uppercase;color:var(--text-faint);margin-bottom:4px}
+.mval{color:var(--text-dim);font-size:10.5px;text-transform:none;letter-spacing:.02em}
+.track{height:7px;background:var(--bg-inset);border:1px solid var(--rule);overflow:hidden}
+.fill{height:100%;background:var(--signal)} .fill.warn{background:var(--busy)} .fill.crit{background:var(--alert)}
+.actions{display:flex;flex-wrap:wrap;gap:6px;margin-top:13px;padding-top:12px;border-top:1px solid var(--rule)}
+.actions button{padding:5px 9px;font-size:9px}
+button[disabled]{opacity:.45;cursor:not-allowed}
+h2.sec{font-family:var(--label);font-size:12px;letter-spacing:.18em;text-transform:uppercase;
+  color:var(--text-dim);margin:22px 0 8px;font-weight:600}
+table.kv{border-collapse:collapse;font-size:11.5px;width:100%}
+table.kv td,table.kv th{border-bottom:1px solid var(--rule);padding:4px 8px;text-align:left;vertical-align:top}
+table.kv th{color:var(--text-faint);font-weight:400;letter-spacing:.06em}
+td.no{color:var(--alert)} td.yes{color:var(--signal)}
+pre.logs{background:var(--bg-inset);border:1px solid var(--rule);padding:10px;font-size:11px;
+  max-height:420px;overflow:auto;white-space:pre-wrap}
+#toast{position:fixed;right:18px;bottom:18px;max-width:380px;background:var(--bg-panel);
+  border:1px solid var(--rule);border-left:3px solid var(--signal);padding:11px 14px;font-size:11.5px;display:none}
+#toast.show{display:block} #toast.bad{border-left-color:var(--alert);color:var(--alert)}
+{% endblock %}
+
+{% block body %}
+<header>
+  <div class="brand"><h1>Runner</h1><div class="sub" id="rid">{{ runner_id }}</div></div>
+  <nav><a href="/v2">Fleet v2</a><a href="/">Fleet</a><a href="/history">History</a></nav>
+</header>
+<div class="wrap">
+  <article class="card" id="card"><div class="creg">Loading</div></article>
+
+  <h2 class="sec">Capabilities</h2>
+  <table class="kv" id="caps"></table>
+
+  <h2 class="sec">Current operation</h2>
+  <div id="current" class="creg">&mdash;</div>
+
+  <h2 class="sec">Operations</h2>
+  <table class="kv" id="ops"></table>
+
+  <h2 class="sec">Audit</h2>
+  <table class="kv" id="audit"></table>
+
+  <h2 class="sec">Logs</h2>
+  <button id="load-logs">Load the last 5 minutes</button>
+  <pre class="logs" id="logs" hidden></pre>
+</div>
+<div id="toast"></div>
+
+<script>
+{% include "_card.js" %}
+
+const RID = {{ runner_id|tojson }};
+const $ = id => document.getElementById(id);
+let current = null;
+
+function toast(msg, bad) {
+  const t = $('toast'); t.textContent = msg; t.className = 'show' + (bad ? ' bad' : '');
+  clearTimeout(t._h); t._h = setTimeout(() => { t.className = ''; }, 6000);
+}
+
+function rows(list, cols) {
+  if (!list || !list.length) return '<tr><td class="creg">none</td></tr>';
+  return '<tr>' + cols.map(c => `<th>${esc(c)}</th>`).join('') + '</tr>' +
+    list.map(r => '<tr>' + cols.map(c => `<td>${esc(r[c])}</td>`).join('') + '</tr>').join('');
+}
+
+// Every capability the runner declares, whatever it is called: the page
+// names none of them, so a runtime that declares a new one shows it here
+// without a change to this file.
+function capsHTML(caps) {
+  const keys = Object.keys(caps || {}).sort();
+  if (!keys.length) return '<tr><td class="creg">none declared</td></tr>';
+  return keys.map(k => {
+    const v = caps[k];
+    const cls = v === true ? 'yes' : v === false ? 'no' : '';
+    return `<tr><th>${esc(k)}</th><td class="${cls}">${esc(Array.isArray(v) ? v.join(', ') : v)}</td></tr>`;
+  }).join('');
+}
+
+async function load() {
+  const res = await fetch('/api/v2/runners/' + encodeURIComponent(RID), {cache: 'no-store'});
+  const d = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    $('card').innerHTML = `<div class="cerr">${esc(d.error || ('HTTP ' + res.status))}</div>`;
+    return;
+  }
+  current = d;
+  const c = d.card;
+  $('card').className = 'card ' + c.state;
+  $('card').innerHTML = cardHTML(c);
+  $('caps').innerHTML = capsHTML(c.capabilities);
+  $('current').textContent = c.current_operation || 'none';
+  $('ops').innerHTML = rows(d.operations, ['operation_id', 'verb', 'state', 'attempts', 'error']);
+  $('audit').innerHTML = rows(d.audit, ['at', 'actor', 'verb', 'decision', 'operation_id']);
+}
+
+document.addEventListener('click', async ev => {
+  const b = ev.target.closest('button');
+  if (!b) return;
+  if (b.id === 'load-logs') {
+    const res = await fetch('/api/v2/runners/' + encodeURIComponent(RID) + '/logs?since=300');
+    const d = await res.json().catch(() => ({}));
+    $('logs').hidden = false;
+    $('logs').textContent = res.ok ? (d.result || '(no output)') : (d.error || 'HTTP ' + res.status);
+    return;
+  }
+  if (b.dataset.action === undefined || !current) return;
+  const a = current.card.actions[Number(b.dataset.action)];
+  if (!a.enabled) { toast(a.reason, true); return; }
+  if (a.method === 'LINK') { location.href = a.url; return; }
+  if (a.confirm && !(await confirmDialog(a.confirm))) return;
+  const key = (window.crypto && crypto.randomUUID) ? crypto.randomUUID()
+            : Date.now().toString(36) + Math.random().toString(36).slice(2);
+  const res = await fetch(a.url, {method: 'POST', headers: {
+      'Content-Type': 'application/json', 'Idempotency-Key': key},
+    body: JSON.stringify(a.body || {})});
+  const d = await res.json().catch(() => ({}));
+  if (!res.ok) toast(a.label + ' failed - ' + (d.error || res.status), true);
+  else toast(a.label + ': ' + (d.operation_id || 'ok'));
+  load();
+});
+
+load();
+setInterval(load, 5000);
+</script>
+{% endblock %}
