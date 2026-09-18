@@ -12,7 +12,10 @@ the runners it creates.
 | `rnr-linux-1` | agent + runner units (2 x 6 GB) | 16 GB | 8 | 400 GB | 10.77.0.20 |
 
 The switch is `rnr-internal` (Internal, 10.77.0.0/24), with the host at
-10.77.0.1 and a NetNat `rnr-internal-nat` for outbound traffic. Every value is
+10.77.0.1, for management. Outbound traffic goes through a second adapter on
+the Default Switch, as the macOS appliance's does: no NAT is made on the
+host, because WinNAT beside WSL's own NAT is a known source of conflict and
+WSL's network is every running job's. Every value is
 in `settings.psd1`. Why these values: design section 20, OPEN-5 and OPEN-6.
 
 ## Order
@@ -22,7 +25,7 @@ in `settings.psd1`. Why these values: design section 20, OPEN-5 and OPEN-6.
 #    converts it, and writes one seed image per VM. Changes nothing on the host.
 .\infra\hyperv\Prepare-RunnerPlatform.ps1
 
-# 2. ELEVATED. The switch, the NAT and the two VMs. -WhatIf first shows the plan.
+# 2. ELEVATED. The switch and the two VMs. -WhatIf first shows the plan.
 .\infra\hyperv\New-RunnerPlatformVMs.ps1 -WhatIf
 .\infra\hyperv\New-RunnerPlatformVMs.ps1
 
@@ -69,6 +72,6 @@ sudo docker exec rnr-controller python -m control status
 .\infra\hyperv\Remove-RunnerPlatform.ps1
 ```
 
-This removes the VMs, the NAT and the switch, by the names in `settings.psd1`
+This removes the VMs and the switch, by the names in `settings.psd1`
 and nothing else. The WSL fleet was never changed, so nothing needs restoring
 there.

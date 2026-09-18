@@ -6,13 +6,19 @@
     # existing macOS appliance (D:\HyperV\macos-runner), which is not touched.
     Root          = 'D:\HyperV\runner-platform'
 
-    # OPEN-6: an Internal switch with a NetNat, not an External switch - that
+    # OPEN-6: an Internal switch for management, never an External one - that
     # would briefly take the host's network, and every running job's, down.
+    # Controller, agents and the host's SSH talk over it, on static addresses.
     Switch        = 'rnr-internal'
-    Nat           = 'rnr-internal-nat'
     Prefix        = '10.77.0.0/24'
     HostAddress   = '10.77.0.1'
     PrefixLength  = 24
+    # Outbound traffic goes through a second adapter on the Default Switch,
+    # the host's own NAT that the macOS appliance already uses - not through
+    # a NetNat of our own. WinNAT beside the NAT networks WSL and Docker
+    # Desktop keep is a known source of conflict, and WSL's network is every
+    # running job's network.
+    UplinkSwitch  = 'Default Switch'
     # The resolvers the WSL distro is pinned to, for the same reason: a DNS
     # proxy that dies takes every runner with it.
     Dns           = @('1.1.1.1', '8.8.8.8')
@@ -43,6 +49,10 @@
             Cpus      = 2
             DiskGB    = 64
             Address   = '10.77.0.10'
+            # Fixed, in Hyper-V's own range, so the seed image can tell the
+            # two adapters apart before the VM exists.
+            MgmtMac   = '00155D770A0A'
+            UplinkMac = '00155D770A0B'
         }
         'rnr-linux-1' = @{
             Role      = 'linux-worker'
@@ -50,6 +60,8 @@
             Cpus      = 8
             DiskGB    = 400
             Address   = '10.77.0.20'
+            MgmtMac   = '00155D77140A'
+            UplinkMac = '00155D77140B'
             # What the agent declares, and placement respects: room for two
             # runners at 6 GB each, leaving the guest and its engine 4 GB.
             MaxRunners   = 2

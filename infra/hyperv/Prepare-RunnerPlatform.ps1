@@ -37,6 +37,8 @@ Write-Host "key: $key"
 # --- the cloud image, verified -----------------------------------------------
 $img = Join-Path $s.Root 'base\noble-server-cloudimg-amd64.img'
 $sums = (Invoke-WebRequest -UseBasicParsing -Uri $s.ImageSums).Content
+# Served as application/octet-stream, so it arrives as bytes, not text.
+if ($sums -is [byte[]]) { $sums = [Text.Encoding]::UTF8.GetString($sums) }
 $line = ($sums -split "`n") | Where-Object { $_ -match '\*?noble-server-cloudimg-amd64\.img$' } | Select-Object -First 1
 if (-not $line) { throw "SHA256SUMS lists no noble-server-cloudimg-amd64.img" }
 $want = ($line -split '\s+')[0].ToLower()
@@ -73,8 +75,10 @@ foreach ($name in $s.VMs.Keys) {
     New-Item -ItemType Directory -Force -Path $dir | Out-Null
     Write-LfFile (Join-Path $dir 'user-data') (Expand-Template (Join-Path $guest 'user-data.tmpl') @{
         HOSTNAME = $name; ADMIN = $s.AdminUser; SSH_KEY = $publicKey })
+    $colons = { param($mac) (($mac.ToLower() -split '(..)' | Where-Object { $_ }) -join ':') }
     Write-LfFile (Join-Path $dir 'network-config') (Expand-Template (Join-Path $guest 'network-config.tmpl') @{
-        ADDRESS = $vm.Address; PREFIX_LENGTH = $s.PrefixLength; GATEWAY = $s.HostAddress
+        ADDRESS = $vm.Address; PREFIX_LENGTH = $s.PrefixLength
+        MGMT_MAC = (& $colons $vm.MgmtMac); UPLINK_MAC = (& $colons $vm.UplinkMac)
         DNS = ($s.Dns -join ', ') })
     Write-LfFile (Join-Path $dir 'meta-data') "instance-id: $name-1`nlocal-hostname: $name`n"
     $seed = ConvertTo-WslPath (Join-Path $s.Root 'seed')

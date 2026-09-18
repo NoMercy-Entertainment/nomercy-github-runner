@@ -1,13 +1,19 @@
 version: 2
 ethernets:
-  primary:
-    # Hyper-V's synthetic adapter, whatever the kernel names it.
+  # rnr-internal: the controller, the agents and the host's SSH, static.
+  mgmt:
     match:
-      driver: hv_netvsc
-    set-name: eth0
+      macaddress: "{{MGMT_MAC}}"
+    set-name: mgmt0
     addresses: [{{ADDRESS}}/{{PREFIX_LENGTH}}]
-    routes:
-      - to: default
-        via: {{GATEWAY}}
+  # The Default Switch: outbound only, by the host's own NAT. Its DNS is not
+  # used - the resolvers below are, as the WSL distro's are.
+  uplink:
+    match:
+      macaddress: "{{UPLINK_MAC}}"
+    set-name: uplink0
+    dhcp4: true
+    dhcp4-overrides:
+      use-dns: false
     nameservers:
       addresses: [{{DNS}}]

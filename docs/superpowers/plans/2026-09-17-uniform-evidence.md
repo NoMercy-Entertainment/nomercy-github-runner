@@ -72,3 +72,29 @@ actually done" has one answer (ACC-19).
 - **Left behind:** the two `:test` image tags, thin layers over the images
   already there. Remove with `docker rmi nomercy/runner-unit-forgejo:test
   nomercy/runner-unit-github:test`.
+
+## 2026-09-18 - phase 5 prepared (not elevated; nothing on the host changed)
+
+- **Decided by:** the operator ("3: Akkoord", phase 5 VM creation approved).
+- **Command:** `infra\hyperv\Prepare-RunnerPlatform.ps1`, run twice. The
+  second run kept everything and verified the image again.
+- **Output:**
+  - `D:\HyperV\runner-platform\ssh\id_ed25519`, the platform's own key. Its
+    ACL grants SYSTEM, Administrators and the user.
+  - The Ubuntu 24.04 cloud image, SHA-256
+    `612b2c0cc1bc413a6cb8c38fd611794caf0f2b436c50013d8b3794db12ad7354`,
+    equal to Canonical's SHA256SUMS. It was converted to
+    `noble-server-cloudimg-amd64.vhdx` (2088 MB) in a throwaway `alpine:3.20`
+    container.
+  - `seed\rnr-control.iso` and `seed\rnr-linux-1.iso`: the admin account, a
+    static management address, and an outbound adapter by DHCP. No secret and
+    no code.
+- **Changed in the design before anything was created:** the VMs reach the
+  internet through a second adapter on the Default Switch, not through a
+  NetNat of their own. WinNAT beside the NAT networks WSL and Docker Desktop
+  keep is a known source of conflict, and WSL's network carries every running
+  job (spec 20, OPEN-6).
+- **Also found:** `enrol` on a store the controller had not made yet failed on
+  a missing table. It was fixed and proven in the controller's own image, in a
+  throwaway container that has since been removed. The controller planned a
+  runner and held it in `planned` because no worker existed yet.

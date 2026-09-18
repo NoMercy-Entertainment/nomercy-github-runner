@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    Rolls phase 5 back: the runner-platform VMs, their NAT and their switch.
+    Rolls phase 5 back: the runner-platform VMs and their switch.
     Run elevated. Asks before each removal unless -Confirm:$false.
 
 .DESCRIPTION
@@ -49,10 +49,6 @@ foreach ($name in $s.VMs.Keys) {
     }
 }
 
-$nat = Get-NetNat -ErrorAction SilentlyContinue | Where-Object { $_.Name -eq $s.Nat }
-if ($nat -and $PSCmdlet.ShouldProcess($s.Nat, 'remove NetNat')) {
-    Remove-NetNat -Name $s.Nat -Confirm:$false
-}
 $switch = Get-VMSwitch -Name $s.Switch -ErrorAction SilentlyContinue
 if ($switch) {
     $users = @(Get-VMNetworkAdapter -All | Where-Object { $_.SwitchName -eq $s.Switch -and -not $_.IsManagementOs })

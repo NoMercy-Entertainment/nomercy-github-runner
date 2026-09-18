@@ -6,13 +6,14 @@
 .DESCRIPTION
     Creates, only where missing:
       - the Internal switch and the host's address on it (OPEN-6),
-      - a NetNat so the guests reach the internet through the host,
       - each VM in settings.psd1: Generation 2, Secure Boot for Ubuntu, static
         memory (OPEN-5), its own disk made from the verified base image, its
-        seed image in the DVD drive - and starts it.
+        seed image in the DVD drive, one adapter on the Internal switch and
+        one on the Default Switch for outbound traffic - and starts it.
 
-    Touches nothing else. No existing VM, switch or NAT is changed, the macOS
-    appliance included; an existing one with the same name is left as it is.
+    No NAT is made on the host. Touches nothing else: no existing VM or switch
+    is changed, the macOS appliance and the Default Switch included; an
+    existing one with the same name is left as it is.
 
     Refuses to create a VM when, with that VM's memory reserved, less than
     CommitReserveGB of commit would be left: the host has no pagefile, a
@@ -52,14 +53,10 @@ if (-not $hostIp -and $PSCmdlet.ShouldProcess($alias, "assign $($s.HostAddress)/
     New-NetIPAddress -InterfaceAlias $alias -IPAddress $s.HostAddress -PrefixLength $s.PrefixLength | Out-Null
 }
 
-$nat = Get-NetNat -ErrorAction SilentlyContinue | Where-Object { $_.Name -eq $s.Nat }
-if (-not $nat) {
-    $overlap = Get-NetNat -ErrorAction SilentlyContinue |
-        Where-Object { $_.InternalIPInterfaceAddressPrefix -eq $s.Prefix }
-    if ($overlap) { throw "Another NAT ($($overlap.Name)) already covers $($s.Prefix)." }
-    if ($PSCmdlet.ShouldProcess($s.Prefix, "create NetNat $($s.Nat)")) {
-        New-NetNat -Name $s.Nat -InternalIPInterfaceAddressPrefix $s.Prefix | Out-Null
-    }
+# Outbound goes through the Default Switch, which Hyper-V keeps itself; no
+# NAT of ours is made (settings.psd1 says why).
+if (-not (Get-VMSwitch -Name $s.UplinkSwitch -ErrorAction SilentlyContinue)) {
+    throw "There is no '$($s.UplinkSwitch)' for the VMs' outbound traffic."
 }
 
 # --- VMs -------------------------------------------------------------------------
@@ -95,6 +92,11 @@ foreach ($name in $order) {
     }
     New-VM -Name $name -Generation 2 -Path (Join-Path $s.Root 'vms') -VHDPath $disk `
         -MemoryStartupBytes ([int64]$spec.MemoryGB * 1GB) -SwitchName $s.Switch | Out-Null
+    # Two adapters, told apart in the guest by these addresses (the seed's
+    # network-config): management on rnr-internal, outbound on the uplink.
+    Get-VMNetworkAdapter -VMName $name | Rename-VMNetworkAdapter -NewName 'mgmt'
+    Set-VMNetworkAdapter -VMName $name -Name 'mgmt' -StaticMacAddress $spec.MgmtMac
+    Add-VMNetworkAdapter -VMName $name -Name 'uplink' -SwitchName $s.UplinkSwitch -StaticMacAddress $spec.UplinkMac
     Set-VMMemory -VMName $name -DynamicMemoryEnabled $false
     Set-VMProcessor -VMName $name -Count $spec.Cpus
     Set-VMFirmware -VMName $name -EnableSecureBoot On -SecureBootTemplate 'MicrosoftUEFICertificateAuthority'
