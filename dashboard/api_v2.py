@@ -473,6 +473,16 @@ def fleet_capacity(fleet_id):
     desired = (request.get_json(silent=True) or {}).get("desired")
     if isinstance(desired, bool) or not isinstance(desired, int) or             desired < 0:
         return _refuse(400, "desired must be a whole number, 0 or more")
+    # A decrease removes runners: design 18.2's destroy group (T-1902).
+    from flask import g
+    if desired < fleet["desired_capacity"] and             getattr(g, "role", None) != "admin":
+        from control import audit
+        audit.record(_db_path(), "set_capacity", "refused",
+                     actor=requested_by(), fleet_id=fleet_id,
+                     parameters={"desired": desired},
+                     outcome="a decrease requires admin")
+        return _refuse(403, "Reducing a fleet's capacity needs the admin "
+                            "role.")
     from control.service import Refused
     try:
         op = service.set_capacity(fleet_id, desired,

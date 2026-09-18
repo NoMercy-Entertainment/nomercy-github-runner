@@ -275,6 +275,41 @@ def _redact_response(response):
     return response
 
 
+#: Design 18.2's destroy group: what only an admin may do (T-1902). Paths as
+#: policy_path gives them, so a /api/v1 alias is judged the same. Capacity
+#: decreases are judged in their route, which knows the fleet's current
+#: capacity; everything else in the group is recognised here, in one place.
+DESTROY_PATHS = (
+    re.compile(r"^/api/runner/remove$"),                        # v1
+    re.compile(r"^/api/recreate$"),                             # v1 fleet
+    re.compile(r"^/api/v2/runners/[^/]+/actions/"
+               r"(remove|recreate|deregister)$"),
+    re.compile(r"^/api/v2/fleets/[^/]+/recreate$"),
+)
+
+
+def destroys(method, path):
+    return method == "POST" and any(p.match(path) for p in DESTROY_PATHS)
+
+
+def _refuse_destroy(role, path):
+    """Refused, and recorded with the actor when the control plane keeps an
+    audit - a refused destroy is what an operator needs to find later."""
+    try:
+        from store import schema as control_schema
+        if os.path.exists(control_schema.DB_PATH):
+            from control import audit
+            audit.record(control_schema.DB_PATH, path.rsplit("/", 1)[-1],
+                         "refused", actor=session.get("email")
+                         or session.get("sub") or "unknown",
+                         outcome=f"requires admin; the caller is {role}",
+                         parameters={"path": path})
+    except Exception:   # noqa: BLE001 - the refusal stands either way
+        pass
+    return _forbid("Removing, recreating or deregistering needs the admin "
+                   "role.")
+
+
 @app.before_request
 def guard():
     if request.path.startswith("/static"):
@@ -308,6 +343,8 @@ def guard():
         return _forbid("Settings are not available with read-only access.")
     elif request.method == "POST" and role == "viewer":
         return _forbid("Your access is read-only.")
+    elif destroys(request.method, path) and role != "admin":
+        return _refuse_destroy(role, path)
     return None
 
 
