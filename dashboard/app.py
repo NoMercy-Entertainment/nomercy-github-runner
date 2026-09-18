@@ -234,6 +234,37 @@ def _template_role():
     return {"role": getattr(g, "role", None)}
 
 
+def _secret_values():
+    """The deployment's own secret values, for masking wherever they
+    appear. Read from the environment file on each use, so a token changed
+    in Settings is covered at once."""
+    from control import redact
+    env = dict(read_env())
+    for key in ("GH_TOKEN", "FORGEJO_API_TOKEN", "OIDC_CLIENT_SECRET"):
+        if os.environ.get(key):
+            env.setdefault(key, os.environ[key])
+    values = redact.secret_values(env)
+    redact.remember(*values)
+    return tuple(values) + redact.known()
+
+
+@app.after_request
+def _redact_response(response):
+    """NFR-4, enforced once for every API route (T-1801): a secret field is
+    masked by name and a secret value wherever it appears. A route that
+    returns a token by accident still returns it masked."""
+    if not request.path.startswith("/api/") or not response.is_json:
+        return response
+    data = response.get_json(silent=True)
+    if data is None:
+        return response
+    from control import redact
+    clean = redact.redact_payload(data, _secret_values())
+    if clean != data:
+        response.set_data(json.dumps(clean))
+    return response
+
+
 @app.before_request
 def guard():
     if request.path.startswith("/static"):
@@ -880,6 +911,14 @@ def wire_frame(frame):
     return {"schema": FLEET_SCHEMA, **frame}
 
 
+def encode_frame(frame):
+    """A frame as the socket sends it: framed, then redacted exactly as every
+    API response is (T-1801)."""
+    from control import redact
+    return json.dumps(redact.redact_payload(wire_frame(frame),
+                                            _secret_values()))
+
+
 @sock.route("/ws/fleet")
 def ws_fleet(ws):
     sub = session.get("sub")
@@ -902,7 +941,7 @@ def ws_fleet(ws):
 
     try:
         for frame in fleet_frames(authorised, wait_for_change, current):
-            ws.send(json.dumps(wire_frame(frame)))
+            ws.send(encode_frame(frame))
     except Exception:      # noqa: BLE001 - a closed browser tab is not an error
         pass
 
@@ -1335,6 +1374,10 @@ def runner_v2_page(runner_id):
 
 
 if __name__ == "__main__":
+    # Every log line this process writes goes out with secret values masked
+    # (T-1801).
+    from control import redact as _redact
+    _redact.install_log_redaction(_secret_values)
     history.init()
     threading.Thread(target=_backfill, daemon=True).start()
     threading.Thread(target=_collector, daemon=True).start()

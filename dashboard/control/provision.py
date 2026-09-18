@@ -289,8 +289,12 @@ class ProvisioningFlow:
         plan = retry.call(FORGE_REGISTRATION, mint)
         state["plan"] = plan
         # Kept only so every later error message in this call can be scrubbed
-        # of it by value. `state` is local to one call and dies with it.
+        # of it by value. `state` is local to one call and dies with it; the
+        # redaction registry keeps the value, never the plan, so a record
+        # written elsewhere is masked too (T-1801).
         state["secret"] = plan.token
+        from .redact import remember
+        remember(plan.token)
 
     def _step_register(self, spec, state):
         result = retry.call(AGENT_SLOW, self.agent.register,

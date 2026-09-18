@@ -19,7 +19,7 @@ from datetime import datetime, timezone
 
 from store import schema
 
-from .redact import redact_mapping
+from .redact import known, redact_payload
 
 
 def _now():
@@ -34,7 +34,7 @@ def record(path, verb, decision, actor="controller", runner_id=None,
             "INSERT INTO audit (at, actor, verb, runner_id, operation_id,"
             " decision, parameters) VALUES (?,?,?,?,?,?,?)",
             (_now(), actor, verb, runner_id, operation_id, decision,
-             json.dumps(redact_mapping(parameters))
+             json.dumps(redact_payload(parameters, known()))
              if parameters is not None else None))
 
 
