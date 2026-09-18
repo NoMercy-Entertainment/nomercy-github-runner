@@ -92,6 +92,16 @@ def init():
                       " DEFAULT 'github'")
         if "forge_task_id" not in have:
             c.execute("ALTER TABLE runs ADD COLUMN forge_task_id INTEGER")
+        if "runner_id" not in have:
+            # Nullable, and nothing reads it yet. Old code is unaffected, which
+            # is what makes this safe to ship ahead of the thing that uses it.
+            # Filling it is backfill_runner_ids() below, called deliberately -
+            # not from here, because that function writes rows into the control
+            # plane's database and a history module must not do that silently
+            # on import.
+            c.execute("ALTER TABLE runs ADD COLUMN runner_id TEXT")
+        c.execute("CREATE INDEX IF NOT EXISTS idx_runs_runner_id"
+                  " ON runs(runner_id)")
 
 
 # --------------------------------------------------------------------------
@@ -394,3 +404,93 @@ def distinct(col):
         return [r[0] for r in c.execute(
             f"SELECT DISTINCT {col} FROM runs WHERE {col} IS NOT NULL"
             f" ORDER BY {col}").fetchall()]
+
+
+# --------------------------------------------------------------------------
+# backfill: give every historical run a stable referent
+# --------------------------------------------------------------------------
+
+def backfill_runner_ids(store=None):
+    """Point every historical run at a RunnerSpec, creating one where needed.
+
+    History keys runs on the container name, which was never an identity: the
+    same runner has a forge name, a container name and this. The platform now
+    keys on `runner_id`, so every old row needs one - and a row that cannot be
+    resolved is history that silently stops being reachable from anything.
+
+    What it does, for each distinct (runner, provider) pair that has no id yet:
+    find the spec created for it before, or create one carrying the old name in
+    `display_name` and the old container name in `exec_unit_ref`, mark it
+    absent and soft-deleted, then stamp its id onto that pair's rows.
+
+    Keyed on the pair, not on the name alone as the plan's wording had it,
+    because a spec carries a provider and the name alone cannot say which. Two
+    forges using one name would otherwise be recorded as one runner.
+
+    The specs are born deleted on purpose. They describe runners that are gone;
+    a live-looking spec would be reconciled into existence, which would mean
+    this backfill created runners.
+
+    **Nothing is deleted and no column is dropped.** The only write to `runs` is
+    an UPDATE of a column that was NULL, so the row count cannot change - which
+    is exactly what the test asserts.
+
+    Idempotent: a second call finds no unresolved pairs and writes nothing.
+    Returns what it did, so the result can be recorded rather than assumed.
+    """
+    if store is None:
+        # Late, so importing history does not drag in the control plane.
+        from store.specs import SpecStore
+        store = SpecStore()
+
+    # Three steps, and the split matters. The control-plane writes happen
+    # between the two history locks rather than inside them: holding this
+    # module's lock across another database's transaction would block the
+    # collector, which writes a sample every five seconds per running job.
+    with _lock, _conn() as c:
+        pairs = [(r["runner"], r["provider"]) for r in c.execute(
+            "SELECT DISTINCT runner, COALESCE(provider, 'github') AS provider"
+            " FROM runs WHERE runner_id IS NULL AND runner IS NOT NULL")]
+
+    created = 0
+    mapping = {}
+    for name, provider in pairs:
+        # Only ever reuse a spec this backfill made: exec_unit_ref holds the
+        # old container name, which is what it genuinely was, and deleted_at
+        # proves it is not a live runner that happens to share a display name.
+        existing = [s for s in store.list(include_deleted=True,
+                                          exec_unit_ref=name,
+                                          provider=provider)
+                    if s["deleted_at"]]
+        if existing:
+            mapping[(name, provider)] = existing[0]["runner_id"]
+            continue
+        runner_id = store.create(
+            display_name=name,
+            provider=provider,
+            platform="linux",
+            actual_state="absent",
+            exec_unit_ref=name,
+        )
+        store.soft_delete(runner_id)
+        mapping[(name, provider)] = runner_id
+        created += 1
+
+    resolved = 0
+    with _lock, _conn() as c:
+        for (name, provider), runner_id in mapping.items():
+            cur = c.execute(
+                "UPDATE runs SET runner_id = ?"
+                " WHERE runner = ? AND COALESCE(provider, 'github') = ?"
+                "   AND runner_id IS NULL",
+                (runner_id, name, provider))
+            resolved += cur.rowcount
+
+    return {"specs_created": created, "runs_resolved": resolved}
+
+
+def unresolved_runs():
+    """How many historical rows still have no spec. ACC-15, as a number."""
+    with _conn() as c:
+        return c.execute(
+            "SELECT count(*) FROM runs WHERE runner_id IS NULL").fetchone()[0]
