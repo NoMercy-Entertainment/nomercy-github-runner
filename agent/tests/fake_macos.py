@@ -245,6 +245,8 @@ class FakeMac:
         if verb == "kickstart":
             if "-k" in args:
                 self._abort_work(label)
+            elif job["state"] == "running":
+                return True, "", ""     # launchd: already running, left be
             self._run_job(label)
             return True, "", ""
         if verb == "bootout":
@@ -270,6 +272,21 @@ class FakeMac:
 
     def _exited_cleanly(self, label):
         self.jobs[label].update(state="waiting", pid=None, draining=False)
+
+    def crashed(self, unit):
+        """The runner exits uncleanly. KeepAlive's `SuccessfulExit: false`
+        is launchd's cue to start it again."""
+        label = "com.nomercy." + unit
+        job = self.jobs.get(label)
+        if not job or job["state"] != "running":
+            return
+        self._abort_work(label)
+        keep_alive = job["job"].get("KeepAlive")
+        if isinstance(keep_alive, dict) and \
+                keep_alive.get("SuccessfulExit") is False:
+            self._run_job(label)
+        else:
+            self._exited_cleanly(label)
 
     @staticmethod
     def _unit(label):

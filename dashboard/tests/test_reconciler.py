@@ -398,6 +398,7 @@ class TestNeverAbortsAJob:
         runner = live(service)[0]
         service.specs.update(runner["runner_id"], runner["spec_version"],
                              actual_state="busy")
+        executor.world[runner["runner_id"]] = "busy"    # the forge agrees
         service.set_desired(runner["runner_id"], "absent")
         executor.calls.clear()
 
@@ -415,6 +416,7 @@ class TestNeverAbortsAJob:
         spec = service.specs.get(runner_id)
         service.specs.update(runner_id, spec["spec_version"],
                              actual_state="busy")
+        executor.world[runner_id] = "busy"
         service.set_desired(runner_id, "absent")
 
         for _ in range(3):
@@ -537,6 +539,7 @@ class TestOperationsAreCarriedOut:
         spec = service.specs.get(runner_id)
         service.specs.update(runner_id, spec["spec_version"],
                              actual_state="busy")
+        executor.world[runner_id] = "busy"
 
         reconciler.pass_once()
 
@@ -647,7 +650,8 @@ STEP_FROM = {
     "start": {"stopped", "starting"},
     "stop": {"idle", "drained", "stopping"},
     "deregister": {"drained", "stopped", "deregistering"},
-    "drain": {"idle", "busy"},
+    # draining is a re-drive, like stopping for stop.
+    "drain": {"idle", "busy", "draining"},
     "cancel_drain": {"drained"},
     "withdraw": {"planned"},
     "remove": {"removing", "failed"},

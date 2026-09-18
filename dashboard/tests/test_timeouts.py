@@ -51,7 +51,7 @@ def table_rows():
 class TestTheTableIsTheSpec:
     def test_the_table_parsed(self):
         """An empty parse would make the comparisons below vacuous."""
-        assert len(table_rows()) == 6
+        assert len(table_rows()) == 7
 
     def test_every_row_has_a_policy(self):
         assert {row[0] for row in table_rows()} == set(retry.POLICIES)

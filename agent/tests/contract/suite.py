@@ -106,6 +106,9 @@ def test_2_drain_while_busy_finishes_the_job_and_takes_no_other(harness):
     harness.drain(rid)
     assert harness.offer_job(rid) is False, \
         "no new job while it finishes the one it has"
+    # The controller asks again on every pass until the runner is drained,
+    # so a drain asked twice must still be a drain and nothing more.
+    harness.drain(rid)
     assert harness.finish_job(rid) is True, "the running job must finish"
     assert harness.offer_job(rid) is False, "and no new one may start"
 
@@ -120,6 +123,18 @@ def test_3_cancel_drain_accepts_work_again(harness):
 
     harness.cancel_drain(rid)
     assert harness.offer_job(rid) is True
+
+    # A start puts a runner back in service too: drained, stopped and
+    # started again - a restart of a busy runner goes this way - it serves,
+    # and it is brought back when its runner exits by itself, as it was
+    # before the drain.
+    harness.drain(rid)
+    harness.runtime.stop(rid)
+    harness.runtime.start(rid)
+    assert harness.offer_job(rid) is True, "started after a drain, it serves"
+    harness.runner_exits(rid)
+    assert harness.offer_job(rid) is True, \
+        "and a drain no longer keeps it down when its runner exits"
 
 
 # ---------------------------------------------------------------------------

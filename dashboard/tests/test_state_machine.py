@@ -242,7 +242,7 @@ class TestTheTableIsTheDiagram:
     def test_the_diagram_actually_parsed(self):
         """Guards against a silent pass if the spec moves or the block is
         renamed: an empty parse would make every comparison above vacuous."""
-        assert len(diagram_edges()) == 26
+        assert len(diagram_edges()) == 27
 
     def test_no_state_exists_only_in_the_code(self):
         drawn = {s for edge in diagram_edges() for s in edge if s}

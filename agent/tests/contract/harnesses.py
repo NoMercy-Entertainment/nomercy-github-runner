@@ -120,6 +120,10 @@ class LinuxContainerHarness:
     def offer_job(self, runner_id):
         return self.docker.offers(naming.unit_name(runner_id))
 
+    def runner_exits(self, runner_id):
+        """The runner process exits by itself, as a crash would."""
+        self.docker._exited_by_itself(naming.unit_name(runner_id))
+
 
 class WindowsProcessHarness:
     name = "windows-process"
@@ -215,6 +219,9 @@ class WindowsProcessHarness:
 
     def offer_job(self, runner_id):
         return self.host.offers(naming.unit_name(runner_id))
+
+    def runner_exits(self, runner_id):
+        self.host._program_exited(naming.unit_name(runner_id))
 
 
 class MacApplianceHarness:
@@ -312,6 +319,9 @@ class MacApplianceHarness:
 
     def offer_job(self, runner_id):
         return self.guest.offers(naming.unit_name(runner_id))
+
+    def runner_exits(self, runner_id):
+        self.guest.crashed(naming.unit_name(runner_id))
 
 
 #: Every runtime the suite runs against.

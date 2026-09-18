@@ -53,6 +53,7 @@ AGENT_SLOW = Policy("agent-slow", 300, 0)
 FORGE_REGISTRATION = Policy("forge-registration", 20, 2, (2, 6))
 FORGE_STATUS = Policy("forge-status", 20, 0)
 FORGE_DELETE = Policy("forge-delete", 20, 0)
+FORGE_DRAIN = Policy("forge-drain", 20, 0)
 HEARTBEAT = Policy("heartbeat", 5, 0)
 
 #: Keyed by the "Call" column of the design's table, so the test can line each
@@ -63,6 +64,7 @@ POLICIES = {
     "Forge registration": FORGE_REGISTRATION,
     "Forge status poll": FORGE_STATUS,
     "Forge record deletion": FORGE_DELETE,
+    "Forge runner drain": FORGE_DRAIN,
     "Heartbeat": HEARTBEAT,
 }
 

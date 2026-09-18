@@ -220,8 +220,16 @@ class FakeWindows:
             return True, {"running": "SERVICE_RUNNING",
                           "stopped": "SERVICE_STOPPED"}[svc["state"]], ""
         if verb == "start":
+            if svc["state"] == "running":
+                return False, "", (f"{name}: START: An instance of the "
+                                   f"service is already running.")
             svc["state"] = "running"
             svc["draining"] = False
+            if any(ntpath.basename(p) == "drain.request"
+                   and self._unit_of(p) == name for p in self.files):
+                # The job host finds the request still there and passes
+                # the Ctrl+Break on at once: the runner exits again.
+                self._program_exited(name)
             return True, f"{name}: START: The operation completed", ""
         if verb == "stop":
             if svc["state"] != "running":

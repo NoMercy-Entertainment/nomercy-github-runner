@@ -196,6 +196,22 @@ class DeregistrationPlan:
     note: str = ""
 
 
+@dataclass(frozen=True)
+class DrainPlan:
+    """How a runner stops taking jobs without losing the one it has (OPEN-7).
+
+    `via_forge` is the whole question, and the two forges answer it opposite
+    ways, because their runners treat a stop signal opposite ways.
+    forgejo-runner finishes its job on SIGTERM and then exits, so it is drained
+    on the worker. The GitHub runner cancels its job on SIGTERM, so it cannot
+    be signalled at all while it works: it is drained at the forge instead,
+    where GitHub stops giving it jobs, and it finishes the one it has undisturbed.
+    """
+
+    via_forge: bool
+    note: str = ""
+
+
 class Provider:
     def __init__(self, key, prefix, image, registration_path,
                  registration_key):
@@ -294,6 +310,20 @@ class Provider:
         clear delete layers a live build needs.
         """
         raise NotImplementedError
+
+    def drain_plan(self, spec):
+        """Where this runner is drained: at the forge or on its worker."""
+        raise NotImplementedError
+
+    def drain_at_forge(self, env, spec):
+        """Stop the forge giving this runner jobs. Raises when the forge did
+        not confirm it. Only for a provider whose plan is `via_forge`."""
+        raise NotImplementedError(f"{self.key} runners drain on the worker")
+
+    def undrain_at_forge(self, env, spec):
+        """Let the forge give this runner jobs again. Idempotent: a runner
+        that was never drained is left as its fleet asks."""
+        raise NotImplementedError(f"{self.key} runners drain on the worker")
 
 
 class _GitHub(Provider):
@@ -485,6 +515,99 @@ class _GitHub(Provider):
             registration_id=str((spec or {}).get("registration_id") or ""),
             note="the runner deregisters itself on SIGTERM; give it the "
                  "full stop timeout")
+
+    # ---- drain (OPEN-7) ------------------------------------------------------
+
+    #: A runner group no repository may use. Set, and a drained runner is
+    #: moved into it, which no job can follow it into. Unset, and its custom
+    #: labels are taken off instead, which keeps every job that asks for one
+    #: of them away - but not a job that asks only for `self-hosted`, the OS
+    #: or the architecture, which GitHub will not let anyone take off. The
+    #: reconciler covers that gap by looking again before it ends a drained
+    #: runner; the group closes it.
+    DRAIN_GROUP_ENV = "GITHUB_DRAIN_GROUP"
+
+    def drain_plan(self, spec):
+        return DrainPlan(
+            via_forge=True,
+            note="the GitHub runner cancels its job on SIGTERM, so it is "
+                 "drained at GitHub, which stops giving it jobs, and "
+                 "finishes the one it has undisturbed")
+
+    def _runner_at_github(self, env, spec, doing):
+        client = self.forge_client(env)
+        if client is None:
+            raise RuntimeError(f"GH_TOKEN and GITHUB_ORG are both required "
+                               f"to {doing} a GitHub runner")
+        rid = str((spec or {}).get("registration_id") or "")
+        if not rid.isdigit():
+            raise RuntimeError(f"no GitHub runner id on this runner, so "
+                               f"nothing identifies it to {doing}")
+        return client, rid
+
+    def _custom_labels(self, spec, env, read_only):
+        """The fleet's labels that GitHub counts as custom on this runner:
+        all of them but the ones it gave the runner itself."""
+        wanted = _labels(spec, self.default_labels(
+            (spec or {}).get("platform") or LINUX,
+            (spec or {}).get("architecture") or X64, env))
+        return [x.strip() for x in wanted.split(",")
+                if x.strip() and x.strip().lower() not in read_only]
+
+    def drain_at_forge(self, env, spec):
+        """Idempotent, because it is asked again on every pass until the
+        runner is drained: a runner already in the drain group, or already
+        without custom labels, is left so."""
+        env = env or {}
+        client, rid = self._runner_at_github(env, spec, "drain")
+        group = (env.get(self.DRAIN_GROUP_ENV) or "").strip()
+        if group:
+            if not client.move_runner_to_group(group, rid):
+                raise RuntimeError(f"GitHub did not confirm runner {rid} "
+                                   f"moved into the drain group {group!r}")
+            return
+        labels = client.runner_labels(rid)
+        if labels is None:
+            raise RuntimeError(f"GitHub did not say which labels runner "
+                               f"{rid} carries")
+        read_only = {n.lower() for n, kind in labels if kind == "read-only"}
+        if not self._custom_labels(spec, env, read_only):
+            # Taking nothing off keeps no job away. Refused, not pretended.
+            raise RuntimeError(
+                f"runner {rid}'s fleet gives it no custom label to take off, "
+                f"so GitHub would go on giving it jobs; set "
+                f"{self.DRAIN_GROUP_ENV} to a runner group no repository "
+                f"may use")
+        left = client.remove_custom_labels(rid)
+        if left is None or any(kind != "read-only" for _, kind in left):
+            raise RuntimeError(f"GitHub did not confirm runner {rid}'s "
+                               f"custom labels taken off")
+
+    def undrain_at_forge(self, env, spec):
+        """Back as its fleet asks: in the fleet's group, or carrying the
+        fleet's labels. Also what a start does, so it must be - and is -
+        harmless for a runner that was never drained."""
+        env = env or {}
+        client, rid = self._runner_at_github(env, spec, "put back in service")
+        if (env.get(self.DRAIN_GROUP_ENV) or "").strip():
+            home = ((spec or {}).get("runner_group")
+                    or env.get("RUNNER_GROUP") or "Default")
+            if not client.move_runner_to_group(home, rid):
+                raise RuntimeError(f"GitHub did not confirm runner {rid} "
+                                   f"moved back into {home!r}")
+            return
+        labels = client.runner_labels(rid)
+        if labels is None:
+            raise RuntimeError(f"GitHub did not say which labels runner "
+                               f"{rid} carries")
+        read_only = {n.lower() for n, kind in labels if kind == "read-only"}
+        custom = self._custom_labels(spec, env, read_only)
+        have = {n.lower() for n, kind in labels if kind != "read-only"}
+        if not custom or have == {x.lower() for x in custom}:
+            return
+        if client.set_custom_labels(rid, custom) is None:
+            raise RuntimeError(f"GitHub did not confirm runner {rid}'s "
+                               f"labels put back")
 
 
 class _Forgejo(Provider):
@@ -731,6 +854,16 @@ class _Forgejo(Provider):
             registration_uuid=str(spec.get("registration_uuid") or ""),
             note="forgejo-runner cannot deregister itself; refuse the removal "
                  "if the API is unreachable rather than stranding the record")
+
+    def drain_plan(self, spec):
+        """forgejo-runner finishes the job it has on SIGTERM and takes no
+        other - its daemon waits up to `shutdown_timeout`, three hours by
+        default - so it is drained on its worker, and its record at Forgejo
+        is not touched."""
+        return DrainPlan(
+            via_forge=False,
+            note="forgejo-runner finishes its job on SIGTERM, then exits; the "
+                 "unit is kept down")
 
 
 GITHUB = _GitHub(

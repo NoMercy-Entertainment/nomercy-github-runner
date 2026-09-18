@@ -30,7 +30,9 @@ nobody saw start.
 
 Two edges were added while building the reconciler, and the design records why:
 `planned -> absent` so a runner that exists only on paper can be withdrawn, and
-`removing -> provisioning` so `recreate` can keep its storage. See spec 12.2.
+`removing -> provisioning` so `recreate` can keep its storage. A third came with
+drain (OPEN-7): `drained -> draining`, observed when a runner drained at GitHub
+is sent a job anyway. See spec 12.2.
 
 `unknown` is deliberately not a state here. It is the database default for a
 row whose actual state has never been observed, which is a different statement
@@ -60,6 +62,7 @@ TRANSITIONS = {
     ("idle", "draining"): "drain",
     ("busy", "draining"): "drain",
     ("draining", "drained"): "job finished",
+    ("drained", "draining"): "job accepted",
     ("drained", "idle"): "cancel drain",
     ("drained", "stopping"): "stop",
     ("idle", "stopping"): "stop",
@@ -115,6 +118,7 @@ OBSERVED = frozenset({
     ("idle", "busy"),
     ("busy", "idle"),
     ("draining", "drained"),
+    ("drained", "draining"),
     ("stopping", "stopped"),
     ("starting", "idle"),
     ("deregistering", "removing"),

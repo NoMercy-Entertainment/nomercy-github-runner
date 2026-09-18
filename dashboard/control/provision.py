@@ -44,7 +44,7 @@ import providers
 
 from . import placement, retry
 from .redact import redact
-from .retry import (AGENT_FAST, AGENT_SLOW, FORGE_DELETE,
+from .retry import (AGENT_FAST, AGENT_SLOW, FORGE_DELETE, FORGE_DRAIN,
                     FORGE_REGISTRATION, FORGE_STATUS)
 
 #: The flow's own steps, in order. Asserted by test.
@@ -81,6 +81,10 @@ class Agent(Protocol):
     def drain(self, host_id: str, ref: Any) -> None: ...
     def cancel_drain(self, host_id: str, ref: Any) -> None: ...
     def ready(self, host_id: str, ref: Any) -> bool: ...
+    #: Whether the unit's process is running at all. Raises when the agent
+    #: cannot tell: a drain is proven by the process having gone, and an
+    #: agent that did not answer has proven nothing.
+    def running(self, host_id: str, ref: Any) -> bool: ...
 
 
 class Forges(Protocol):
@@ -88,6 +92,8 @@ class Forges(Protocol):
 
     def records(self, provider: Any) -> Optional[list]: ...
     def delete(self, provider: Any, registration_id: str) -> bool: ...
+    def drain(self, provider: Any, spec: Mapping) -> None: ...
+    def cancel_drain(self, provider: Any, spec: Mapping) -> None: ...
 
 
 class StepFailed(Exception):
@@ -508,14 +514,18 @@ class ProvisioningFlow:
     def observe(self, spec):
         """What the forge says, translated into the machine's words.
 
-        Only for runners that are serving or draining; everything else is
-        reported by the step that moved it. A draining runner the forge shows
-        idle has finished its job, which is the observed `draining -> drained`
-        edge. Unknown and offline are not observations: they say nothing new
-        about the machine and must not be read as idle.
+        Only for runners that are serving, draining or drained; everything
+        else is reported by the step that moved it. A draining runner is
+        drained once `_drained` can prove it. A drained runner the forge
+        shows busy took a job after all - GitHub will still send one that
+        asks only for labels a drain cannot take off - and goes back to
+        draining, so nothing ends it under that job. Unknown and offline are
+        not observations of a serving runner: they say nothing new about the
+        machine and must not be read as idle.
         """
         actual = spec["actual_state"]
-        if actual not in ("idle", "busy", "draining", "registering"):
+        if actual not in ("idle", "busy", "draining", "drained",
+                          "registering"):
             return None
         provider = self._provider(spec)
         seen = provider.job_state(spec, self._records(provider))
@@ -534,7 +544,9 @@ class ProvisioningFlow:
             ready = self._ready(spec.get("host_id"), self._ref(spec))
             return "idle" if ready else None
         if actual == "draining":
-            return "drained" if seen == providers.IDLE else None
+            return "drained" if self._drained(spec, provider, seen) else None
+        if actual == "drained":
+            return "draining" if seen == providers.BUSY else None
         if seen == providers.BUSY:
             return "busy"
         if seen == providers.IDLE:
@@ -542,18 +554,69 @@ class ProvisioningFlow:
         return None
 
     def start(self, spec):
+        """Started, and in service. The runtime undoes on the worker what a
+        drain did there; a runner drained at its forge is put back there as
+        well. A restart of a busy runner is drain, stop, start, and without
+        this it would come back unable to take a job."""
         retry.call(AGENT_SLOW, self._runtime(spec).start, self._ref(spec))
+        provider = self._provider(spec)
+        if provider.drain_plan(spec).via_forge:
+            retry.call(FORGE_DRAIN, self.forges.cancel_drain, provider, spec)
 
     def stop(self, spec):
         retry.call(AGENT_SLOW, self._runtime(spec).stop, self._ref(spec))
 
+    # ---- drain (OPEN-7) -----------------------------------------------------
+
     def drain(self, spec):
-        retry.call(AGENT_FAST, self.agent.drain, spec.get("host_id"),
-                   self._ref(spec))
+        """Stop the runner taking jobs, where its provider says, and report
+        whether it is drained already: True only when that is proven, so the
+        reconciler moves it to `drained` on evidence and not because the
+        machine last saw it idle. Asked again on every pass while it is
+        draining, so every layer of it is idempotent.
+
+        GitHub's runner cancels its job on SIGTERM, so it is drained at
+        GitHub; forgejo-runner finishes its job on SIGTERM, so it is drained
+        on its worker (`DrainPlan`).
+        """
+        provider = self._provider(spec)
+        if provider.drain_plan(spec).via_forge:
+            retry.call(FORGE_DRAIN, self.forges.drain, provider, spec)
+        else:
+            retry.call(AGENT_FAST, self.agent.drain, spec.get("host_id"),
+                       self._ref(spec))
+        return self._drained(spec, provider)
+
+    def _drained(self, spec, provider, seen=None):
+        """Whether the runner has no job and will take none - proven, never
+        assumed. The forge must show it without a job: idle, or offline,
+        which a runner that has exited is. Unknown proves nothing. A runner
+        drained on its worker must also have stopped: its runner exits once
+        its job is done, and a process still up may still be finishing one
+        the forge has stopped reporting - offline is also what a network
+        break mid-job looks like."""
+        if seen is None:
+            seen = provider.job_state(spec, self._records(provider))
+        if seen not in (providers.IDLE, providers.OFFLINE):
+            return False
+        if provider.drain_plan(spec).via_forge:
+            return True
+        try:
+            running = retry.call(AGENT_FAST, self.agent.running,
+                                 spec.get("host_id"), self._ref(spec))
+        except Exception:               # noqa: BLE001 - unknown is not down
+            return False
+        return running is False
 
     def cancel_drain(self, spec):
-        retry.call(AGENT_FAST, self.agent.cancel_drain, spec.get("host_id"),
-                   self._ref(spec))
+        """Back into service from `drained`, where its provider drained it:
+        the forge gives it jobs again, or its unit is started again."""
+        provider = self._provider(spec)
+        if provider.drain_plan(spec).via_forge:
+            retry.call(FORGE_DRAIN, self.forges.cancel_drain, provider, spec)
+        else:
+            retry.call(AGENT_SLOW, self.agent.cancel_drain,
+                       spec.get("host_id"), self._ref(spec))
 
     def remove(self, spec, keep_data=False):
         if not spec.get("exec_unit_ref"):

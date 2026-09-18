@@ -230,11 +230,25 @@ class WindowsProcessRuntime:
             self._check(self._nssm("set", name, *setting))
 
     def start(self, runner_id):
-        self._check(self._nssm("start", naming.unit_name(runner_id),
-                               timeout=STOP_TIMEOUT + 30))
+        """Started, and in service. What a drain leaves behind is undone
+        first - the request file the job host would answer with Ctrl+Break,
+        and NSSM's leave-it-down on exit - so a service started after a drain
+        serves instead of exiting again at once. A running service is left
+        running: NSSM refuses to start one twice."""
+        name = naming.unit_name(runner_id)
+        p = self.paths(runner_id)
+        self._fs.remove(ntpath.join(p["reg"], DRAIN_REQUEST))
+        self._check(self._nssm("set", name, "AppExit", "Default", "Restart"))
+        if not self.status(runner_id).get("running"):
+            self._check(self._nssm("start", name, timeout=STOP_TIMEOUT + 30))
 
     def stop(self, runner_id):
-        """Ctrl+C to the runner, then the grace a deregistration needs."""
+        """Ctrl+C to the runner, then the grace a deregistration needs. A
+        service that is already down - a drained runner's, say - is left as
+        it is: NSSM refuses to stop one that has not been started, and a stop
+        is asked for to make the unit down, which it is."""
+        if not self.status(runner_id).get("running"):
+            return
         self._check(self._nssm("stop", naming.unit_name(runner_id),
                                timeout=STOP_TIMEOUT + 30))
 
@@ -248,7 +262,11 @@ class WindowsProcessRuntime:
         asked - by a file in the runner's own tree, which only this runner's
         account and the agent can write - to pass the runner a Ctrl+Break.
         The runner takes nothing new, finishes what it has, exits, and the
-        service stays down. Nothing here waits for it or kills anything."""
+        service stays down. Nothing here waits for it or kills anything.
+
+        Asked again on every reconciler pass until the runner is drained;
+        the job host passes the Ctrl+Break on once, however often the file
+        is written."""
         name = naming.unit_name(runner_id)
         p = self.paths(runner_id)
         self._check(self._nssm("set", name, "AppExit", "Default", "Exit"))
@@ -256,13 +274,8 @@ class WindowsProcessRuntime:
 
     def cancel_drain(self, runner_id):
         """Back into service once drained: restarts on exit again, and the
-        service started."""
-        name = naming.unit_name(runner_id)
-        p = self.paths(runner_id)
-        self._fs.remove(ntpath.join(p["reg"], DRAIN_REQUEST))
-        self._check(self._nssm("set", name, "AppExit", "Default", "Restart"))
-        if not self.status(runner_id).get("running"):
-            self._check(self._nssm("start", name, timeout=STOP_TIMEOUT + 30))
+        service started - which is what a start does."""
+        self.start(runner_id)
 
     def remove(self, runner_id, keep_data):
         """Remove the service and its storage. Safe when any of it is absent."""

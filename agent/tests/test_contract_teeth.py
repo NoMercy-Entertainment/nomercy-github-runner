@@ -214,6 +214,22 @@ class DrainsButComesBack(LinuxContainerRuntime):
                      naming.unit_name(runner_id)], timeout=30)
 
 
+class StartsButStaysDrained(LinuxContainerRuntime):
+    """Starts the unit and leaves the restart policy a drain took off, so
+    the first time its runner exits it stays down."""
+
+    def start(self, runner_id):
+        self._check(["start", naming.unit_name(runner_id)], timeout=60)
+
+
+class WinStartsButStaysDrained(WindowsProcessRuntime):
+    """Starts the service with the drain request still there, which the job
+    host answers at once."""
+
+    def start(self, runner_id):
+        self._check(self._nssm("start", naming.unit_name(runner_id)))
+
+
 class DeniesDraining(LinuxContainerRuntime):
     """Says it cannot drain - and a drain asked of it goes through anyway."""
 
@@ -241,6 +257,18 @@ def test_claiming_a_capability_it_does_not_have_fails(broken):
     with pytest.raises(AssertionError):
         suite.test_2_drain_while_busy_finishes_the_job_and_takes_no_other(
             harness_with(broken))
+
+
+@pytest.mark.parametrize("make", [
+    lambda: harness_with(StartsButStaysDrained),
+    lambda: windows_harness_with(WinStartsButStaysDrained),
+], ids=["linux", "windows"])
+def test_a_start_that_leaves_the_drain_in_place_fails(make):
+    """A restart of a busy runner is drain, stop, start. A start that does
+    not undo the drain leaves a runner that serves until its first exit, or
+    not at all."""
+    with pytest.raises(AssertionError):
+        suite.test_3_cancel_drain_accepts_work_again(make())
 
 
 def test_saying_nothing_about_one_fails():

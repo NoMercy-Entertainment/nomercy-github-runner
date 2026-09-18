@@ -214,6 +214,10 @@ class FakeDocker:
         missing = self._need(name)
         if missing:
             return missing
+        if self.containers[name]["state"] == "running":
+            # A no-op, as the engine's is: a process that was told to drain
+            # is still draining.
+            return True, name, ""
         self.containers[name]["draining"] = False
         return self._set(name, "running")
 

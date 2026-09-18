@@ -19,6 +19,13 @@ class FakeAgent:
     def __init__(self, ready=True):
         self.calls = []
         self._ready = ready
+        #: Units told to drain on their worker and not since told otherwise.
+        #: Their runner exits once it has no job; FakeForges says whether it
+        #: has one, and sets itself here when it is built.
+        self.drained = set()
+        self.forges = None
+        #: Set to make `running` fail, as an agent that cannot answer does.
+        self.running_unknown = False
         self.fail_on = set()
         self.raise_with = None      # text for the exception, to test redaction
         self.ready_after = 0        # number of `ready` calls that say no first
@@ -44,9 +51,25 @@ class FakeAgent:
 
     def drain(self, host_id, ref):
         self.calls.append(("drain", host_id, ref.handle))
+        self._maybe_fail("drain")
+        self.drained.add(ref.handle)
 
     def cancel_drain(self, host_id, ref):
         self.calls.append(("cancel_drain", host_id, ref.handle))
+        self._maybe_fail("cancel_drain")
+        self.drained.discard(ref.handle)
+
+    def exited(self, handle):
+        """A unit drained on its worker whose runner has finished its job,
+        and so exited."""
+        return handle in self.drained and not (
+            self.forges and self.forges.working(handle))
+
+    def running(self, host_id, ref):
+        self.calls.append(("running", host_id, ref.handle))
+        if self.running_unknown:
+            raise RuntimeError("the agent did not answer")
+        return not self.exited(ref.handle)
 
     #: Raise Crash on the next `ready` - "register before confirm".
     crash_on_ready = False
@@ -71,7 +94,12 @@ class FakeForges:
 
     def __init__(self, agent, online=True):
         self.agent = agent
+        agent.forges = self
         self.online = online
+        #: Registration ids drained at the forge - taken out of job matching
+        #: - and whether the forge confirms that when asked.
+        self.drained = set()
+        self.drain_ok = True
         self.busy = set()
         self.idle_overrides = set()
         self.deleted = []
@@ -107,16 +135,32 @@ class FakeForges:
         apply(len(self.agent.calls))
         return live
 
+    def working(self, handle):
+        return f"77{handle[-4:]}" in self.busy
+
+    def drain(self, provider, spec):
+        if not self.drain_ok:
+            raise RuntimeError("the forge did not confirm the drain")
+        self.drained.add(str(spec.get("registration_id")))
+
+    def cancel_drain(self, provider, spec):
+        if not self.drain_ok:
+            raise RuntimeError("the forge did not confirm the runner back")
+        self.drained.discard(str(spec.get("registration_id")))
+
     def records(self, provider):
         out = []
         for handle in self.live_handles():
             rid = f"77{handle[-4:]}"
-            status = "online" if self.online else "offline"
+            # A runner drained on its worker exits once its job is done, and
+            # its forge then sees it go offline.
+            up = self.online and not self.agent.exited(handle)
+            status = "online" if up else "offline"
             out.append({"id": rid, "status": status, "busy": rid in self.busy,
                         "uuid": f"uuid-{handle}",
                         # Forgejo's words
                         **({"status": ("active" if rid in self.busy
-                                       else "idle" if self.online
+                                       else "idle" if up
                                        else "offline")}
                            if provider.key == "forgejo" else {})})
         return out

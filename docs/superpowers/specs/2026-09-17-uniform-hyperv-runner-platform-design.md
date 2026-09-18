@@ -1008,6 +1008,7 @@ stateDiagram-v2
   idle --> draining: drain
   busy --> draining: drain
   draining --> drained: job finished
+  drained --> draining: job accepted
   drained --> idle: cancel drain
   drained --> stopping: stop
   idle --> stopping: stop
@@ -1051,6 +1052,24 @@ have.
   registers afresh. It is an observed edge: the reconciler takes it when the
   unit is gone and a `recreate` is the operation in flight, and takes
   `removing --> absent` otherwise.
+
+**A third edge came with drain (OPEN-7), 2026-09-18.** `drained --> draining:
+job accepted` is observed, never asked for. GitHub will not let anyone take off
+the labels it gives every runner (`self-hosted`, the OS, the architecture).
+So a runner drained by taking its custom labels off (13.1) can still be sent
+a job that asks for nothing else. When the forge shows a drained runner busy,
+it goes back to `draining`, and every step that would end it is held until the
+job is done. The reconciler looks once more before it stops, deregisters or
+removes a drained runner, so such a job is caught at the last moment it
+matters. A runner drained into a runner group no repository may use cannot be
+sent one at all.
+
+**Drained is proven, not assumed.** A runner that was idle when a drain was
+asked for is not drained until the forge shows it without a job, because a
+job can arrive between the sighting and the drain. A runner drained on its
+worker must also have stopped. `draining` is re-driven on every pass, as an
+interrupted `stopping` is, so a drain that failed or was cut off is asked for
+again instead of being waited on for ever.
 
 ### 12.3 Operations, idempotency and tracing
 
@@ -1128,6 +1147,7 @@ command:
 | `exec_unit.status` / `.telemetry` / `.logs` | controller to agent | yes |
 | `exec_unit.probe` | controller to agent | yes, closed `Probe` enum |
 | `exec_unit.clear_cache` | controller to agent | yes |
+| `exec_unit.drain` / `.cancel_drain` | controller to agent | yes |
 | `runner.register` / `.deregister` | controller to agent | yes |
 | `heartbeat` | agent to controller | n/a |
 | `event` | agent to controller | n/a |
@@ -1135,6 +1155,47 @@ command:
 There is no `run`, no `shell`, no `powershell`, no `ssh`. A new capability
 means a new named verb, reviewed. `Probe` is an enum in the type system, so a
 free-text probe cannot be expressed (T-0001).
+
+**Drain, added when OPEN-7 was settled (2026-09-18).** `exec_unit.drain` is
+a graceful stop that stays stopped. It asks the unit's runner process to
+finish what it has and take nothing new, and it keeps the unit down afterwards.
+Nothing in it kills anything. `exec_unit.cancel_drain` puts the unit back in
+service, and so does `exec_unit.start`, because a restart of a busy runner is
+drain, stop, start.
+
+| Runtime | `drain` | undone by `start` / `cancel_drain` |
+| --- | --- | --- |
+| Linux container | restart policy `no`, then SIGTERM to the runner (never `docker stop`, which kills when its timeout runs out) | restart policy `unless-stopped`, then `docker start` |
+| Windows process | NSSM `AppExit Default Exit`, and a `drain.request` file in the runner's own tree. The job host answers it with Ctrl+Break to the runner, which runs in its own process group | the file removed, `AppExit Default Restart`, the service started if it is down |
+| macOS appliance | SIGTERM through `launchctl kill`; `KeepAlive` `SuccessfulExit: false` does not restart a clean exit | loaded, and kickstarted if it is not running |
+
+**Which forge uses it.** The two runners treat a stop signal in opposite
+ways, so the controller drains them in opposite places (`DrainPlan` in
+`providers.py`).
+
+- **Forgejo, on the worker.** forgejo-runner finishes its job on SIGTERM
+  and exits. Its daemon waits up to `shutdown_timeout`, which defaults to three
+  hours. **DOCUMENTED** in its source: `main.go` creates the signal context
+  with `signal.NotifyContext(..., SIGINT, SIGTERM)` and stops it only when
+  `main` returns. So a second SIGTERM while it finishes a job is ignored, and
+  the drain can be asked for again safely. Go delivers Ctrl+Break on Windows
+  as the same interrupt. Its record at Forgejo is not touched.
+- **GitHub, at the forge.** The GitHub runner cancels its job on SIGTERM, so
+  it is never signalled while it may be working. GitHub is told to stop giving
+  it jobs instead:
+  - with `GITHUB_DRAIN_GROUP` set, the runner is moved into that runner group,
+    which should be one no repository may use;
+  - otherwise its custom labels are taken off, which keeps away every job
+    that asks for one of them.
+
+  GitHub does not let anyone remove `self-hosted`, the OS or the architecture.
+  A job that asks for nothing more can still reach a runner drained by its
+  labels. 12.2 shows how that is caught before anything ends the runner.
+  A fleet with no custom label cannot be drained by labels at all, and the
+  drain is refused with that reason rather than reported as done.
+
+A runner is `drained` only when that is proven. The forge must show no job,
+and a runner drained on its worker must also have stopped (12.2).
 
 **CON-9 explicitly:** `exporters/runner_exporter.py` stays read-only and is
 **not** extended into the control path. It is superseded: once a worker runs a
@@ -1515,6 +1576,7 @@ NFR-6. Every remote call has a deadline; no call is unbounded.
 | Forge registration | 20 s | 2 | 2 s, 6 s |
 | Forge status poll | 20 s | 0 | cached; a failure caches "unknown", never the last good answer |
 | Forge record deletion | 20 s | 0 | n/a; a retried delete whose first reply was lost finds nothing and reads as a failure |
+| Forge runner drain (labels or group) | 20 s | 0 | n/a; the edit is idempotent and the reconciler asks for it again on its next pass |
 | Heartbeat | 5 s | 0 | next beat |
 
 The deletion row was added during implementation (T-0307, 2026-09-18). The
@@ -1522,6 +1584,12 @@ provisioning flow deletes Forgejo records to deregister, and the first five
 rows had no place for it. It is not retried because it cannot be retried
 safely: the Forgejo client reports a delete of a record that is already gone
 as a failure, so a retry after a lost reply would turn a success into one.
+
+The drain row was added when OPEN-7 was settled (2026-09-18). A GitHub runner
+is drained at GitHub, by editing its labels or its runner group (13.1). The
+edit is not retried within a pass. It needs no retry: setting the same labels
+or group twice has the same effect as once, and a draining runner has its
+drain asked for again on every pass until it is drained.
 
 The "a failure is cached as unknown, never as the previous good answer" rule is
 **MEASURED** as already correct in `docker_ops._forge_records()` and
@@ -1684,7 +1752,7 @@ does not exist yet.
 | **OPEN-4** | Maintain a self-built `GOOS=windows` Forgejo runner | Ongoing maintenance at every upstream release, with no upstream support | The Forgejo x Windows cell |
 | **OPEN-5** | Control-plane memory reservation, given the host has no pagefile and Hyper-V static memory is a reservation rather than a ceiling | Capacity planning against 255.9 GB with Docker Desktop still resident | Phase 5 sizing |
 | **OPEN-6** | Whether the LAN publication moves to an External vSwitch with a static address, replacing the portproxy | A new External switch briefly interrupts host networking | T-0604 |
-| **OPEN-7** | How `drain` stops a runner taking new jobs without aborting the one it has. Found in Phase 3 (2026-09-18): the controller's lifecycle has `drain` and `cancel drain`, and the provisioning flow asks the agent for them, but the closed verb set of 13.1 has no such verb, and neither runner has a documented way to pause itself. Candidates: remove the runner's job labels at the forge so nothing matches it, which is forge-side and needs no agent verb, if both forges' APIs allow editing a runner's labels; or a `runner.drain` agent verb, if a runner can be told to finish its job and take no other. Neither has been checked against the forges' APIs yet | Picks between a forge-side and a worker-side mechanism, and each forge may allow only one | Wiring the flow to real agents (phase 4-5); `drain`, `recreate` and every scale-down of a busy runner |
+| ~~OPEN-7~~ | **Settled 2026-09-18: both mechanisms, one per forge.** Forgejo is drained on its worker, through the new agent verbs `exec_unit.drain` and `.cancel_drain`, because forgejo-runner finishes its job on SIGTERM. GitHub is drained at GitHub, by runner group or by custom labels, because its runner cancels its job on SIGTERM. See 13.1 for the mechanism and 12.2 for what proves a runner drained. Residual: until `GITHUB_DRAIN_GROUP` names a group no repository may use, a job that asks only for `self-hosted`, the OS or the architecture can still reach a drained GitHub runner. The reconciler catches it, and nothing is aborted | - | nothing |
 
 With OPEN-1 closed, no fleet is blocked on an open decision. OPEN-2 and
 OPEN-3 shape the Windows worker but do not prevent it from being built.

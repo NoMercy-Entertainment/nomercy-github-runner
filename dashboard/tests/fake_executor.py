@@ -64,7 +64,10 @@ class FakeExecutor:
         self._record("stop", spec)
 
     def drain(self, spec):
+        """Drained at once unless the world says the runner has a job - the
+        real flow asks the forge the same question."""
         self._record("drain", spec)
+        return self.world.get(spec["runner_id"]) not in ("busy", "draining")
 
     def cancel_drain(self, spec):
         self._record("cancel_drain", spec)

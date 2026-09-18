@@ -93,7 +93,8 @@ class Executor(Protocol):
     def abandon(self, spec: Mapping[str, Any]) -> tuple: ...
     def start(self, spec: Mapping[str, Any]) -> None: ...
     def stop(self, spec: Mapping[str, Any]) -> None: ...
-    def drain(self, spec: Mapping[str, Any]) -> None: ...
+    #: True when the runner is proven drained - no job, and none to come.
+    def drain(self, spec: Mapping[str, Any]) -> bool: ...
     def cancel_drain(self, spec: Mapping[str, Any]) -> None: ...
     def deregister(self, spec: Mapping[str, Any]) -> None: ...
     def remove(self, spec: Mapping[str, Any], keep_data: bool) -> None: ...
@@ -316,6 +317,19 @@ class Reconciler:
                                 f"abort its job"))
             return
 
+        # A drained runner is looked at once more before it is ended. A drain
+        # at GitHub cannot take off the labels GitHub gives every runner, so a
+        # job asking only for those can still reach it; if one has, the look
+        # moves it back to draining and the lock above holds the step.
+        if action in DESTRUCTIVE and spec["actual_state"] == "drained":
+            self._do_observe(spec, None, report)
+            spec = self.service.specs.get(spec["runner_id"])
+            if states.aborts_a_job(action, spec["actual_state"]):
+                report.held.append((spec["runner_id"],
+                                    f"{action} held: the drained runner took "
+                                    f"a job, and {action} would abort it"))
+                return
+
         if action in NEEDS_HEALTHY_WORKER and not self._worker_accepts(spec):
             report.held.append((spec["runner_id"],
                                 f"{action} held: worker "
@@ -498,17 +512,22 @@ class Reconciler:
         report.did("stop", spec["runner_id"])
 
     def _do_drain(self, spec, operation, report):
-        """Draining ends when the job does, which is observed later. An idle
-        runner has no job, so it is drained as soon as it stops accepting."""
-        self._attempt(operation, "draining")
-        was_idle = spec["actual_state"] == "idle"
-        spec = self._move(spec, "draining")
+        """Asked for on every pass while the runner is draining, the way an
+        interrupted stop is taken again: a drain that failed, or was cut off,
+        or was never confirmed, is simply asked for again, and every layer of
+        it is idempotent. The runner is drained when the executor proves it -
+        the forge shows no job, and a runner drained on its worker has
+        stopped - never because the machine last saw it idle: a job can
+        arrive between that sighting and the drain."""
+        if spec["actual_state"] != "draining":      # a re-drive stays put
+            self._attempt(operation, "draining")
+            spec = self._move(spec, "draining")
         try:
-            self.executor.drain(spec)
+            done = self.executor.drain(spec)
         except Exception as e:                  # noqa: BLE001
             self._fail(spec, operation, e, report, "drain")
             return
-        if was_idle:
+        if done is True:
             self._move(spec, "drained")
         report.did("drain", spec["runner_id"])
 
@@ -775,10 +794,8 @@ def decide(spec, operation=None, progress=None):
         # skipped: the clear step refuses a runner that took a job meanwhile.
         policy = spec.get("cache_policy") or {}
         if policy.get("on_clear") == "drain-first":
-            if actual == "busy":
+            if actual in ("busy", "draining"):
                 return "drain"
-            if actual == "draining":
-                return "observe"
         return "clear_cache"
 
     if verb == "restart" and "started" not in done:
@@ -788,8 +805,7 @@ def decide(spec, operation=None, progress=None):
             return "stop"
         if actual == "stopped":
             return "start"
-        if actual in ("draining", "stopping", "starting"):
-            return "observe"
+        # draining, stopping and starting fall through to be taken again.
 
     if verb == "recreate" and "rebuilding" not in done:
         if actual in ("idle", "busy"):
@@ -798,8 +814,7 @@ def decide(spec, operation=None, progress=None):
             return "deregister"
         if actual in ("removing", "failed"):
             return "remove"
-        if actual in ("draining", "deregistering"):
-            return "observe"
+        # draining and deregistering fall through to be taken again.
 
     if verb == "repair" and actual == "failed":
         return "repair"
@@ -815,6 +830,8 @@ def decide(spec, operation=None, progress=None):
         return "start"
     if actual == "deregistering":
         return "deregister"
+    if actual == "draining":
+        return "drain"
 
     # -- a runner half-way through being created is finished first -----------
     # The machine has no way out of `provisioning` or `provisioned` except
@@ -851,7 +868,11 @@ def decide(spec, operation=None, progress=None):
     if desired == "drained":
         if actual in ("idle", "busy"):
             return "drain"
-        if actual in ("drained", "planned", "stopped", "failed"):
+        if actual == "drained":
+            # Kept looked at: a runner drained at GitHub can still be sent a
+            # job that asks only for labels a drain cannot take off.
+            return "observe"
+        if actual in ("planned", "stopped", "failed"):
             return None
         return "observe"
 

@@ -1,4 +1,5 @@
-"""The forges, as the provisioning flow sees them: records, and deleting one.
+"""The forges, as the provisioning flow sees them: records, deleting one, and
+draining a runner whose forge is where it is drained.
 
 The flow's `Forges` protocol, over the providers' own adapters. The flow never
 holds a forge client: it asks here, and this asks the provider for the
@@ -46,3 +47,13 @@ class LiveForges:
                 f"{provider.key}: the forge did not confirm registration "
                 f"{registration_id} deleted")
         return True
+
+    def drain(self, provider, spec) -> None:
+        """Stop the forge giving this runner jobs (OPEN-7). The provider
+        raises when the forge did not confirm it; that reaches `last_error`
+        as it is, and the drain is asked again on the next pass."""
+        provider.drain_at_forge(self.env, spec)
+
+    def cancel_drain(self, provider, spec) -> None:
+        """Let the forge give this runner jobs again."""
+        provider.undrain_at_forge(self.env, spec)

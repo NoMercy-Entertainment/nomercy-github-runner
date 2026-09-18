@@ -96,6 +96,96 @@ class GitHub:
             print(f"[github] DELETE {path}: {type(e).__name__}")
             return None
 
+    def _send(self, method, path, body=None):
+        """A write that answers with JSON, as (status, data): status None
+        when there was no answer at all, data None when there was no JSON.
+        For the runner edits of a drain, where both matter - which status,
+        and what the forge says the runner now carries."""
+        data = json.dumps(body).encode() if body is not None else None
+        req = urllib.request.Request(API + path, method=method, data=data,
+                                     headers={
+            "Authorization": f"Bearer {self.token}",
+            "Accept": "application/vnd.github+json",
+            "Content-Type": "application/json",
+            "X-GitHub-Api-Version": "2022-11-28",
+            "User-Agent": "nomercy-runner-dashboard",
+        })
+        try:
+            with urllib.request.urlopen(req, timeout=20) as r:
+                raw = r.read()
+                return r.status, (json.loads(raw.decode()) if raw else None)
+        except urllib.error.HTTPError as e:
+            print(f"[github] {e.code} {method} {path}")
+            return e.code, None
+        except Exception as e:  # noqa: BLE001
+            print(f"[github] {method} {path}: {type(e).__name__}")
+            return None, None
+
+    @staticmethod
+    def _label_list(data):
+        """GitHub's `{"labels": [{"name", "type"}...]}` as [(name, type)],
+        or None when the answer is not that."""
+        if not isinstance(data, dict) or not isinstance(
+                data.get("labels"), list):
+            return None
+        return [(str(x.get("name", "")), str(x.get("type", "")))
+                for x in data["labels"] if isinstance(x, dict)]
+
+    def runner_labels(self, runner_id):
+        """One runner's labels as [(name, type)] - type is `read-only` for
+        the ones GitHub gives every self-hosted runner and `custom` for the
+        rest - or None when it could not be read."""
+        rid = str(runner_id or "").strip()
+        if not rid.isdigit():
+            return None
+        return self._label_list(
+            self._get(f"/orgs/{self.org}/actions/runners/{rid}/labels"))
+
+    def remove_custom_labels(self, runner_id):
+        """Take every custom label off a runner, so no job that asks for one
+        matches it any more. The labels it still has, or None when GitHub
+        did not confirm. A job it is running is not touched: labels decide
+        only which runner the next job goes to."""
+        rid = str(runner_id or "").strip()
+        if not rid.isdigit():
+            return None
+        status, data = self._send(
+            "DELETE", f"/orgs/{self.org}/actions/runners/{rid}/labels")
+        return self._label_list(data) if status == 200 else None
+
+    def set_custom_labels(self, runner_id, labels):
+        """Replace a runner's custom labels with these. The labels it then
+        has, or None when GitHub did not confirm."""
+        rid = str(runner_id or "").strip()
+        if not rid.isdigit():
+            return None
+        status, data = self._send(
+            "PUT", f"/orgs/{self.org}/actions/runners/{rid}/labels",
+            {"labels": list(labels)})
+        return self._label_list(data) if status == 200 else None
+
+    def runner_group_id(self, name):
+        """The id of the org's runner group with this name, or None."""
+        data = self._get(f"/orgs/{self.org}/actions/runner-groups",
+                         params={"per_page": 100})
+        for group in (data or {}).get("runner_groups") or []:
+            if str(group.get("name", "")).lower() == str(name).lower():
+                return group.get("id")
+        return None
+
+    def move_runner_to_group(self, group_name, runner_id):
+        """Put a runner in the named group, which takes it out of the one it
+        was in. True only when GitHub confirmed it (204)."""
+        rid = str(runner_id or "").strip()
+        group_id = self.runner_group_id(group_name) if rid.isdigit() \
+            else None
+        if group_id is None:
+            return False
+        status, _ = self._send(
+            "PUT", f"/orgs/{self.org}/actions/runner-groups/{group_id}"
+                   f"/runners/{rid}")
+        return status == 204
+
     def delete_runner(self, runner_id):
         """Remove one self-hosted runner's record from the org, by its id.
 
