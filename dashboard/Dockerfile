@@ -11,6 +11,7 @@ RUN apk add --no-cache docker-cli bash coreutils tzdata \
 WORKDIR /app
 COPY app.py docker_ops.py external_telemetry.py forgejo_api.py github_api.py history.py oidc.py providers.py runner_detail.py users.py ./
 COPY runtime/ ./runtime/
+COPY store/ ./store/
 COPY templates/ ./templates/
 
 ENV PYTHONUNBUFFERED=1 \
