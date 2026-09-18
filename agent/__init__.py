@@ -8,7 +8,7 @@ test on the dashboard side reads that file and fails if the controller's copy
 disagrees.
 
 **It can only be asked for named things.** `verbs.VERBS` is a frozen table of
-fourteen verbs. There is no verb that runs a command, takes a shell string, or
+sixteen verbs. There is no verb that runs a command, takes a shell string, or
 names a path outside one runner's own tree, and a test scans this package's
 source for process-spawning calls whose arguments are anything but a literal
 list. That is design NFR-10, enforced rather than intended: the agent listens

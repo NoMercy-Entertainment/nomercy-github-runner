@@ -32,6 +32,12 @@ VERB_NAMES = frozenset({
     "exec_unit.logs",
     "exec_unit.probe",
     "exec_unit.clear_cache",
+    # OPEN-7, settled 2026-09-18: a graceful stop - the unit's process is
+    # asked to finish what it is doing and take nothing new, and is not
+    # restarted afterwards. Whether that preserves a job depends on the forge
+    # runner, which is the provider's knowledge, not the agent's.
+    "exec_unit.drain",
+    "exec_unit.cancel_drain",
     "runner.register",
     "runner.deregister",
 })
@@ -59,6 +65,7 @@ OP_PATH = "/v1/op/"
 ASYNC_VERBS = frozenset({
     "exec_unit.create", "exec_unit.start", "exec_unit.stop",
     "exec_unit.restart", "exec_unit.remove", "exec_unit.clear_cache",
+    "exec_unit.drain", "exec_unit.cancel_drain",
     "runner.register", "runner.deregister",
 })
 

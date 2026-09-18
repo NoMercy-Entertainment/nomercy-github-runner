@@ -36,6 +36,7 @@ import argparse
 import ctypes
 import json
 import os
+import signal
 import subprocess
 import sys
 import time
@@ -43,6 +44,12 @@ from ctypes import wintypes
 
 GRACE_SECONDS = 60
 REPORT_SECONDS = 10
+
+#: A file the runtime writes in the runner's own `reg` to drain it (OPEN-7):
+#: the job host passes the runner a Ctrl+Break, the runner finishes what it
+#: has and exits, and the service manager - told not to restart it - leaves
+#: it down.
+DRAIN_REQUEST = "drain.request"
 
 # Job object information classes and flags, winnt.h.
 _BASIC_ACCOUNTING = 1
@@ -259,7 +266,13 @@ def main(argv=None):
     env = dict(os.environ)
     env.update(unit.get("env") or {})
     entry = os.path.join(root, "reg", "run.cmd")
-    child = subprocess.Popen([entry], cwd=os.path.join(root, "work"), env=env)
+    # Its own process group, so a Ctrl+Break can be aimed at the runner and
+    # nothing else. A new group ignores Ctrl+C, so the service manager's stop
+    # is passed on explicitly below.
+    child = subprocess.Popen([entry], cwd=os.path.join(root, "work"), env=env,
+                             stdin=subprocess.DEVNULL,
+                             creationflags=getattr(
+                                 subprocess, "CREATE_NEW_PROCESS_GROUP", 0))
     # Checked, not assumed: a runner outside its job is a runner without
     # limits, and that is worse than no runner.
     if not in_job(child._handle, job):
@@ -268,25 +281,41 @@ def main(argv=None):
               file=sys.stderr)
         return 4
 
-    last = None
+    last, drained = None, False
+    marker = os.path.join(root, "reg", DRAIN_REQUEST)
     try:
         while True:
             try:
                 code = child.wait(timeout=args.report_seconds)
                 break
             except subprocess.TimeoutExpired:
+                if not drained and os.path.exists(marker):
+                    # Once, and never followed by a kill: the runner decides
+                    # how long its job needs, within its own shutdown timeout.
+                    drained = _interrupt(child)
                 try:
                     last = report(root, job, last, time.time())
                 except OSError:
                     pass            # telemetry must never stop the runner
     except KeyboardInterrupt:
-        # The service manager's stop. The runner shares this console and has
-        # the same Ctrl+C; give it the grace a deregistration needs.
+        # The service manager's stop, passed on; then the grace a
+        # deregistration needs.
+        _interrupt(child)
         try:
             code = child.wait(timeout=GRACE_SECONDS)
         except subprocess.TimeoutExpired:
             code = 1
     return code
+
+
+def _interrupt(child):
+    """Ctrl+Break to the runner's process group - what forgejo-runner, like
+    any Go program, takes as an interrupt."""
+    try:
+        os.kill(child.pid, getattr(signal, "CTRL_BREAK_EVENT", signal.SIGINT))
+        return True
+    except OSError:
+        return False
 
 
 if __name__ == "__main__":

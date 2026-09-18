@@ -56,6 +56,8 @@ class FakeWindows:
             self.services.get(unit, {}).get("state") == "running")
         #: A tool verb (e.g. "install") after which to raise Crash, once.
         self.crash_after = None
+        #: unit -> "running" | "aborted": the job its runner has.
+        self.jobs = {}
         self.install_template(TEMPLATE)
 
     # ---- helpers for tests ---------------------------------------------------
@@ -111,6 +113,20 @@ class FakeWindows:
             raise FileNotFoundError(ntpath.dirname(path))
         self.files[_key(path)] = len(text)
         self.texts[_key(path)] = text
+        if ntpath.basename(path) == "drain.request":
+            # What the job host does when it sees this file: Ctrl+Break to
+            # the runner, which finishes a job it has and exits.
+            self._drain_requested(self._unit_of(path))
+
+    def remove(self, path):
+        self.files.pop(_key(path), None)
+        self.texts.pop(_key(path), None)
+
+    @staticmethod
+    def _unit_of(path):
+        """rnr-<id> for a path inside the runner's own tree under D:."""
+        parts = ntpath.normpath(path).split("\\")
+        return "rnr-" + parts[2] if len(parts) > 2 else None
 
     def read_text(self, path):
         k = _key(path)
@@ -196,6 +212,7 @@ class FakeWindows:
         if missing:
             return missing
         svc = self.services[name]
+        svc.setdefault("draining", False)
         if verb == "set":
             svc["settings"][args[2]] = args[3:]
             return True, f"Set parameter \"{args[2]}\" for service", ""
@@ -204,23 +221,73 @@ class FakeWindows:
                           "stopped": "SERVICE_STOPPED"}[svc["state"]], ""
         if verb == "start":
             svc["state"] = "running"
+            svc["draining"] = False
             return True, f"{name}: START: The operation completed", ""
         if verb == "stop":
             if svc["state"] != "running":
                 return False, "", (f"{name}: STOP: The service has not been "
                                    f"started.")
+            self._abort_job(name)
             svc["state"] = "stopped"
             return True, f"{name}: STOP: The operation completed", ""
         if verb == "restart":
+            self._abort_job(name)
             svc["state"] = "running"
+            svc["draining"] = False
             svc["restarts"] = svc.get("restarts", 0) + 1
             return True, f"{name}: RESTART: done", ""
         if verb == "remove":
             if args[2:] != ["confirm"]:
                 return False, "", "remove needs confirm"
+            self._abort_job(name)
             del self.services[name]
             return True, f"Service \"{name}\" removed successfully!", ""
         return False, "", f"unknown nssm verb {verb!r}"
+
+    # ---- jobs, and what a drained runner does ---------------------------------
+
+    def _drain_requested(self, unit):
+        svc = self.services.get(unit)
+        if not svc or svc["state"] != "running":
+            return
+        if self.jobs.get(unit) == "running":
+            svc["draining"] = True
+        else:
+            self._program_exited(unit)
+
+    def _program_exited(self, unit):
+        """The runner exited on its own. NSSM restarts it unless told the
+        exit means stop."""
+        svc = self.services[unit]
+        svc["draining"] = False
+        exit_rule = svc["settings"].get("AppExit")
+        svc["state"] = ("stopped" if exit_rule == ["Default", "Exit"]
+                        else "running")
+
+    def start_job(self, unit):
+        if not self.offers(unit):
+            return False
+        self.jobs[unit] = "running"
+        return True
+
+    def finish_job(self, unit):
+        state = self.jobs.pop(unit, None)
+        if state != "running":
+            return False
+        if self.services.get(unit, {}).get("draining"):
+            self._program_exited(unit)
+        return True
+
+    def offers(self, unit):
+        svc = self.services.get(unit)
+        return (bool(svc) and svc["state"] == "running"
+                and not svc.get("draining")
+                and self.jobs.get(unit) != "running"
+                and bool(self.forge.for_unit(unit)))
+
+    def _abort_job(self, unit):
+        if self.jobs.get(unit) == "running":
+            self.jobs[unit] = "aborted"
 
     def _sc(self, args, input):
         verb = args[0]

@@ -205,6 +205,26 @@ class LinuxContainerRuntime:
         self._check(["restart", "-t", str(STOP_TIMEOUT),
                      naming.unit_name(runner_id)], timeout=STOP_TIMEOUT + 30)
 
+    def drain(self, runner_id):
+        """A graceful stop that stays stopped (OPEN-7): the restart policy
+        is taken off first, so the engine does not bring the unit back when
+        its process exits, and then the process is sent SIGTERM - not
+        `docker stop`, which kills it when its timeout runs out. What the
+        runner does with a running job on SIGTERM is its own business; a
+        forgejo-runner finishes it within its shutdown timeout."""
+        name = naming.unit_name(runner_id)
+        self._check(["update", "--restart=no", name], timeout=30)
+        if self.status(runner_id).get("running"):
+            self._check(["kill", "--signal=TERM", name], timeout=30)
+
+    def cancel_drain(self, runner_id):
+        """Back into service: the restart policy restored, and the unit
+        started if it has stopped."""
+        name = naming.unit_name(runner_id)
+        self._check(["update", "--restart=unless-stopped", name], timeout=30)
+        if not self.status(runner_id).get("running"):
+            self._check(["start", name], timeout=60)
+
     def remove(self, runner_id, keep_data):
         """Remove the unit and its storage. Safe when any of it is absent."""
         rid = naming.check(runner_id)
@@ -224,7 +244,7 @@ class LinuxContainerRuntime:
         if left:
             raise RuntimeError("storage left behind: " + "; ".join(left))
 
-    def _check(self, args, timeout):
+    def _check(self, args, timeout=30):
         ok, out, err = self._run(args, timeout=timeout)
         if not ok:
             raise RuntimeError(err or out)
@@ -428,8 +448,8 @@ class LinuxContainerRuntime:
                 "job_containers": True,
                 "nested_builds": True,
                 "resettable_os": False,
-                # OPEN-7: nothing in the protocol can drain a runner yet.
-                "supports_drain": False,
+                # OPEN-7: a graceful stop that stays stopped.
+                "supports_drain": True,
                 "clear_cache": True,
                 "cache_scopes": sorted(SUPPORTED_SCOPES),
                 "notes": "one container per runner, five named volumes "

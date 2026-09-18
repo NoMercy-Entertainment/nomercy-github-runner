@@ -38,7 +38,8 @@ VERB_NAMES = frozenset({
     "exec_unit.create", "exec_unit.start", "exec_unit.stop",
     "exec_unit.restart", "exec_unit.remove", "exec_unit.status",
     "exec_unit.telemetry", "exec_unit.logs", "exec_unit.probe",
-    "exec_unit.clear_cache", "runner.register", "runner.deregister",
+    "exec_unit.clear_cache", "exec_unit.drain", "exec_unit.cancel_drain",
+    "runner.register", "runner.deregister",
 })
 OP_PATH = "/v1/op/"
 #: Mirrors `agent.protocol.ASYNC_VERBS`, checked by test. These are answered
@@ -46,6 +47,7 @@ OP_PATH = "/v1/op/"
 ASYNC_VERBS = frozenset({
     "exec_unit.create", "exec_unit.start", "exec_unit.stop",
     "exec_unit.restart", "exec_unit.remove", "exec_unit.clear_cache",
+    "exec_unit.drain", "exec_unit.cancel_drain",
     "runner.register", "runner.deregister",
 })
 
@@ -74,6 +76,8 @@ WORKER_NOT_HEALTHY = "worker-not-healthy"
 PROTOCOL_MISMATCH = "protocol-mismatch"
 DESTRUCTIVE_VERBS = frozenset({"exec_unit.stop", "exec_unit.restart",
                                "exec_unit.remove", "exec_unit.clear_cache",
+                               # Takes a runner out of service, if gently.
+                               "exec_unit.drain",
                                "runner.deregister"})
 
 

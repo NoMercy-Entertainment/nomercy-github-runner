@@ -104,6 +104,8 @@ def test_2_drain_while_busy_finishes_the_job_and_takes_no_other(harness):
     harness.start_job(rid)
 
     harness.drain(rid)
+    assert harness.offer_job(rid) is False, \
+        "no new job while it finishes the one it has"
     assert harness.finish_job(rid) is True, "the running job must finish"
     assert harness.offer_job(rid) is False, "and no new one may start"
 

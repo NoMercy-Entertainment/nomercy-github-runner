@@ -264,6 +264,22 @@ class MacApplianceRuntime:
         self._check(self._launchctl("kickstart", "-k", self._target(rid),
                                     timeout=STOP_TIMEOUT + 30))
 
+    def drain(self, runner_id):
+        """A graceful stop that stays stopped (OPEN-7): SIGTERM to the job's
+        process. The runner takes nothing new, finishes what it has and
+        exits cleanly - and launchd restarts it only after an unclean exit
+        (`KeepAlive: SuccessfulExit false`), so it stays down."""
+        rid = naming.check(runner_id)
+        if self.status(rid).get("running"):
+            self._check(self._launchctl("kill", "SIGTERM", self._target(rid)))
+
+    def cancel_drain(self, runner_id):
+        """Back into service once drained: loaded and started again."""
+        rid = naming.check(runner_id)
+        self._load(rid)
+        if not self.status(rid).get("running"):
+            self._check(self._launchctl("kickstart", self._target(rid)))
+
     def remove(self, runner_id, keep_data):
         """Remove the job and its storage. Safe when any of it is absent."""
         rid = naming.check(runner_id)
@@ -428,8 +444,8 @@ class MacApplianceRuntime:
                 # The appliance can be reset to a snapshot in principle
                 # (design 9.5, option B); nothing here does it yet.
                 "resettable_os": False,
-                # OPEN-7: nothing in the protocol can drain a runner yet.
-                "supports_drain": False,
+                # OPEN-7: a graceful stop that stays stopped.
+                "supports_drain": True,
                 "clear_cache": True,
                 "cache_scopes": sorted(SUPPORTED_SCOPES),
                 "notes": "one launchd job per runner inside the macOS "

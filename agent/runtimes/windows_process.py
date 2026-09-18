@@ -59,6 +59,9 @@ LAYOUT_ENV_KEYS = {"work": "RUNNER_WORK_DIR", "cache": "RUNNER_CACHE_DIR",
                    "reg": "RUNNER_REG_DIR", "logs": "RUNNER_LOG_DIR"}
 
 TEMPLATE_FILES = ("run.cmd", "register.ps1", "deregister.ps1")
+
+#: The file that asks the job host to drain the runner (see agent/jobhost.py).
+DRAIN_REQUEST = "drain.request"
 TEMPLATE_MARKER = ".template"
 
 #: Which of the runner's own directories each clearable scope is (T-1601).
@@ -239,6 +242,28 @@ class WindowsProcessRuntime:
         self._check(self._nssm("restart", naming.unit_name(runner_id),
                                timeout=2 * STOP_TIMEOUT + 30))
 
+    def drain(self, runner_id):
+        """A graceful stop that stays stopped (OPEN-7). NSSM is told not to
+        restart the service when its program exits, and the job host is
+        asked - by a file in the runner's own tree, which only this runner's
+        account and the agent can write - to pass the runner a Ctrl+Break.
+        The runner takes nothing new, finishes what it has, exits, and the
+        service stays down. Nothing here waits for it or kills anything."""
+        name = naming.unit_name(runner_id)
+        p = self.paths(runner_id)
+        self._check(self._nssm("set", name, "AppExit", "Default", "Exit"))
+        self._fs.write_text(ntpath.join(p["reg"], DRAIN_REQUEST), "drain")
+
+    def cancel_drain(self, runner_id):
+        """Back into service once drained: restarts on exit again, and the
+        service started."""
+        name = naming.unit_name(runner_id)
+        p = self.paths(runner_id)
+        self._fs.remove(ntpath.join(p["reg"], DRAIN_REQUEST))
+        self._check(self._nssm("set", name, "AppExit", "Default", "Restart"))
+        if not self.status(runner_id).get("running"):
+            self._check(self._nssm("start", name, timeout=STOP_TIMEOUT + 30))
+
     def remove(self, runner_id, keep_data):
         """Remove the service and its storage. Safe when any of it is absent."""
         rid = naming.check(runner_id)
@@ -414,8 +439,8 @@ class WindowsProcessRuntime:
                 "job_containers": False,
                 "nested_builds": False,
                 "resettable_os": False,
-                # OPEN-7: nothing in the protocol can drain a runner yet.
-                "supports_drain": False,
+                # OPEN-7: a graceful stop that stays stopped.
+                "supports_drain": True,
                 "clear_cache": True,
                 "cache_scopes": sorted(SUPPORTED_SCOPES),
                 "notes": "one service per runner under its own virtual "

@@ -21,7 +21,6 @@ from ..fake_macos import FakeMac
 from ..fake_windows import TEMPLATE as WINDOWS_TEMPLATE
 from ..fake_windows import TOOLS as WINDOWS_TOOLS
 from ..fake_windows import FakeWindows
-from .suite import NotSupported
 
 
 class LinuxContainerHarness:
@@ -103,12 +102,23 @@ class LinuxContainerHarness:
         """The container is made, then the agent dies before it can say so."""
         self.docker.crash_after = "run"
 
-    # ---- drain: OPEN-7 -------------------------------------------------------
+    # ---- drain and jobs (OPEN-7) --------------------------------------------
 
-    def _no_drain(self, *_):
-        raise NotSupported("OPEN-7: nothing can drain a Linux runner yet")
+    def drain(self, runner_id):
+        self.runtime.drain(runner_id)
 
-    drain = cancel_drain = start_job = finish_job = offer_job = _no_drain
+    def cancel_drain(self, runner_id):
+        self.runtime.cancel_drain(runner_id)
+
+    def start_job(self, runner_id):
+        assert self.docker.start_job(naming.unit_name(runner_id)), \
+            "the forge would not give this runner a job"
+
+    def finish_job(self, runner_id):
+        return self.docker.finish_job(naming.unit_name(runner_id))
+
+    def offer_job(self, runner_id):
+        return self.docker.offers(naming.unit_name(runner_id))
 
 
 class WindowsProcessHarness:
@@ -189,12 +199,22 @@ class WindowsProcessHarness:
         configured or started."""
         self.host.crash_after = "install"
 
-    # ---- drain: OPEN-7 -------------------------------------------------------
+    # ---- drain and jobs (OPEN-7) --------------------------------------------
 
-    def _no_drain(self, *_):
-        raise NotSupported("OPEN-7: nothing can drain a Windows runner yet")
+    def drain(self, runner_id):
+        self.runtime.drain(runner_id)
 
-    drain = cancel_drain = start_job = finish_job = offer_job = _no_drain
+    def cancel_drain(self, runner_id):
+        self.runtime.cancel_drain(runner_id)
+
+    def start_job(self, runner_id):
+        assert self.host.start_job(naming.unit_name(runner_id))
+
+    def finish_job(self, runner_id):
+        return self.host.finish_job(naming.unit_name(runner_id))
+
+    def offer_job(self, runner_id):
+        return self.host.offers(naming.unit_name(runner_id))
 
 
 class MacApplianceHarness:
@@ -276,12 +296,22 @@ class MacApplianceHarness:
         asks launchd about the job - before it is ever loaded."""
         self.guest.crash_after = "print"
 
-    # ---- drain: OPEN-7 -------------------------------------------------------
+    # ---- drain and jobs (OPEN-7) --------------------------------------------
 
-    def _no_drain(self, *_):
-        raise NotSupported("OPEN-7: nothing can drain a macOS runner yet")
+    def drain(self, runner_id):
+        self.runtime.drain(runner_id)
 
-    drain = cancel_drain = start_job = finish_job = offer_job = _no_drain
+    def cancel_drain(self, runner_id):
+        self.runtime.cancel_drain(runner_id)
+
+    def start_job(self, runner_id):
+        assert self.guest.start_job(naming.unit_name(runner_id))
+
+    def finish_job(self, runner_id):
+        return self.guest.finish_job(naming.unit_name(runner_id))
+
+    def offer_job(self, runner_id):
+        return self.guest.offers(naming.unit_name(runner_id))
 
 
 #: Every runtime the suite runs against.

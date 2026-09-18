@@ -78,6 +78,8 @@ class FakeDocker:
         self.crash_after = None
         #: verb -> (stderr) to fail once.
         self.fail_once = {}
+        #: unit -> "running" | "aborted": the job its runner has.
+        self.jobs = {}
 
     # ---- helpers for tests --------------------------------------------------
 
@@ -197,7 +199,8 @@ class FakeDocker:
         for vol in opts["mounts"]:
             self.volumes.setdefault(vol, _new_volume())
         self.containers[name] = {"state": "running", "restarts": 0,
-                                 "tmp": {}, **opts}
+                                 "tmp": {}, "draining": False, **opts}
+        self.containers[name].setdefault("restart", "no")
         return True, "0123456789ab", ""
 
     def _need(self, name):
@@ -208,19 +211,90 @@ class FakeDocker:
 
     def _start(self, args, input):
         name = args[-1]
-        return self._need(name) or self._set(name, "running")
+        missing = self._need(name)
+        if missing:
+            return missing
+        self.containers[name]["draining"] = False
+        return self._set(name, "running")
 
     def _stop(self, args, input):
         name = args[-1]
-        return self._need(name) or self._set(name, "exited")
+        missing = self._need(name)
+        if missing:
+            return missing
+        self._abort_job(name)          # stop kills after its timeout
+        return self._set(name, "exited")
 
     def _restart(self, args, input):
         name = args[-1]
         missing = self._need(name)
         if missing:
             return missing
+        self._abort_job(name)
         self.containers[name]["restarts"] += 1
+        self.containers[name]["draining"] = False
         return self._set(name, "running")
+
+    def _update(self, args, input):
+        name = args[-1]
+        missing = self._need(name)
+        if missing:
+            return missing
+        for a in args[:-1]:
+            if a.startswith("--restart="):
+                self.containers[name]["restart"] = a.split("=", 1)[1]
+        return True, name, ""
+
+    def _kill(self, args, input):
+        """SIGTERM to the runner process: it takes nothing new, finishes a
+        job it has, then exits - as forgejo-runner does."""
+        name = args[-1]
+        missing = self._need(name)
+        if missing:
+            return missing
+        if self.jobs.get(name) == "running":
+            self.containers[name]["draining"] = True
+        else:
+            self._exited_by_itself(name)
+        return True, name, ""
+
+    def _exited_by_itself(self, name):
+        c = self.containers[name]
+        c["draining"] = False
+        # The engine brings back a unit whose process exited on its own
+        # unless the restart policy says not to.
+        c["state"] = "running" if c.get("restart") in (
+            "always", "unless-stopped") else "exited"
+
+    # ---- jobs: what a forge would give the runner -------------------------
+
+    def start_job(self, name):
+        """The forge gives this unit's runner a job, if it would."""
+        if not self.offers(name):
+            return False
+        self.jobs[name] = "running"
+        return True
+
+    def finish_job(self, name):
+        """The running job ends. True when it ran to completion, False when
+        it had been killed. A draining runner exits after it."""
+        state = self.jobs.pop(name, None)
+        if state != "running":
+            return False
+        if self.containers.get(name, {}).get("draining"):
+            self._exited_by_itself(name)
+        return True
+
+    def offers(self, name):
+        """Whether the forge could give this unit's runner a new job now."""
+        c = self.containers.get(name)
+        return (bool(c) and c["state"] == "running" and not c["draining"]
+                and self.jobs.get(name) != "running"
+                and bool(self.forge.for_unit(name)))
+
+    def _abort_job(self, name):
+        if self.jobs.get(name) == "running":
+            self.jobs[name] = "aborted"
 
     def _set(self, name, state):
         self.containers[name]["state"] = state
@@ -231,6 +305,7 @@ class FakeDocker:
         missing = self._need(name)
         if missing:
             return missing
+        self._abort_job(name)
         del self.containers[name]
         return True, name, ""
 

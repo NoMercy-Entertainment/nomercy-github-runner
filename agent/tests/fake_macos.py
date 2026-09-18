@@ -81,6 +81,8 @@ class FakeMac:
         self._next_pid = 500
         #: A launchctl verb after which to raise Crash, once.
         self.crash_after = None
+        #: unit -> "running" | "aborted": the runner's own job, not launchd's.
+        self.work = {}
         self.install_template(TEMPLATE)
 
     def _unit_running(self, unit):
@@ -228,7 +230,8 @@ class FakeMac:
             if job.get("RunAtLoad"):
                 self._run_job(label)
             return True, "", ""
-        target = [a for a in args[1:] if not a.startswith("-")][0]
+        target = (args[-1] if verb == "kill" else
+                  [a for a in args[1:] if not a.startswith("-")][0])
         label = target.split("/", 2)[-1]
         if label not in self.jobs:
             return False, "", (f'Could not find service "{label}" in domain '
@@ -240,16 +243,66 @@ class FakeMac:
                 lines.append(f"\tpid = {job['pid']}")
             return True, "\n".join(lines + ["}"]), ""
         if verb == "kickstart":
+            if "-k" in args:
+                self._abort_work(label)
             self._run_job(label)
             return True, "", ""
         if verb == "bootout":
+            self._abort_work(label)
             del self.jobs[label]
+            return True, "", ""
+        if verb == "kill":
+            # SIGTERM to the runner: it takes nothing new, finishes a job it
+            # has, and exits cleanly - which KeepAlive does not restart.
+            if job["state"] != "running":
+                return True, "", ""
+            if self.work.get(self._unit(label)) == "running":
+                job["draining"] = True
+            else:
+                self._exited_cleanly(label)
             return True, "", ""
         return False, "", f"unknown launchctl verb {verb!r}"
 
     def _run_job(self, label):
         self._next_pid += 1
-        self.jobs[label].update(state="running", pid=self._next_pid)
+        self.jobs[label].update(state="running", pid=self._next_pid,
+                                draining=False)
+
+    def _exited_cleanly(self, label):
+        self.jobs[label].update(state="waiting", pid=None, draining=False)
+
+    @staticmethod
+    def _unit(label):
+        return label[len("com.nomercy."):]
+
+    # ---- the runner's jobs ----------------------------------------------------
+
+    def start_job(self, unit):
+        if not self.offers(unit):
+            return False
+        self.work[unit] = "running"
+        return True
+
+    def finish_job(self, unit):
+        state = self.work.pop(unit, None)
+        if state != "running":
+            return False
+        label = "com.nomercy." + unit
+        if self.jobs.get(label, {}).get("draining"):
+            self._exited_cleanly(label)
+        return True
+
+    def offers(self, unit):
+        job = self.jobs.get("com.nomercy." + unit)
+        return (self.appliance.power == "running" and job is not None
+                and job["state"] == "running" and not job.get("draining")
+                and self.work.get(unit) != "running"
+                and bool(self.forge.for_unit(unit)))
+
+    def _abort_work(self, label):
+        unit = self._unit(label)
+        if self.work.get(unit) == "running":
+            self.work[unit] = "aborted"
 
     def _entry(self, args, input):
         entry = args[0]

@@ -382,6 +382,54 @@ class TestWhatItDeclares:
         assert caps["nested_builds"] is True
         assert caps["kind"] == "linux-container"
 
-    def test_it_does_not_claim_to_drain(self, runtime):
-        """OPEN-7: nothing in the protocol can drain a runner yet."""
-        assert runtime.capabilities()["supports_drain"] is False
+    def test_it_drains(self, runtime):
+        """OPEN-7, settled: a graceful stop that stays stopped."""
+        assert runtime.capabilities()["supports_drain"] is True
+
+
+class TestDrain:
+    """SIGTERM, never `docker stop`: stop kills a job when its timeout runs
+    out. And the restart policy off first, or the engine brings the unit
+    straight back when its process exits."""
+
+    def test_the_policy_goes_before_the_signal(self, runtime, docker):
+        runtime.create(RID, SPEC)
+        docker.calls.clear()
+        runtime.drain(RID)
+        verbs = [c[0] for c in docker.calls if c[0] in ("update", "kill",
+                                                        "stop")]
+        assert verbs == ["update", "kill"]
+        assert ["update", "--restart=no", naming.unit_name(RID)] in             docker.calls
+        assert ["kill", "--signal=TERM", naming.unit_name(RID)] in             docker.calls
+
+    def test_a_running_job_is_finished_not_killed(self, runtime, docker):
+        runtime.create(RID, SPEC)
+        LinuxRegistrar(run=docker).register(RID, {"url": "https://x",
+                                                  "token": "t" * 12})
+        unit = naming.unit_name(RID)
+        assert docker.start_job(unit)
+        runtime.drain(RID)
+        assert runtime.status(RID)["running"] is True, "still finishing"
+        assert docker.finish_job(unit) is True
+        assert runtime.status(RID)["running"] is False, "and then down"
+
+    def test_a_drained_unit_stays_down(self, runtime, docker):
+        runtime.create(RID, SPEC)
+        runtime.drain(RID)
+        assert runtime.status(RID)["running"] is False
+        assert docker.containers[naming.unit_name(RID)]["restart"] == "no"
+
+    def test_cancel_puts_it_back_as_it_was(self, runtime, docker):
+        runtime.create(RID, SPEC)
+        runtime.drain(RID)
+        runtime.cancel_drain(RID)
+        assert runtime.status(RID)["running"] is True
+        assert docker.containers[naming.unit_name(RID)]["restart"] ==             "unless-stopped"
+
+    def test_draining_a_stopped_unit_only_keeps_it_down(self, runtime,
+                                                        docker):
+        runtime.create(RID, SPEC)
+        runtime.stop(RID)
+        docker.calls.clear()
+        runtime.drain(RID)
+        assert not any(c[0] == "kill" for c in docker.calls)

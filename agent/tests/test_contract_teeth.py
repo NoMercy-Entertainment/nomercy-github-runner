@@ -198,9 +198,27 @@ def test_the_suite_fails_a_macos_runtime_that_breaks_it(broken, scenario):
 # T-0503: a declaration is checked in both directions
 # ---------------------------------------------------------------------------
 
-class ClaimsToDrain(LinuxContainerRuntime):
+class DrainsByKilling(LinuxContainerRuntime):
+    """Claims to drain, and stops the unit - killing the job it has."""
+
+    def drain(self, runner_id):
+        self.stop(runner_id)
+
+
+class DrainsButComesBack(LinuxContainerRuntime):
+    """Signals the runner but leaves the restart policy on, so the engine
+    brings it straight back to take the next job."""
+
+    def drain(self, runner_id):
+        self._check(["kill", "--signal=TERM",
+                     naming.unit_name(runner_id)], timeout=30)
+
+
+class DeniesDraining(LinuxContainerRuntime):
+    """Says it cannot drain - and a drain asked of it goes through anyway."""
+
     def capabilities(self):
-        return dict(super().capabilities(), supports_drain=True)
+        return dict(super().capabilities(), supports_drain=False)
 
 
 class SaysNothingAboutDrain(LinuxContainerRuntime):
@@ -215,19 +233,14 @@ class DeniesClearingButClears(LinuxContainerRuntime):
         return dict(super().capabilities(), clear_cache=False)
 
 
-class DrainsInSilence(LinuxContainerHarness):
-    """Declared unable to drain, and quietly accepts being asked."""
-
-    def drain(self, runner_id):
-        return None
-
-
-def test_claiming_a_capability_it_does_not_have_fails():
-    """Declared true, and the platform cannot do it: the scenario runs, and
-    the platform's own refusal is what fails it."""
-    with pytest.raises(suite.NotSupported):
+@pytest.mark.parametrize("broken", [DrainsByKilling, DrainsButComesBack],
+                         ids=["kills-the-job", "comes-back"])
+def test_claiming_a_capability_it_does_not_have_fails(broken):
+    """Declared true, and the drain does not do what drain means: the
+    scenario runs and fails on it."""
+    with pytest.raises(AssertionError):
         suite.test_2_drain_while_busy_finishes_the_job_and_takes_no_other(
-            harness_with(ClaimsToDrain))
+            harness_with(broken))
 
 
 def test_saying_nothing_about_one_fails():
@@ -244,7 +257,7 @@ def test_denying_one_it_has_fails():
 
 
 def test_a_declared_absence_that_is_not_refused_fails():
-    """Declared false, then does nothing when asked instead of saying no."""
+    """Declared false, then goes through when asked instead of saying no."""
     with pytest.raises(pytest.fail.Exception, match="went through"):
         suite.test_2_drain_while_busy_finishes_the_job_and_takes_no_other(
-            DrainsInSilence())
+            harness_with(DeniesDraining))

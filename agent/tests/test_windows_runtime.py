@@ -421,7 +421,7 @@ class TestCapabilities:
         assert caps["kind"] == "windows-process"
         assert caps["job_containers"] is False
         assert caps["nested_builds"] is False
-        assert caps["supports_drain"] is False
+        assert caps["supports_drain"] is True
         assert caps["cache_scopes"] == ["temp", "toolcache", "workspace"]
 
 
@@ -515,6 +515,41 @@ class TestTheJobHostForReal:
         assert "from-the-unit-file" in p.stdout
         report = json.loads((tmp_path / "logs" / "telemetry.json").read_text())
         assert report["mem_used_bytes"] > 0
+
+    def test_a_drain_lets_the_job_finish_and_the_host_exit(self, tmp_path,
+                                                            python):
+        """OPEN-7 on Windows: the runtime writes drain.request, the job host
+        sends the runner a Ctrl+Break, the runner finishes and exits cleanly,
+        and so does the host - without a kill, and without cmd.exe's
+        "Terminate batch job?" holding it up."""
+        worker = textwrap.dedent("""\
+            import signal, sys, time
+            def done(*a):
+                print('finishing the job', flush=True)
+                time.sleep(1)
+                sys.exit(0)
+            signal.signal(signal.SIGBREAK, done)
+            print('working', flush=True)
+            # Short sleeps: on Windows a Ctrl+Break does not cut a long
+            # time.sleep short, so the handler would wait for it to end.
+            for _ in range(600):
+                time.sleep(0.1)
+            print('never', flush=True)
+            """)
+        (tmp_path / "worker.py").write_text(worker)
+        self._unit(tmp_path, f'@"{python}" "{tmp_path / "worker.py"}"\r\n'
+                             '@exit /b %ERRORLEVEL%\r\n', 256 * 1024 ** 2)
+        import threading
+        import time as _time
+        threading.Timer(3.0, lambda: (tmp_path / "reg" / "drain.request")
+                        .write_text("drain")).start()
+        started = _time.monotonic()
+        p = self._run(tmp_path, python)
+        took = _time.monotonic() - started
+        assert "finishing the job" in p.stdout, (p.stdout, p.stderr)
+        assert "never" not in p.stdout
+        assert p.returncode == 0, (p.returncode, p.stderr)
+        assert took < 30, "the host exited when the runner did"
 
     @pytest.mark.skipif(not _is_packaged(sys.executable),
                         reason="needs the Store Python to show the refusal")

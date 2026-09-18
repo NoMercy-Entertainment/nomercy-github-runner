@@ -333,5 +333,5 @@ class TestCapabilities:
         assert caps["kind"] == "macos-appliance"
         assert caps["job_containers"] is False
         assert caps["nested_builds"] is False
-        assert caps["supports_drain"] is False
+        assert caps["supports_drain"] is True
         assert "no per-instance memory or CPU cap" in caps["notes"]

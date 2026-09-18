@@ -1,4 +1,4 @@
-"""The fourteen things an agent can be asked to do, and nothing else.
+"""The sixteen things an agent can be asked to do, and nothing else.
 
 `VERBS` maps each name in `protocol.VERB_NAMES` to one handler. It is a frozen
 mapping - a `MappingProxyType` over a dict nobody else holds - so a verb cannot
@@ -59,6 +59,8 @@ class Runtime(Protocol):
     def probe(self, runner_id: str, probe: str) -> Mapping[str, Any]: ...
     def clear_cache(self, runner_id: str,
                     policy: Mapping[str, Any]) -> Mapping[str, Any]: ...
+    def drain(self, runner_id: str) -> None: ...
+    def cancel_drain(self, runner_id: str) -> None: ...
     def capabilities(self) -> Mapping[str, Any]: ...
     def instances(self) -> list: ...
 
@@ -130,6 +132,8 @@ FIELDS = MappingProxyType({
     "exec_unit.logs": frozenset({"runner_id", "since_seconds"}),
     "exec_unit.probe": frozenset({"runner_id", "probe"}),
     "exec_unit.clear_cache": frozenset({"runner_id", "policy"}),
+    "exec_unit.drain": frozenset({"runner_id"}),
+    "exec_unit.cancel_drain": frozenset({"runner_id"}),
     "runner.register": frozenset({"runner_id", "plan"}),
     "runner.deregister": frozenset({"runner_id"}),
 })
@@ -352,6 +356,23 @@ def _clear_cache(agent, body):
     return lambda: dict(agent.runtime.clear_cache(rid, policy) or {})
 
 
+def _drain(agent, body):
+    """Ask the unit's process to finish what it is doing, take nothing new,
+    and stay down afterwards (OPEN-7). How long it may take is the runner's
+    own shutdown timeout; how long the controller waits is its operation's
+    deadline. Nothing here ever kills the process."""
+    rid = _runner_id(body)
+    return lambda: agent.runtime.drain(rid) or {}
+
+
+def _cancel_drain(agent, body):
+    """Undo a drain once it is complete: the unit is started again and
+    restarted as before if it stops. The controller only asks from
+    `drained`, when the job is done and the unit is down."""
+    rid = _runner_id(body)
+    return lambda: agent.runtime.cancel_drain(rid) or {}
+
+
 def _register(agent, body):
     rid, plan = _runner_id(body), _plan(body.get("plan"))
 
@@ -383,6 +404,8 @@ VERBS = MappingProxyType({
     "exec_unit.logs": _logs,
     "exec_unit.probe": _probe,
     "exec_unit.clear_cache": _clear_cache,
+    "exec_unit.drain": _drain,
+    "exec_unit.cancel_drain": _cancel_drain,
     "runner.register": _register,
     "runner.deregister": _deregister,
 })
