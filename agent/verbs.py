@@ -70,14 +70,33 @@ class Registrar(Protocol):
     def deregister(self, runner_id: str) -> None: ...
 
 
-class Agent:
-    """The state a handler needs: who this worker is and what it drives."""
+#: Always served: they say who this agent is and what it will serve, and
+#: change nothing. The controller has the same two as always-allowed.
+DISCOVERY = frozenset({"hello", "capabilities"})
 
-    def __init__(self, host_id, runtime, registrar, version="0"):
+
+class Agent:
+    """The state a handler needs: who this worker is and what it drives.
+
+    `permitted` is this worker's own policy - the verbs it will carry out,
+    whatever the controller believes it may ask. The controller checks its
+    policy before sending and this one is checked again on arrival, so a
+    controller with a wrong or widened policy still cannot get a verb this
+    worker was configured not to serve (T-0403).
+    """
+
+    def __init__(self, host_id, runtime, registrar, version="0",
+                 permitted=None):
         self.host_id = host_id
         self.runtime = runtime
         self.registrar = registrar
         self.version = version
+        permitted = (protocol.VERB_NAMES if permitted is None
+                     else frozenset(permitted))
+        unknown = sorted(permitted - protocol.VERB_NAMES)
+        if unknown:
+            raise ValueError(f"not protocol verbs: {unknown}")
+        self.permitted = frozenset(permitted) | DISCOVERY
 
 
 # ---------------------------------------------------------------------------
@@ -252,7 +271,12 @@ def _hello(agent, body):
 
 
 def _capabilities(agent, body):
-    return {"verbs": sorted(protocol.VERB_NAMES),
+    """What this worker will serve, and what its runtime can do.
+
+    The verbs reported are the worker's own policy. The controller shows them
+    beside its own; it never adopts them as its policy.
+    """
+    return {"verbs": sorted(agent.permitted),
             "runtime": dict(agent.runtime.capabilities() or {})}
 
 
@@ -347,5 +371,7 @@ def dispatch(agent, verb, body):
     handler = VERBS.get(verb)
     if handler is None:
         raise Refused(f"no verb {verb!r}", status=404)
+    if verb not in agent.permitted:
+        raise Refused("not permitted on this worker", status=403)
     _closed(body, FIELDS[verb], "body")
     return handler(agent, body)

@@ -36,8 +36,34 @@ HEARTBEAT_SECONDS = 5
 MISSED_BEATS_BEFORE_DEGRADED = 3
 
 
+#: The key in `workers.capabilities` that holds which verbs the controller may
+#: send this worker. Policy, not a fact about the worker - so only `permit()`
+#: writes it. Everything else in that column is what the agent declares about
+#: itself, and a heartbeat replaces those keys freely; if a heartbeat could
+#: write this one too, an agent could grant itself any verb it liked.
+PERMITTED = "verbs"
+
+#: Always allowed, because they are how a worker is learned about: who it is,
+#: and what it will serve. Neither changes anything.
+DISCOVERY = frozenset({"hello", "capabilities"})
+
+
 class UnknownWorker(Exception):
     pass
+
+
+def _declared(stored, declared):
+    """The capabilities column after the agent declares `declared`.
+
+    The agent's own keys are replaced wholesale - it is the authority on what
+    it is - and the controller's policy key is carried over untouched. A
+    `verbs` key in what the agent sent is dropped, not merged.
+    """
+    current = json.loads(stored) if stored else {}
+    merged = {k: v for k, v in (declared or {}).items() if k != PERMITTED}
+    if PERMITTED in current:
+        merged[PERMITTED] = current[PERMITTED]
+    return json.dumps(merged)
 
 
 def _now():
@@ -89,13 +115,9 @@ class Inventory:
         if kind not in KINDS:
             raise ValueError(f"unknown worker kind {kind!r}; expected {KINDS}")
 
-        payload = (display_name or host_id, kind, endpoint, agent_version,
-                   json.dumps(capabilities) if capabilities is not None
-                   else None,
-                   certificate_fingerprint)
         with self._conn() as c:
             existing = c.execute(
-                "SELECT host_id FROM workers WHERE host_id = ?",
+                "SELECT capabilities FROM workers WHERE host_id = ?",
                 (host_id,)).fetchone()
             if existing is None:
                 c.execute(
@@ -103,14 +125,57 @@ class Inventory:
                     " endpoint, agent_version, capabilities,"
                     " certificate_fingerprint, state, last_seen_at)"
                     " VALUES (?,?,?,?,?,?,?,?,?)",
-                    (host_id,) + payload + (UNKNOWN, None))
+                    (host_id, display_name or host_id, kind, endpoint,
+                     agent_version, _declared(None, capabilities),
+                     certificate_fingerprint, UNKNOWN, None))
             else:
+                # Re-announcing never widens what the worker may be asked to
+                # do, and omitting capabilities leaves them as they were
+                # rather than wiping them.
+                caps = (existing["capabilities"] if capabilities is None
+                        else _declared(existing["capabilities"], capabilities))
                 c.execute(
                     "UPDATE workers SET display_name = ?, kind = ?,"
                     " endpoint = ?, agent_version = ?, capabilities = ?,"
                     " certificate_fingerprint = ? WHERE host_id = ?",
-                    payload + (host_id,))
+                    (display_name or host_id, kind, endpoint, agent_version,
+                     caps, certificate_fingerprint, host_id))
         return host_id
+
+    def permit(self, host_id, verbs):
+        """Set which verbs the controller may send this worker. Policy.
+
+        The only writer of the `verbs` key. Replaces the list rather than
+        adding to it, so what a worker may be asked for is always one
+        statement an operator made, not the sum of every grant ever issued.
+        """
+        from .agent_client import VERB_NAMES
+        verbs = set(verbs)
+        unknown = sorted(verbs - VERB_NAMES)
+        if unknown:
+            raise ValueError(f"not protocol verbs: {unknown}")
+        with self._conn() as c:
+            row = c.execute(
+                "SELECT capabilities FROM workers WHERE host_id = ?",
+                (host_id,)).fetchone()
+            if row is None:
+                raise UnknownWorker(host_id)
+            caps = json.loads(row["capabilities"]) if row["capabilities"] \
+                else {}
+            caps[PERMITTED] = sorted(verbs)
+            c.execute("UPDATE workers SET capabilities = ? WHERE host_id = ?",
+                      (json.dumps(caps), host_id))
+
+    def permitted_verbs(self, host_id):
+        """What the controller may send this worker: its policy, plus the two
+        discovery verbs. A worker nobody has permitted anything can still be
+        asked who it is."""
+        worker = self.get(host_id)
+        if worker is None:
+            raise UnknownWorker(host_id)
+        caps = worker.get("capabilities") or {}
+        policy = caps.get(PERMITTED) if isinstance(caps, dict) else None
+        return frozenset(policy or ()) | DISCOVERY
 
     def heartbeat(self, host_id, agent_version=None, capabilities=None,
                   at=None):
@@ -121,16 +186,21 @@ class Inventory:
         if agent_version is not None:
             sets.append("agent_version = ?")
             params.append(agent_version)
-        if capabilities is not None:
-            sets.append("capabilities = ?")
-            params.append(json.dumps(capabilities))
 
         with self._conn() as c:
-            cur = c.execute(
+            row = c.execute(
+                "SELECT capabilities FROM workers WHERE host_id = ?",
+                (host_id,)).fetchone()
+            if row is None:
+                raise UnknownWorker(host_id)
+            if capabilities is not None:
+                # What the agent says about itself. Never the verbs it may be
+                # sent - see PERMITTED.
+                sets.append("capabilities = ?")
+                params.append(_declared(row["capabilities"], capabilities))
+            c.execute(
                 f"UPDATE workers SET {', '.join(sets)} WHERE host_id = ?",
                 params + [host_id])
-            if not cur.rowcount:
-                raise UnknownWorker(host_id)
 
     def get(self, host_id):
         with self._conn() as c:

@@ -64,11 +64,10 @@ class _Handler(BaseHTTPRequestHandler):
         if verb is None:
             return self._refuse(404, "no such verb")
 
-        gate = getattr(self.server, "gate", None)
-        if gate is not None:
-            refusal = gate(self, verb)
-            if refusal is not None:
-                return self._refuse(*refusal)
+        # Decided from the request line and headers alone, before the body.
+        refusal = self.server.admit(self, verb)
+        if refusal is not None:
+            return self._refuse(*refusal)
 
         try:
             length = int(self.headers.get("Content-Length") or 0)
@@ -102,10 +101,10 @@ class _Handler(BaseHTTPRequestHandler):
 class AgentServer(ThreadingHTTPServer):
     """The agent's server. `start()` serves on a background thread.
 
-    `gate` is a hook the later tasks use - protocol version (T-0406) and
-    per-verb authorization (T-0403) are checked in it, before the body is
-    read. `handle_verb` is what runs an admitted request; the default runs it
-    synchronously, and T-0405 replaces that with an asynchronous one.
+    `admit` decides whether a request may go on, from its verb and headers,
+    before the body is read. `handle_verb` is what runs an admitted request;
+    the default runs it synchronously, and T-0405 replaces that with an
+    asynchronous one.
     """
 
     daemon_threads = True
@@ -115,7 +114,6 @@ class AgentServer(ThreadingHTTPServer):
                  controller_subject=tls.CONTROLLER_SUBJECT):
         super().__init__(address, _Handler)
         self.agent = agent
-        self.gate = None
         self.ssl_context = ssl_context
         self.controller_subject = controller_subject
         #: Connections refused before a request was read, with why. Kept in
@@ -146,6 +144,18 @@ class AgentServer(ThreadingHTTPServer):
                 return
             request.settimeout(None)
         super().finish_request(request, client_address)
+
+    def admit(self, handler, verb):
+        """None to let a request through, or (status, reason) to refuse it.
+
+        A verb this worker is not configured to serve is a 403 here, before
+        the body is read - the same point an unknown verb is refused at, and
+        for the same reason: a body that will not be acted on is not parsed.
+        """
+        if verb not in self.agent.permitted:
+            self.refusals.append(("not-permitted", verb))
+            return 403, "not permitted on this worker"
+        return None
 
     def handle_verb(self, handler, verb, body):
         return 200, {"ok": True, "result": dispatch(self.agent, verb, body)}

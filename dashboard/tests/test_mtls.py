@@ -14,7 +14,6 @@ the same authority.
 """
 import http.client
 import os
-import sys
 
 import pytest
 
@@ -23,42 +22,7 @@ from control import audit, ca
 from control.agent_client import AgentClient, AgentRefused, AgentUnreachable
 from control.inventory import HYPERV_LINUX, Inventory
 from store import schema
-
-ROOT = os.path.dirname(os.path.dirname(os.path.dirname(
-    os.path.abspath(__file__))))
-if ROOT not in sys.path:
-    sys.path.insert(0, ROOT)
-
-from agent import tls as agent_tls                        # noqa: E402
-from agent.server import AgentServer                      # noqa: E402
-from agent.tests.fakes import FakeRegistrar, FakeRuntime  # noqa: E402
-from agent.verbs import Agent                             # noqa: E402
-
-RID = "3f2504e0-4f89-41d3-9a0c-0305e82c3301"
-
-
-class PKI:
-    """A control-plane authority, and a place to write what it issues."""
-
-    def __init__(self, directory):
-        self.dir = directory
-        self.ca_cert, self.ca_key = ca.create_ca()
-        self.ca_file = self.write("ca.pem", self.ca_cert)
-
-    def write(self, name, data):
-        path = os.path.join(self.dir, name)
-        with open(path, "wb") as fh:
-            fh.write(data)
-        return path
-
-    def issue(self, subject, role, name=None, authority=None):
-        """Returns (cert file, key file, cert PEM)."""
-        cert_pem, key_pem = ca.issue(*(authority or (self.ca_cert,
-                                                     self.ca_key)),
-                                     subject, role)
-        name = name or subject
-        return (self.write(f"{name}.crt", cert_pem),
-                self.write(f"{name}.key", key_pem), cert_pem)
+from tests.agent_harness import PKI, RID, controller, enrol, serve
 
 
 @pytest.fixture
@@ -71,37 +35,6 @@ def db(tmp_path):
     path = str(tmp_path / "control.db")
     schema.init(path)
     return path
-
-
-def serve(pki, subject="linux-1", name=None, authority=None):
-    """An agent with a certificate for `subject`. Returns (server, runtime,
-    registrar, cert PEM)."""
-    cert, key, pem = pki.issue(subject, "agent", name=name,
-                               authority=authority)
-    runtime, registrar = FakeRuntime(), FakeRegistrar()
-    server = AgentServer(
-        Agent(subject, runtime, registrar),
-        ssl_context=agent_tls.server_context(cert, key, pki.ca_file)).start()
-    return server, runtime, registrar, pem
-
-
-def controller(pki, db, subject=ca.CONTROLLER_SUBJECT, authority=None,
-               name="controller"):
-    cert, key, _ = pki.issue(subject, "controller", name=name,
-                             authority=authority)
-    return AgentClient(Inventory(db), cert, key, pki.ca_file,
-                       audit_path=db, timeout=5)
-
-
-def enrol(db, host_id, server, pem, scheme="https"):
-    """Register a worker at the server's address with the pin taken from the
-    certificate it was issued - the deliberate, first-contact-free pinning."""
-    inventory = Inventory(db)
-    inventory.register_worker(
-        host_id, HYPERV_LINUX,
-        endpoint=f"{scheme}://127.0.0.1:{server.port}",
-        certificate_fingerprint=ca.fingerprint(pem) if pem else None)
-    return inventory
 
 
 @pytest.fixture

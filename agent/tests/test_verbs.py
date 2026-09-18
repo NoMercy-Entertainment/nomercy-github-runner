@@ -402,3 +402,44 @@ class TestTheAgentStandsAlone:
                     names = [node.module.split(".")[0]]
                 assert not (set(names) & theirs), (
                     f"{os.path.basename(path)} imports {names}")
+
+
+class TestTheWorkersOwnPolicy:
+    """T-0403's second check, from the agent's side."""
+
+    def test_a_verb_this_worker_does_not_serve_is_a_403(self, runtime,
+                                                        registrar):
+        agent = Agent("linux-1", runtime, registrar,
+                      permitted={"exec_unit.status"})
+        s = AgentServer(agent).start()
+        try:
+            status, _ = post(s, "exec_unit.stop", {"runner_id": RID})
+        finally:
+            s.stop()
+        assert status == 403
+        assert runtime.calls == []
+
+    def test_it_is_refused_before_the_body_is_read(self, runtime, registrar):
+        """A 403, not a 400: the malformed body was never looked at."""
+        agent = Agent("linux-1", runtime, registrar, permitted=set())
+        s = AgentServer(agent).start()
+        try:
+            status, _ = post(s, "exec_unit.stop", raw=b"{{{not json")
+        finally:
+            s.stop()
+        assert status == 403
+
+    def test_dispatch_checks_it_again(self, runtime, registrar):
+        agent = Agent("linux-1", runtime, registrar, permitted=set())
+        with pytest.raises(Refused) as caught:
+            dispatch(agent, "exec_unit.stop", {"runner_id": RID})
+        assert caught.value.status == 403
+
+    def test_discovery_is_always_served(self, runtime, registrar):
+        agent = Agent("linux-1", runtime, registrar, permitted=set())
+        assert agent.permitted == verbs.DISCOVERY
+
+    def test_a_policy_naming_an_unknown_verb_is_refused_at_start(
+            self, runtime, registrar):
+        with pytest.raises(ValueError):
+            Agent("linux-1", runtime, registrar, permitted={"shell"})

@@ -51,6 +51,11 @@ WRONG_CA = "wrong-ca"
 WRONG_SUBJECT = "wrong-subject"
 FINGERPRINT_CHANGED = "fingerprint-changed"
 REFUSED_BY_AGENT = "refused-by-agent"
+#: Per-verb authorization (T-0403), checked twice: the controller's policy
+#: before anything is sent, then the worker's own on arrival. Two reasons, so
+#: the audit trail says which side said no.
+NOT_PERMITTED = "not-permitted"
+NOT_PERMITTED_BY_AGENT = "not-permitted-by-agent"
 
 
 class AgentRefused(Exception):
@@ -165,6 +170,11 @@ class AgentClient:
         if verb not in VERB_NAMES:
             self._refuse(host_id, verb, UNKNOWN_VERB, "not a protocol verb")
         worker, endpoint = self._worker(host_id, verb)
+        # The controller's own policy for this worker, before a connection is
+        # opened. The worker checks its own again when the request arrives.
+        if verb not in self.inventory.permitted_verbs(host_id):
+            self._refuse(host_id, verb, NOT_PERMITTED,
+                         "not in this worker's permitted verbs")
         conn = self._connect(host_id, verb, worker, endpoint,
                              timeout or self.timeout)
         payload = json.dumps(body or {}).encode()
@@ -187,6 +197,9 @@ class AgentClient:
             answer = json.loads(data or b"{}")
         except ValueError:
             raise AgentError(response.status, "the answer was not JSON")
+        if response.status == 403:
+            self._refuse(host_id, verb, NOT_PERMITTED_BY_AGENT,
+                         answer.get("error", ""))
         if response.status >= 300:
             raise AgentError(response.status, answer.get("error", ""))
         return answer.get("result", answer)
