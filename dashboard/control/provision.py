@@ -42,7 +42,7 @@ from typing import Any, Callable, Mapping, Optional, Protocol
 
 import providers
 
-from . import retry
+from . import placement, retry
 from .redact import redact
 from .retry import (AGENT_FAST, AGENT_SLOW, FORGE_DELETE,
                     FORGE_REGISTRATION, FORGE_STATUS)
@@ -69,13 +69,8 @@ COMPENSATIONS = {
     "verify_online": ("deregister", "remove_unit"),
 }
 
-#: Which worker kind hosts which platform. macOS runs as an appliance inside a
-#: Linux worker (16.4): there is no separate worker kind for it, on purpose.
-WORKER_KIND = {
-    providers.LINUX: "hyperv-linux",
-    providers.WINDOWS: "hyperv-windows",
-    providers.MACOS: "hyperv-linux",
-}
+#: Which worker kind hosts which platform; one table, in placement.py.
+WORKER_KIND = placement.WORKER_KIND
 
 
 class Agent(Protocol):
@@ -185,23 +180,25 @@ class ProvisioningFlow:
                          lambda: {"exec_unit_ref": state["ref"].handle,
                                   "host_id": state["host_id"]}, hooks)
 
-    def _step_place(self, spec, state):
-        """Scheduler.place(): a healthy worker of the right kind, the least
-        loaded first. A runner already placed keeps its worker, because its
-        storage is there."""
-        if state["host_id"]:
-            return
+    def placement(self, spec):
+        """(host_id, None) or (None, why): where this runner would go now.
+        The reconciler asks before moving a runner out of `planned`, so one
+        with nowhere to go waits there instead of failing (T-1502)."""
         kind = WORKER_KIND[spec["platform"]]
         workers = self.service.inventory.healthy(kind=kind)
-        if not workers:
-            raise NoWorker(f"no healthy {kind} worker to place this runner on")
-        load = {}
-        for other in self.service.specs.list():
-            if other.get("host_id"):
-                load[other["host_id"]] = load.get(other["host_id"], 0) + 1
-        state["host_id"] = min(
-            workers, key=lambda w: (load.get(w["host_id"], 0),
-                                    w["host_id"]))["host_id"]
+        placed = [s for s in self.service.specs.list() if s.get("host_id")]
+        return placement.choose(spec, workers, placed)
+
+    def _step_place(self, spec, state):
+        """Scheduler.place(): a healthy worker of the right kind and
+        architecture with room, the least loaded first. A runner already
+        placed keeps its worker, because its storage is there."""
+        if state["host_id"]:
+            return
+        host_id, why = self.placement(spec)
+        if host_id is None:
+            raise NoWorker(why)
+        state["host_id"] = host_id
 
     def _step_create_unit(self, spec, state):
         """Create the unit - or adopt it, if a previous attempt already did.

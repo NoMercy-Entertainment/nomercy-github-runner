@@ -392,6 +392,19 @@ class Reconciler:
     # (design 12.5). Each then writes the resting state the call produced.
 
     def _do_provision(self, spec, operation, report):
+        # A runner with nowhere to go waits in `planned`, with the reason,
+        # rather than failing: it is not broken, the fleet is full, and a
+        # failed runner would hold its place in the fleet until someone
+        # repaired it (T-1502).
+        placement = getattr(self.executor, "placement", None)
+        if spec["actual_state"] == "planned" and not spec["host_id"] and                 placement is not None:
+            host_id, why = placement(spec)
+            if host_id is None:
+                report.held.append((spec["runner_id"], f"not placed: {why}"))
+                return
+        self._provision(spec, operation, report)
+
+    def _provision(self, spec, operation, report):
         # A runner the fleet asked for has no operation of its own yet. It
         # gets one here, because the operation carries the deadline the sweep
         # measures against - without it, a runner interrupted mid-creation
