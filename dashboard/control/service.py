@@ -24,7 +24,7 @@ import providers
 from store.fleets import FleetStore
 from store.specs import SpecStore
 
-from . import states
+from . import retry, states
 from .inventory import Inventory
 from .operations import OperationStore
 
@@ -424,7 +424,7 @@ class RunnerService:
         observed = None
         if spec["exec_unit_ref"]:
             runtime, ref = self._runtime_and_ref(spec)
-            observed = runtime.status(ref)
+            observed = retry.call(retry.AGENT_FAST, runtime.status, ref)
         return {"runner_id": runner_id,
                 "desired_state": spec["desired_state"],
                 "actual_state": spec["actual_state"],
@@ -437,14 +437,15 @@ class RunnerService:
         if not spec["exec_unit_ref"]:
             return ""
         runtime, ref = self._runtime_and_ref(spec)
-        return runtime.logs(ref, since_seconds=since_seconds)
+        return retry.call(retry.AGENT_FAST, runtime.logs, ref,
+                          since_seconds=since_seconds)
 
     def inspect_resources(self, runner_id):
         spec = self._spec(runner_id)
         if not spec["exec_unit_ref"]:
             return None
         runtime, ref = self._runtime_and_ref(spec)
-        return runtime.telemetry(ref)
+        return retry.call(retry.AGENT_FAST, runtime.telemetry, ref)
 
     def _runtime_and_ref(self, spec):
         from runtime.base import ExecUnitKind, ExecUnitRef

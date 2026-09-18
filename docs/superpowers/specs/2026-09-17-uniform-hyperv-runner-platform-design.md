@@ -1446,7 +1446,14 @@ NFR-6. Every remote call has a deadline; no call is unbounded.
 | Agent verb, slow (`create`, `remove`) | operation deadline, default 300 s | 0 | n/a, the reconciler retries the whole step |
 | Forge registration | 20 s | 2 | 2 s, 6 s |
 | Forge status poll | 20 s | 0 | cached; a failure caches "unknown", never the last good answer |
+| Forge record deletion | 20 s | 0 | n/a; a retried delete whose first reply was lost finds nothing and reads as a failure |
 | Heartbeat | 5 s | 0 | next beat |
+
+The deletion row was added during implementation (T-0307, 2026-09-18). The
+provisioning flow deletes Forgejo records to deregister, and the first five
+rows had no place for it. It is not retried because it cannot be retried
+safely: the Forgejo client reports a delete of a record that is already gone
+as a failure, so a retry after a lost reply would turn a success into one.
 
 The "a failure is cached as unknown, never as the previous good answer" rule is
 **MEASURED** as already correct in `docker_ops._forge_records()` and

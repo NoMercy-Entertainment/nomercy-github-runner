@@ -46,3 +46,15 @@ def anon_client():
     dash.app.config["TESTING"] = True
     with dash.app.test_client() as c:
         yield c
+
+
+@pytest.fixture(autouse=True)
+def no_real_backoff(monkeypatch):
+    """Retries pause between attempts - 1s, 3s, 6s by design 17.2. A test that
+    exercises a failure would otherwise spend real seconds waiting, and a
+    suite that grows slow gets run less. Patched here, once, so no test can
+    forget; the pauses a test wants to inspect are recorded instead."""
+    from control import retry
+    pauses = []
+    monkeypatch.setattr(retry, "sleep", pauses.append)
+    return pauses

@@ -33,7 +33,10 @@ from typing import Any, Callable, Mapping, Optional, Protocol
 
 import providers
 
+from . import retry
 from .redact import redact
+from .retry import (AGENT_FAST, AGENT_SLOW, FORGE_DELETE,
+                    FORGE_REGISTRATION, FORGE_STATUS)
 
 #: The flow's own steps, in order. Asserted by test.
 STEPS = ("place", "create_unit", "mint_token", "register", "verify_online")
@@ -189,7 +192,7 @@ class ProvisioningFlow:
         unit = dict(spec)
         unit["storage"] = storage.names(spec["runner_id"], spec["platform"])
         unit["host_id"] = state["host_id"]
-        state["ref"] = runtime.create(unit)
+        state["ref"] = retry.call(AGENT_SLOW, runtime.create, unit)
 
     # ---- steps 5-8 ----------------------------------------------------------
 
@@ -202,17 +205,27 @@ class ProvisioningFlow:
                          state, lambda: dict(state["registration"]))
 
     def _step_mint_token(self, spec, state):
-        plan, error = self._provider(spec).registration(spec, self.env)
-        if plan is None:
-            raise RuntimeError(error or "no registration plan")
+        provider = self._provider(spec)
+
+        def mint():
+            # Raising inside the retried call is what lets a transient failure
+            # be retried at all: `registration` reports failure as (None,
+            # reason), which the retry loop would otherwise take as an answer.
+            plan, error = provider.registration(spec, self.env)
+            if plan is None:
+                raise RuntimeError(error or "no registration plan")
+            return plan
+
+        plan = retry.call(FORGE_REGISTRATION, mint)
         state["plan"] = plan
         # Kept only so every later error message in this call can be scrubbed
         # of it by value. `state` is local to one call and dies with it.
         state["secret"] = plan.token
 
     def _step_register(self, spec, state):
-        result = self.agent.register(state["host_id"], state["ref"],
-                                     state["plan"]) or {}
+        result = retry.call(AGENT_SLOW, self.agent.register,
+                            state["host_id"], state["ref"],
+                            state["plan"]) or {}
         state["registration"] = {
             "registration_id": str(result.get("registration_id") or ""),
             "registration_uuid": result.get("registration_uuid"),
@@ -229,9 +242,8 @@ class ProvisioningFlow:
         probe = dict(spec, **state["registration"])
         waited = 0
         while True:
-            if self.agent.ready(state["host_id"], state["ref"]):
-                seen = provider.job_state(probe,
-                                          self.forges.records(provider))
+            if self._ready(state["host_id"], state["ref"]):
+                seen = provider.job_state(probe, self._records(provider))
                 if seen in (providers.IDLE, providers.BUSY):
                     return
             if waited >= self.verify_timeout:
@@ -240,6 +252,23 @@ class ProvisioningFlow:
                     f"and the forge did not both report it ready")
             self.sleep(self.verify_interval)
             waited += self.verify_interval
+
+    def _ready(self, host_id, ref):
+        """The agent's answer, or False when it could not give one. An agent
+        that did not answer has not said the runner is ready."""
+        try:
+            return bool(retry.call(AGENT_FAST, self.agent.ready, host_id,
+                                   ref))
+        except Exception:               # noqa: BLE001
+            return False
+
+    def _records(self, provider):
+        """The forge's runner list, or None - unknown - when it could not be
+        read. Never the last list that did arrive: 17.2."""
+        try:
+            return retry.call(FORGE_STATUS, self.forges.records, provider)
+        except Exception:               # noqa: BLE001
+            return None
 
     # ---- running steps, and undoing them ------------------------------------
 
@@ -275,7 +304,8 @@ class ProvisioningFlow:
             ref = self._ref(spec)
         if ref is None:
             return
-        self._runtime(spec).remove(ref, keep_data=False)
+        retry.call(AGENT_SLOW, self._runtime(spec).remove, ref,
+                   keep_data=False)
 
     def _undo_deregister(self, spec, state):
         """Safe if nothing was registered. A registration whose reply was lost
@@ -294,14 +324,16 @@ class ProvisioningFlow:
         if plan.via_api:
             # Forgejo: only the API can delete the record, and a removal that
             # cannot reach it must fail rather than strand the registration.
-            if not self.forges.delete(provider, plan.registration_id):
+            if not retry.call(FORGE_DELETE, self.forges.delete, provider,
+                              plan.registration_id):
                 raise RuntimeError(
                     f"the forge did not delete registration "
                     f"{plan.registration_id}; refusing to continue rather "
                     f"than strand it")
         else:
             # GitHub: the runner deregisters itself when told to.
-            self.agent.deregister(spec.get("host_id"), ref or self._ref(spec))
+            retry.call(AGENT_SLOW, self.agent.deregister,
+                       spec.get("host_id"), ref or self._ref(spec))
 
     def deregister(self, spec):
         self._deregister(spec)
@@ -319,7 +351,7 @@ class ProvisioningFlow:
         if actual not in ("idle", "busy", "draining"):
             return None
         provider = self._provider(spec)
-        seen = provider.job_state(spec, self.forges.records(provider))
+        seen = provider.job_state(spec, self._records(provider))
         if actual == "draining":
             return "drained" if seen == providers.IDLE else None
         if seen == providers.BUSY:
@@ -329,25 +361,28 @@ class ProvisioningFlow:
         return None
 
     def start(self, spec):
-        self._runtime(spec).start(self._ref(spec))
+        retry.call(AGENT_SLOW, self._runtime(spec).start, self._ref(spec))
 
     def stop(self, spec):
-        self._runtime(spec).stop(self._ref(spec))
+        retry.call(AGENT_SLOW, self._runtime(spec).stop, self._ref(spec))
 
     def drain(self, spec):
-        self.agent.drain(spec.get("host_id"), self._ref(spec))
+        retry.call(AGENT_FAST, self.agent.drain, spec.get("host_id"),
+                   self._ref(spec))
 
     def cancel_drain(self, spec):
-        self.agent.cancel_drain(spec.get("host_id"), self._ref(spec))
+        retry.call(AGENT_FAST, self.agent.cancel_drain, spec.get("host_id"),
+                   self._ref(spec))
 
     def remove(self, spec, keep_data=False):
         if not spec.get("exec_unit_ref"):
             return                      # nothing was ever created
-        self._runtime(spec).remove(self._ref(spec), keep_data=keep_data)
+        retry.call(AGENT_SLOW, self._runtime(spec).remove, self._ref(spec),
+                   keep_data=keep_data)
 
     def clear_cache(self, spec):
-        freed = self._runtime(spec).clear_cache(self._ref(spec),
-                                                spec.get("cache_policy") or {})
+        freed = retry.call(AGENT_SLOW, self._runtime(spec).clear_cache,
+                           self._ref(spec), spec.get("cache_policy") or {})
         return {"total_bytes": getattr(freed, "total_bytes", 0),
                 "measured": getattr(freed, "measured", False),
                 "errors": dict(getattr(freed, "errors", {}) or {})}
