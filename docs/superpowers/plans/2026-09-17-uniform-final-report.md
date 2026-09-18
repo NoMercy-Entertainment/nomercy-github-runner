@@ -8,7 +8,7 @@ none of the gated ones had started.
 provisioning flow and one closed control protocol exist. So do runtimes for
 Linux containers, Windows process trees and the macOS appliance, provider
 adapters for GitHub and Forgejo on all three platforms, and a v2 dashboard
-that renders every runner with one card. All of it is tested: 1616 tests in
+that renders every runner with one card. All of it is tested: 1619 tests in
 the dashboard and 336 in the agent, green. None of it is deployed. There is no
 Hyper-V worker, the agent runs on no machine, and the 13 runners on WSL run as
 they did before. So the platform is built and shown correct against
@@ -156,7 +156,7 @@ On 2026-09-18, on BEAST-UNIT:
 
 | Suite | Result |
 | --- | --- |
-| `dashboard/tests` | **1616 passed, 9 xfailed** (the WSL couplings), none skipped |
+| `dashboard/tests` | **1619 passed, 9 xfailed** (the WSL couplings), none skipped |
 | `agent/tests` | **336 passed**, none skipped |
 
 Among them, these reached something real and not a fake:

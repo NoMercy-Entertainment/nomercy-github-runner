@@ -233,7 +233,7 @@ A task with several gates needs all of them.
 These hold for every task and are not repeated per task.
 
 - **The tests in `dashboard/tests/` must stay green** — 437 when this plan was
-  written, 1275 passing and 9 expected-to-fail after Phase 4, plus 141 in
+  written, 1619 passing and 9 expected-to-fail on 2026-09-18, plus 336 in
   `agent/tests`. Run
   `cd dashboard && python -m pytest tests/ -q` before and after every task.
   A task that would require weakening an existing test must stop and report it
