@@ -39,14 +39,13 @@ Object in `agent/jobhost.py` against this machine's real kernel.
 import hashlib
 import json
 import ntpath
-import os
-import shutil
 import struct
 import subprocess
 import sys
 import time
 
 from .. import naming
+from .localfs import LocalFs
 
 #: Areas created per runner. `docker` is None on Windows: no nested engine.
 AREAS = tuple(a for a in naming.AREAS if a != "docker")
@@ -117,73 +116,6 @@ def _exec(args, input=None, timeout=30):
         return False, "", f"timed out after {timeout}s"
     except OSError as e:
         return False, "", str(e)
-
-
-class LocalFs:
-    """The worker's own disk. The fake in the tests implements the same
-    methods over memory."""
-
-    def exists(self, path):
-        return os.path.exists(path)
-
-    def makedirs(self, path):
-        os.makedirs(path, exist_ok=True)
-
-    def copytree(self, src, dst):
-        shutil.copytree(src, dst, dirs_exist_ok=True)
-
-    def write_text(self, path, text):
-        tmp = path + ".tmp"
-        with open(tmp, "w", encoding="utf-8") as fh:
-            fh.write(text)
-        os.replace(tmp, path)
-
-    def read_text(self, path):
-        with open(path, encoding="utf-8", errors="replace") as fh:
-            return fh.read()
-
-    def tail(self, path, max_bytes):
-        with open(path, "rb") as fh:
-            fh.seek(0, os.SEEK_END)
-            fh.seek(max(0, fh.tell() - max_bytes))
-            return fh.read().decode("utf-8", errors="replace")
-
-    def mtime(self, path):
-        return os.path.getmtime(path)
-
-    def rmtree(self, path):
-        if os.path.exists(path):
-            shutil.rmtree(path)
-
-    def clear_dir(self, path):
-        """Delete what is inside `path`, keeping `path`. Continues past what
-        cannot be deleted and raises once, naming how much was left."""
-        failed = []
-        for name in os.listdir(path) if os.path.isdir(path) else ():
-            full = os.path.join(path, name)
-            try:
-                if os.path.isdir(full) and not os.path.islink(full):
-                    shutil.rmtree(full)
-                else:
-                    os.unlink(full)
-            except OSError as e:
-                failed.append(f"{name}: {e.strerror}")
-        if failed:
-            raise OSError(f"{len(failed)} entries could not be deleted: "
-                          + "; ".join(failed[:3]))
-
-    def du(self, path):
-        """Bytes under `path`, or None when it cannot be read - never 0."""
-        if not os.path.isdir(path):
-            return None
-        total = 0
-        for base, dirs, files in os.walk(path, onerror=None):
-            for name in files:
-                try:
-                    total += os.lstat(os.path.join(base, name)).st_size
-                except OSError:
-                    pass
-        return total
 
 
 class WindowsProcessRuntime:

@@ -10,10 +10,12 @@ import pytest
 
 from agent import naming
 from agent.runtimes.linux_container import LinuxContainerRuntime
+from agent.runtimes.macos_appliance import MacApplianceRuntime
 from agent.runtimes.windows_process import WindowsProcessRuntime
 
 from .contract import suite
-from .contract.harnesses import (WINDOWS_TOOLS, LinuxContainerHarness,
+from .contract.harnesses import (MAC_TOOLS, WINDOWS_TOOLS,
+                                 LinuxContainerHarness, MacApplianceHarness,
                                  WindowsProcessHarness)
 
 
@@ -145,6 +147,51 @@ def windows_harness_with(runtime_class):
 def test_the_suite_fails_a_windows_runtime_that_breaks_it(broken, scenario):
     with pytest.raises((AssertionError, RuntimeError)):
         scenario(windows_harness_with(broken))
+
+
+# ---------------------------------------------------------------------------
+# and for the macOS appliance
+# ---------------------------------------------------------------------------
+
+class MacLeavesTheCacheBehind(MacApplianceRuntime):
+    def remove(self, runner_id, keep_data):
+        super().remove(runner_id, keep_data=True)
+
+
+class MacForgetsWhatItStarted(MacApplianceRuntime):
+    def create(self, runner_id, spec):
+        if self._fs.exists(self.paths(runner_id)["root"]):
+            return naming.unit_name(runner_id)
+        return super().create(runner_id, spec)
+
+
+class MacKeepsTheOldWorkspace(MacApplianceRuntime):
+    def remove(self, runner_id, keep_data):
+        if keep_data:
+            self.stop(runner_id)
+            self._fs.remove(self.paths(runner_id)["plist"])
+            return
+        super().remove(runner_id, keep_data)
+
+
+def mac_harness_with(runtime_class):
+    h = MacApplianceHarness()
+    h.runtime = runtime_class(run=h.guest, fs=h.guest,
+                              appliance=h.guest.appliance, tools=MAC_TOOLS)
+    return h
+
+
+@pytest.mark.parametrize("broken,scenario", [
+    (MacLeavesTheCacheBehind,
+     suite.test_7_remove_leaves_no_forge_record_and_no_storage),
+    (MacForgetsWhatItStarted,
+     suite.test_8_a_create_cut_off_by_a_crash_converges_to_a_whole_instance),
+    (MacKeepsTheOldWorkspace,
+     suite.test_6_recreate_gives_a_new_workspace_and_a_fresh_registration),
+], ids=["leaves-storage", "half-created", "keeps-workspace"])
+def test_the_suite_fails_a_macos_runtime_that_breaks_it(broken, scenario):
+    with pytest.raises((AssertionError, RuntimeError)):
+        scenario(mac_harness_with(broken))
 
 
 # ---------------------------------------------------------------------------
