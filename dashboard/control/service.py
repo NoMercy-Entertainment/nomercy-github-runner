@@ -1,0 +1,307 @@
+"""The one service every runner action goes through.
+
+**It never performs work.** A call validates, writes what should be true, and
+returns an operation id. Nothing here talks to a forge, an agent or an engine.
+That is not a stylistic preference: the shape it replaces is a route handler
+that shelled out to Docker and returned when it was done, which could not be
+retried, could not be watched, and left half a runner behind whenever the
+request timed out first.
+
+**Impossible is refused here, before anything exists.** A cell no provider
+supports, a cell with no runtime to execute it, a verb the runner's state does
+not allow - each is refused at the moment it is asked for, with a reason. The
+alternative is discovering it four steps later, on a runner that has already
+been half created and now has to be cleaned up.
+
+**Which runtime runs a cell is a table.** `RUNTIMES` below is data, so adding
+the Windows worker is a row rather than a branch, and a test proves the lookup
+is data-driven by replacing the table. The moment this becomes an `if platform
+== "windows"` the design has lost the property it exists for.
+"""
+import importlib
+
+import providers
+from store.fleets import FleetStore, fleet_id
+from store.specs import SpecStore
+
+from . import states
+from .inventory import Inventory
+from .operations import OperationStore
+
+#: (provider, platform) -> the runtime that executes that cell, as
+#: "module:attribute". Strings rather than imports so this stays a table of
+#: data: nothing here is loaded until a cell is actually used, and a test can
+#: replace the whole table to prove the lookup is not a hidden conditional.
+#:
+#: Two cells today. Windows arrives in phase 6 and macOS in phase 7; each is a
+#: line here and nothing else.
+RUNTIMES = {
+    ("github", providers.LINUX): "runtime.docker_adapter:DockerRuntimeAdapter",
+    ("forgejo", providers.LINUX): "runtime.docker_adapter:DockerRuntimeAdapter",
+}
+
+#: What a verb means for a runner's desired state. Absent from this table means
+#: the verb is an operation that does not change what the runner should be -
+#: clearing a cache does not make a running runner any less meant to run.
+DESIRED_BY_VERB = {
+    "start": "running",
+    "stop": "stopped",
+    "restart": "running",
+    "drain": "drained",
+    "cancel_drain": "running",
+    "remove": "absent",
+    "recreate": "running",
+    "repair": "running",
+    "provision": "running",
+    "register": "running",
+    "deregister": "absent",
+}
+
+DESIRED_STATES = frozenset({"running", "stopped", "drained", "absent"})
+
+
+class Refused(Exception):
+    """The request cannot be carried out, and this is why.
+
+    One exception type with a reason, rather than a bare False, for the same
+    reason `Support` carries one: a refusal an operator cannot act on is a
+    failure they will report as a bug.
+    """
+
+
+class UnknownRunner(Exception):
+    pass
+
+
+class RunnerService:
+    def __init__(self, path=None, specs=None, fleets=None, operations=None,
+                 inventory=None, runtimes=None):
+        self.specs = specs or SpecStore(path)
+        self.fleets = fleets or FleetStore(path)
+        self.operations = operations or OperationStore(path)
+        self.inventory = inventory or Inventory(path)
+        #: Injectable so a test can prove the lookup is data-driven.
+        self.runtimes = RUNTIMES if runtimes is None else runtimes
+
+    # ---- which runtime runs a cell -----------------------------------------
+
+    def runtime_for(self, provider_key, platform):
+        """The runtime class for a cell, or a refusal naming the gap.
+
+        Resolved by table lookup and imported on use. A cell with no entry is
+        not an error in the abstract - it is a platform this build cannot
+        execute yet, and saying so is more useful than a KeyError.
+        """
+        target = self.runtimes.get((provider_key, platform))
+        if not target:
+            raise Refused(
+                f"no runtime is registered for {provider_key}/{platform}; "
+                f"this build can execute "
+                f"{sorted({p for _, p in self.runtimes})}")
+        module_name, _, attribute = target.partition(":")
+        module = importlib.import_module(module_name)
+        return getattr(module, attribute)
+
+    def can_execute(self, provider_key, platform):
+        return (provider_key, platform) in self.runtimes
+
+    # ---- planning ----------------------------------------------------------
+
+    def plan(self, fid, count, requested_by=None, idempotency_key=None,
+             env=None):
+        """Produce `count` RunnerSpecs for a fleet, or refuse saying why.
+
+        Validation happens before the first row is written, so a fleet that
+        cannot be built produces no specs at all rather than some. Creating
+        five and failing on the sixth would leave five runners the reconciler
+        would dutifully build for a cell nobody can serve.
+
+        Specs are born `planned`. Nothing has been created anywhere; the
+        reconciler takes them from here.
+        """
+        if count < 1:
+            raise ValueError("plan needs a positive count")
+
+        fleet = self.fleets.get(fid)
+        if fleet is None:
+            raise Refused(f"no fleet {fid}")
+        if not fleet["available"]:
+            raise Refused(
+                f"{fid} is unavailable: "
+                f"{fleet['unavailable_reason'] or 'the cell does not exist'}")
+
+        provider = providers.by_key(fleet["provider"])
+        if provider is None:
+            raise Refused(f"{fid} names an unknown provider "
+                          f"{fleet['provider']!r}")
+
+        # Asked again here rather than trusting the stored flag: seeding may
+        # have run before someone built the artefact, or long before now.
+        support = provider.supports(fleet["platform"], fleet["architecture"],
+                                    env if env is not None else {})
+        if not support:
+            raise Refused(f"{fid} cannot be built: {support.reason}")
+
+        # Refused before anything is created, which is the whole point of
+        # doing it at plan time.
+        self.runtime_for(fleet["provider"], fleet["platform"])
+
+        operation, created = self.operations.open(
+            "plan", fleet_id=fid, requested_by=requested_by,
+            idempotency_key=idempotency_key,
+            note=f"plan {count} for {fid}")
+        if not created:
+            return operation["operation_id"]
+
+        runner_ids = []
+        for _ in range(count):
+            runner_ids.append(self.specs.create(
+                provider=fleet["provider"],
+                platform=fleet["platform"],
+                architecture=fleet["architecture"],
+                runtime_template=fleet["template"],
+                labels=fleet.get("labels") or [],
+                runner_group=fleet.get("runner_group"),
+                cache_policy=fleet.get("cache_policy"),
+                fleet_id=fid,
+                desired_state="running",
+                actual_state="planned",
+            ))
+
+        # Planning is finished when the rows exist; there is no remote work in
+        # it. Saying so keeps "pending" meaning something that is still going.
+        self.operations.succeed(operation["operation_id"],
+                                {"runner_ids": runner_ids})
+        return operation["operation_id"]
+
+    def planned_ids(self, operation_id):
+        """The runner ids a `plan` produced, read back from its result."""
+        import json
+        operation = self.operations.get(operation_id)
+        if not operation or not operation["result"]:
+            return []
+        return json.loads(operation["result"]).get("runner_ids", [])
+
+    # ---- intent ------------------------------------------------------------
+
+    def set_desired(self, runner_id, state, requested_by=None,
+                    idempotency_key=None):
+        """Record what a runner should be. Returns an operation id.
+
+        Writes only `desired_state`. `actual_state` belongs to the reconciler,
+        which is the only thing that has witnessed anything.
+        """
+        if state not in DESIRED_STATES:
+            raise ValueError(
+                f"{state!r} is not a desired state; expected "
+                f"{sorted(DESIRED_STATES)}")
+        spec = self._spec(runner_id)
+
+        operation, created = self.operations.open(
+            "set_desired", runner_id=runner_id, requested_by=requested_by,
+            idempotency_key=idempotency_key,
+            note=f"desired {spec['desired_state']} -> {state}")
+        if not created:
+            return operation["operation_id"]
+
+        self.specs.update(runner_id, spec["spec_version"], desired_state=state)
+        self.operations.succeed(operation["operation_id"], {"desired": state})
+        return operation["operation_id"]
+
+    # ---- verbs -------------------------------------------------------------
+
+    def act(self, runner_id, verb, requested_by=None, idempotency_key=None):
+        """Ask for a verb. Validates, records, and returns an operation id.
+
+        Nothing is carried out here. The reconciler picks the operation up,
+        which is what lets a thirty-second removal be watched rather than
+        waited on.
+        """
+        if verb not in states.VERBS:
+            raise ValueError(f"unknown verb {verb!r}")
+        if verb in states.READS:
+            raise Refused(
+                f"{verb} is a read, not an operation; call it directly "
+                f"instead of asking for it to be scheduled")
+        if verb in states.FLEET_VERBS:
+            raise Refused(
+                f"{verb} acts on a fleet's capacity, not on one runner; "
+                f"use the fleet's capacity instead")
+
+        spec = self._spec(runner_id)
+        current = spec["actual_state"]
+
+        # First, before any other judgement. A caller that did not hear the
+        # answer repeats the call, and the repeat must find its own operation
+        # rather than be told one is already in flight - which is what the
+        # first call started. Checking anything else first would make the one
+        # safe move a caller has look like a conflict.
+        repeat = self._repeat(idempotency_key, runner_id, verb)
+        if repeat:
+            return repeat["operation_id"]
+
+        if not states.allows(verb, current):
+            raise Refused(
+                f"{verb} is not possible while the runner is {current!r}"
+                + self._why_not(verb, current))
+
+        if spec["current_operation"]:
+            in_flight = self.operations.get(spec["current_operation"])
+            if in_flight and in_flight["state"] in ("pending", "running"):
+                raise Refused(
+                    f"{in_flight['verb']} is already in flight on this "
+                    f"runner ({in_flight['operation_id']}); wait for it or "
+                    f"cancel it")
+
+        operation, created = self.operations.open(
+            verb, runner_id=runner_id, requested_by=requested_by,
+            idempotency_key=idempotency_key,
+            note=f"{verb} requested while {current}")
+        if not created:
+            return operation["operation_id"]
+
+        changes = {"current_operation": operation["operation_id"]}
+        if verb in DESIRED_BY_VERB:
+            changes["desired_state"] = DESIRED_BY_VERB[verb]
+        self.specs.update(runner_id, spec["spec_version"], **changes)
+
+        return operation["operation_id"]
+
+    def _repeat(self, idempotency_key, runner_id, verb):
+        """The operation this key already opened, if there is one.
+
+        A key that was used for a different verb or a different runner is not
+        a repeat - it is a collision, and returning the other operation would
+        answer a question nobody asked. Keys are caller-generated, so a
+        collision means the caller is reusing one, and saying so is more use
+        than a confusing success.
+        """
+        if not idempotency_key:
+            return None
+        existing = self.operations.by_key(idempotency_key)
+        if not existing:
+            return None
+        if existing["verb"] != verb or existing["runner_id"] != runner_id:
+            raise Refused(
+                f"idempotency key {idempotency_key!r} was already used for "
+                f"{existing['verb']} on {existing['runner_id']}; a key "
+                f"identifies one request, not a family of them")
+        return existing
+
+    def _why_not(self, verb, current):
+        if verb in states.GUARDED:
+            return (f"; it needs the runner to be one of "
+                    f"{sorted(states.GUARDED[verb])}")
+        edges = states.VERB_EDGES.get(verb)
+        if edges:
+            froms = sorted(f for f, _ in edges if f)
+            return f"; {verb} starts from {froms}"
+        return ""
+
+    # ---- helpers -----------------------------------------------------------
+
+    def _spec(self, runner_id):
+        spec = self.specs.get(runner_id)
+        if spec is None:
+            raise UnknownRunner(runner_id)
+        return spec
