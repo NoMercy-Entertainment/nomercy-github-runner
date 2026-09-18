@@ -20,6 +20,10 @@ in `settings.psd1`. Why these values: design section 20, OPEN-5 and OPEN-6.
 
 ## Order
 
+In one go, after step 1: `Deploy-RunnerPlatform.ps1`, elevated, runs steps
+2, 3 and 4 in order, stops at the first failure, and logs everything to
+`D:\HyperV\runner-platform\deploy-<time>.log`. Or step by step:
+
 ```powershell
 # 1. Not elevated. Downloads and verifies the Ubuntu 24.04 cloud image,
 #    converts it, and writes one seed image per VM. Changes nothing on the host.
@@ -32,6 +36,12 @@ in `settings.psd1`. Why these values: design section 20, OPEN-5 and OPEN-6.
 # 3. Not elevated. Software, the controller's authority, the worker enrolled
 #    and its agent running. Ends when the worker reports healthy.
 .\infra\hyperv\Initialize-RunnerPlatform.ps1
+```
+
+```powershell
+# 4. ELEVATED. This host as the Windows worker (OPEN-2): the agent as the
+#    service rnr-agent, enrolled with the controller.
+.\infra\hyperv\Install-WindowsWorker.ps1
 ```
 
 Then the first runner, on the control plane (`ssh -i D:\HyperV\runner-platform\ssh\id_ed25519 rnr-admin@10.77.0.10`):

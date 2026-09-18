@@ -98,3 +98,37 @@ actually done" has one answer (ACC-19).
   a missing table. It was fixed and proven in the controller's own image, in a
   throwaway container that has since been removed. The controller planned a
   runner and held it in `planned` because no worker existed yet.
+
+## 2026-09-18 - the elevated phase 5 step requested, and cancelled
+
+- **Command:** `Start-Process pwsh -Verb RunAs ... New-RunnerPlatformVMs.ps1`
+  at 14:53:48.
+- **Output:** "The operation was canceled by the user." The UAC prompt was
+  declined, or went unanswered. No log was written. `Get-NetAdapter` shows
+  only `vEthernet (Default Switch)` and `vEthernet (WSL)`, so nothing was
+  created. The request was not repeated.
+
+## 2026-09-18 - forgejo-runner v13.1.0 built for Windows and macOS
+
+- **Commands:** `docker run --rm golang:1.26.7 bash
+  /build/build-forgejo-runner.sh v13.1.0`, twice, into two fresh output
+  directories under `D:\HyperV\runner-platform\artefacts\`.
+- **Output:** built from commit `6095cb17bfdbded5aa4ea84c18a4b69fd9574cca`
+  with go1.26.7. The same three SHA-256 came out of both builds
+  (`images/windows/manifest.json`). The Windows binary prints
+  `forgejo-runner version v13.1.0`.
+
+## 2026-09-18 - the Windows template's register exercised on this host
+
+- **What:** `register.ps1` and `deregister.ps1`, run from a copy in the
+  scratchpad against the built binary, as the agent runs them.
+- **Found and fixed:** under `ErrorActionPreference = 'Stop'`, the
+  deprecation warning that v13 always prints made every registration fail.
+  Also, `register` against an unreachable instance never returned.
+- **After the fix:** exit 124 at 91 s, with the reason given and the token
+  not in the output. Idempotent with a registration present. Deregister
+  exited 0 while unregistered and 3 once registered.
+- **Cleanup:** the first, unbounded attempt left the test copy running. It
+  was stopped by PID only after its path was checked to be the scratchpad
+  copy. The live `forgejo-runner` service was never touched and was
+  `Running` afterwards.

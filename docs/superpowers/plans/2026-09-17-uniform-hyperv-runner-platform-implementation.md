@@ -584,7 +584,20 @@ engine and a fake forge; the runtime is not installed on any worker.
 
 ## Phase 5 — Linux Hyper-V worker
 
-**Not started:** every task is HYPERV. The agent it installs is built and tested, but has no entry point yet; see "For later phases".
+**Built, not yet run elevated (2026-09-18).** Everything below is in `infra/hyperv/` (README there):
+- `Prepare-RunnerPlatform.ps1` needs no elevation and **has run**. It made the verified Ubuntu image, the VHDX and the seeds.
+- `New-RunnerPlatformVMs.ps1` covers T-0601, T-0602 and T-0604.
+- `Initialize-RunnerPlatform.ps1` enrols the worker and starts the agent and the controller.
+- `Deploy-RunnerPlatform.ps1` runs all of them in one elevated go.
+- `Remove-RunnerPlatform.ps1` is the rollback.
+
+The agent (`python -m agent`), the controller (`python -m control`) and the Linux unit images are built and tested. The unit drain was proven in throwaway units on the WSL engine (evidence file). The one elevated request made so far, a UAC prompt at 14:53, was cancelled, so no VM exists yet.
+
+**Departures:**
+- The VMs go out through the Default Switch, not a NetNat (spec 20, OPEN-6).
+- The control plane runs only the controller until T-0603 moves the state store.
+- The pilot fleet carries a label no production workflow asks for.
+- T-0603 (the state store) is still NEVER-AUTO and not started.
 
 ### T-0601 — Build the Linux worker VM
 
@@ -627,7 +640,15 @@ engine and a fake forge; the runtime is not installed on any worker.
 
 ## Phase 6 — Windows worker
 
-**Done:** T-0702 (written; against a fake host, and the Job Object against this host's kernel) and T-0705's documentation (the build was not run). **Not started:** T-0701, T-0703, T-0704, which are gated.
+**Done:**
+- T-0702, written and tested against a fake host, with the Job Object tested against this host's kernel.
+- T-0705: the build ran on 2026-09-18, in `golang:1.26.7`. forgejo-runner v13.1.0 was built for windows/amd64, darwin/amd64 and darwin/arm64. The hashes are in `images/windows/manifest.json`, and a second build reproduced them.
+
+**Built, not yet run:**
+- T-0701: `infra/hyperv/Install-WindowsWorker.ps1`, elevated.
+- The Forgejo Windows template, in `infra/windows/templates/`. Its `register.ps1` was exercised on this host.
+
+**Not started:** T-0703 and T-0704, which are gated.
 
 **Decided 2026-09-18 (spec 20):** OPEN-2 buys no licence now, so the Windows worker is BEAST-UNIT itself, where the Windows runner already runs. T-0701 therefore installs the agent on the host as a service instead of building a VM. OPEN-3 is one shared worker with a virtual account, a service SID and a Job Object per runner, which is what T-0702 built. OPEN-4 keeps the self-built runner, built in a pinned `golang` container.
 
