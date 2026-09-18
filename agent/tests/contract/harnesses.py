@@ -10,8 +10,13 @@ import uuid
 from agent import naming
 from agent.runtimes.linux_container import (LinuxContainerRuntime,
                                             LinuxRegistrar)
+from agent.runtimes.windows_process import (WindowsProcessRuntime,
+                                            WindowsRegistrar)
 
 from ..fake_docker import FakeDocker
+from ..fake_windows import TEMPLATE as WINDOWS_TEMPLATE
+from ..fake_windows import TOOLS as WINDOWS_TOOLS
+from ..fake_windows import FakeWindows
 from .suite import NotSupported
 
 
@@ -102,6 +107,92 @@ class LinuxContainerHarness:
     drain = cancel_drain = start_job = finish_job = offer_job = _no_drain
 
 
-#: Every runtime the suite runs against. Windows and macOS are added here in
-#: phases 6 and 7.
-HARNESSES = {"linux-container": LinuxContainerHarness}
+class WindowsProcessHarness:
+    name = "windows-process"
+    platform = "windows"
+
+    def __init__(self):
+        self.host = FakeWindows()
+        self.runtime = WindowsProcessRuntime(run=self.host, fs=self.host,
+                                             tools=WINDOWS_TOOLS)
+        self.registrar = WindowsRegistrar(run=self.host, fs=self.host,
+                                          tools=WINDOWS_TOOLS)
+
+    # ---- inputs -------------------------------------------------------------
+
+    def new_id(self):
+        return str(uuid.uuid4())
+
+    def spec(self):
+        return {"image": WINDOWS_TEMPLATE, "memory": "8g", "cpus": "4"}
+
+    def plan(self, runner_id):
+        return {"url": "https://git.example", "token": "tok-contract-123456",
+                "name": f"rnr-{runner_id[:8]}", "labels": "self-hosted"}
+
+    # ---- the forge ----------------------------------------------------------
+
+    def forge_records(self, runner_id):
+        return self.host.forge.for_unit(naming.unit_name(runner_id))
+
+    def forge_online(self, registration_id):
+        return self.host.forge.online(registration_id)
+
+    def forge_reachable(self, reachable):
+        self.host.forge.reachable = reachable
+
+    # ---- the unit and its storage -------------------------------------------
+
+    def _paths(self, runner_id):
+        return self.runtime.paths(runner_id)
+
+    def expected_areas(self):
+        return {a for a, n in naming.names(str(uuid.uuid4()),
+                                           self.platform).items() if n}
+
+    def storage_present(self, runner_id):
+        return {area for area, path in naming.names(runner_id,
+                                                    self.platform).items()
+                if path and self.host.exists(path)}
+
+    def unit_present(self, runner_id):
+        return naming.unit_name(runner_id) in self.host.services
+
+    def units(self, runner_id):
+        return sum(1 for n in self.host.services
+                   if n == naming.unit_name(runner_id))
+
+    def snapshot(self, runner_id):
+        return self.host.snapshot(self._paths(runner_id)["root"])
+
+    def put_cache(self, runner_id, size):
+        self.host.put(self._paths(runner_id)["cache"] + r"\tools\node.zip",
+                      size)
+
+    def cache_kept(self, runner_id):
+        return self.host.size_under(self._paths(runner_id)["cache"]) > 0
+
+    def mark_workspace(self, runner_id):
+        self.host.put(self._paths(runner_id)["work"] + r"\marker", 1)
+
+    def workspace_marked(self, runner_id):
+        return self.host.exists(self._paths(runner_id)["work"] + r"\marker")
+
+    # ---- faults -------------------------------------------------------------
+
+    def crash_during_create(self):
+        """The service is installed, then the agent dies before it is
+        configured or started."""
+        self.host.crash_after = "install"
+
+    # ---- drain: OPEN-7 -------------------------------------------------------
+
+    def _no_drain(self, *_):
+        raise NotSupported("OPEN-7: nothing can drain a Windows runner yet")
+
+    drain = cancel_drain = start_job = finish_job = offer_job = _no_drain
+
+
+#: Every runtime the suite runs against. macOS is added here in phase 7.
+HARNESSES = {"linux-container": LinuxContainerHarness,
+             "windows-process": WindowsProcessHarness}

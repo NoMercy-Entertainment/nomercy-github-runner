@@ -10,9 +10,11 @@ import pytest
 
 from agent import naming
 from agent.runtimes.linux_container import LinuxContainerRuntime
+from agent.runtimes.windows_process import WindowsProcessRuntime
 
 from .contract import suite
-from .contract.harnesses import LinuxContainerHarness
+from .contract.harnesses import (WINDOWS_TOOLS, LinuxContainerHarness,
+                                 WindowsProcessHarness)
 
 
 class LeavesTheCacheBehind(LinuxContainerRuntime):
@@ -85,6 +87,64 @@ def test_and_passes_the_real_one():
             suite.test_7_remove_leaves_no_forge_record_and_no_storage,
             suite.test_8_a_create_cut_off_by_a_crash_converges_to_a_whole_instance):  # noqa: E501
         scenario(LinuxContainerHarness())
+
+
+# ---------------------------------------------------------------------------
+# the same teeth for the Windows runtime
+# ---------------------------------------------------------------------------
+
+class WinLeavesTheCacheBehind(WindowsProcessRuntime):
+    def remove(self, runner_id, keep_data):
+        super().remove(runner_id, keep_data=True)
+
+
+class WinKeepsTheOldWorkspace(WindowsProcessRuntime):
+    def remove(self, runner_id, keep_data):
+        if keep_data:
+            self._nssm("remove", naming.unit_name(runner_id), "confirm")
+            return
+        super().remove(runner_id, keep_data)
+
+
+class WinClearsEveryonesCache(WindowsProcessRuntime):
+    def clear_cache(self, runner_id, policy):
+        result = super().clear_cache(runner_id, policy)
+        for name in list(self._fs.services):
+            rid = name[len("rnr-"):]
+            if rid != runner_id:
+                self._fs.clear_dir(self.paths(rid)["cache"])
+        return result
+
+
+class WinForgetsWhatItStarted(WindowsProcessRuntime):
+    """Does not make the service when it is asked a second time."""
+
+    def create(self, runner_id, spec):
+        if self._fs.exists(self.paths(runner_id)["root"]):
+            return naming.unit_name(runner_id)
+        return super().create(runner_id, spec)
+
+
+def windows_harness_with(runtime_class):
+    h = WindowsProcessHarness()
+    h.runtime = runtime_class(run=h.host, fs=h.host, tools=WINDOWS_TOOLS)
+    return h
+
+
+@pytest.mark.parametrize("broken,scenario", [
+    (WinLeavesTheCacheBehind,
+     suite.test_7_remove_leaves_no_forge_record_and_no_storage),
+    (WinKeepsTheOldWorkspace,
+     suite.test_6_recreate_gives_a_new_workspace_and_a_fresh_registration),
+    (WinClearsEveryonesCache,
+     suite.test_5_clear_cache_frees_space_is_idempotent_and_touches_no_one_else),  # noqa: E501
+    (WinForgetsWhatItStarted,
+     suite.test_8_a_create_cut_off_by_a_crash_converges_to_a_whole_instance),
+], ids=["leaves-storage", "keeps-workspace", "clears-others",
+        "half-created"])
+def test_the_suite_fails_a_windows_runtime_that_breaks_it(broken, scenario):
+    with pytest.raises((AssertionError, RuntimeError)):
+        scenario(windows_harness_with(broken))
 
 
 # ---------------------------------------------------------------------------

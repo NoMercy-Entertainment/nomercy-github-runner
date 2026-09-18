@@ -242,6 +242,14 @@ def test_8_a_create_cut_off_by_a_crash_converges_to_a_whole_instance(
 
     assert harness.units(rid) == 1
     assert harness.storage_present(rid) == harness.expected_areas()
+    # Whole means what a create that was never cut off gives: a running unit
+    # that can be registered. One unit and all its storage is not enough - a
+    # unit made but never configured or started passes that and is still
+    # half an instance.
+    assert harness.runtime.status(rid)["running"] is True
+    registration = harness.registrar.register(rid, harness.plan(rid))[
+        "registration_id"]
+    assert harness.forge_online(registration) is True
 
 
 def test_8_or_to_nothing_at_all(harness):
