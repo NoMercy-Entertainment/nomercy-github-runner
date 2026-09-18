@@ -1,0 +1,16 @@
+{
+  "forgejo-runner-windows-amd64": [
+    {
+      "status": "running, provenance unknown",
+      "where": "BEAST-UNIT C:\\forgejo-runner\\forgejo-runner.exe",
+      "sha256": "7f2b3decaa25f32b401b04b45c307397208e716d63f2b5f58e99791254881adb",
+      "size": 19201024,
+      "written": "2026-05-30T05:36:47",
+      "reports_version": "dev",
+      "tag": null,
+      "commit": null,
+      "go": null,
+      "measured": "2026-09-18, read-only: Get-FileHash and --version"
+    }
+  ]
+}
