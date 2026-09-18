@@ -1,0 +1,48 @@
+"""The forges, as the provisioning flow sees them: records, and deleting one.
+
+The flow's `Forges` protocol, over the providers' own adapters. The flow never
+holds a forge client: it asks here, and this asks the provider for the
+runner's cell, with the deployment's environment. That keeps the tokens in one
+place, and it is the one door a forge record is deleted through (T-1002):
+forgejo-runner has no `unregister`, so for Forgejo this is not one way of
+removing a record but the only one.
+
+**Unknown is not empty, and not deleted is not deleted.** `records` answers
+None when the forge could not be asked, never [] - the flow reads None as
+"unknown" and never as "idle". `delete` answers True only when the forge
+confirmed the record gone, and a transport failure is raised rather than
+turned into False, so the reason reaches the runner's `last_error`.
+"""
+from typing import Mapping, Optional
+
+
+class ForgeUnreachable(RuntimeError):
+    """The forge did not answer a delete. The removal waiting on it must be
+    refused, not forced: forcing it strands the record."""
+
+
+class LiveForges:
+    def __init__(self, env: Optional[Mapping[str, str]] = None):
+        self.env = dict(env or {})
+
+    def records(self, provider) -> Optional[list]:
+        try:
+            return provider.forge_records(self.env)
+        except Exception:               # noqa: BLE001 - unknown, not empty
+            return None
+
+    def delete(self, provider, registration_id) -> bool:
+        if not registration_id:
+            raise ValueError("no registration id: nothing identifies the "
+                             "record to delete")
+        try:
+            deleted = provider.delete_record(self.env, str(registration_id))
+        except Exception as e:          # noqa: BLE001
+            raise ForgeUnreachable(
+                f"{provider.key}: the forge could not be asked to delete "
+                f"registration {registration_id}: {type(e).__name__}") from e
+        if not deleted:
+            raise ForgeUnreachable(
+                f"{provider.key}: the forge did not confirm registration "
+                f"{registration_id} deleted")
+        return True
