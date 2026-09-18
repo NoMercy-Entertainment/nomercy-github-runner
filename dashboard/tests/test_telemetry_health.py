@@ -153,3 +153,19 @@ class TestTheReconcilerRecordsWhatTheForgeSaid:
         s = the_runner(service)
         assert s["forge_state"] == "unknown"
         assert s["forge_seen_at"] == before
+
+
+class TestTheJobField:
+    def test_a_busy_runner_never_says_no_active_job(self):
+        card = cards.from_spec(spec(actual_state="busy", forge_state="busy"),
+                               now=NOW)
+        assert card["job"] and "running a job" in card["job"]
+
+    def test_a_named_job_is_shown_by_name(self):
+        card = cards.from_spec(spec(actual_state="busy"),
+                               telemetry={"job": "build (NoMercy/app)"},
+                               now=NOW)
+        assert card["job"] == "build (NoMercy/app)"
+
+    def test_an_idle_runner_has_none(self):
+        assert cards.from_spec(spec(), now=NOW)["job"] is None

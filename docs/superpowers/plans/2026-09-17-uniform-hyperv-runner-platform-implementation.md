@@ -203,6 +203,9 @@ Departures in phases 6 to 19:
   OpenCore leftover) is T-0803's to implement against the real appliance.
 - **Runner images must adopt the unit layout** before phase 5 (spec 15.1),
   and the Windows and macOS templates their three entry points.
+- **A controller runner's job name** needs the forges' job APIs (FR-19's
+  "job information"). Until then a busy card says it is running a job the
+  forge does not name, rather than "no active job".
 
 ---
 

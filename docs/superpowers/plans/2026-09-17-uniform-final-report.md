@@ -235,7 +235,9 @@ what is still missing before they can be taken.
   macOS;
 - the macOS `ApplianceHost`;
 - runner images and templates that follow the unit layout and its entry
-  points.
+  points;
+- the name of a controller runner's running job, from the forges' job APIs.
+  Until then a busy card says it is running a job the forge does not name.
 
 **Gated work:**
 - phase 5 (HYPERV);

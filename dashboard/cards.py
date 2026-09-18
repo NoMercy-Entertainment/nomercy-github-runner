@@ -400,6 +400,19 @@ def _measured(spec, override, now):
     return cpu, memory, storage, cache
 
 
+def _job(lifecycle, telemetry):
+    """The running job's name when something reported it. A busy runner
+    whose job nobody named says it is running one - "no active job" on a
+    busy card would be false (T-1803). Naming the job needs the forge's job
+    API, which is still to be added."""
+    named = (telemetry or {}).get("job")
+    if named:
+        return named
+    if lifecycle in ("busy", "draining"):
+        return "running a job - the forge does not say which"
+    return None
+
+
 def from_spec(spec, telemetry=None, worker_reachable=None, now=None):
     """A card for a runner the controller manages, from its RunnerSpec."""
     rid = spec["runner_id"]
@@ -441,7 +454,7 @@ def from_spec(spec, telemetry=None, worker_reachable=None, now=None):
         worker=spec.get("host_id"),
         runtime=caps.get("kind"),
         state=_shown_state(state, ready),
-        job=(telemetry or {}).get("job"),
+        job=_job(state, telemetry),
         cpu=cpu,
         memory=memory,
         storage=storage,
