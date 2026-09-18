@@ -16,13 +16,33 @@ defined in spec section 4 and traced in spec section 8.
 **Tech stack:** Python 3.12, Flask 3.0.3, flask-sock, sqlite3, pytest, the
 `docker` CLI, Hyper-V PowerShell cmdlets, GitHub REST, Forgejo REST v1.
 
-**Status:** Phases 0 to 4 are complete — T-0001 to T-0005, T-0201 to
-T-0204, T-0301 to T-0308, T-0401 to T-0406 and T-0501 to T-0503 are
-implemented and committed. Nothing beyond that has been started, and no
-infrastructure has been touched: every task so far is LOCAL, the running fleet
-was not altered, and no VM, service or forge registration was created, stopped
-or removed. The dashboard runs from its image rather than from the repository
-mount, so none of this is live until the image is rebuilt.
+**Status (2026-09-18):** every task whose gate allows it to run
+unattended is done. That is every LOCAL task, and the LOCAL part of every
+"LOCAL to write/build" task. Phases 0 to 4 are complete. Of the later
+phases, these are done and committed:
+- T-0702, T-0705 (partial), T-0801 and T-0805 (partial);
+- T-0901 to T-0903 and T-1001 to T-1003;
+- T-1301 to T-1303, T-1401 to T-1404 and T-1406;
+- T-1501, T-1502 and T-1601 to T-1603;
+- T-1801 to T-1803, T-1901 (built, not run) and T-1902;
+- T-2001, T-2003, T-2201 and T-2203.
+
+**Not started, each because of its gate:**
+- phase 5 (HYPERV);
+- T-0701, T-0703 and T-0704 (HYPERV, WINDOWS-INFRA, FORGE-LIVE);
+- T-0802 to T-0804 (MACOS-ENV, NEVER-AUTO);
+- T-1405 (waits for T-0802) and T-1407 (waits for every fleet on v2);
+- T-1903 (WINDOWS-INFRA);
+- phases 16 and 17 (NEVER-AUTO);
+- T-2002 (needs real workers) and T-2202 (waits for T-1708).
+
+**No infrastructure has been touched.** The running fleet was not altered,
+and no VM, service or forge registration was created, stopped or removed.
+The dashboard runs from its image rather than from the repository mount, so
+none of this is live until the image is rebuilt. What a rebuild changes is in
+`docs/operations/runner-platform.md` section 3. The evidence against each
+acceptance criterion is in `2026-09-17-uniform-acceptance.md`, and the report
+`uniform.md` asks for is `2026-09-17-uniform-final-report.md`.
 
 **Phase 4 is tested against a fake Docker engine and a fake forge**
 (`agent/tests/fake_docker.py`), never against a real engine: the runtime's argv
@@ -110,6 +130,56 @@ Phase 4 departures:
   that **today's images do not have these entry points or the `/runner/*`
   layout**; adopting them is a prerequisite for phase 5.
 
+Departures in phases 6 to 19:
+
+- **Windows runners run under their service's virtual account**
+  (`NT SERVICEnr-<id>`) and not under a local user created per runner:
+  there is no password to create, store or pass. The account's SID is
+  derived from the service name, checked against `sc.exe showsid`. The
+  service runs `agent.jobhost` through NSSM, and the job host puts the runner
+  in the Job Object. It refuses the Microsoft Store Python, whose child
+  processes were measured escaping every job.
+- **Runner software on Windows and macOS is a template directory** with the
+  same two entry points as the Linux image (`register` with the plan on
+  standard input, and `deregister`), so the runtimes never learn the forge.
+- **The macOS runtime's appliance power is a separate `ApplianceHost`**, the
+  hypervisor side, which is still to be implemented (T-0803). The word
+  "container" appears in the module only as the protocol's `job_containers`
+  key.
+- **Contract scenario 8 now requires a whole instance**: running and
+  registrable. Its teeth test found that a unit made but never configured
+  passed the old version.
+- **GitHub deregistration falls back to deleting the record by id through
+  the API** when the runner cannot deregister itself, and never while the
+  forge shows it busy. Today's images deregister with a token held inside the
+  unit, which the new design keeps out of units.
+- **v2 is a separate page (`/v2`, `/runners/<runner_id>`)** next to v1 rather
+  than a rewrite of `index.html`. `/` stays exactly as it was until T-1407
+  retires v1, because rewriting the live page would have been a behaviour
+  change for the running fleet. Today's containers appear on v2 through the
+  v1 collector and keep their v1 routes, as data on their cards. New files:
+  `api_v2.py`, `cards.py`, `templates/_card.js`, `fleet_v2.html` and
+  `runner_v2.html`.
+- **A runner with no room waits in `planned`** with the reason, instead of
+  failing (T-1502). Worker capacity is what the agent declares.
+- **FR-17's "drain first" is a cache-policy option** (`on_clear:
+  drain-first`). Skipping is the default.
+- **Capacity still opens its operation in `FleetStore`.** That is the
+  layering wart noted in `store/fleets.py`: phase 1's tests pin it returning
+  an operation id. The service's `set_capacity` is the call path, and
+  idempotency keys now pass through it.
+- **The destroy group requires admin on the v1 routes too** (T-1902). An
+  operator can no longer remove a runner or recreate a fleet there.
+- **The audit follows 18.4's columns**, and an operation's outcome is a row
+  of its own, so the table is append-only in the database.
+- **Three observation columns on `runner_specs`**: `telemetry`,
+  `forge_state` and `forge_seen_at` (T-1803). They are in the design's table
+  and in the migration.
+- The test fakes recorded a deregistration or delete that had failed as
+  done. They now record only what happened, and three tasks found that.
+- One flaky test (the plain-text mTLS refusal) raced the agent recording the
+  refusal. It now waits for the record.
+
 **For later phases:**
 
 - **OPEN-7, drain.** The flow asks the agent to drain a runner, and the closed
@@ -120,8 +190,19 @@ Phase 4 departures:
   protocol to `AgentClient.call_and_wait`. The registration plan must be sent
   without `RegistrationPlan.extra`, which the agent refuses as a field it does
   not take.
-- Spec 11.3 and 18.4 disagree on the audit table's columns - 18.4 adds
-  `fleet_id` and an outcome. T-0201 followed 11.3; T-1803 should settle it.
+- ~~Spec 11.3 and 18.4 disagree on the audit table's columns~~ - settled in
+  T-1802: 18.4's columns.
+- **Nothing starts the agent yet.** Every piece is built and tested: the
+  server, heartbeat, events and three runtimes. What is missing is an entry
+  point that reads a worker's configuration and starts them. T-0601 needs it.
+- **Nothing runs the controller either.** No process runs the reconciler
+  loop with `LiveForges` and the receiver. Before it can drive Windows and
+  macOS cells, `RunnerService.RUNTIMES` needs an agent-backed runtime adapter
+  for each, going through `AgentClient.call_and_wait`.
+- **The macOS `ApplianceHost`** (booting the guest and clearing the
+  OpenCore leftover) is T-0803's to implement against the real appliance.
+- **Runner images must adopt the unit layout** before phase 5 (spec 15.1),
+  and the Windows and macOS templates their three entry points.
 
 ---
 
@@ -498,6 +579,8 @@ engine and a fake forge; the runtime is not installed on any worker.
 
 ## Phase 5 — Linux Hyper-V worker
 
+**Not started:** every task is HYPERV. The agent it installs is built and tested, but has no entry point yet; see "For later phases".
+
 ### T-0601 — Build the Linux worker VM
 
 - **Gate:** HYPERV · **Requirements:** CON-1, FR-18 · **Depends on:** T-0501
@@ -538,6 +621,8 @@ engine and a fake forge; the runtime is not installed on any worker.
 ---
 
 ## Phase 6 — Windows worker
+
+**Done:** T-0702 (written; against a fake host, and the Job Object against this host's kernel) and T-0705's documentation (the build was not run, and OPEN-4 is still open). **Not started:** T-0701, T-0703, T-0704, which are gated.
 
 ### T-0701 — Build the Windows worker VM
 
@@ -587,6 +672,8 @@ engine and a fake forge; the runtime is not installed on any worker.
 ---
 
 ## Phase 7 — macOS appliance
+
+**Done:** T-0801 (against a fake guest) and T-0805's recipe (not built, not measured). **Not started:** T-0802 to T-0804, which are gated.
 
 ### T-0801 — The appliance contract
 
@@ -644,6 +731,8 @@ engine and a fake forge; the runtime is not installed on any worker.
 
 ## Phase 8 and 9 — Provider adapters across platforms
 
+**Done:** T-0901 to T-0903 and T-1001 to T-1003, tested against recorded API answers. Verifying against the live forges is FORGE-LIVE and has not been done.
+
 ### T-0901 — GitHub adapter, three platforms
 
 - **Gate:** LOCAL to write, FORGE-LIVE to verify · **Requirements:** FR-19, CON-3 · **Depends on:** T-0003
@@ -690,6 +779,8 @@ engine and a fake forge; the runtime is not installed on any worker.
 ---
 
 ## Phase 10 — Dashboard and API v2
+
+**Done:** T-1401 to T-1404 and T-1406, as a v2 page next to v1 (see the departures). **Not started:** T-1405 (waits for T-0802) and T-1407 (waits for every fleet on v2; NEVER-AUTO to deploy).
 
 ### T-1401 — One runner card
 
@@ -753,6 +844,8 @@ engine and a fake forge; the runtime is not installed on any worker.
 
 ## Phase 11 to 13 — Lifecycle, scaling, cache
 
+**Done:** T-1301 to T-1303, T-1501, T-1502 and T-1601 to T-1603, against fakes, plus real-disk and real-kernel tests where the machine allowed.
+
 ### T-1301 — Lifecycle over the API
 
 - **Gate:** LOCAL · **Requirements:** FR-6 · **Depends on:** T-0304, T-1402
@@ -811,6 +904,8 @@ engine and a fake forge; the runtime is not installed on any worker.
 
 ## Phase 14 and 15 — Telemetry, logging, security
 
+**Done:** T-1801 to T-1803, T-1901 (built, not run) and T-1902. **Not started:** T-1903 (WINDOWS-INFRA).
+
 ### T-1801 — Redaction
 
 - **Gate:** LOCAL · **Requirements:** NFR-4 · **Depends on:** T-0306
@@ -854,6 +949,8 @@ engine and a fake forge; the runtime is not installed on any worker.
 ---
 
 ## Phase 16 — Migration and WSL retirement
+
+**Not started:** every task is NEVER-AUTO.
 
 Every task here is **NEVER-AUTO**. Each names its rollback.
 
@@ -913,6 +1010,8 @@ Every task here is **NEVER-AUTO**. Each names its rollback.
 ---
 
 ## Phase 17 to 19 — Cutover, tests, documentation
+
+**Done:** T-2001 (both suites green), T-2003 (`2026-09-17-uniform-acceptance.md`), T-2201 (`docs/operations/runner-platform.md`) and T-2203 (`2026-09-17-uniform-final-report.md`). **Not started:** T-2101 to T-2103 (NEVER-AUTO), T-2002 (needs real workers) and T-2202 (waits for T-1708).
 
 ### T-2101 — Cutover
 

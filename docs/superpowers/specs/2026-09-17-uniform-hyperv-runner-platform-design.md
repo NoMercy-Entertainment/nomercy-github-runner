@@ -934,6 +934,9 @@ describes: the dashboard sets five, the controller converges.
 
 **`audit`** - NFR-7: append-only; who, when, what verb, against which
 `runner_id`, the `operation_id`, the decision, and the redacted parameters.
+**Settled in T-1802 (2026-09-18):** this table follows 18.4, which adds
+`fleet_id` and `outcome`. Both are in the schema and the migration, and
+triggers make the database refuse any update or delete.
 
 ### 11.4 History, preserved
 
@@ -1067,7 +1070,12 @@ The nine steps of `uniform.md` 99-128, implemented once:
    against `provider.supports()` and the chosen worker's `capabilities()`.
    An impossible combination is refused **here**, before anything is created.
 3. `Scheduler.place()` picks a worker by platform, architecture, free capacity
-   and current health.
+   and current health. **As built (T-1502):** capacity is what the worker's
+   agent declares - `max_runners`, `memory_bytes` against its runners'
+   memory limits, `architecture`. When no worker qualifies, the runner stays
+   in `planned` with the reason for each worker, and is placed on a later
+   pass. It is never failed for lack of room, and a worker is never
+   overcommitted.
 4. The runtime adapter creates the execution unit and its isolated storage.
 5. The provider adapter mints a registration token.
 6. The agent registers the runner.
@@ -1091,6 +1099,17 @@ the database **before** acting, so a crash between the two is recoverable:
 The reconciler sweeps for specs stuck in a transitional state past their
 deadline and runs the same compensations. That is also what makes a runner left
 behind by an earlier crash converge rather than leak (`uniform.md` 355).
+
+**A unit is never removed before its forge record (T-0903, 2026-09-18).**
+When a deregistration fails, the unit is kept, because it holds the runner's
+own credentials, and the error says so. The result is a half instance that
+can still be cleaned up, where removing the unit would have left an orphan
+that cannot. `remove` from `failed` deregisters first as well, since a runner
+can fail with its record intact. A GitHub runner that cannot deregister
+itself (its unit gone, its worker silent, or no credential to do it with) has
+its record deleted by id through the API. That never happens while the forge
+shows it running a job. `repair` keeps a record the forge still has and makes
+only what is missing (T-1303).
 ---
 
 ## 13. Control protocol and agents
@@ -1573,6 +1592,11 @@ NFR-7. Append-only, one row per accepted operation: actor, time, verb,
 outcome. Rejected calls are recorded too, with the reason, because a refused
 destroy is exactly what an operator needs to see later.
 
+**As built (T-1802):** an operation's outcome is a `closed` row of its own
+and never an update to the row that accepted it, so the table can be
+append-only in the database itself. Refusals by role (18.2) are recorded
+too.
+
 ### 18.5 Telemetry and logs
 
 FR-12. Telemetry is pulled by the agent from the execution unit and pushed on
@@ -1585,6 +1609,16 @@ Health checks, per instance: the agent reports `ready` only when the runner
 process is up **and** the forge shows the runner online. Either alone is not
 enough; **MEASURED** on 2026-09-17, the macOS runner's process was healthy for
 hours while the forge showed it offline, because the forge was unreachable.
+
+**As built (T-1803):** each heartbeat carries CPU and memory for each running
+unit. Every thirtieth beat also carries storage and cache for every unit.
+`ready` is computed from two observations:
+- the unit's state, reported within a heartbeat's reach (30 s);
+- what the forge last said, within 120 s.
+
+A process that is up while the forge cannot be asked reads `unknown`. One the
+forge reports offline reads `offline`. A figure older than a heartbeat's
+reach is shown as unknown, not as current.
 
 ---
 

@@ -98,3 +98,13 @@ same isolated engine and through the same lifecycle code. See
 `docs/superpowers/specs/2026-08-25-forgejo-runners-design.md` for the design
 and `docs/forgejo-runner-migration.md` for how the Forgejo runner moves off
 BeastStack's shared Docker socket and onto this distro.
+## The uniform runner platform
+
+The fleet is being moved onto one controller, one RunnerSpec, one lifecycle
+and one control protocol for GitHub and Forgejo on Linux, Windows and macOS,
+on Hyper-V rather than WSL. What is built, what is deployed, how to deploy
+what can be, and what to do when something goes wrong:
+`docs/operations/runner-platform.md`. The design is
+`docs/superpowers/specs/2026-09-17-uniform-hyperv-runner-platform-design.md`;
+the plan, with the gate every step waits on, is
+`docs/superpowers/plans/2026-09-17-uniform-hyperv-runner-platform-implementation.md`.
