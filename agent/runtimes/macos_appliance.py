@@ -65,10 +65,13 @@ LAYOUT_ENV_KEYS = {"work": "RUNNER_WORK_DIR", "cache": "RUNNER_CACHE_DIR",
 TEMPLATE_MARKER = ".template"
 LABEL_PREFIX = "com.nomercy."
 
-#: Only what provably belongs to one runner. Xcode's DerivedData lives in the
-#: user's Library, shared by every instance in the guest, so it cannot be
-#: attributed and is not offered (design 15.2).
-SUPPORTED_SCOPES = frozenset({"workspace", "toolcache", "temp"})
+#: Which of the runner's own directories each clearable scope is (T-1601);
+#: the scopes offered are generated from this table. Only what provably
+#: belongs to one runner: Xcode's DerivedData lives in the user's Library,
+#: shared by every instance in the guest, so it cannot be attributed and is
+#: not offered (design 15.2).
+SCOPE_AREAS = {"workspace": "work", "toolcache": "cache", "temp": "tmp"}
+SUPPORTED_SCOPES = frozenset(SCOPE_AREAS)
 DEFAULT_SCOPES = ("toolcache", "temp")
 
 STOP_TIMEOUT = 60
@@ -131,6 +134,11 @@ class MacApplianceRuntime:
         out["plist"] = posixpath.join(self._tools["launch_agents"],
                                       f"{self.label(rid)}.plist")
         return out
+
+    def scope_locations(self, runner_id):
+        """Each scope's directory: always inside this runner's own tree."""
+        p = self.paths(runner_id)
+        return {scope: p[area] for scope, area in SCOPE_AREAS.items()}
 
     @staticmethod
     def label(runner_id):
@@ -389,9 +397,7 @@ class MacApplianceRuntime:
     # ---- cache ---------------------------------------------------------------
 
     def clear_cache(self, runner_id, policy):
-        p = self.paths(runner_id)
-        where = {"workspace": p["work"], "toolcache": p["cache"],
-                 "temp": p["tmp"]}
+        where = self.scope_locations(runner_id)
         scopes = list((policy or {}).get("scopes") or DEFAULT_SCOPES)
         per_scope, errors, measured = {}, {}, True
         for scope in scopes:

@@ -65,13 +65,35 @@ KEPT_ON_RECREATE = ("docker", "cache", "logs")
 RUNNER_LABEL = "nomercy.runner_id"
 STOP_TIMEOUT = 60
 
-#: The cache scopes this runtime can clear, design 15.2, and how.
+#: Which of this runner's own storage each clearable scope lives in (T-1601):
+#: an area of design 15.1, or "unit" for the unit's own writable layer -
+#: which is this runner's alone, because the unit is. The scopes this runtime
+#: offers are generated from this table; a scope that is not in some place
+#: of the runner's own is not offered at all (design 15.2).
+SCOPE_AREAS = {"workspace": "work", "toolcache": "cache", "temp": "unit",
+               "engine-build-cache": "docker",
+               "engine-images-unused": "docker"}
+
+#: How each scope is cleared: a path inside the unit, or a command to the
+#: unit's own nested engine, whose data is the runner's `docker` area.
 SCOPE_PATHS = {"workspace": MOUNTS["work"], "toolcache": MOUNTS["cache"],
                "temp": "/tmp"}
 ENGINE_SCOPES = {"engine-build-cache": ["docker", "buildx", "prune", "-af"],
                  "engine-images-unused": ["docker", "image", "prune", "-af"]}
-SUPPORTED_SCOPES = frozenset(SCOPE_PATHS) | frozenset(ENGINE_SCOPES)
+SUPPORTED_SCOPES = frozenset(SCOPE_AREAS)
 DEFAULT_SCOPES = ("engine-build-cache", "engine-images-unused")
+
+
+def scope_locations(runner_id):
+    """Where each scope of this runner is: always inside its own unit, and in
+    one of its own volumes except for temp. Derived from the runner_id
+    alone."""
+    rid = naming.check(runner_id)
+    volumes = naming.names(rid, "linux")
+    return {scope: {"unit": naming.unit_name(rid), "area": area,
+                    "volume": volumes.get(area),
+                    "path": SCOPE_PATHS.get(scope, MOUNTS["docker"])}
+            for scope, area in SCOPE_AREAS.items()}
 
 
 def _docker(args, input=None, timeout=30, merge_stderr=False):

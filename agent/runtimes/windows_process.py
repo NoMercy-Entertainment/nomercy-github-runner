@@ -61,9 +61,11 @@ LAYOUT_ENV_KEYS = {"work": "RUNNER_WORK_DIR", "cache": "RUNNER_CACHE_DIR",
 TEMPLATE_FILES = ("run.cmd", "register.ps1", "deregister.ps1")
 TEMPLATE_MARKER = ".template"
 
-#: The cache scopes this runtime can clear. No engine scopes: there is no
-#: engine.
-SUPPORTED_SCOPES = frozenset({"workspace", "toolcache", "temp"})
+#: Which of the runner's own directories each clearable scope is (T-1601).
+#: The scopes this runtime offers are generated from this table. No engine
+#: scopes: there is no engine, so nothing of the runner's would hold one.
+SCOPE_AREAS = {"workspace": "work", "toolcache": "cache", "temp": "tmp"}
+SUPPORTED_SCOPES = frozenset(SCOPE_AREAS)
 DEFAULT_SCOPES = ("toolcache", "temp")
 
 STOP_TIMEOUT = 60
@@ -137,6 +139,11 @@ class WindowsProcessRuntime:
         out["root"] = root
         out["tmp"] = ntpath.join(root, "tmp")
         return out
+
+    def scope_locations(self, runner_id):
+        """Each scope's directory: always inside this runner's own tree."""
+        p = self.paths(runner_id)
+        return {scope: p[area] for scope, area in SCOPE_AREAS.items()}
 
     def _nssm(self, *args, timeout=60):
         return self._run([self._tools["nssm"], *args], timeout=timeout)
@@ -377,9 +384,7 @@ class WindowsProcessRuntime:
         scope, never skipped in silence. A failing scope does not stop the
         others. A second call finds nothing to free and still succeeds.
         """
-        p = self.paths(runner_id)
-        where = {"workspace": p["work"], "toolcache": p["cache"],
-                 "temp": p["tmp"]}
+        where = self.scope_locations(runner_id)
         scopes = list((policy or {}).get("scopes") or DEFAULT_SCOPES)
         per_scope, errors, measured = {}, {}, True
         for scope in scopes:
