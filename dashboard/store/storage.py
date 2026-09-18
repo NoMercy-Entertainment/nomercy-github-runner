@@ -124,3 +124,15 @@ def owns(runner_id, name, platform=providers.LINUX):
     if not isinstance(name, str) or not name:
         return False
     return name in set(v for v in names(runner_id, platform).values() if v)
+
+
+def unit_name(runner_id):
+    """The execution unit's own name, derived like its storage.
+
+    Derived rather than chosen at creation, for the same reason the storage
+    names are: a controller that crashed after the unit was created but before
+    it recorded the handle must be able to find the unit again from the
+    runner_id alone. A name picked at create time and lost in the crash would
+    leave a unit nothing can attribute - which is what a half instance is.
+    """
+    return f"{PREFIX}-{check(runner_id)}"

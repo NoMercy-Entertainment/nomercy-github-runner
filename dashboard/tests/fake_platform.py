@@ -6,6 +6,15 @@ Phase 3 builds the real agent; phases 8 and 9 talk to the real forges.
 """
 
 
+class Crash(BaseException):
+    """The controller process dying, not a step failing.
+
+    A BaseException so it passes through every `except Exception` in the flow
+    and the reconciler exactly as a real crash would: no compensation runs, no
+    state is written, the pass simply stops where it was.
+    """
+
+
 class FakeAgent:
     def __init__(self, ready=True):
         self.calls = []
@@ -37,8 +46,14 @@ class FakeAgent:
     def cancel_drain(self, host_id, ref):
         self.calls.append(("cancel_drain", host_id, ref.handle))
 
+    #: Raise Crash on the next `ready` - "register before confirm".
+    crash_on_ready = False
+
     def ready(self, host_id, ref):
         self.calls.append(("ready", host_id, ref.handle))
+        if self.crash_on_ready:
+            self.crash_on_ready = False
+            raise Crash("the controller died waiting for the runner")
         if self.ready_after > 0:
             self.ready_after -= 1
             return False
@@ -60,12 +75,22 @@ class FakeForges:
         self.deleted = []
         self.delete_ok = True
 
+    def live_handles(self):
+        """Units with a forge record right now: registered, and not since
+        deregistered by the agent or deleted through the API."""
+        live = []
+        for call in self.agent.calls:
+            handle = call[2] if len(call) > 2 else None
+            if call[0] == "register" and handle not in live:
+                live.append(handle)
+            elif call[0] == "deregister" and handle in live:
+                live.remove(handle)
+        gone = {rid for _, rid in self.deleted}
+        return [h for h in live if f"77{h[-4:]}" not in gone]
+
     def records(self, provider):
         out = []
-        for call in self.agent.calls:
-            if call[0] != "register":
-                continue
-            handle = call[2]
+        for handle in self.live_handles():
             rid = f"77{handle[-4:]}"
             status = "online" if self.online else "offline"
             out.append({"id": rid, "status": status, "busy": rid in self.busy,

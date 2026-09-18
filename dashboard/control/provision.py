@@ -24,6 +24,15 @@ a real registration takes. Each half compensates for its own failures before
 returning, so a failure leaves nothing behind - which is NFR-8's "no half
 instances", and T-0308 extends it to crashes.
 
+**A crash leaves nothing behind (T-0308).** Every step that creates something
+outside records its intent first, as design 12.5 lists: the worker before the
+unit is built on it, and the forge's ids the moment the agent confirms them.
+The unit's name is derived from the runner_id, so a controller that died after
+creating it can find it again. Re-running `provision` after such a crash adopts
+the unit rather than failing to create a second one with the same name, and a
+runner left mid-creation past its deadline is swept by `abandon`, which runs
+the same compensations the flow runs for an ordinary failure.
+
 **The registration token goes nowhere but the agent.** It is not logged, not
 put in an operation's trace or result, not stored on the spec, and every error
 message is scrubbed of it by value before it leaves this module. A test mints a
@@ -160,13 +169,21 @@ class ProvisioningFlow:
 
     # ---- steps 3-4 ----------------------------------------------------------
 
-    def provision(self, spec):
+    def provision(self, spec, on_placed=None):
         """Place the runner and create its unit. Returns what the reconciler
-        records: the unit's handle and the worker it is on."""
+        records: the unit's handle and the worker it is on.
+
+        `on_placed` is called with the chosen worker before the unit is built
+        on it - 12.5's "recorded before" for placement. Without it, a crash
+        after the unit was created would leave the next attempt free to place
+        the runner somewhere else, orphaning the unit on the first worker.
+        """
         state = {"host_id": spec.get("host_id"), "ref": None}
+        hooks = {"place": (lambda: on_placed(state["host_id"]))
+                 if on_placed else None}
         return self._run(spec, ("place", "create_unit"), state,
                          lambda: {"exec_unit_ref": state["ref"].handle,
-                                  "host_id": state["host_id"]})
+                                  "host_id": state["host_id"]}, hooks)
 
     def _step_place(self, spec, state):
         """Scheduler.place(): a healthy worker of the right kind, the least
@@ -187,22 +204,49 @@ class ProvisioningFlow:
                                     w["host_id"]))["host_id"]
 
     def _step_create_unit(self, spec, state):
-        runtime = self._runtime(spec)
+        """Create the unit - or adopt it, if a previous attempt already did.
+
+        The name comes from the runner_id, so a unit by that name IS this
+        runner's. After a crash between creating it and recording it, the
+        next attempt finds it here instead of failing on a name already in
+        use, and the runner converges rather than being failed for a
+        collision with itself.
+        """
         from store import storage
+        runtime = self._runtime(spec)
+        name = storage.unit_name(spec["runner_id"])
+        ref = self._ref(spec, handle=name)
+        try:
+            existing = retry.call(AGENT_FAST, runtime.status, ref)
+        except Exception:               # noqa: BLE001 - unknown is "create"
+            existing = None
+        if existing is not None and getattr(existing, "exists", False):
+            state["ref"] = ref
+            return
         unit = dict(spec)
+        unit["name"] = name
         unit["storage"] = storage.names(spec["runner_id"], spec["platform"])
         unit["host_id"] = state["host_id"]
         state["ref"] = retry.call(AGENT_SLOW, runtime.create, unit)
 
     # ---- steps 5-8 ----------------------------------------------------------
 
-    def register(self, spec):
+    def register(self, spec, on_registered=None):
         """Mint a token, register with it, and wait until the runner is up
-        and the forge agrees. Returns the forge's identifiers for it."""
+        and the forge agrees. Returns the forge's identifiers for it.
+
+        `on_registered` is called with those identifiers as soon as the agent
+        confirms them, before the wait for the runner to come online - 12.5's
+        "registration_id written with the agent's confirmation". A crash during
+        the wait then leaves a runner whose forge record can be found and
+        deleted by id, rather than one nobody can attribute.
+        """
         state = {"host_id": spec.get("host_id"), "ref": self._ref(spec),
                  "plan": None, "registration": {}}
+        hooks = {"register": (lambda: on_registered(
+            dict(state["registration"]))) if on_registered else None}
         return self._run(spec, ("mint_token", "register", "verify_online"),
-                         state, lambda: dict(state["registration"]))
+                         state, lambda: dict(state["registration"]), hooks)
 
     def _step_mint_token(self, spec, state):
         provider = self._provider(spec)
@@ -272,11 +316,18 @@ class ProvisioningFlow:
 
     # ---- running steps, and undoing them ------------------------------------
 
-    def _run(self, spec, steps, state, result):
+    def _run(self, spec, steps, state, result, hooks=None):
+        hooks = hooks or {}
         for step in steps:
             self.trail.append(step)
             try:
                 getattr(self, f"_step_{step}")(spec, state)
+                if hooks.get(step):
+                    # The record of what this step made, written before the
+                    # next step starts. If this write fails, the step is
+                    # treated as failed and undone: something made that
+                    # nothing has recorded is the thing to avoid.
+                    hooks[step]()
             except Exception as error:          # noqa: BLE001
                 token = state.get("secret")
                 compensated, errors = self._compensate(spec, step, state)
@@ -298,12 +349,18 @@ class ProvisioningFlow:
         return done, errors
 
     def _undo_remove_unit(self, spec, state):
-        """Safe if there is no unit: that is the case 12.5 designs for."""
+        """Safe if there is no unit: that is the case 12.5 designs for.
+
+        Falls back to the name derived from the runner_id, so a unit created
+        by a call that failed or was cut off before returning its handle is
+        still found and removed.
+        """
+        from store import storage
         ref = state.get("ref")
         if ref is None and spec.get("exec_unit_ref"):
             ref = self._ref(spec)
         if ref is None:
-            return
+            ref = self._ref(spec, handle=storage.unit_name(spec["runner_id"]))
         retry.call(AGENT_SLOW, self._runtime(spec).remove, ref,
                    keep_data=False)
 
@@ -338,6 +395,34 @@ class ProvisioningFlow:
     def deregister(self, spec):
         self._deregister(spec)
 
+    def abandon(self, spec):
+        """Undo a creation that was interrupted and not finished in time.
+
+        The sweep's half of 12.5: the same compensations the flow runs for an
+        ordinary failure - deregister what was registered, then remove the
+        unit - driven from what the spec recorded rather than from the state
+        of a call that no longer exists. Returns what was done, and raises if
+        any of it could not be, because a compensation that failed is where
+        something was left behind.
+        """
+        state = {"ref": None,
+                 "registration": {
+                     "registration_id": spec.get("registration_id"),
+                     "registration_uuid": spec.get("registration_uuid")}}
+        if spec.get("exec_unit_ref"):
+            state["ref"] = self._ref(spec)
+        done, errors = [], []
+        for action in COMPENSATIONS["verify_online"]:
+            try:
+                getattr(self, f"_undo_{action}")(spec, state)
+                done.append(action)
+            except Exception as e:          # noqa: BLE001
+                errors.append(f"{action}: {e}")
+        if errors:
+            raise StepFailed("abandon", "could not finish undoing", done,
+                             errors)
+        return tuple(done)
+
     def observe(self, spec):
         """What the forge says, translated into the machine's words.
 
@@ -348,10 +433,21 @@ class ProvisioningFlow:
         about the machine and must not be read as idle.
         """
         actual = spec["actual_state"]
-        if actual not in ("idle", "busy", "draining"):
+        if actual not in ("idle", "busy", "draining", "registering"):
             return None
         provider = self._provider(spec)
         seen = provider.job_state(spec, self._records(provider))
+        if actual == "registering":
+            # A registration interrupted during the wait to come online. If
+            # the forge now shows the runner and the agent says it is up, the
+            # wait is over: that is the observed `registering -> idle` edge,
+            # and the runner converges to healthy instead of being swept.
+            if not spec.get("registration_id"):
+                return None
+            if seen not in (providers.IDLE, providers.BUSY):
+                return None
+            ready = self._ready(spec.get("host_id"), self._ref(spec))
+            return "idle" if ready else None
         if actual == "draining":
             return "drained" if seen == providers.IDLE else None
         if seen == providers.BUSY:

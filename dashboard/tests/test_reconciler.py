@@ -640,12 +640,16 @@ class TestOperationsAreCarriedOut:
 STEP_FROM = {
     "provision": {"planned", "provisioning"},
     "register": {"provisioned"},
-    "start": {"stopped"},
-    "stop": {"idle", "drained"},
+    # The last entry of each of these three is a re-drive (T-0308): a step
+    # interrupted part-way is taken again from the transitional state it left
+    # the runner in, and each then leaves by that state's own edge -
+    # stopping -> stopped, starting -> idle, deregistering -> removing.
+    "start": {"stopped", "starting"},
+    "stop": {"idle", "drained", "stopping"},
+    "deregister": {"drained", "stopped", "deregistering"},
     "drain": {"idle", "busy"},
     "cancel_drain": {"drained"},
     "withdraw": {"planned"},
-    "deregister": {"drained", "stopped"},
     "remove": {"removing", "failed"},
     "repair": {"failed"},
 }

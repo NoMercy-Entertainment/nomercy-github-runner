@@ -72,13 +72,25 @@ FULFILLED = {
 #: worker.
 DESTRUCTIVE = frozenset({"stop", "deregister", "remove"})
 
+#: Every step that must not be sent to a worker the controller does not trust.
+#: The destructive ones, plus two whose FAILURE is destructive: a provision or
+#: registration that fails runs the flow's compensations, and those remove the
+#: unit. Letting them run against an unreachable worker would dispatch a
+#: removal there by the back door - which the design forbids (17.3) and which a
+#: mutation test of T-0308 turned up. Plus clear_cache, which deletes data.
+#: A runner not yet placed is exempt: placement only ever picks a healthy one.
+NEEDS_HEALTHY_WORKER = DESTRUCTIVE | {"provision", "register", "clear_cache"}
+
 
 class Executor(Protocol):
     """What the reconciler needs done in the world. See T-0305."""
 
     def observe(self, spec: Mapping[str, Any]) -> Optional[str]: ...
-    def provision(self, spec: Mapping[str, Any]) -> Mapping[str, Any]: ...
-    def register(self, spec: Mapping[str, Any]) -> Mapping[str, Any]: ...
+    def provision(self, spec: Mapping[str, Any],
+                  on_placed=None) -> Mapping[str, Any]: ...
+    def register(self, spec: Mapping[str, Any],
+                 on_registered=None) -> Mapping[str, Any]: ...
+    def abandon(self, spec: Mapping[str, Any]) -> tuple: ...
     def start(self, spec: Mapping[str, Any]) -> None: ...
     def stop(self, spec: Mapping[str, Any]) -> None: ...
     def drain(self, spec: Mapping[str, Any]) -> None: ...
@@ -153,6 +165,7 @@ class Reconciler:
             report.skipped = True
             return report
         try:
+            self._sweep(report)
             for fleet in self.service.fleets.list():
                 self._converge_capacity(fleet, report)
             for spec in self.service.specs.list():
@@ -166,6 +179,52 @@ class Reconciler:
             return report
         finally:
             self._release()
+
+    # ---- the sweep ---------------------------------------------------------
+
+    #: States a runner is in while it is being created. A runner left in one
+    #: of these past its operation's deadline was interrupted, and nothing but
+    #: the sweep will ever move it: the machine's only ways out are forwards,
+    #: which a crashed call cannot take, or into `failed`.
+    CREATING = frozenset({"provisioning", "registering"})
+
+    def _sweep(self, report):
+        """Undo creations that were interrupted and not finished in time.
+
+        Design 12.5: the reconciler sweeps for specs stuck in a transitional
+        state past their deadline and runs the same compensations. The runner
+        ends `failed` with nothing left outside - no unit, no forge record - and
+        is counted against its fleet like any failed runner, so the sweep
+        never causes an overshoot by freeing a slot while something still
+        exists.
+
+        Only creation is swept. A runner that is draining may be waiting on a
+        job for hours and is never touched here; the others re-drive
+        themselves on every pass.
+        """
+        for operation in self.service.operations.overdue():
+            runner_id = operation["runner_id"]
+            if not runner_id:
+                continue
+            spec = self.service.specs.get(runner_id)
+            if not spec or spec["current_operation"] != \
+                    operation["operation_id"]:
+                continue
+            if spec["actual_state"] not in self.CREATING:
+                continue
+            if not self._worker_accepts(spec):
+                report.held.append((runner_id, "sweep held: worker "
+                                    f"{spec['host_id']} is not healthy"))
+                continue
+            was = spec["actual_state"]
+            try:
+                undone = self.executor.abandon(spec)
+            except Exception as e:          # noqa: BLE001
+                self._fail(spec, operation, e, report,
+                           f"interrupted while {was}; sweep")
+                continue
+            self._fail(spec, operation, _Abandoned(was, undone), report)
+            report.did("swept", runner_id, was)
 
     # ---- capacity ----------------------------------------------------------
 
@@ -248,7 +307,7 @@ class Reconciler:
         if action is None:
             return
 
-        if action in DESTRUCTIVE and not self._worker_accepts(spec):
+        if action in NEEDS_HEALTHY_WORKER and not self._worker_accepts(spec):
             report.held.append((spec["runner_id"],
                                 f"{action} held: worker "
                                 f"{spec['host_id']} is not healthy"))
@@ -324,27 +383,60 @@ class Reconciler:
     # (design 12.5). Each then writes the resting state the call produced.
 
     def _do_provision(self, spec, operation, report):
+        # A runner the fleet asked for has no operation of its own yet. It
+        # gets one here, because the operation carries the deadline the sweep
+        # measures against - without it, a runner interrupted mid-creation
+        # could never be told apart from one that is merely slow.
+        if operation is None:
+            operation, _ = self.service.operations.open(
+                "provision", runner_id=spec["runner_id"],
+                requested_by="reconciler")
+            self.service.specs.update(spec["runner_id"], spec["spec_version"],
+                                      current_operation=operation[
+                                          "operation_id"])
+            spec = self.service.specs.get(spec["runner_id"])
         self._attempt(operation, "provisioning")
         if spec["actual_state"] != "provisioning":
             spec = self._move(spec, "provisioning")
         try:
-            result = self.executor.provision(spec) or {}
+            result = self.executor.provision(
+                spec, on_placed=self._recorder(spec, "host_id")) or {}
         except Exception as e:                  # noqa: BLE001
             self._fail(spec, operation, e, report, "provision")
             return
+        spec = self.service.specs.get(spec["runner_id"])
         self._move(spec, "provisioned",
                    exec_unit_ref=result.get("exec_unit_ref"),
                    host_id=result.get("host_id") or spec["host_id"])
         report.did("provision", spec["runner_id"])
 
+    def _recorder(self, spec, *fields):
+        """A hook that writes what a step made before the next step starts -
+        12.5's "recorded before". Re-reads the spec each time, because the
+        write it is making is itself a change to it."""
+        runner_id = spec["runner_id"]
+
+        def record(value):
+            current = self.service.specs.get(runner_id)
+            if isinstance(value, dict):
+                changes = {k: value.get(k) for k in fields}
+            else:
+                changes = {fields[0]: value}
+            self.service.specs.update(runner_id, current["spec_version"],
+                                      **changes)
+        return record
+
     def _do_register(self, spec, operation, report):
         self._attempt(operation, "registering")
         spec = self._move(spec, "registering")
         try:
-            result = self.executor.register(spec) or {}
+            result = self.executor.register(
+                spec, on_registered=self._recorder(
+                    spec, "registration_id", "registration_uuid")) or {}
         except Exception as e:                  # noqa: BLE001
             self._fail(spec, operation, e, report, "register")
             return
+        spec = self.service.specs.get(spec["runner_id"])
         self._move(spec, "idle",
                    registration_id=result.get("registration_id"),
                    registration_uuid=result.get("registration_uuid"))
@@ -352,7 +444,8 @@ class Reconciler:
 
     def _do_start(self, spec, operation, report):
         self._attempt(operation, "starting")
-        spec = self._move(spec, "starting")
+        if spec["actual_state"] != "starting":      # a re-drive stays put
+            spec = self._move(spec, "starting")
         try:
             self.executor.start(spec)
         except Exception as e:                  # noqa: BLE001
@@ -364,7 +457,8 @@ class Reconciler:
 
     def _do_stop(self, spec, operation, report):
         self._attempt(operation, "stopping")
-        spec = self._move(spec, "stopping")
+        if spec["actual_state"] != "stopping":      # a re-drive stays put
+            spec = self._move(spec, "stopping")
         try:
             self.executor.stop(spec)
         except Exception as e:                  # noqa: BLE001
@@ -422,7 +516,8 @@ class Reconciler:
 
     def _do_deregister(self, spec, operation, report):
         self._attempt(operation, "deregistering")
-        spec = self._move(spec, "deregistering")
+        if spec["actual_state"] != "deregistering":  # a re-drive stays put
+            spec = self._move(spec, "deregistering")
         try:
             self.executor.deregister(spec)
         except Exception as e:                  # noqa: BLE001
@@ -556,6 +651,28 @@ class Reconciler:
         return True
 
 
+class _Abandoned(Exception):
+    """Why a runner was swept: interrupted mid-creation, and what was undone.
+
+    Raised by nobody - handed to `_fail` as a reason, so a swept runner is
+    recorded exactly as a failed one is, with the compensations it had.
+    """
+
+    def __init__(self, state, undone):
+        self.compensated = tuple(undone)
+        super().__init__(
+            f"interrupted while {state} and not finished before its "
+            f"deadline; undone: {', '.join(undone) or 'nothing to undo'}")
+
+    @property
+    def removed_unit(self):
+        return "remove_unit" in self.compensated
+
+    @property
+    def deregistered(self):
+        return "deregister" in self.compensated
+
+
 def decide(spec, operation=None, progress=None):
     """The next step for one runner, or None when nothing needs doing.
 
@@ -597,6 +714,18 @@ def decide(spec, operation=None, progress=None):
 
     if verb == "repair" and actual == "failed":
         return "repair"
+
+    # -- a step that was interrupted part-way is taken again -----------------
+    # Each of these has exactly one way forward, and each step is idempotent -
+    # stopping a stopped unit, starting a started one, deleting a record that
+    # is gone. So the step is simply taken again rather than waited on for
+    # ever, which is what "observe" would have done: nothing reports these.
+    if actual == "stopping":
+        return "stop"
+    if actual == "starting":
+        return "start"
+    if actual == "deregistering":
+        return "deregister"
 
     # -- a runner half-way through being created is finished first -----------
     # The machine has no way out of `provisioning` or `provisioned` except

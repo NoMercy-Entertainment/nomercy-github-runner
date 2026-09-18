@@ -11,7 +11,8 @@ only looks is a pass that did no work.
 """
 
 MUTATING = frozenset({"provision", "register", "start", "stop", "drain",
-                      "cancel_drain", "deregister", "remove", "clear_cache"})
+                      "cancel_drain", "deregister", "remove", "clear_cache",
+                      "abandon"})
 
 
 class FakeExecutor:
@@ -37,14 +38,24 @@ class FakeExecutor:
         self.calls.append(("observe", spec["runner_id"], {}))
         return self.world.get(spec["runner_id"])
 
-    def provision(self, spec):
+    def provision(self, spec, on_placed=None):
         self._record("provision", spec)
+        if on_placed:
+            on_placed(self.host_id)
         return {"exec_unit_ref": f"unit-{spec['runner_id'][:8]}",
                 "host_id": self.host_id}
 
-    def register(self, spec):
+    def register(self, spec, on_registered=None):
         self._record("register", spec)
-        return {"registration_id": f"reg-{spec['runner_id'][:8]}"}
+        ids = {"registration_id": f"reg-{spec['runner_id'][:8]}",
+               "registration_uuid": None}
+        if on_registered:
+            on_registered(ids)
+        return ids
+
+    def abandon(self, spec):
+        self._record("abandon", spec)
+        return ("deregister", "remove_unit")
 
     def start(self, spec):
         self._record("start", spec)

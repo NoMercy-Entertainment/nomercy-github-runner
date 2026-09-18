@@ -66,20 +66,37 @@ class UnitRuntime:
         cls.units = {}
         cls.log = []
         cls.fail_on = set()
+        cls.crash_after_create = False
 
     def _maybe_fail(self, name):
         if name in UnitRuntime.fail_on:
             raise RuntimeError(f"runtime {name} failed on purpose")
 
+    #: Raised after the unit exists and before create returns: the crash
+    #: T-0308 calls "create before record".
+    crash_after_create = False
+
     def create(self, spec):
         from runtime.base import ExecUnitKind, ExecUnitRef
         from control.service import EXEC_KINDS
-        handle = f"unit-{spec['runner_id'][:8]}"
+        handle = spec.get("name") or f"unit-{spec['runner_id'][:8]}"
         UnitRuntime.log.append(("create", handle, spec.get("host_id")))
         self._maybe_fail("create")
+        if handle in UnitRuntime.units:
+            # What a real engine does with a second unit of the same name.
+            raise RuntimeError(f"a unit named {handle} already exists")
         UnitRuntime.units[handle] = {"storage": spec.get("storage")}
+        if UnitRuntime.crash_after_create:
+            UnitRuntime.crash_after_create = False
+            from tests.fake_platform import Crash
+            raise Crash("the controller died after creating the unit")
         return ExecUnitRef(kind=ExecUnitKind(EXEC_KINDS[spec["platform"]]),
                            handle=handle)
+
+    def status(self, ref):
+        from runtime.base import ExecUnitStatus
+        return ExecUnitStatus(exists=ref.handle in UnitRuntime.units,
+                              running=ref.handle in UnitRuntime.units)
 
     def remove(self, ref, keep_data=False):
         UnitRuntime.log.append(("remove", ref.handle, keep_data))

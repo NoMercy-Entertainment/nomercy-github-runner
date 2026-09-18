@@ -269,7 +269,8 @@ class TestPlacement:
         service, flow, agent, forges = platform
         spec = a_planned(service)
         flow.provision(spec)
-        handle = f"unit-{spec['runner_id'][:8]}"
+        from store import storage as store_storage
+        handle = store_storage.unit_name(spec["runner_id"])
         storage = UnitRuntime.units[handle]["storage"]
         assert storage["work"] == f"rnr-{spec['runner_id']}-work"
 
