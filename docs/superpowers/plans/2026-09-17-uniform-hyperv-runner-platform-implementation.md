@@ -114,7 +114,9 @@ Phase 4 departures:
 
 - `supports_drain` is declared **false** for the Linux runtime, because of
   OPEN-7. Scenarios 2 and 3 therefore run in their other direction: they
-  assert that drain is refused, not that it works.
+  assert that drain is refused, not that it works. **Superseded 2026-09-18:**
+  OPEN-7 is settled, all three runtimes drain, and the scenarios run in the
+  positive direction (spec 13.1).
 - `keep_data=True` keeps the nested engine data, the cache and the logs, and
   discards the workspace and the registration, because scenario 6 requires a
   fresh workspace and registration after a recreate. Recorded per area in spec
@@ -133,7 +135,7 @@ Phase 4 departures:
 Departures in phases 6 to 19:
 
 - **Windows runners run under their service's virtual account**
-  (`NT SERVICEnr-<id>`) and not under a local user created per runner:
+  (`NT SERVICE\rnr-<id>`) and not under a local user created per runner:
   there is no password to create, store or pass. The account's SID is
   derived from the service name, checked against `sc.exe showsid`. The
   service runs `agent.jobhost` through NSSM, and the job host puts the runner
@@ -182,10 +184,10 @@ Departures in phases 6 to 19:
 
 **For later phases:**
 
-- **OPEN-7, drain.** The flow asks the agent to drain a runner, and the closed
-  verb set has no verb for it; neither runner documents a way to pause itself.
-  Recorded in spec 20 with the candidates. Must be settled before the flow is
-  wired to real agents.
+- ~~**OPEN-7, drain.**~~ Settled 2026-09-18. Forgejo runners are drained on
+  their worker through `exec_unit.drain` and `.cancel_drain`, and GitHub
+  runners at GitHub, by runner group or custom labels. A runner is `drained`
+  only on proof. See spec 12.2, 13.1 and 20.
 - Wiring the flow to real agents needs an adapter from the flow's `Agent`
   protocol to `AgentClient.call_and_wait`. The registration plan must be sent
   without `RegistrationPlan.extra`, which the agent refuses as a field it does
@@ -625,7 +627,9 @@ engine and a fake forge; the runtime is not installed on any worker.
 
 ## Phase 6 — Windows worker
 
-**Done:** T-0702 (written; against a fake host, and the Job Object against this host's kernel) and T-0705's documentation (the build was not run, and OPEN-4 is still open). **Not started:** T-0701, T-0703, T-0704, which are gated.
+**Done:** T-0702 (written; against a fake host, and the Job Object against this host's kernel) and T-0705's documentation (the build was not run). **Not started:** T-0701, T-0703, T-0704, which are gated.
+
+**Decided 2026-09-18 (spec 20):** OPEN-2 buys no licence now, so the Windows worker is BEAST-UNIT itself, where the Windows runner already runs. T-0701 therefore installs the agent on the host as a service instead of building a VM. OPEN-3 is one shared worker with a virtual account, a service SID and a Job Object per runner, which is what T-0702 built. OPEN-4 keeps the self-built runner, built in a pinned `golang` container.
 
 ### T-0701 — Build the Windows worker VM
 

@@ -3,9 +3,10 @@
 Forgejo publishes no Windows runner. Release v13.1.0 has twelve assets, all
 `linux-amd64` or `linux-arm64` (design 9.2, 9.4). A Windows runner therefore
 has to be cross-compiled from source and maintained here. OPEN-4 in the
-design is the decision whether to keep doing that, and **it is still open**.
-This file records what runs today, and how a traceable build would be made
-if OPEN-4 says yes.
+design decided on 2026-09-18 to keep doing that, built traceably in a pinned
+`golang` container on the existing engine rather than with Go installed on
+the host. This file records what runs today, and how the traceable build is
+made.
 
 ## What runs today
 
