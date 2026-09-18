@@ -363,4 +363,23 @@ class OperationStore:
                 (state,
                  json.dumps(result) if result is not None else None,
                  error, json.dumps(trace), operation_id))
-        return self.get(operation_id)
+        closed = self.get(operation_id)
+        self._audit_close(closed, state, error)
+        return closed
+
+    def _audit_close(self, op, state, error):
+        """How an operation ended, as a row of its own (design 18.4): the
+        audit is append-only, so an outcome is never an update to the row
+        that accepted it. Written after the close is committed, and never
+        allowed to undo it."""
+        try:
+            from . import audit
+            audit.record(self.path, op["verb"], "closed",
+                         actor=op.get("requested_by") or "controller",
+                         runner_id=op.get("runner_id"),
+                         fleet_id=op.get("fleet_id"),
+                         operation_id=op["operation_id"],
+                         outcome=state + (f": {error}" if error else ""))
+        except Exception as e:      # noqa: BLE001
+            print(f"[audit] could not record the close of "
+                  f"{op.get('operation_id')}: {type(e).__name__}")

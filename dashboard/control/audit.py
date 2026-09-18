@@ -19,7 +19,7 @@ from datetime import datetime, timezone
 
 from store import schema
 
-from .redact import known, redact_payload
+from .redact import known, redact, redact_payload
 
 
 def _now():
@@ -27,26 +27,31 @@ def _now():
 
 
 def record(path, verb, decision, actor="controller", runner_id=None,
-           operation_id=None, parameters=None):
-    """Append one row. Returns nothing; there is nothing to act on."""
+           operation_id=None, parameters=None, fleet_id=None, outcome=None):
+    """Append one row. Returns nothing; there is nothing to act on.
+
+    `decision` is accepted, refused or closed; `outcome` is the reason for a
+    refusal and how an operation ended for a close (design 18.4)."""
     with schema.connect(path) as c:
         c.execute(
             "INSERT INTO audit (at, actor, verb, runner_id, operation_id,"
-            " decision, parameters) VALUES (?,?,?,?,?,?,?)",
+            " decision, parameters, fleet_id, outcome)"
+            " VALUES (?,?,?,?,?,?,?,?,?)",
             (_now(), actor, verb, runner_id, operation_id, decision,
              json.dumps(redact_payload(parameters, known()))
-             if parameters is not None else None))
+             if parameters is not None else None, fleet_id,
+             redact(outcome, *known()) if outcome else None))
 
 
-def entries(path, verb=None, limit=100, runner_id=None):
-    """Newest first, optionally for one verb or one runner."""
+def entries(path, verb=None, limit=100, runner_id=None, fleet_id=None,
+            decision=None):
+    """Newest first, optionally for one verb, runner, fleet or decision."""
     clauses, params = [], []
-    if verb:
-        clauses.append("verb = ?")
-        params.append(verb)
-    if runner_id:
-        clauses.append("runner_id = ?")
-        params.append(runner_id)
+    for column, value in (("verb", verb), ("runner_id", runner_id),
+                          ("fleet_id", fleet_id), ("decision", decision)):
+        if value:
+            clauses.append(f"{column} = ?")
+            params.append(value)
     where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
     with schema.connect(path) as c:
         rows = c.execute(f"SELECT * FROM audit {where} ORDER BY id DESC"

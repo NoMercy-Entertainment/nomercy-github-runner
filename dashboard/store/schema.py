@@ -156,8 +156,22 @@ CREATE TABLE IF NOT EXISTS audit (
   operation_id TEXT,
   decision     TEXT,
   -- Redacted before it gets here. Never the raw request.
-  parameters   TEXT
+  parameters   TEXT,
+  -- Design 18.4's two further columns (T-1802): the fleet a request was
+  -- about, and how it ended - or why it was refused.
+  fleet_id     TEXT,
+  outcome      TEXT
 );
+
+-- NFR-7: append-only, by the database rather than by convention. An
+-- operation's outcome is a row of its own, never an update to the row that
+-- accepted it.
+CREATE TRIGGER IF NOT EXISTS audit_is_append_only_update
+BEFORE UPDATE ON audit
+BEGIN SELECT RAISE(ABORT, 'audit is append-only'); END;
+CREATE TRIGGER IF NOT EXISTS audit_is_append_only_delete
+BEFORE DELETE ON audit
+BEGIN SELECT RAISE(ABORT, 'audit is append-only'); END;
 CREATE INDEX IF NOT EXISTS idx_audit_at ON audit(at DESC);
 """
 
@@ -187,6 +201,12 @@ def _migrate(c):
     if "state_reason" not in workers:
         # T-0406. Nullable: a worker nobody has marked has no reason.
         c.execute("ALTER TABLE workers ADD COLUMN state_reason TEXT")
+
+    audit = {r[1] for r in c.execute("PRAGMA table_info(audit)")}
+    for column in ("fleet_id", "outcome"):
+        if column not in audit:
+            # T-1802, design 18.4. Nullable: rows written before had none.
+            c.execute(f"ALTER TABLE audit ADD COLUMN {column} TEXT")
 
     have = {r[1] for r in c.execute("PRAGMA table_info(runner_specs)")}
     if "unit_state" not in have:

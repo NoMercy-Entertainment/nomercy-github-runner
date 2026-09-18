@@ -553,3 +553,26 @@ def fleet_clear_cache(fleet_id):
     results = _each_runner(service, fleet_id, "clear_cache", key, skip)
     return jsonify(ok=all(r["ok"] or r.get("skipped") for r in results),
                    results=results), 202
+
+
+# ---------------------------------------------------------------------------
+# audit (T-1802)
+# ---------------------------------------------------------------------------
+
+@bp.route("/api/v2/audit")
+def audit_log():
+    """What was asked, by whom, and what became of it - refusals included.
+    Newest first; filter by runner_id, fleet_id, verb or decision."""
+    service, err = _need_plane()
+    if err:
+        return err
+    try:
+        limit = max(1, min(1000, int(request.args.get("limit", 100))))
+    except ValueError:
+        return _refuse(400, "limit must be a number")
+    from control import audit
+    rows = audit.entries(_db_path(), verb=request.args.get("verb"),
+                         runner_id=request.args.get("runner_id"),
+                         fleet_id=request.args.get("fleet_id"),
+                         decision=request.args.get("decision"), limit=limit)
+    return jsonify(audit=rows)

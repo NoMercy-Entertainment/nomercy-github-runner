@@ -226,7 +226,36 @@ class RunnerService:
         Nothing is carried out here. The reconciler picks the operation up,
         which is what lets a thirty-second removal be watched rather than
         waited on.
+
+        Every request is audited, accepted or refused (T-1802): a refused
+        destroy is exactly what an operator needs to find later.
         """
+        spec = self.specs.get(runner_id) if isinstance(runner_id, str)             else None
+        fleet = (spec or {}).get("fleet_id")
+        try:
+            operation_id = self._act(runner_id, verb, requested_by,
+                                     idempotency_key)
+        except (Refused, UnknownRunner, ValueError) as e:
+            self._audit(verb, "refused", requested_by, runner_id=runner_id,
+                        fleet_id=fleet,
+                        outcome=str(e) or f"no runner {runner_id}")
+            raise
+        self._audit(verb, "accepted", requested_by, runner_id=runner_id,
+                    fleet_id=fleet, operation_id=operation_id)
+        return operation_id
+
+    def _audit(self, verb, decision, actor, **fields):
+        """Never lets an audit failure change the answer - but an audit that
+        cannot be written is itself worth a line in the log."""
+        from . import audit
+        try:
+            audit.record(self.operations.path, verb, decision,
+                         actor=actor or "unknown", **fields)
+        except Exception as e:      # noqa: BLE001
+            print(f"[audit] could not record {decision} {verb}: "
+                  f"{type(e).__name__}")
+
+    def _act(self, runner_id, verb, requested_by, idempotency_key):
         if verb not in states.VERBS:
             raise ValueError(f"unknown verb {verb!r}")
         if verb in states.READS:
@@ -404,15 +433,25 @@ class RunnerService:
     def set_capacity(self, fid, desired, requested_by=None,
                      idempotency_key=None):
         """Scale up and scale down are this one call with a different number
-        (design 14.3, `uniform.md` 158)."""
+        (design 14.3, `uniform.md` 158). Audited, accepted or refused."""
         try:
-            return self.fleets.set_capacity(fid, desired,
-                                            requested_by=requested_by,
-                                            idempotency_key=idempotency_key)
-        except ValueError:
+            operation_id = self.fleets.set_capacity(
+                fid, desired, requested_by=requested_by,
+                idempotency_key=idempotency_key)
+        except ValueError as e:
+            self._audit("set_capacity", "refused", requested_by,
+                        fleet_id=fid, outcome=str(e),
+                        parameters={"desired": desired})
             raise
         except Exception as e:      # FleetUnavailable, UnknownFleet
+            self._audit("set_capacity", "refused", requested_by,
+                        fleet_id=fid, outcome=str(e),
+                        parameters={"desired": desired})
             raise Refused(str(e)) from e
+        self._audit("set_capacity", "accepted", requested_by, fleet_id=fid,
+                    operation_id=operation_id,
+                    parameters={"desired": desired})
+        return operation_id
 
     def _scale(self, fid, delta, requested_by, idempotency_key=None):
         if delta == 0:
