@@ -8,9 +8,12 @@ not the raw request.
 
 
 class FakeRuntime:
-    def __init__(self, raise_with=None):
+    def __init__(self, raise_with=None, units=None):
         self.calls = []
         self.raise_with = raise_with
+        #: What `instances()` reports: [{"runner_id", "state"}, ...], or an
+        #: exception to raise, for the case where the runtime cannot tell.
+        self.units = units if units is not None else []
 
     def _record(self, *call):
         self.calls.append(call)
@@ -55,6 +58,11 @@ class FakeRuntime:
 
     def capabilities(self):
         return {"job_containers": True}
+
+    def instances(self):
+        if isinstance(self.units, Exception):
+            raise self.units
+        return list(self.units)
 
 
 class FakeRegistrar:

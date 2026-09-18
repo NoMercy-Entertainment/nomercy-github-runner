@@ -56,6 +56,14 @@ REFUSED_BY_AGENT = "refused-by-agent"
 #: the audit trail says which side said no.
 NOT_PERMITTED = "not-permitted"
 NOT_PERMITTED_BY_AGENT = "not-permitted-by-agent"
+#: Design 17.3: no destructive verb is dispatched to a worker that is not
+#: healthy. Unreachable and absent look the same from here, and acting on that
+#: evidence deletes capacity that was only out of touch. Enforced here as well
+#: as in the reconciler, so it holds for every caller rather than one.
+WORKER_NOT_HEALTHY = "worker-not-healthy"
+DESTRUCTIVE_VERBS = frozenset({"exec_unit.stop", "exec_unit.restart",
+                               "exec_unit.remove", "exec_unit.clear_cache",
+                               "runner.deregister"})
 
 
 class AgentRefused(Exception):
@@ -175,6 +183,11 @@ class AgentClient:
         if verb not in self.inventory.permitted_verbs(host_id):
             self._refuse(host_id, verb, NOT_PERMITTED,
                          "not in this worker's permitted verbs")
+        if verb in DESTRUCTIVE_VERBS:
+            health = self.inventory.health(host_id)
+            if health != "healthy":
+                self._refuse(host_id, verb, WORKER_NOT_HEALTHY,
+                             f"the worker is {health}")
         conn = self._connect(host_id, verb, worker, endpoint,
                              timeout or self.timeout)
         payload = json.dumps(body or {}).encode()

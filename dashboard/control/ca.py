@@ -71,21 +71,30 @@ def create_ca(name="runner control plane CA", days=3650):
 def issue(ca_cert_pem, ca_key_pem, subject, role, days=365):
     """A certificate for one end of the channel. Returns (cert PEM, key PEM).
 
-    `role` is "agent" (it serves) or "controller" (it connects), and sets the
-    extended key usage to match, so a certificate issued for one role is not
-    accepted in the other.
+    `role` is "agent" (it serves the control verbs), "controller" (it
+    connects to agents) or "receiver" (the controller's own endpoint, which
+    agents connect to for heartbeats and events). The extended key usage is
+    set to match, so a certificate issued for one role is not accepted in
+    another.
     """
     from cryptography import x509
     from cryptography.hazmat.primitives import hashes, serialization
     from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
 
-    if role not in ("agent", "controller"):
+    if role not in ("agent", "controller", "receiver"):
         raise ValueError(f"unknown role {role!r}")
     ca_cert = x509.load_pem_x509_certificate(ca_cert_pem)
     ca_key = serialization.load_pem_private_key(ca_key_pem, password=None)
     key = _key()
-    usage = (ExtendedKeyUsageOID.SERVER_AUTH if role == "agent"
-             else ExtendedKeyUsageOID.CLIENT_AUTH)
+    # An agent is a server to the controller's calls and a client when it
+    # sends heartbeats, so it needs both; OpenSSL checks the purpose of a
+    # client certificate and would refuse an agent's beat without clientAuth.
+    # That an agent's certificate can therefore authenticate as a client is
+    # why the agent also checks the client's subject by name.
+    usage = {"agent": [ExtendedKeyUsageOID.SERVER_AUTH,
+                       ExtendedKeyUsageOID.CLIENT_AUTH],
+             "controller": [ExtendedKeyUsageOID.CLIENT_AUTH],
+             "receiver": [ExtendedKeyUsageOID.SERVER_AUTH]}[role]
     cert = (x509.CertificateBuilder()
             .subject_name(x509.Name([x509.NameAttribute(NameOID.COMMON_NAME,
                                                         subject)]))
@@ -96,7 +105,7 @@ def issue(ca_cert_pem, ca_key_pem, subject, role, days=365):
             .not_valid_after(_now() + datetime.timedelta(days=days))
             .add_extension(x509.BasicConstraints(ca=False, path_length=None),
                            critical=True)
-            .add_extension(x509.ExtendedKeyUsage([usage]), critical=False)
+            .add_extension(x509.ExtendedKeyUsage(usage), critical=False)
             .add_extension(x509.SubjectAlternativeName(
                 [x509.DNSName(subject)]), critical=False)
             .sign(ca_key, hashes.SHA256()))

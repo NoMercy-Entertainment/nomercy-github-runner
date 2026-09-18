@@ -83,4 +83,8 @@ def enrol(db, host_id, server, pem, scheme="https", verbs=None):
         endpoint=f"{scheme}://127.0.0.1:{server.port}",
         certificate_fingerprint=ca.fingerprint(pem) if pem else None)
     inventory.permit(host_id, ac.VERB_NAMES if verbs is None else verbs)
+    # A live worker has beaten at least once. Without it the worker's health
+    # is unknown, and destructive verbs are refused before identity or policy
+    # are even tested - which is right, but not what those tests are about.
+    inventory.heartbeat(host_id)
     return inventory

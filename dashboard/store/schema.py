@@ -98,6 +98,11 @@ CREATE TABLE IF NOT EXISTS runner_specs (
   exec_unit_ref    TEXT,
   fleet_id         TEXT REFERENCES fleets(fleet_id),
   spec_version     INTEGER NOT NULL DEFAULT 1,
+  -- What the worker last said about the execution unit: running, stopped,
+  -- absent or unknown. Written by heartbeats, never by the reconciler, and
+  -- outside spec_version - an observation arriving every ten seconds must not
+  -- turn every change a person makes into a stale-version conflict.
+  unit_state       TEXT,
   -- Soft delete. History keeps a referent, so a run from a runner that no
   -- longer exists still resolves to something that says what it was.
   deleted_at       TEXT
@@ -170,10 +175,15 @@ def connect(path=None):
 def _migrate(c):
     """Columns added after a database was first created.
 
-    Empty today, and that is the point of having it: the next column goes here
-    rather than only into SCHEMA, where a deployed database would never see it.
+    Each goes here as well as into SCHEMA: CREATE TABLE IF NOT EXISTS does
+    nothing to a table that already exists, so a deployed database only ever
+    gains a column through this.
     """
-    return
+    have = {r[1] for r in c.execute("PRAGMA table_info(runner_specs)")}
+    if "unit_state" not in have:
+        # T-0404. Nullable: a runner no heartbeat has mentioned yet has no
+        # observed unit state, which is not the same as any value.
+        c.execute("ALTER TABLE runner_specs ADD COLUMN unit_state TEXT")
 
 
 def init(path=None):

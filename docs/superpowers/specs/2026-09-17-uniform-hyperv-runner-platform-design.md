@@ -889,6 +889,7 @@ Stored in the control plane's SQLite database, one row per runner instance.
 | `exec_unit_ref` | TEXT | Adapter-private handle, opaque to the controller |
 | `fleet_id` | TEXT FK | The fleet this instance satisfies |
 | `spec_version` | INTEGER | Bumped on every accepted change, for optimistic concurrency |
+| `unit_state` | TEXT | What the worker last reported about the execution unit: `running`, `stopped`, `absent` or `unknown`. Written by heartbeats and outside `spec_version`, because an observation every 10 s must not make every human change a stale-version conflict. Added in T-0404 |
 | `deleted_at` | TEXT | Soft delete, so history keeps a referent (NFR-11) |
 
 ### 11.2 Identity, and the problem it solves

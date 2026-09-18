@@ -193,7 +193,8 @@ class TestListing:
 
 
 class TestTheSchemaMatchesTheDesign:
-    """Section 11.1 lists twenty-six columns. All of them, by name and type."""
+    """Section 11.1 lists twenty-seven columns. All of them, by name and
+    type."""
 
     EXPECTED = {
         "runner_id": "TEXT", "display_name": "TEXT", "provider": "TEXT",
@@ -208,6 +209,8 @@ class TestTheSchemaMatchesTheDesign:
         "last_error": "TEXT", "capabilities": "TEXT",
         "exec_unit_ref": "TEXT", "fleet_id": "TEXT",
         "spec_version": "INTEGER", "deleted_at": "TEXT",
+        # Added in T-0404, and to the design's table with it.
+        "unit_state": "TEXT",
     }
 
     def columns(self, store, table="runner_specs"):
@@ -304,3 +307,23 @@ class TestAControlDatabaseFromBeforeTheLeaseTable:
                 "SELECT name FROM sqlite_master WHERE type='table'")}
         assert "leases" in tables
         assert store.get(runner_id) is not None
+
+
+class TestADatabaseFromBeforeUnitState:
+    """unit_state arrived in T-0404, after deployed databases may exist."""
+
+    def test_init_adds_the_column_and_keeps_the_specs(self, tmp_path):
+        path = str(tmp_path / "control.db")
+        schema.init(path)
+        store = SpecStore(path)
+        runner_id = store.create(**a_spec())
+        with schema.connect(path) as c:
+            c.execute("ALTER TABLE runner_specs DROP COLUMN unit_state")
+
+        schema.init(path)
+
+        with schema.connect(path) as c:
+            columns = {r["name"] for r in c.execute(
+                "PRAGMA table_info(runner_specs)")}
+        assert "unit_state" in columns
+        assert store.get(runner_id)["unit_state"] is None

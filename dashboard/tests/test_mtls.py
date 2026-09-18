@@ -282,12 +282,23 @@ class TestNoCodePathReachesAnAgentUnverified:
                 "HTTPSConnection(", ""), name
 
     def test_only_the_agent_client_opens_a_connection(self):
+        """The receiver accepts connections from agents; it opens none. It is
+        allowed its server-side TLS wrap and nothing that dials out."""
         for name, source in self.sources():
             if name == "agent_client.py":
                 continue
-            for marker in ("HTTPSConnection(", "urlopen(", "wrap_socket(",
-                           "create_connection("):
+            outbound = ["HTTPSConnection(", "urlopen(", "create_connection("]
+            if name != "receiver.py":
+                outbound.append("wrap_socket(")
+            for marker in outbound:
                 assert marker not in source, f"{name} uses {marker}"
+
+    def test_the_receiver_only_wraps_the_server_side(self):
+        with open(os.path.join(self.CONTROL, "receiver.py"),
+                  encoding="utf-8") as fh:
+            source = fh.read()
+        assert source.count("wrap_socket(") == 1
+        assert "server_side=True" in source
 
     def test_the_client_requires_a_verified_certificate(self, pki, db):
         client = controller(pki, db)

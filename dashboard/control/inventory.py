@@ -29,11 +29,21 @@ KINDS = (HYPERV_LINUX, HYPERV_WINDOWS)
 
 HEALTHY, DEGRADED, UNKNOWN = "healthy", "degraded", "unknown"
 
-#: Spec 17.2: a heartbeat every 5s, no retry. Three missed beats is the point
-#: at which a pause becomes an absence - long enough not to trip on one slow
-#: sample, short enough that an operator is not acting on stale information.
-HEARTBEAT_SECONDS = 5
+#: Design 13.4: a heartbeat every 10s. Three missed beats is the point at
+#: which a pause becomes an absence - long enough not to trip on one slow
+#: beat, short enough that an operator is not acting on stale information.
+#:
+#: This was 5 until T-0404, taken from the "Heartbeat" row of design 17.2 -
+#: but that row gives the heartbeat call's timeout, not how often it is sent.
+#: At 5 a worker beating on schedule would have read as degraded after 15s of
+#: a 30s window.
+HEARTBEAT_SECONDS = 10
 MISSED_BEATS_BEFORE_DEGRADED = 3
+
+#: What a worker may say about one of its execution units. Anything else it
+#: sends is recorded as unknown rather than guessed at: "unknown" is a real
+#: answer and is never folded into running or stopped (design 13.4).
+UNIT_STATES = frozenset({"running", "stopped", "absent", "unknown"})
 
 
 #: The key in `workers.capabilities` that holds which verbs the controller may
@@ -201,6 +211,56 @@ class Inventory:
             c.execute(
                 f"UPDATE workers SET {', '.join(sets)} WHERE host_id = ?",
                 params + [host_id])
+
+    def accept_heartbeat(self, host_id, payload, at=None):
+        """Take one heartbeat from a worker whose identity is already proved.
+
+        `host_id` comes from the certificate the beat arrived with, not from
+        the payload: a payload naming another worker is refused, so one worker
+        cannot beat on another's behalf. For each unit it reports, the runner's
+        `last_seen_at` and `unit_state` are written - but only for runners
+        placed on this worker. A unit it does not mention is left alone rather
+        than taken to be gone: silence about a unit is not evidence about it.
+
+        Returns what it recorded, for the caller to log.
+        """
+        if not isinstance(payload, dict):
+            raise ValueError("a heartbeat must be an object")
+        claimed = payload.get("host_id")
+        if claimed != host_id:
+            raise ValueError(
+                f"heartbeat names {claimed!r} but arrived from {host_id!r}")
+
+        moment = at or _now()
+        declared = payload.get("capabilities")
+        self.heartbeat(host_id,
+                       agent_version=payload.get("agent_version"),
+                       capabilities=declared if isinstance(declared, dict)
+                       else None, at=moment)
+
+        seen = {}
+        for unit in payload.get("instances") or []:
+            if not isinstance(unit, dict):
+                continue
+            runner_id = unit.get("runner_id")
+            state = unit.get("state")
+            if not isinstance(runner_id, str):
+                continue
+            seen[runner_id] = state if state in UNIT_STATES else "unknown"
+
+        recorded = {}
+        with self._conn() as c:
+            for runner_id, state in seen.items():
+                # Direct, and outside spec_version: an observation, not a
+                # change of intent. The host_id condition is the fence - a
+                # worker cannot report on a runner placed somewhere else.
+                cur = c.execute(
+                    "UPDATE runner_specs SET last_seen_at = ?,"
+                    " unit_state = ? WHERE runner_id = ? AND host_id = ?",
+                    (_iso(moment), state, runner_id, host_id))
+                if cur.rowcount:
+                    recorded[runner_id] = state
+        return recorded
 
     def get(self, host_id):
         with self._conn() as c:
