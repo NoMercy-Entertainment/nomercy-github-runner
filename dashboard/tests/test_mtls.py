@@ -206,6 +206,15 @@ class TestTheAgentRefusesAnythingButTheController:
                             OSError)):
             conn.request("POST", "/v1/op/hello", body=b"{}")
             conn.getresponse().read()
+        # The TLS layer answers the plain-text bytes with an alert from
+        # inside the handshake, before the server's thread gets the error
+        # back and records it - so the client can see its failure a moment
+        # before the refusal is written. Waited for, briefly, rather than
+        # raced: under a loaded suite the race was lost twice.
+        import time
+        deadline = time.monotonic() + 5
+        while not server.refusals and time.monotonic() < deadline:
+            time.sleep(0.01)
         assert server.refusals and server.refusals[-1][0] == "handshake"
 
     def test_a_client_with_no_certificate_gets_nothing(self, pki, db, agent):
