@@ -62,7 +62,8 @@ def post(server, verb, body=None, raw=None, headers=None, key=None):
     conn = http.client.HTTPConnection("127.0.0.1", server.port, timeout=5)
     data = raw if raw is not None else json.dumps(body or {}).encode()
     sent = {"Content-Type": "application/json",
-            "Idempotency-Key": key or str(uuid.uuid4())}
+            "Idempotency-Key": key or str(uuid.uuid4()),
+            "X-Protocol-Version": str(protocol.PROTOCOL_MAJOR)}
     sent.update(headers or {})
     conn.request("POST", protocol.OP_PATH + verb, body=data, headers=sent)
     response = conn.getresponse()

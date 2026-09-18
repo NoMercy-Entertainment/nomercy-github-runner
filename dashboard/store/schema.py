@@ -45,7 +45,11 @@ CREATE TABLE IF NOT EXISTS workers (
   capabilities            TEXT,
   last_seen_at            TEXT,
   state                   TEXT NOT NULL DEFAULT 'unknown',
-  certificate_fingerprint TEXT
+  certificate_fingerprint TEXT,
+  -- Why a worker was marked degraded, when it was marked rather than merely
+  -- silent - a protocol version the controller does not speak (T-0406).
+  -- Cleared by the next compatible heartbeat.
+  state_reason            TEXT
 );
 
 CREATE TABLE IF NOT EXISTS fleets (
@@ -179,6 +183,11 @@ def _migrate(c):
     nothing to a table that already exists, so a deployed database only ever
     gains a column through this.
     """
+    workers = {r[1] for r in c.execute("PRAGMA table_info(workers)")}
+    if "state_reason" not in workers:
+        # T-0406. Nullable: a worker nobody has marked has no reason.
+        c.execute("ALTER TABLE workers ADD COLUMN state_reason TEXT")
+
     have = {r[1] for r in c.execute("PRAGMA table_info(runner_specs)")}
     if "unit_state" not in have:
         # T-0404. Nullable: a runner no heartbeat has mentioned yet has no

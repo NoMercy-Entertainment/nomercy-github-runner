@@ -914,7 +914,10 @@ The rule from now on:
 
 **`workers`** - the inventory of FR-8: `host_id`, `display_name`, `kind`
 (`hyperv-linux`, `hyperv-windows`), `endpoint`, `agent_version`,
-`capabilities`, `last_seen_at`, `state`, `certificate_fingerprint`.
+`capabilities`, `last_seen_at`, `state`, `certificate_fingerprint`,
+`state_reason`. The last was added in T-0406: why a worker was marked
+degraded when silence is not the reason - a protocol major the controller does
+not speak - so the dashboard can show it. A compatible heartbeat clears it.
 
 **`fleets`** - the six of FR-15: `fleet_id`, `provider`, `platform`,
 `architecture`, `desired_capacity`, `labels`, `runner_group`, `template`,

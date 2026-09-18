@@ -1236,6 +1236,30 @@ def api_recreate():
     return jsonify(ok=all(r["ok"] for r in results), results=results)
 
 
+@app.route("/api/control/workers")
+def api_control_workers():
+    """The control plane's workers, with each one's health and why.
+
+    Read-only, and it creates nothing: until the control plane has run there
+    is no database to read, and opening one here would create an empty file in
+    the dashboard's volume that nothing asked for. So an absent database is an
+    empty list with a note, not an error and not a new file.
+
+    The reason column is the point (T-0406). A worker marked degraded because
+    it speaks a protocol major the controller does not is shown with both
+    versions, rather than as a worker that merely went quiet.
+    """
+    from store import schema as control_schema
+    if not os.path.exists(control_schema.DB_PATH):
+        return jsonify(workers=[], note="the control plane has not run yet")
+    from control.inventory import Inventory
+    try:
+        workers = Inventory(control_schema.DB_PATH).summary()
+    except Exception:   # noqa: BLE001 - a half-made database reads as empty
+        return jsonify(workers=[], note="the control database is not ready")
+    return jsonify(workers=workers)
+
+
 @app.route("/api/version")
 def api_version():
     """What this dashboard serves, so a client can tell before it calls.

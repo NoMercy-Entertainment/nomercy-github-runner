@@ -15,8 +15,14 @@ from . import protocol, tls
 
 
 class ControllerLink:
-    def __init__(self, base_url, ssl_context, timeout=5):
+    def __init__(self, base_url, ssl_context, timeout=5,
+                 protocol_major=None):
         parts = urlsplit(base_url)
+        #: Replaceable so a test can be an older or a newer agent. Compared
+        #: with None, not truthiness: major 0 is a version, and `or` would
+        #: quietly turn it into the current one.
+        self.protocol_major = (protocol.PROTOCOL_MAJOR
+                               if protocol_major is None else protocol_major)
         if parts.scheme != "https":
             raise ValueError("the controller is reached over https only")
         self.host = parts.hostname
@@ -37,7 +43,7 @@ class ControllerLink:
             conn.request("POST", path, body=json.dumps(payload),
                          headers={"Content-Type": "application/json",
                                   "X-Protocol-Version":
-                                      str(protocol.PROTOCOL_MAJOR)})
+                                      str(self.protocol_major)})
             return conn.getresponse().status == 200
         except (OSError, ssl.SSLError, http.client.HTTPException):
             return False

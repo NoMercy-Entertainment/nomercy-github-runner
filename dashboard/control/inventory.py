@@ -190,8 +190,10 @@ class Inventory:
     def heartbeat(self, host_id, agent_version=None, capabilities=None,
                   at=None):
         """Record that the worker answered. The only thing that makes it
-        healthy."""
-        sets = ["last_seen_at = ?", "state = ?"]
+        healthy - and so the thing that clears a reason it was marked
+        degraded for: a beat only reaches here once it has passed every
+        check, the protocol version included."""
+        sets = ["last_seen_at = ?", "state = ?", "state_reason = NULL"]
         params = [_iso(at or _now()), HEALTHY]
         if agent_version is not None:
             sets.append("agent_version = ?")
@@ -280,6 +282,58 @@ class Inventory:
                 params).fetchall()
         return [_decode(r) for r in rows]
 
+    def mark_degraded(self, host_id, reason):
+        """Mark a worker degraded for a reason silence would not explain.
+
+        Sticky: the worker reads as degraded however recently it last beat,
+        until a beat that passes every check clears it. Used for a protocol
+        major the controller does not speak (T-0406) - a worker that keeps
+        beating in a language nobody here understands is not healthy, and
+        should not look it.
+        """
+        with self._conn() as c:
+            cur = c.execute(
+                "UPDATE workers SET state = ?, state_reason = ?"
+                " WHERE host_id = ?", (DEGRADED, str(reason)[:500], host_id))
+            if not cur.rowcount:
+                raise UnknownWorker(host_id)
+
+    def health_reason(self, host_id, now=None):
+        """Why a worker is in the health it is in, in words.
+
+        What the dashboard shows beside the state. A marked reason wins over
+        the heartbeat arithmetic, because it says something the arithmetic
+        cannot.
+        """
+        worker = self.get(host_id)
+        if worker is None:
+            raise UnknownWorker(host_id)
+        if worker.get("state") == DEGRADED and worker.get("state_reason"):
+            return worker["state_reason"]
+        health = self._health_of(worker, now)
+        if health == UNKNOWN:
+            return "never heard from"
+        if health == DEGRADED:
+            last = _parse(worker.get("last_seen_at"))
+            gap = int(((now or _now()) - last).total_seconds())
+            return f"no heartbeat for {gap}s"
+        return ""
+
+    def summary(self, now=None):
+        """Every worker with its health and the reason for it. Read-only, and
+        nothing in it is secret."""
+        out = []
+        for worker in self.list():
+            out.append({
+                "host_id": worker["host_id"],
+                "kind": worker["kind"],
+                "agent_version": worker.get("agent_version"),
+                "last_seen_at": worker.get("last_seen_at"),
+                "health": self._health_of(worker, now),
+                "reason": self.health_reason(worker["host_id"], now),
+            })
+        return out
+
     def health(self, host_id, now=None):
         """`healthy`, `degraded` or `unknown`, computed from the last beat.
 
@@ -294,6 +348,8 @@ class Inventory:
         return self._health_of(worker, now)
 
     def _health_of(self, worker, now=None):
+        if worker.get("state") == DEGRADED and worker.get("state_reason"):
+            return DEGRADED
         last = _parse(worker.get("last_seen_at"))
         if last is None:
             return UNKNOWN

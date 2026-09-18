@@ -134,6 +134,12 @@ class Receiver(ThreadingHTTPServer):
             return
         request.settimeout(None)
         super().finish_request(request, client_address)
+        _linger_close(request)
+
+    def shutdown_request(self, request):
+        """The original socket, detached by the TLS wrap; see
+        `_linger_close`."""
+        _linger_close(request)
 
     # ---- who is calling -----------------------------------------------------
 
@@ -163,8 +169,24 @@ class Receiver(ThreadingHTTPServer):
 
     def admit(self, handler, host_id, what):
         """A further check on an identified caller; None lets it through.
-        T-0406 checks the protocol version here."""
-        return None
+
+        The protocol major (T-0406). A worker speaking one the controller
+        does not implement is marked degraded with both versions in the
+        reason, and its beat is refused - so it cannot stay healthy by
+        beating in a language nobody here reads. A beat in the right major
+        clears the mark.
+        """
+        from .agent_client import PROTOCOL_MAJOR
+        spoken = handler.headers.get("X-Protocol-Version", "")
+        if spoken.isdigit() and int(spoken) == PROTOCOL_MAJOR:
+            return None
+        reason = (f"protocol mismatch: controller speaks {PROTOCOL_MAJOR}; "
+                  f"agent sent {spoken or 'none'}")
+        try:
+            self.inventory.mark_degraded(host_id, reason)
+        except Exception:                   # noqa: BLE001
+            pass
+        return 426, "protocol-mismatch"
 
     # ---- what they send -----------------------------------------------------
 
@@ -211,3 +233,43 @@ def server_context(cert_file, key_file, ca_file):
     context.load_cert_chain(cert_file, key_file)
     context.load_verify_locations(ca_file)
     return context
+
+#: How long, and how much, a closing connection keeps reading what the peer
+#: is still sending. Enough for a refused request's body; bounded so a peer
+#: that never stops cannot hold the thread.
+LINGER_SECONDS = 0.5
+LINGER_BYTES = 1024 * 1024
+
+
+def _linger_close(sock):
+    """Close a connection without resetting it.
+
+    A request refused before its body was read leaves that body in the
+    socket's receive buffer, and closing a socket with unread data makes the
+    operating system answer with a reset rather than an orderly close. On
+    Windows the reset can arrive before the peer has read the refusal, which
+    it then never sees - it sees a dropped connection instead, and reports the
+    wrong reason. So: stop writing, read and discard what is still arriving,
+    and only then close. Nothing read here is parsed.
+    """
+    try:
+        if sock.fileno() == -1:
+            return
+        try:
+            sock.shutdown(socket.SHUT_WR)
+        except OSError:
+            pass
+        sock.settimeout(LINGER_SECONDS)
+        received = 0
+        while received < LINGER_BYTES:
+            chunk = sock.recv(65536)
+            if not chunk:
+                break
+            received += len(chunk)
+    except (OSError, ValueError):
+        pass
+    finally:
+        try:
+            sock.close()
+        except OSError:
+            pass

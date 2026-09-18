@@ -126,10 +126,16 @@ class AgentServer(ThreadingHTTPServer):
     MAX_OPERATIONS = 1000
 
     def __init__(self, agent, address=("127.0.0.1", 0), ssl_context=None,
-                 controller_subject=tls.CONTROLLER_SUBJECT, emit=None):
+                 controller_subject=tls.CONTROLLER_SUBJECT, emit=None,
+                 supported_majors=None):
         super().__init__(address, _Handler)
         self.agent = agent
         self.emit = emit
+        #: The protocol majors this agent implements. Replaceable so a test
+        #: can stand up an older or a newer agent.
+        self.supported_majors = frozenset(
+            {protocol.PROTOCOL_MAJOR} if supported_majors is None
+            else supported_majors)
         self.operations = collections.OrderedDict()
         self._ops_lock = threading.Lock()
         self.ssl_context = ssl_context
@@ -161,7 +167,16 @@ class AgentServer(ThreadingHTTPServer):
                 _close(request)
                 return
             request.settimeout(None)
+            super().finish_request(request, client_address)
+            _linger_close(request)
+            return
         super().finish_request(request, client_address)
+
+    def shutdown_request(self, request):
+        """The plain-text path's close; see `_linger_close`. Under TLS the
+        connection was closed in `finish_request`, and this socket is the
+        detached original."""
+        _linger_close(request)
 
     def admit(self, handler, verb):
         """None to let a request through, or (status, reason) to refuse it.
@@ -170,6 +185,15 @@ class AgentServer(ThreadingHTTPServer):
         the body is read - the same point an unknown verb is refused at, and
         for the same reason: a body that will not be acted on is not parsed.
         """
+        spoken = handler.headers.get("X-Protocol-Version", "")
+        if not spoken.isdigit() or int(spoken) not in self.supported_majors:
+            # 426: the caller must speak another version. The majors this
+            # agent does speak go back in the reason, so the controller can
+            # say which side is behind instead of guessing (T-0406).
+            self.refusals.append(("protocol", spoken))
+            majors = ",".join(str(m) for m in sorted(self.supported_majors))
+            return 426, (f"protocol {spoken or 'none'} is not spoken here; "
+                         f"this agent speaks {majors}")
         if verb not in self.agent.permitted:
             self.refusals.append(("not-permitted", verb))
             return 403, "not permitted on this worker"
@@ -279,3 +303,43 @@ def _answer(op):
     if "error" in op:
         out["error"] = op["error"]
     return out
+
+#: How long, and how much, a closing connection keeps reading what the peer
+#: is still sending. Enough for a refused request's body; bounded so a peer
+#: that never stops cannot hold the thread.
+LINGER_SECONDS = 0.5
+LINGER_BYTES = 1024 * 1024
+
+
+def _linger_close(sock):
+    """Close a connection without resetting it.
+
+    A request refused before its body was read leaves that body in the
+    socket's receive buffer, and closing a socket with unread data makes the
+    operating system answer with a reset rather than an orderly close. On
+    Windows the reset can arrive before the peer has read the refusal, which
+    it then never sees - it sees a dropped connection instead, and reports the
+    wrong reason. So: stop writing, read and discard what is still arriving,
+    and only then close. Nothing read here is parsed.
+    """
+    try:
+        if sock.fileno() == -1:
+            return
+        try:
+            sock.shutdown(socket.SHUT_WR)
+        except OSError:
+            pass
+        sock.settimeout(LINGER_SECONDS)
+        received = 0
+        while received < LINGER_BYTES:
+            chunk = sock.recv(65536)
+            if not chunk:
+                break
+            received += len(chunk)
+    except (OSError, ValueError):
+        pass
+    finally:
+        try:
+            sock.close()
+        except OSError:
+            pass

@@ -68,6 +68,10 @@ NOT_PERMITTED_BY_AGENT = "not-permitted-by-agent"
 #: evidence deletes capacity that was only out of touch. Enforced here as well
 #: as in the reconciler, so it holds for every caller rather than one.
 WORKER_NOT_HEALTHY = "worker-not-healthy"
+#: T-0406. The agent does not speak the controller's protocol major. The worker
+#: is marked degraded with both versions in the reason, and nothing is guessed:
+#: an older agent and a newer one are refused the same way, visibly.
+PROTOCOL_MISMATCH = "protocol-mismatch"
 DESTRUCTIVE_VERBS = frozenset({"exec_unit.stop", "exec_unit.restart",
                                "exec_unit.remove", "exec_unit.clear_cache",
                                "runner.deregister"})
@@ -220,12 +224,32 @@ class AgentClient:
         if response.status == 403:
             self._refuse(host_id, verb, NOT_PERMITTED_BY_AGENT,
                          answer.get("error", ""))
+        if response.status == 426:
+            self._mismatch(host_id, verb, answer.get("error", ""))
         if response.status >= 300:
             raise AgentError(response.status, answer.get("error", ""))
         if response.status == 202:
             # Accepted, not done: the handle and the state so far.
             return answer
-        return answer.get("result", answer)
+        result = answer.get("result", answer)
+        if verb == "hello" and isinstance(result, dict) and \
+                result.get("protocol_major") != PROTOCOL_MAJOR:
+            # An agent that let the request through but says it speaks
+            # another major is believed about the major, not about letting
+            # it through.
+            self._mismatch(host_id, verb,
+                           f"agent reports protocol "
+                           f"{result.get('protocol_major')}")
+        return result
+
+    def _mismatch(self, host_id, verb, detail):
+        reason = (f"protocol mismatch: controller speaks {PROTOCOL_MAJOR}; "
+                  f"{detail}")
+        try:
+            self.inventory.mark_degraded(host_id, reason)
+        except Exception:                   # noqa: BLE001
+            pass
+        self._refuse(host_id, verb, PROTOCOL_MISMATCH, detail)
 
     def call_and_wait(self, host_id, verb, body=None, operation_id=None,
                       idempotency_key=None, deadline=300, poll=1.0,
