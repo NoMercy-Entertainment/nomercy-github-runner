@@ -320,7 +320,7 @@ class RunnerService:
     # recorded as themselves, and what they decompose into is written once, in
     # `states.COMPOSITE`, for the provisioner to follow.
 
-    def create(self, fid, count=1, requested_by=None):
+    def create(self, fid, count=1, requested_by=None, idempotency_key=None):
         """One more runner for a fleet: which is to say, a higher capacity.
 
         Not a direct `plan`, and the first version was one. A runner planned
@@ -335,7 +335,7 @@ class RunnerService:
         """
         if count < 1:
             raise ValueError("create needs a positive count")
-        return self._scale(fid, count, requested_by)
+        return self._scale(fid, count, requested_by, idempotency_key)
 
     def provision(self, runner_id, **kw):
         return self.act(runner_id, "provision", **kw)
@@ -379,17 +379,37 @@ class RunnerService:
         """Refused unless idle or drained; see `states.GUARDED`."""
         return self.act(runner_id, "clear_cache", **kw)
 
-    def scale_up(self, fid, by=1, requested_by=None):
-        return self._scale(fid, by, requested_by)
+    def scale_up(self, fid, by=1, requested_by=None, idempotency_key=None):
+        return self._scale(fid, by, requested_by, idempotency_key)
 
-    def scale_down(self, fid, by=1, requested_by=None):
+    def scale_down(self, fid, by=1, requested_by=None, idempotency_key=None):
         """Lowers the target. The reconciler chooses which runner goes, and
         only an idle or drained one - a scale-down never aborts a job."""
-        return self._scale(fid, -by, requested_by)
+        return self._scale(fid, -by, requested_by, idempotency_key)
 
-    def _scale(self, fid, delta, requested_by):
+    def set_capacity(self, fid, desired, requested_by=None,
+                     idempotency_key=None):
+        """Scale up and scale down are this one call with a different number
+        (design 14.3, `uniform.md` 158)."""
+        try:
+            return self.fleets.set_capacity(fid, desired,
+                                            requested_by=requested_by,
+                                            idempotency_key=idempotency_key)
+        except ValueError:
+            raise
+        except Exception as e:      # FleetUnavailable, UnknownFleet
+            raise Refused(str(e)) from e
+
+    def _scale(self, fid, delta, requested_by, idempotency_key=None):
         if delta == 0:
             raise ValueError("scaling by zero is not a change")
+        # A repeat first, before the target is worked out again from a
+        # capacity the first call already changed: "one more", repeated,
+        # must not become two more - or be refused as going below zero.
+        if idempotency_key:
+            repeat = self.operations.by_key(idempotency_key)
+            if repeat:
+                return repeat["operation_id"]
         fleet = self.fleets.get(fid)
         if fleet is None:
             raise Refused(f"no fleet {fid}")
@@ -398,11 +418,7 @@ class RunnerService:
             raise Refused(
                 f"{fid} wants {fleet['desired_capacity']}; it cannot go "
                 f"{abs(delta)} lower")
-        try:
-            return self.fleets.set_capacity(fid, target,
-                                            requested_by=requested_by)
-        except Exception as e:      # FleetUnavailable, UnknownFleet
-            raise Refused(str(e)) from e
+        return self.set_capacity(fid, target, requested_by, idempotency_key)
 
     # ---- reads -------------------------------------------------------------
     #

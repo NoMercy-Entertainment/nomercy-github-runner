@@ -38,9 +38,16 @@ def record(path, verb, decision, actor="controller", runner_id=None,
              if parameters is not None else None))
 
 
-def entries(path, verb=None, limit=100):
-    """Newest first."""
-    where, params = ("WHERE verb = ?", [verb]) if verb else ("", [])
+def entries(path, verb=None, limit=100, runner_id=None):
+    """Newest first, optionally for one verb or one runner."""
+    clauses, params = [], []
+    if verb:
+        clauses.append("verb = ?")
+        params.append(verb)
+    if runner_id:
+        clauses.append("runner_id = ?")
+        params.append(runner_id)
+    where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
     with schema.connect(path) as c:
         rows = c.execute(f"SELECT * FROM audit {where} ORDER BY id DESC"
                          f" LIMIT ?", params + [limit]).fetchall()

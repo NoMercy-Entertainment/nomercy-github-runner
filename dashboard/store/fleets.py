@@ -128,7 +128,8 @@ class FleetStore:
 
     # ---- capacity ----------------------------------------------------------
 
-    def set_capacity(self, fid, count, requested_by=None):
+    def set_capacity(self, fid, count, requested_by=None,
+                     idempotency_key=None):
         """Record that a fleet should have `count` runners; return an
         operation id.
 
@@ -162,9 +163,15 @@ class FleetStore:
         # moves to the service in T-1501 and this import goes with it.
         from control.operations import OperationStore
 
-        operation, _ = OperationStore(self.path).open(
+        operation, created = OperationStore(self.path).open(
             "set_capacity", fleet_id=fid, requested_by=requested_by,
+            idempotency_key=idempotency_key,
             note=f"desired capacity {fleet['desired_capacity']} -> {count}")
+        if not created:
+            # A repeat of a request already carried out. Applying it again
+            # would undo any change made since - "add one", sent twice,
+            # must add one.
+            return operation["operation_id"]
 
         with self._conn() as c:
             c.execute("UPDATE fleets SET desired_capacity = ?"
