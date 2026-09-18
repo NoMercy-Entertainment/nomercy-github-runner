@@ -15,11 +15,14 @@ replaced: it would print to stderr, and while it only prints the request line,
 the one body this agent routinely receives carries a registration token. The
 rule is kept absolute so it does not depend on remembering which verb that is.
 """
+import collections
 import json
+import socket
+import ssl
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from . import protocol
+from . import protocol, tls
 from .verbs import VERBS, Refused, dispatch
 
 #: No legitimate body is anywhere near this. A unit spec with a full
@@ -108,11 +111,41 @@ class AgentServer(ThreadingHTTPServer):
     daemon_threads = True
     allow_reuse_address = True
 
-    def __init__(self, agent, address=("127.0.0.1", 0)):
+    def __init__(self, agent, address=("127.0.0.1", 0), ssl_context=None,
+                 controller_subject=tls.CONTROLLER_SUBJECT):
         super().__init__(address, _Handler)
         self.agent = agent
         self.gate = None
+        self.ssl_context = ssl_context
+        self.controller_subject = controller_subject
+        #: Connections refused before a request was read, with why. Kept in
+        #: memory for the heartbeat to report; never includes what was sent.
+        self.refusals = collections.deque(maxlen=200)
         self._thread = None
+
+    def finish_request(self, request, client_address):
+        """Handshake here, on the request's own thread, then serve.
+
+        A plain-text client, one without a certificate, one whose certificate
+        another authority issued, and one whose certificate names anything but
+        the controller are all dropped before a byte of HTTP is read.
+        """
+        if self.ssl_context is not None:
+            request.settimeout(tls.HANDSHAKE_TIMEOUT)
+            try:
+                request = self.ssl_context.wrap_socket(request,
+                                                       server_side=True)
+            except (ssl.SSLError, OSError) as e:
+                self.refusals.append(("handshake", type(e).__name__))
+                _close(request)
+                return
+            subject = tls.common_name(request.getpeercert())
+            if subject != self.controller_subject:
+                self.refusals.append(("subject", subject or ""))
+                _close(request)
+                return
+            request.settimeout(None)
+        super().finish_request(request, client_address)
 
     def handle_verb(self, handler, verb, body):
         return 200, {"ok": True, "result": dispatch(self.agent, verb, body)}
@@ -133,3 +166,11 @@ class AgentServer(ThreadingHTTPServer):
     def stop(self):
         self.shutdown()
         self.server_close()
+
+
+def _close(sock):
+    try:
+        sock.shutdown(socket.SHUT_RDWR)
+    except OSError:
+        pass
+    sock.close()

@@ -26,3 +26,29 @@ def test_the_probe_names_are_the_same_on_both_sides():
     """A probe the controller can ask for and the agent refuses, or the other
     way round, would fail only at run time on a real worker."""
     assert {p.value for p in Probe} == agent_protocol().PROBES
+
+
+def test_the_verb_names_are_the_same_on_both_sides():
+    """A verb the controller sends and the agent does not know is a 404 on a
+    real worker; one the agent knows and the controller cannot send is dead
+    code on the worker."""
+    from control import agent_client
+    assert agent_client.VERB_NAMES == agent_protocol().VERB_NAMES
+
+
+def test_the_protocol_major_is_the_same_on_both_sides():
+    from control import agent_client
+    assert agent_client.PROTOCOL_MAJOR == agent_protocol().PROTOCOL_MAJOR
+
+
+def test_the_request_path_is_the_same_on_both_sides():
+    from control import agent_client
+    assert agent_client.OP_PATH == agent_protocol().OP_PATH
+
+
+def test_the_controllers_certificate_subject_is_the_same_on_both_sides():
+    """The agent refuses any client whose certificate names something else.
+    If the two disagreed, every call would be refused as an impostor."""
+    from agent import tls
+    from control import ca
+    assert ca.CONTROLLER_SUBJECT == tls.CONTROLLER_SUBJECT

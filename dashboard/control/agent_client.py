@@ -1,0 +1,192 @@
+"""The one way the controller reaches an agent.
+
+Every call goes over mutual TLS, and the agent's identity is established three
+ways before a byte of the request is sent:
+
+1. its certificate chains to the control plane's own authority;
+2. its subject is the `host_id` the call is addressed to;
+3. its fingerprint is the one pinned for that worker in `workers`.
+
+Each failure has its own reason, because they mean different things. A foreign
+authority is someone else's certificate. A wrong subject is one of our own
+workers answering at another's address. A changed fingerprint is the right
+worker with a certificate nobody pinned - a re-issue the operator may not have
+made. Folding these into one "TLS error" would hide which one happened, and
+each refusal is recorded in the audit trail with the reason it was given.
+
+Plain HTTP is refused before a connection is attempted, and a worker with no
+pinned fingerprint is refused rather than trusted on first use: pinning happens
+when the worker is registered, deliberately, not whenever it first answers.
+
+The request body can carry a registration token, which is why nothing is sent
+until all three checks have passed.
+"""
+import http.client
+import json
+import ssl
+import uuid
+from urllib.parse import urlsplit
+
+from . import audit
+from .ca import CONTROLLER_SUBJECT, fingerprint
+
+#: Mirrors `agent.protocol`. A dashboard test reads that file and fails on any
+#: difference; the two deployables cannot import each other.
+PROTOCOL_MAJOR = 1
+VERB_NAMES = frozenset({
+    "hello", "capabilities",
+    "exec_unit.create", "exec_unit.start", "exec_unit.stop",
+    "exec_unit.restart", "exec_unit.remove", "exec_unit.status",
+    "exec_unit.telemetry", "exec_unit.logs", "exec_unit.probe",
+    "exec_unit.clear_cache", "runner.register", "runner.deregister",
+})
+OP_PATH = "/v1/op/"
+
+# The reasons a call is refused. Distinct on purpose; see the module docstring.
+PLAIN_HTTP = "plain-http"
+NOT_PINNED = "not-pinned"
+UNKNOWN_WORKER = "unknown-worker"
+UNKNOWN_VERB = "unknown-verb"
+WRONG_CA = "wrong-ca"
+WRONG_SUBJECT = "wrong-subject"
+FINGERPRINT_CHANGED = "fingerprint-changed"
+REFUSED_BY_AGENT = "refused-by-agent"
+
+
+class AgentRefused(Exception):
+    """The call was not made, or was not let through, and this is why."""
+
+    def __init__(self, reason, detail=""):
+        super().__init__(f"{reason}: {detail}" if detail else reason)
+        self.reason = reason
+        self.detail = detail
+
+
+class AgentUnreachable(Exception):
+    """Nothing answered. Distinct from a refusal: this proves nothing about
+    who is at the address, only that nobody was."""
+
+
+class AgentError(Exception):
+    """The right agent answered, and said no."""
+
+    def __init__(self, status, error):
+        super().__init__(f"{status}: {error}")
+        self.status = status
+        self.error = error
+
+
+def _common_name(peer_cert):
+    for rdn in (peer_cert or {}).get("subject", ()):
+        for key, value in rdn:
+            if key == "commonName":
+                return value
+    return None
+
+
+class AgentClient:
+    def __init__(self, inventory, cert_file, key_file, ca_file,
+                 audit_path=None, timeout=10):
+        self.inventory = inventory
+        self.timeout = timeout
+        self.audit_path = audit_path or inventory.path
+        context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+        context.minimum_version = ssl.TLSVersion.TLSv1_2
+        # The agent is identified by subject and pinned fingerprint below; a
+        # hostname match would prove only where DNS pointed.
+        context.check_hostname = False
+        context.verify_mode = ssl.CERT_REQUIRED
+        context.load_cert_chain(cert_file, key_file)
+        context.load_verify_locations(ca_file)
+        self._context = context
+
+    # ---- refusing ----------------------------------------------------------
+
+    def _refuse(self, host_id, verb, reason, detail=""):
+        audit.record(self.audit_path, verb=verb,
+                     decision=f"refused: {reason}",
+                     parameters={"host_id": host_id, "detail": detail})
+        raise AgentRefused(reason, detail)
+
+    # ---- connecting --------------------------------------------------------
+
+    def _worker(self, host_id, verb):
+        worker = self.inventory.get(host_id)
+        if worker is None:
+            self._refuse(host_id, verb, UNKNOWN_WORKER, "not in the inventory")
+        endpoint = urlsplit(worker.get("endpoint") or "")
+        if endpoint.scheme != "https":
+            self._refuse(host_id, verb, PLAIN_HTTP,
+                         f"endpoint scheme is {endpoint.scheme or 'missing'}")
+        if not worker.get("certificate_fingerprint"):
+            self._refuse(host_id, verb, NOT_PINNED,
+                         "no certificate fingerprint is pinned for it")
+        return worker, endpoint
+
+    def _connect(self, host_id, verb, worker, endpoint, timeout):
+        conn = http.client.HTTPSConnection(
+            endpoint.hostname, endpoint.port or 443, context=self._context,
+            timeout=timeout)
+        try:
+            conn.connect()
+        except ssl.SSLCertVerificationError as e:
+            conn.close()
+            self._refuse(host_id, verb, WRONG_CA,
+                         e.verify_message or "certificate did not verify")
+        except ssl.SSLError as e:
+            conn.close()
+            self._refuse(host_id, verb, REFUSED_BY_AGENT, type(e).__name__)
+        except OSError as e:
+            conn.close()
+            raise AgentUnreachable(f"{host_id}: {type(e).__name__}") from None
+
+        subject = _common_name(conn.sock.getpeercert())
+        if subject != host_id:
+            conn.close()
+            self._refuse(host_id, verb, WRONG_SUBJECT,
+                         f"certificate names {subject!r}")
+        seen = fingerprint(conn.sock.getpeercert(binary_form=True))
+        if seen != worker["certificate_fingerprint"]:
+            conn.close()
+            self._refuse(host_id, verb, FINGERPRINT_CHANGED,
+                         f"presented {seen[:23]}...")
+        return conn
+
+    # ---- calling -----------------------------------------------------------
+
+    def call(self, host_id, verb, body=None, idempotency_key=None,
+             operation_id=None, timeout=None):
+        """Ask one agent for one verb. Returns the verb's result.
+
+        Raises AgentRefused when identity or policy stops the call - recorded
+        in the audit trail - AgentUnreachable when nothing answers, and
+        AgentError when the right agent answered with a refusal of its own.
+        """
+        if verb not in VERB_NAMES:
+            self._refuse(host_id, verb, UNKNOWN_VERB, "not a protocol verb")
+        worker, endpoint = self._worker(host_id, verb)
+        conn = self._connect(host_id, verb, worker, endpoint,
+                             timeout or self.timeout)
+        payload = json.dumps(body or {}).encode()
+        headers = {"Content-Type": "application/json",
+                   "X-Protocol-Version": str(PROTOCOL_MAJOR),
+                   "Idempotency-Key": idempotency_key or str(uuid.uuid4())}
+        if operation_id:
+            headers["X-Operation-Id"] = operation_id
+        try:
+            conn.request("POST", OP_PATH + verb, body=payload, headers=headers)
+            response = conn.getresponse()
+            data = response.read()
+        except (ssl.SSLError, ConnectionError, http.client.HTTPException) as e:
+            # Under TLS 1.3 an agent that rejects our certificate does so
+            # after we consider the handshake done, so it surfaces here.
+            self._refuse(host_id, verb, REFUSED_BY_AGENT, type(e).__name__)
+        finally:
+            conn.close()
+        try:
+            answer = json.loads(data or b"{}")
+        except ValueError:
+            raise AgentError(response.status, "the answer was not JSON")
+        if response.status >= 300:
+            raise AgentError(response.status, answer.get("error", ""))
+        return answer.get("result", answer)
