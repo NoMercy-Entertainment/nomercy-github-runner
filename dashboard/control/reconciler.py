@@ -281,7 +281,7 @@ class Reconciler:
                                   actual_state=to, **extra)
         return self.service.specs.get(spec["runner_id"])
 
-    def _fail(self, spec, operation, error, report):
+    def _fail(self, spec, operation, error, report, step=""):
         """Record a failed step on the runner and on its operation.
 
         A step failing from a state with no edge into `failed` - stopping,
@@ -290,19 +290,28 @@ class Reconciler:
         sweeper exists to find; forcing it into `failed` would write a
         transition the design does not have.
         """
-        message = f"{_iso(_now())} {str(error)[:500]}"
+        text = f"{step}: {error}" if step else str(error)
+        message = f"{_iso(_now())} {text[:500]}"
         spec = self.service.specs.get(spec["runner_id"])
         extra = {"last_error": message}
         if operation:
             extra["current_operation"] = None
+        # What the executor's compensations undid no longer exists, so the
+        # spec must stop pointing at it. A failed runner that still named a
+        # removed unit would send the next `remove` looking for it.
+        if getattr(error, "removed_unit", False):
+            extra["exec_unit_ref"] = None
+        if getattr(error, "deregistered", False):
+            extra["registration_id"] = None
+            extra["registration_uuid"] = None
         if states.can(spec["actual_state"], "failed"):
             spec = self._move(spec, "failed", **extra)
         else:
             self.service.specs.update(spec["runner_id"], spec["spec_version"],
                                       **extra)
         if operation:
-            self.service.operations.fail(operation["operation_id"], error)
-        report.errors.append((spec["runner_id"], str(error)))
+            self.service.operations.fail(operation["operation_id"], text)
+        report.errors.append((spec["runner_id"], text))
 
     def _attempt(self, operation, note):
         if operation:
@@ -321,7 +330,7 @@ class Reconciler:
         try:
             result = self.executor.provision(spec) or {}
         except Exception as e:                  # noqa: BLE001
-            self._fail(spec, operation, f"provision: {e}", report)
+            self._fail(spec, operation, e, report, "provision")
             return
         self._move(spec, "provisioned",
                    exec_unit_ref=result.get("exec_unit_ref"),
@@ -334,7 +343,7 @@ class Reconciler:
         try:
             result = self.executor.register(spec) or {}
         except Exception as e:                  # noqa: BLE001
-            self._fail(spec, operation, f"register: {e}", report)
+            self._fail(spec, operation, e, report, "register")
             return
         self._move(spec, "idle",
                    registration_id=result.get("registration_id"),
@@ -347,7 +356,7 @@ class Reconciler:
         try:
             self.executor.start(spec)
         except Exception as e:                  # noqa: BLE001
-            self._fail(spec, operation, f"start: {e}", report)
+            self._fail(spec, operation, e, report, "start")
             return
         self._move(spec, "idle")
         self._advance(operation, "started")
@@ -359,7 +368,7 @@ class Reconciler:
         try:
             self.executor.stop(spec)
         except Exception as e:                  # noqa: BLE001
-            self._fail(spec, operation, f"stop: {e}", report)
+            self._fail(spec, operation, e, report, "stop")
             return
         self._move(spec, "stopped")
         self._advance(operation, "stopped")
@@ -374,7 +383,7 @@ class Reconciler:
         try:
             self.executor.drain(spec)
         except Exception as e:                  # noqa: BLE001
-            self._fail(spec, operation, f"drain: {e}", report)
+            self._fail(spec, operation, e, report, "drain")
             return
         if was_idle:
             self._move(spec, "drained")
@@ -385,7 +394,7 @@ class Reconciler:
         try:
             self.executor.cancel_drain(spec)
         except Exception as e:                  # noqa: BLE001
-            self._fail(spec, operation, f"cancel drain: {e}", report)
+            self._fail(spec, operation, e, report, "cancel drain")
             return
         self._move(spec, "idle")
         report.did("cancel_drain", spec["runner_id"])
@@ -417,7 +426,7 @@ class Reconciler:
         try:
             self.executor.deregister(spec)
         except Exception as e:                  # noqa: BLE001
-            self._fail(spec, operation, f"deregister: {e}", report)
+            self._fail(spec, operation, e, report, "deregister")
             return
         self._move(spec, "removing")
         report.did("deregister", spec["runner_id"])
@@ -437,7 +446,7 @@ class Reconciler:
         try:
             self.executor.remove(spec, keep_data=recreating)
         except Exception as e:                  # noqa: BLE001
-            self._fail(spec, operation, f"remove: {e}", report)
+            self._fail(spec, operation, e, report, "remove")
             return
         if recreating:
             self._move(spec, "provisioning", exec_unit_ref=None,

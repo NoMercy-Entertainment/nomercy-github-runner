@@ -47,3 +47,52 @@ class RecordingRuntime:
     def telemetry(self, ref):
         RecordingRuntime.calls.append(("telemetry", ref.handle))
         return {"cpu_percent": 3.0}
+
+
+class UnitRuntime:
+    """A runtime adapter that keeps its units in a dict instead of an engine.
+
+    Class-level state, because the provisioning flow builds a fresh instance
+    for every call from the service's table, exactly as it will in production.
+    `reset()` between tests. `fail_on` names the adapter methods that raise.
+    """
+
+    units = {}
+    log = []
+    fail_on = set()
+
+    @classmethod
+    def reset(cls):
+        cls.units = {}
+        cls.log = []
+        cls.fail_on = set()
+
+    def _maybe_fail(self, name):
+        if name in UnitRuntime.fail_on:
+            raise RuntimeError(f"runtime {name} failed on purpose")
+
+    def create(self, spec):
+        from runtime.base import ExecUnitKind, ExecUnitRef
+        from control.service import EXEC_KINDS
+        handle = f"unit-{spec['runner_id'][:8]}"
+        UnitRuntime.log.append(("create", handle, spec.get("host_id")))
+        self._maybe_fail("create")
+        UnitRuntime.units[handle] = {"storage": spec.get("storage")}
+        return ExecUnitRef(kind=ExecUnitKind(EXEC_KINDS[spec["platform"]]),
+                           handle=handle)
+
+    def remove(self, ref, keep_data=False):
+        UnitRuntime.log.append(("remove", ref.handle, keep_data))
+        self._maybe_fail("remove")
+        UnitRuntime.units.pop(ref.handle, None)     # safe if absent
+
+    def start(self, ref):
+        UnitRuntime.log.append(("start", ref.handle))
+
+    def stop(self, ref):
+        UnitRuntime.log.append(("stop", ref.handle))
+
+    def clear_cache(self, ref, policy):
+        from runtime.base import Freed
+        UnitRuntime.log.append(("clear_cache", ref.handle))
+        return Freed(total_bytes=2048, measured=True)
