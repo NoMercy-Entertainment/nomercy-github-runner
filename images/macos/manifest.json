@@ -1,0 +1,14 @@
+{
+  "forgejo-runner-darwin-amd64": [
+    {
+      "status": "running, not yet measured",
+      "where": "macos-runner VM, macOS guest, ~/macos_runner/forgejo-runner-darwin-amd64",
+      "sha256": null,
+      "reports_version": null,
+      "tag": null,
+      "commit": null,
+      "go": null,
+      "measured": "not measured: reading it needs the MACOS-ENV gate (T-0805)"
+    }
+  ]
+}
