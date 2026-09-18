@@ -70,7 +70,7 @@ FULFILLED = {
 
 #: Steps that take capacity away or cannot be undone. Held for a degraded
 #: worker.
-DESTRUCTIVE = frozenset({"stop", "deregister", "remove"})
+DESTRUCTIVE = states.ENDS_WORK
 
 #: Every step that must not be sent to a worker the controller does not trust.
 #: The destructive ones, plus two whose FAILURE is destructive: a provision or
@@ -305,6 +305,15 @@ class Reconciler:
                     if operation else {})
         action = decide(spec, operation, progress)
         if action is None:
+            return
+
+        # The last lock. `decide` never asks for one of these on a busy
+        # runner; this makes sure nothing ever can, whatever it decides.
+        if states.aborts_a_job(action, spec["actual_state"]):
+            report.held.append((spec["runner_id"],
+                                f"{action} held: the runner is "
+                                f"{spec['actual_state']}, and {action} would "
+                                f"abort its job"))
             return
 
         if action in NEEDS_HEALTHY_WORKER and not self._worker_accepts(spec):

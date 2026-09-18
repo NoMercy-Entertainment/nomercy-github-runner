@@ -89,6 +89,20 @@ TRANSITIONAL = frozenset({
 #: States where the runner is alive and answering.
 LIVE = frozenset({"idle", "busy", "draining", "drained"})
 
+#: **Never abort a running job (MIG-9), written down once.** The steps that
+#: end a runner's work - its unit stopped, its forge record deleted, its unit
+#: removed - and the states in which it may be running a job. `draining`
+#: counts: it is exactly a runner finishing one. The service refuses these
+#: verbs there with the reason, and the reconciler checks the same pair before
+#: every step it takes, so no path reaches a busy runner with one (T-1302).
+ENDS_WORK = frozenset({"stop", "deregister", "remove"})
+AT_WORK = frozenset({"busy", "draining"})
+
+
+def aborts_a_job(step, state):
+    """Whether taking `step` on a runner in `state` would abort its job."""
+    return step in ENDS_WORK and state in AT_WORK
+
 #: Edges driven by an observation rather than by a request. Nothing may ask for
 #: one of these: a route that could would be reporting something it did not
 #: witness. (The reconciler writes every edge; see the module docstring.)

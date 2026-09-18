@@ -250,6 +250,11 @@ class RunnerService:
         if repeat:
             return repeat["operation_id"]
 
+        if states.aborts_a_job(verb, current):
+            raise Refused(
+                f"{verb} would abort the job this runner is running "
+                f"({current}); drain it first - drain lets the job finish "
+                f"and takes no other" + self._why_not(verb, current))
         if not states.allows(verb, current):
             raise Refused(
                 f"{verb} is not possible while the runner is {current!r}"
