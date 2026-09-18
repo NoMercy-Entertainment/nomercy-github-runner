@@ -21,6 +21,14 @@ The scenarios, in the design's order:
 Two of them, drain and clearing the cache, depend on something a runtime may
 honestly not have. Those are gated on the capability that says so; the rest
 cannot be declared away.
+
+**No scenario is ever skipped (T-0503).** A runtime must declare each gating
+capability as true or false - leaving one out is refused, because omission is
+the quietest way to dodge a scenario. Declared true, the scenario runs and
+must pass. Declared false, the scenario checks the other direction instead:
+that the operation is actually refused, not quietly done or quietly ignored.
+So a declaration is a claim the suite verifies either way, and a runtime can
+neither over-claim nor under-claim without failing.
 """
 import pytest
 
@@ -36,9 +44,25 @@ OPTIONAL = {
 }
 
 
-def _requires(harness, capability):
-    if not harness.runtime.capabilities().get(capability):
-        pytest.skip(f"{harness.name} declares no {capability}")
+def declared(harness, capability):
+    """What the runtime says about an optional capability - which it must
+    say, as a bool."""
+    value = harness.runtime.capabilities().get(capability)
+    assert isinstance(value, bool), (
+        f"{harness.name} must declare {capability} as true or false; "
+        f"leaving it out would skip a scenario without saying so")
+    return value
+
+
+def refused(operation, what):
+    """A capability declared false must be refused when asked for - by the
+    platform saying so, not by doing nothing."""
+    try:
+        operation()
+    except NotSupported:
+        return
+    pytest.fail(f"{what} was declared unsupported but went through; a "
+                f"declaration the platform does not keep is a false one")
 
 
 def created(harness, runner_id):
@@ -72,9 +96,11 @@ def test_1_create_reaches_idle_and_the_forge_confirms_it(harness):
 # ---------------------------------------------------------------------------
 
 def test_2_drain_while_busy_finishes_the_job_and_takes_no_other(harness):
-    _requires(harness, "supports_drain")
     rid = harness.new_id()
     registered(harness, rid)
+    if not declared(harness, "supports_drain"):
+        refused(lambda: harness.drain(rid), "drain")
+        return
     harness.start_job(rid)
 
     harness.drain(rid)
@@ -83,9 +109,11 @@ def test_2_drain_while_busy_finishes_the_job_and_takes_no_other(harness):
 
 
 def test_3_cancel_drain_accepts_work_again(harness):
-    _requires(harness, "supports_drain")
     rid = harness.new_id()
     registered(harness, rid)
+    if not declared(harness, "supports_drain"):
+        refused(lambda: harness.cancel_drain(rid), "cancel drain")
+        return
     harness.drain(rid)
 
     harness.cancel_drain(rid)
@@ -124,13 +152,28 @@ def test_4_stop_start_and_restart_keep_the_unit_and_the_forge_agreeing(
 
 def test_5_clear_cache_frees_space_is_idempotent_and_touches_no_one_else(
         harness):
-    _requires(harness, "clear_cache")
     rid, other = harness.new_id(), harness.new_id()
     registered(harness, rid)
     registered(harness, other)
     harness.put_cache(rid, 5000)
     harness.put_cache(other, 7000)
     theirs = harness.snapshot(other)
+
+    if not declared(harness, "clear_cache"):
+        # Refused, and nothing cleared anywhere - not a success that did
+        # nothing, and not a clear it said it could not do.
+        mine = harness.snapshot(rid)
+        try:
+            result = harness.runtime.clear_cache(rid, {})
+        except Exception:                   # noqa: BLE001 - refusing is fine
+            result = None
+        if result is not None:
+            assert result.get("total_bytes", 0) == 0
+            assert result.get("errors"), \
+                "a clear that is not supported must say so, not succeed"
+        assert harness.snapshot(rid) == mine
+        assert harness.snapshot(other) == theirs
+        return
 
     freed = harness.runtime.clear_cache(rid, {})
 
@@ -233,3 +276,39 @@ def test_9_an_unreachable_forge_mid_register_leaves_no_orphan(harness):
         "registration_id"]
     assert [r["registration_id"] for r in harness.forge_records(rid)] == \
         [registration], "a retry registers once, not twice"
+
+
+# ---------------------------------------------------------------------------
+# the suite about itself
+# ---------------------------------------------------------------------------
+
+def test_every_gating_capability_is_declared(harness):
+    """Omission is refused: it would be a way to skip without saying so."""
+    for capability in OPTIONAL:
+        declared(harness, capability)
+
+
+def test_the_suite_skips_nothing():
+    """T-0503's definition of done, read from this file's own syntax tree:
+    no skip call, no skip or xfail marker, anywhere in it."""
+    import ast
+    import inspect
+    import sys
+    tree = ast.parse(inspect.getsource(sys.modules[__name__]))
+    found = []
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Call, ast.Attribute)):
+            text = ast.unparse(node.func if isinstance(node, ast.Call)
+                               else node)
+            if text in ("pytest.skip", "pytest.mark.skip",
+                        "pytest.mark.skipif", "pytest.mark.xfail",
+                        "pytest.xfail"):
+                found.append(f"line {node.lineno}: {text}")
+    assert found == []
+
+
+def test_the_suite_covers_all_nine_scenarios():
+    import sys
+    numbers = {int(name.split("_")[1]) for name in dir(sys.modules[__name__])
+               if name.startswith("test_") and name.split("_")[1].isdigit()}
+    assert numbers == set(range(1, 10))

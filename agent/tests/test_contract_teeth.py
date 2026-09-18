@@ -85,3 +85,59 @@ def test_and_passes_the_real_one():
             suite.test_7_remove_leaves_no_forge_record_and_no_storage,
             suite.test_8_a_create_cut_off_by_a_crash_converges_to_a_whole_instance):  # noqa: E501
         scenario(LinuxContainerHarness())
+
+
+# ---------------------------------------------------------------------------
+# T-0503: a declaration is checked in both directions
+# ---------------------------------------------------------------------------
+
+class ClaimsToDrain(LinuxContainerRuntime):
+    def capabilities(self):
+        return dict(super().capabilities(), supports_drain=True)
+
+
+class SaysNothingAboutDrain(LinuxContainerRuntime):
+    def capabilities(self):
+        caps = dict(super().capabilities())
+        del caps["supports_drain"]
+        return caps
+
+
+class DeniesClearingButClears(LinuxContainerRuntime):
+    def capabilities(self):
+        return dict(super().capabilities(), clear_cache=False)
+
+
+class DrainsInSilence(LinuxContainerHarness):
+    """Declared unable to drain, and quietly accepts being asked."""
+
+    def drain(self, runner_id):
+        return None
+
+
+def test_claiming_a_capability_it_does_not_have_fails():
+    """Declared true, and the platform cannot do it: the scenario runs, and
+    the platform's own refusal is what fails it."""
+    with pytest.raises(suite.NotSupported):
+        suite.test_2_drain_while_busy_finishes_the_job_and_takes_no_other(
+            harness_with(ClaimsToDrain))
+
+
+def test_saying_nothing_about_one_fails():
+    """Omission is the quietest way to skip a scenario."""
+    with pytest.raises(AssertionError, match="true or false"):
+        suite.test_every_gating_capability_is_declared(
+            harness_with(SaysNothingAboutDrain))
+
+
+def test_denying_one_it_has_fails():
+    with pytest.raises(AssertionError):
+        suite.test_5_clear_cache_frees_space_is_idempotent_and_touches_no_one_else(  # noqa: E501
+            harness_with(DeniesClearingButClears))
+
+
+def test_a_declared_absence_that_is_not_refused_fails():
+    """Declared false, then does nothing when asked instead of saying no."""
+    with pytest.raises(pytest.fail.Exception, match="went through"):
+        suite.test_2_drain_while_busy_finishes_the_job_and_takes_no_other(
+            DrainsInSilence())
