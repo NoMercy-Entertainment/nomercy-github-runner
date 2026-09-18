@@ -31,12 +31,10 @@ concurrency, soft delete - and none of the three apply here. A `FleetStore`
 inside a module called `specs` would be a name that lies.
 """
 import json
-import uuid
 
 import providers
 
 from . import schema
-from .specs import now
 
 #: The six cells of design section 9.5. Architecture is x64 throughout: ARM64
 #: is documented by GitHub but there is no ARM worker to place it on, so a
@@ -153,18 +151,25 @@ class FleetStore:
                 f"{fid} cannot be given capacity: "
                 f"{fleet['unavailable_reason'] or 'the cell is unavailable'}")
 
-        operation_id = str(uuid.uuid4())
+        # Late import, and the direction is wrong on purpose. Operations carry
+        # policy - deadlines, attempt counting, the rule that a closed outcome
+        # is never overwritten - so they live in `control`, and a store reaching
+        # up into the controller is not where this belongs. It is here because
+        # the alternative was a second, simpler INSERT in this module, and that
+        # second version had already drifted: it wrote no deadline, which makes
+        # an operation the sweeper can never re-drive. One definition with a
+        # noted layering wart beats two definitions that disagree. Capacity
+        # moves to the service in T-1501 and this import goes with it.
+        from control.operations import OperationStore
+
+        operation, _ = OperationStore(self.path).open(
+            "set_capacity", fleet_id=fid, requested_by=requested_by,
+            note=f"desired capacity {fleet['desired_capacity']} -> {count}")
+
         with self._conn() as c:
             c.execute("UPDATE fleets SET desired_capacity = ?"
                       " WHERE fleet_id = ?", (count, fid))
-            # The operation is the record that someone asked, separate from
-            # the fact that the number changed. Phase 2 gives these a worker.
-            c.execute(
-                "INSERT INTO operations (operation_id, idempotency_key,"
-                " fleet_id, verb, requested_by, requested_at, state)"
-                " VALUES (?, ?, ?, 'set_capacity', ?, ?, 'pending')",
-                (operation_id, None, fid, requested_by, now()))
-        return operation_id
+        return operation["operation_id"]
 
 
 class UnknownFleet(Exception):
