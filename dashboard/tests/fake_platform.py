@@ -76,19 +76,36 @@ class FakeForges:
         self.idle_overrides = set()
         self.deleted = []
         self.delete_ok = True
+        #: (registration id, how many agent calls had happened) per deletion,
+        #: so a deletion ends the record that existed then and not one a
+        #: later registration of the same unit makes - as a real forge would.
+        self._deleted_at = []
+
+    def forget(self, registration_id):
+        """The forge loses a record by itself - deleted by hand, say."""
+        self._deleted_at.append((registration_id, len(self.agent.calls)))
 
     def live_handles(self):
         """Units with a forge record right now: registered, and not since
         deregistered by the agent or deleted through the API."""
         live = []
-        for call in self.agent.calls:
+        pending = sorted(self._deleted_at, key=lambda d: d[1])
+
+        def apply(upto):
+            while pending and pending[0][1] <= upto:
+                rid, _ = pending.pop(0)
+                for h in list(live):
+                    if f"77{h[-4:]}" == rid:
+                        live.remove(h)
+        for i, call in enumerate(self.agent.calls):
+            apply(i)
             handle = call[2] if len(call) > 2 else None
             if call[0] == "register" and handle not in live:
                 live.append(handle)
             elif call[0] == "deregister" and handle in live:
                 live.remove(handle)
-        gone = {rid for _, rid in self.deleted}
-        return [h for h in live if f"77{h[-4:]}" not in gone]
+        apply(len(self.agent.calls))
+        return live
 
     def records(self, provider):
         out = []
@@ -105,5 +122,11 @@ class FakeForges:
         return out
 
     def delete(self, provider, registration_id):
-        self.deleted.append((provider.key, registration_id))
+        # Recorded only when it happened: a delete the forge refused leaves
+        # the record where it was, and the forge's view must say so.
+        self.delete_attempts = getattr(self, "delete_attempts", []) + [
+            (provider.key, registration_id)]
+        if self.delete_ok:
+            self.deleted.append((provider.key, registration_id))
+            self._deleted_at.append((registration_id, len(self.agent.calls)))
         return self.delete_ok

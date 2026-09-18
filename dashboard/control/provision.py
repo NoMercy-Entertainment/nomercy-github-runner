@@ -245,8 +245,37 @@ class ProvisioningFlow:
                  "plan": None, "registration": {}}
         hooks = {"register": (lambda: on_registered(
             dict(state["registration"]))) if on_registered else None}
-        return self._run(spec, ("mint_token", "register", "verify_online"),
-                         state, lambda: dict(state["registration"]), hooks)
+        steps = ("mint_token", "register", "verify_online")
+        still = self._still_registered(spec)
+        if still is None:
+            # Nothing was done, so nothing is compensated.
+            raise StepFailed(
+                "mint_token", "the forge could not be asked whether "
+                f"registration {spec.get('registration_id')} still exists; "
+                "not registering again blind - that would strand it")
+        if still:
+            # Only the incomplete steps (T-1303). A repair of a runner that
+            # failed after it was registered finds its record still at the
+            # forge; registering again would make a second record and strand
+            # this one. So it only waits for it to come online.
+            state["registration"] = {
+                "registration_id": str(spec.get("registration_id") or ""),
+                "registration_uuid": spec.get("registration_uuid")}
+            steps = ("verify_online",)
+        return self._run(spec, steps, state,
+                         lambda: dict(state["registration"]), hooks)
+
+    def _still_registered(self, spec):
+        """Whether the registration this spec records is still a record at
+        the forge: True, False, or None when the forge could not be asked.
+        A spec that records no registration has none to find."""
+        if not (spec.get("registration_id") or spec.get("registration_uuid")):
+            return False
+        provider = self._provider(spec)
+        records = self._records(provider)
+        if records is None:
+            return None
+        return provider.record_for(spec, records) is not None
 
     def _step_mint_token(self, spec, state):
         provider = self._provider(spec)
