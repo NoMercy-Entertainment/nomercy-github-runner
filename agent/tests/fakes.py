@@ -20,7 +20,17 @@ class FakeRuntime:
         if self.raise_with:
             raise RuntimeError(self.raise_with)
 
+    #: Seconds `create` takes, or a threading.Event it waits on - how a slow
+    #: verb is simulated.
+    delay = 0
+
     def create(self, runner_id, spec):
+        import threading
+        import time
+        if isinstance(self.delay, threading.Event):
+            self.delay.wait(10)
+        elif self.delay:
+            time.sleep(self.delay)
         self._record("create", runner_id, spec)
         return f"rnr-{runner_id}"
 

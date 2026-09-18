@@ -52,3 +52,11 @@ def test_the_controllers_certificate_subject_is_the_same_on_both_sides():
     from agent import tls
     from control import ca
     assert ca.CONTROLLER_SUBJECT == tls.CONTROLLER_SUBJECT
+
+
+def test_the_slow_verbs_are_the_same_on_both_sides():
+    """A verb one side treats as asynchronous and the other does not would be
+    waited on for an answer that is never coming, or answered 202 to a caller
+    expecting a result."""
+    from control import agent_client
+    assert agent_client.ASYNC_VERBS == agent_protocol().ASYNC_VERBS

@@ -32,6 +32,8 @@ from datetime import datetime, timedelta, timezone
 
 from store import schema
 
+from .redact import redact_mapping
+
 PENDING, RUNNING = "pending", "running"
 SUCCEEDED, FAILED, CANCELLED = "succeeded", "failed", "cancelled"
 
@@ -202,6 +204,98 @@ class OperationStore:
                 else {}
         except (ValueError, TypeError):
             return {}
+
+    def merge_progress(self, operation_id, update):
+        """Change an open operation's progress without losing anyone else's.
+
+        `update` receives the current progress and returns the new one. The
+        read and the write happen under one write lock (BEGIN IMMEDIATE), so a
+        reconciler recording a restart's phase and an agent's event arriving
+        at the same moment cannot each overwrite what the other just wrote.
+        Ignored once the operation is closed.
+        """
+        c = schema.connect(self.path)
+        try:
+            c.isolation_level = None
+            c.execute("BEGIN IMMEDIATE")
+            row = c.execute(
+                "SELECT state, result FROM operations WHERE operation_id = ?",
+                (operation_id,)).fetchone()
+            if row is None or row["state"] in CLOSED:
+                c.execute("ROLLBACK")
+                return {}
+            try:
+                current = json.loads(row["result"]) if row["result"] else {}
+            except (ValueError, TypeError):
+                current = {}
+            updated = update(dict(current))
+            c.execute("UPDATE operations SET result = ? WHERE operation_id = ?",
+                      (json.dumps(updated), operation_id))
+            c.execute("COMMIT")
+            return updated
+        except Exception:
+            try:
+                c.execute("ROLLBACK")
+            except Exception:           # noqa: BLE001
+                pass
+            raise
+        finally:
+            c.close()
+
+    def apply_event(self, host_id, event):
+        """Record progress an agent reported for work it was asked to do.
+
+        `host_id` is the worker the event arrived from, proved by its
+        certificate. The event must name an open-or-closed operation this
+        controller knows, about a runner placed on that worker - one worker
+        cannot report progress on another's work. Each event adds a line to
+        the operation's trace and records the agent call's state under its
+        handle, which is what a caller waiting on that call looks for.
+
+        The operation itself is not closed here. An operation is usually more
+        than one agent call - a provision is a create and then a register -
+        and only the controller knows when all of them are done.
+        """
+        if not isinstance(event, dict):
+            raise ValueError("an event must be an object")
+        state = event.get("state")
+        if state not in ("running", "succeeded", "failed"):
+            raise ValueError("an event must say running, succeeded or failed")
+        handle = event.get("handle")
+        if not isinstance(handle, str) or not handle:
+            raise ValueError("an event must carry its handle")
+        operation = self.get(event.get("operation_id") or "")
+        if operation is None:
+            raise ValueError("no such operation")
+        with schema.connect(self.path) as c:
+            row = c.execute(
+                "SELECT host_id FROM runner_specs WHERE runner_id = ?",
+                (operation["runner_id"] or "",)).fetchone()
+        if row is None or row["host_id"] != host_id:
+            raise ValueError("that operation's runner is not on this worker")
+
+        verb = str(event.get("verb") or "")[:64]
+        self.note(operation["operation_id"],
+                  f"{verb} {state} on {host_id} ({handle[:8]})")
+
+        record = {"verb": verb, "state": state}
+        if state == "succeeded":
+            record["result"] = redact_mapping(event.get("result") or {})
+        if state == "failed":
+            record["error"] = str(event.get("error") or "")[:500]
+
+        def store(progress):
+            calls = dict(progress.get("calls") or {})
+            calls[handle] = record
+            progress["calls"] = calls
+            return progress
+
+        self.merge_progress(operation["operation_id"], store)
+        return {"recorded": True}
+
+    def call_state(self, operation_id, handle):
+        """What the last event said about one agent call, or None."""
+        return (self.progress(operation_id).get("calls") or {}).get(handle)
 
     def set_progress(self, operation_id, progress):
         """Record how far a multi-step operation has got. Ignored once it is

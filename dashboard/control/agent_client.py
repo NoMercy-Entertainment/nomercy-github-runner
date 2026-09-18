@@ -41,6 +41,13 @@ VERB_NAMES = frozenset({
     "exec_unit.clear_cache", "runner.register", "runner.deregister",
 })
 OP_PATH = "/v1/op/"
+#: Mirrors `agent.protocol.ASYNC_VERBS`, checked by test. These are answered
+#: 202 with a handle; `call_and_wait` is how to get their outcome.
+ASYNC_VERBS = frozenset({
+    "exec_unit.create", "exec_unit.start", "exec_unit.stop",
+    "exec_unit.restart", "exec_unit.remove", "exec_unit.clear_cache",
+    "runner.register", "runner.deregister",
+})
 
 # The reasons a call is refused. Distinct on purpose; see the module docstring.
 PLAIN_HTTP = "plain-http"
@@ -215,4 +222,48 @@ class AgentClient:
                          answer.get("error", ""))
         if response.status >= 300:
             raise AgentError(response.status, answer.get("error", ""))
+        if response.status == 202:
+            # Accepted, not done: the handle and the state so far.
+            return answer
         return answer.get("result", answer)
+
+    def call_and_wait(self, host_id, verb, body=None, operation_id=None,
+                      idempotency_key=None, deadline=300, poll=1.0,
+                      operations=None, sleep=None, clock=None):
+        """Ask for a verb and return its outcome, however long it takes.
+
+        A read comes back at once. An asynchronous verb comes back 202, and
+        this then waits: for the agent's event, when `operations` is given and
+        the event arrives, or by asking again with the same Idempotency-Key -
+        which returns the state so far and never starts the work twice. So a
+        lost event delays the answer and cannot lose it.
+
+        No single request stays open longer than the fast timeout; the
+        waiting happens here, between requests, bounded by `deadline`.
+        """
+        import time
+        sleep = sleep or time.sleep
+        clock = clock or time.monotonic
+        key = idempotency_key or str(uuid.uuid4())
+        answer = self.call(host_id, verb, body, idempotency_key=key,
+                           operation_id=operation_id)
+        if not (isinstance(answer, dict) and answer.get("accepted")):
+            return answer
+        handle = answer["handle"]
+        give_up = clock() + deadline
+        while True:
+            state, outcome = answer.get("state"), answer
+            if operations is not None and operation_id:
+                heard = operations.call_state(operation_id, handle)
+                if heard and heard["state"] != "running":
+                    state, outcome = heard["state"], heard
+            if state == "succeeded":
+                return outcome.get("result") or {}
+            if state == "failed":
+                raise AgentError(500, outcome.get("error", "failed"))
+            if clock() >= give_up:
+                raise TimeoutError(
+                    f"{verb} on {host_id} not finished within {deadline}s")
+            sleep(poll)
+            answer = self.call(host_id, verb, body, idempotency_key=key,
+                               operation_id=operation_id)

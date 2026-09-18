@@ -18,14 +18,12 @@ which runners live here, and that is not for anyone else.
 
 A failed beat is not retried: the next one is ten seconds away (design 17.2).
 """
-import http.client
-import json
-import ssl
 import threading
 from datetime import datetime, timezone
 from urllib.parse import urlsplit
 
-from . import protocol, tls
+from . import protocol
+from .link import ControllerLink
 
 INTERVAL = 10
 TIMEOUT = 5
@@ -66,10 +64,9 @@ class HeartbeatSender:
         if parts.scheme != "https":
             raise ValueError("heartbeats go over https only")
         self.agent = agent
-        self.host = parts.hostname
-        self.port = parts.port or 443
-        self.path = parts.path or "/v1/heartbeat"
-        self.context = ssl_context
+        self.link = ControllerLink(f"https://{parts.netloc}", ssl_context,
+                                   timeout=timeout)
+        self.path = parts.path or protocol.HEARTBEAT_PATH
         self.server = server
         self.interval = interval
         self.timeout = timeout
@@ -80,25 +77,7 @@ class HeartbeatSender:
 
     def send_once(self):
         """Send one beat. True when the controller took it."""
-        conn = http.client.HTTPSConnection(self.host, self.port,
-                                           context=self.context,
-                                           timeout=self.timeout)
-        try:
-            conn.connect()
-            if tls.common_name(conn.sock.getpeercert()) != \
-                    tls.CONTROLLER_SUBJECT:
-                self.failed += 1
-                return False
-            conn.request("POST", self.path,
-                         body=json.dumps(build(self.agent, self.server)),
-                         headers={"Content-Type": "application/json",
-                                  "X-Protocol-Version":
-                                      str(protocol.PROTOCOL_MAJOR)})
-            ok = conn.getresponse().status == 200
-        except (OSError, ssl.SSLError, http.client.HTTPException):
-            ok = False
-        finally:
-            conn.close()
+        ok = self.link.post(self.path, build(self.agent, self.server))
         if ok:
             self.sent += 1
         else:

@@ -608,11 +608,15 @@ class Reconciler:
     def _advance(self, operation, phase):
         if not operation:
             return
-        progress = self.service.operations.progress(operation["operation_id"])
-        done = list(progress.get("done", []))
-        done.append(phase)
-        self.service.operations.set_progress(operation["operation_id"],
-                                             {"done": done})
+
+        def add(progress):
+            # Merged, not replaced: the same progress also holds the state of
+            # each agent call, written by events that can land at any moment.
+            progress["done"] = list(progress.get("done", [])) + [phase]
+            return progress
+
+        self.service.operations.merge_progress(operation["operation_id"],
+                                               add)
 
     def _clear_operation(self, spec):
         spec = self.service.specs.get(spec["runner_id"])

@@ -265,10 +265,20 @@ def _policy(value):
 # ---------------------------------------------------------------------------
 # the handlers - every one takes (agent, body) and nothing else
 # ---------------------------------------------------------------------------
+#
+# Each handler does two things in a fixed order. It validates everything it
+# will use, raising Refused if anything is wrong, and only then returns a
+# function that does the work. Nothing is done until that function is called.
+#
+# The split is what lets a slow verb be answered at once (T-0405): the server
+# validates while the caller waits - so a bad request is still a 400, never a
+# 202 that fails later - and runs the work after replying. A handler that did
+# work before returning would make "validated but not started" impossible to
+# express.
 
 def _hello(agent, body):
-    return {"host_id": agent.host_id, "agent_version": agent.version,
-            "protocol_major": protocol.PROTOCOL_MAJOR}
+    return lambda: {"host_id": agent.host_id, "agent_version": agent.version,
+                    "protocol_major": protocol.PROTOCOL_MAJOR}
 
 
 def _capabilities(agent, body):
@@ -277,49 +287,52 @@ def _capabilities(agent, body):
     The verbs reported are the worker's own policy. The controller shows them
     beside its own; it never adopts them as its policy.
     """
-    return {"verbs": sorted(agent.permitted),
-            "runtime": dict(agent.runtime.capabilities() or {})}
+    return lambda: {"verbs": sorted(agent.permitted),
+                    "runtime": dict(agent.runtime.capabilities() or {})}
 
 
 def _create(agent, body):
-    return {"handle": agent.runtime.create(_runner_id(body),
-                                           _spec(body.get("spec", {})))}
+    rid, spec = _runner_id(body), _spec(body.get("spec", {}))
+    return lambda: {"handle": agent.runtime.create(rid, spec)}
 
 
 def _start(agent, body):
-    agent.runtime.start(_runner_id(body))
-    return {}
+    rid = _runner_id(body)
+    return lambda: agent.runtime.start(rid) or {}
 
 
 def _stop(agent, body):
-    agent.runtime.stop(_runner_id(body))
-    return {}
+    rid = _runner_id(body)
+    return lambda: agent.runtime.stop(rid) or {}
 
 
 def _restart(agent, body):
-    agent.runtime.restart(_runner_id(body))
-    return {}
+    rid = _runner_id(body)
+    return lambda: agent.runtime.restart(rid) or {}
 
 
 def _remove(agent, body):
     keep = body.get("keep_data", False)
     if not isinstance(keep, bool):
         raise Refused("keep_data must be true or false")
-    agent.runtime.remove(_runner_id(body), keep)
-    return {}
+    rid = _runner_id(body)
+    return lambda: agent.runtime.remove(rid, keep) or {}
 
 
 def _status(agent, body):
-    return dict(agent.runtime.status(_runner_id(body)) or {})
+    rid = _runner_id(body)
+    return lambda: dict(agent.runtime.status(rid) or {})
 
 
 def _telemetry(agent, body):
-    return dict(agent.runtime.telemetry(_runner_id(body)) or {})
+    rid = _runner_id(body)
+    return lambda: dict(agent.runtime.telemetry(rid) or {})
 
 
 def _logs(agent, body):
     since = _int(body.get("since_seconds", 300), "since_seconds", 1, 86400)
-    return {"text": agent.runtime.logs(_runner_id(body), since) or ""}
+    rid = _runner_id(body)
+    return lambda: {"text": agent.runtime.logs(rid, since) or ""}
 
 
 def _probe(agent, body):
@@ -327,26 +340,31 @@ def _probe(agent, body):
     probe = body.get("probe")
     if probe not in protocol.PROBES:
         raise Refused("probe is not one of the named probes")
-    return dict(agent.runtime.probe(_runner_id(body), probe) or {})
+    rid = _runner_id(body)
+    return lambda: dict(agent.runtime.probe(rid, probe) or {})
 
 
 def _clear_cache(agent, body):
-    return dict(agent.runtime.clear_cache(
-        _runner_id(body), _policy(body.get("policy"))) or {})
+    rid, policy = _runner_id(body), _policy(body.get("policy"))
+    return lambda: dict(agent.runtime.clear_cache(rid, policy) or {})
 
 
 def _register(agent, body):
-    result = agent.registrar.register(_runner_id(body),
-                                      _plan(body.get("plan")))
-    # Only the forge's identifiers go back. The plan, and its token, stay here.
-    return {"registration_id": str((result or {}).get("registration_id")
-                                   or ""),
-            "registration_uuid": (result or {}).get("registration_uuid")}
+    rid, plan = _runner_id(body), _plan(body.get("plan"))
+
+    def work():
+        result = agent.registrar.register(rid, plan)
+        # Only the forge's identifiers go back. The plan, and its token, stay
+        # here.
+        return {"registration_id": str((result or {}).get("registration_id")
+                                       or ""),
+                "registration_uuid": (result or {}).get("registration_uuid")}
+    return work
 
 
 def _deregister(agent, body):
-    agent.registrar.deregister(_runner_id(body))
-    return {}
+    rid = _runner_id(body)
+    return lambda: agent.registrar.deregister(rid) or {}
 
 
 VERBS = MappingProxyType({
@@ -367,8 +385,13 @@ VERBS = MappingProxyType({
 })
 
 
-def dispatch(agent, verb, body):
-    """Run one verb. The body's shape is checked before the handler runs."""
+def prepare(agent, verb, body):
+    """Validate one request completely and return the work, not yet done.
+
+    Raises Refused for anything wrong - an unknown verb, one this worker does
+    not serve, a field the verb does not take, a value that does not check
+    out. A request that gets a function back has passed every check there is.
+    """
     handler = VERBS.get(verb)
     if handler is None:
         raise Refused(f"no verb {verb!r}", status=404)
@@ -376,3 +399,32 @@ def dispatch(agent, verb, body):
         raise Refused("not permitted on this worker", status=403)
     _closed(body, FIELDS[verb], "body")
     return handler(agent, body)
+
+
+def dispatch(agent, verb, body):
+    """Validate and run one verb, synchronously."""
+    return prepare(agent, verb, body)()
+
+
+def secrets_in(body):
+    """Values in a request that must never come back out in an error.
+
+    The registration token, and every environment value a unit is created
+    with - an environment can carry a token too, and a runtime error that
+    echoes the command it ran would echo it. Scrubbed by value, because an
+    error message has no field names to match on.
+    """
+    found = []
+    plan = body.get("plan") if isinstance(body, dict) else None
+    if isinstance(plan, dict) and isinstance(plan.get("token"), str):
+        found.append(plan["token"])
+    spec = body.get("spec") if isinstance(body, dict) else None
+    if isinstance(spec, dict) and isinstance(spec.get("env"), dict):
+        found += [v for v in spec["env"].values() if isinstance(v, str)]
+    return [v for v in found if len(v) >= 8]
+
+
+def scrub(text, secrets):
+    for secret in secrets:
+        text = text.replace(secret, "[redacted]")
+    return text

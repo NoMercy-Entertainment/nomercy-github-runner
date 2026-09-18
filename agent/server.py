@@ -20,10 +20,12 @@ import json
 import socket
 import ssl
 import threading
+import uuid
+from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from . import protocol, tls
-from .verbs import VERBS, Refused, dispatch
+from .verbs import VERBS, Refused, prepare, scrub, secrets_in
 
 #: No legitimate body is anywhere near this. A unit spec with a full
 #: environment is a few kilobytes.
@@ -102,18 +104,34 @@ class AgentServer(ThreadingHTTPServer):
     """The agent's server. `start()` serves on a background thread.
 
     `admit` decides whether a request may go on, from its verb and headers,
-    before the body is read. `handle_verb` is what runs an admitted request;
-    the default runs it synchronously, and T-0405 replaces that with an
-    asynchronous one.
+    before the body is read. `handle_verb` runs an admitted request: a read
+    is answered directly, and a verb in `protocol.ASYNC_VERBS` is validated
+    while the caller waits, answered 202 with a handle, and carried out on a
+    thread of its own (T-0405). No request stays open for the work itself.
+
+    `emit` is where progress goes - an `EventSender` in production. Events are
+    a courtesy, not the record: the operation's state is kept here, and a
+    repeat of the request with the same Idempotency-Key returns it, so a lost
+    event costs the controller time and never the outcome.
     """
 
     daemon_threads = True
     allow_reuse_address = True
 
+    #: Operations remembered by Idempotency-Key. Bounded: the oldest finished
+    #: ones are forgotten first. Held in memory, so an agent restart forgets
+    #: them - and a repeat after that runs the verb again, which is safe
+    #: because every asynchronous verb is idempotent on its runner_id
+    #: (design 13.1).
+    MAX_OPERATIONS = 1000
+
     def __init__(self, agent, address=("127.0.0.1", 0), ssl_context=None,
-                 controller_subject=tls.CONTROLLER_SUBJECT):
+                 controller_subject=tls.CONTROLLER_SUBJECT, emit=None):
         super().__init__(address, _Handler)
         self.agent = agent
+        self.emit = emit
+        self.operations = collections.OrderedDict()
+        self._ops_lock = threading.Lock()
         self.ssl_context = ssl_context
         self.controller_subject = controller_subject
         #: Connections refused before a request was read, with why. Kept in
@@ -158,7 +176,73 @@ class AgentServer(ThreadingHTTPServer):
         return None
 
     def handle_verb(self, handler, verb, body):
-        return 200, {"ok": True, "result": dispatch(self.agent, verb, body)}
+        # Every check runs now, while the caller waits: a bad request is a
+        # 400, never a 202 that fails later.
+        work = prepare(self.agent, verb, body)
+        if verb not in protocol.ASYNC_VERBS:
+            return 200, {"ok": True, "result": work()}
+
+        key = handler.headers.get("Idempotency-Key") or ""
+        if not key or len(key) > 128:
+            raise Refused("an asynchronous verb needs an Idempotency-Key")
+        with self._ops_lock:
+            existing = self.operations.get(key)
+            if existing is not None:
+                if existing["verb"] != verb:
+                    raise Refused("that Idempotency-Key was used for another "
+                                  "verb", status=409)
+                # The lost-reply case: the same handle and the state so far.
+                # The work is not started again.
+                return 202, _answer(existing)
+            op = {"handle": str(uuid.uuid4()), "verb": verb, "key": key,
+                  "operation_id": handler.headers.get("X-Operation-Id"),
+                  "runner_id": body.get("runner_id"),
+                  "state": "running", "secrets": secrets_in(body)}
+            self.operations[key] = op
+            self._forget_oldest()
+        threading.Thread(target=self._carry_out, args=(op, work),
+                         name=f"op:{verb}", daemon=True).start()
+        return 202, _answer(op)
+
+    def _forget_oldest(self):
+        while len(self.operations) > self.MAX_OPERATIONS:
+            for key, op in self.operations.items():
+                if op["state"] != "running":
+                    del self.operations[key]
+                    break
+            else:
+                return      # every remembered operation is still running
+
+    def _carry_out(self, op, work):
+        self._event(op)
+        try:
+            op["result"] = work() or {}
+            op["state"] = "succeeded"
+        except Refused as e:
+            op["error"] = e.reason
+            op["state"] = "failed"
+        except Exception as e:              # noqa: BLE001
+            # A reason the controller can act on, scrubbed of every secret
+            # the request carried: a runtime error can echo the command it
+            # ran, environment and all.
+            op["error"] = scrub(f"{type(e).__name__}: {e}",
+                                op["secrets"])[:500]
+            op["state"] = "failed"
+        op["secrets"] = []                  # not needed once it is over
+        self._event(op)
+
+    def _event(self, op):
+        if self.emit is None:
+            return
+        event = dict(_answer(op), host_id=self.agent.host_id,
+                     verb=op["verb"], operation_id=op["operation_id"],
+                     idempotency_key=op["key"], runner_id=op["runner_id"],
+                     at=datetime.now(timezone.utc).strftime(
+                         "%Y-%m-%dT%H:%M:%SZ"))
+        try:
+            self.emit(event)
+        except Exception:                   # noqa: BLE001
+            pass
 
     @property
     def port(self):
@@ -184,3 +268,14 @@ def _close(sock):
     except OSError:
         pass
     sock.close()
+
+
+def _answer(op):
+    """What the caller is told about an operation. Never its secrets."""
+    out = {"ok": True, "accepted": True, "handle": op["handle"],
+           "state": op["state"]}
+    if "result" in op:
+        out["result"] = op["result"]
+    if "error" in op:
+        out["error"] = op["error"]
+    return out

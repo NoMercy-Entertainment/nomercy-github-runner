@@ -49,3 +49,19 @@ CACHE_SCOPES = frozenset({"engine-build-cache", "engine-images-unused",
 #: Paths. The verb is in the path, not the body, so an unknown verb is refused
 #: before a byte of the body is read (T-0401).
 OP_PATH = "/v1/op/"
+
+#: Verbs that may take longer than a request should stay open. The agent
+#: answers these with 202 and a handle at once, does the work afterwards, and
+#: reports it by `event` (design 13.3, T-0405). Every other verb is a read or a
+#: discovery and is answered directly. A 202 verb must carry an
+#: Idempotency-Key: a repeat with the same key gets the same handle and the
+#: state so far, and the work is never started twice.
+ASYNC_VERBS = frozenset({
+    "exec_unit.create", "exec_unit.start", "exec_unit.stop",
+    "exec_unit.restart", "exec_unit.remove", "exec_unit.clear_cache",
+    "runner.register", "runner.deregister",
+})
+
+#: Where an agent sends heartbeats and events, on the controller's receiver.
+HEARTBEAT_PATH = "/v1/heartbeat"
+EVENT_PATH = "/v1/event"

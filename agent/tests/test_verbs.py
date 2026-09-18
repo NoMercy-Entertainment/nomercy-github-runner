@@ -17,6 +17,8 @@ import json
 import os
 import re
 import socket
+import time
+import uuid
 from types import MappingProxyType
 
 import pytest
@@ -53,16 +55,35 @@ def server(agent):
     s.stop()
 
 
-def post(server, verb, body=None, raw=None, headers=None):
+def post(server, verb, body=None, raw=None, headers=None, key=None):
+    """One request. Every request carries a fresh Idempotency-Key unless one
+    is given, so a test about validation is refused for its validation and
+    not for a missing key."""
     conn = http.client.HTTPConnection("127.0.0.1", server.port, timeout=5)
     data = raw if raw is not None else json.dumps(body or {}).encode()
-    conn.request("POST", protocol.OP_PATH + verb, body=data,
-                 headers=dict({"Content-Type": "application/json"},
-                              **(headers or {})))
+    sent = {"Content-Type": "application/json",
+            "Idempotency-Key": key or str(uuid.uuid4())}
+    sent.update(headers or {})
+    conn.request("POST", protocol.OP_PATH + verb, body=data, headers=sent)
     response = conn.getresponse()
     payload = json.loads(response.read() or b"{}")
     conn.close()
     return response.status, payload
+
+
+def post_and_wait(server, verb, body, timeout=5.0):
+    """Send an asynchronous verb and ask again, with the same key, until it
+    is no longer running - which is how the controller recovers a lost
+    event."""
+    key = str(uuid.uuid4())
+    status, payload = post(server, verb, body, key=key)
+    deadline = time.monotonic() + timeout
+    while status == 202 and payload.get("state") == "running":
+        if time.monotonic() > deadline:
+            raise AssertionError(f"{verb} still running after {timeout}s")
+        time.sleep(0.02)
+        status, payload = post(server, verb, body, key=key)
+    return status, payload
 
 
 class TestTheTableIsClosed:
@@ -232,19 +253,19 @@ class TestEveryValueIsValidated:
 
 class TestWhatReachesTheRuntimeIsTheCheckedValue:
     def test_create_passes_the_validated_spec(self, server, runtime):
-        status, payload = post(server, "exec_unit.create", {
+        status, payload = post_and_wait(server, "exec_unit.create", {
             "runner_id": RID.upper(),
             "spec": {"image": "ghcr.io/nomercy/runner:latest",
                      "env": {"RUNNER_LABELS": "self-hosted"},
                      "cpuset": "0-15", "memory": "32g"}})
-        assert status == 200
+        assert status == 202 and payload["state"] == "succeeded"
         assert payload["result"]["handle"] == f"rnr-{RID}"
         assert runtime.calls[0][1] == RID, "the id is normalised"
         assert runtime.calls[0][2]["cpuset"] == "0-15"
 
     def test_remove_passes_keep_data(self, server, runtime):
-        post(server, "exec_unit.remove", {"runner_id": RID,
-                                          "keep_data": True})
+        post_and_wait(server, "exec_unit.remove", {"runner_id": RID,
+                                                   "keep_data": True})
         assert runtime.calls == [("remove", RID, True)]
 
     def test_hello_says_who_and_what(self, server):
@@ -257,12 +278,12 @@ class TestWhatReachesTheRuntimeIsTheCheckedValue:
     def test_register_returns_the_forges_ids_and_not_the_plan(
             self, server, registrar):
         """The token goes in and does not come back out."""
-        status, payload = post(server, "runner.register", {
+        status, payload = post_and_wait(server, "runner.register", {
             "runner_id": RID,
             "plan": {"url": "https://git.example",
                      "token": "tok-SENTINEL-12345678",
                      "labels": "docker:docker://node:20"}})
-        assert status == 200
+        assert payload["state"] == "succeeded"
         assert set(payload["result"]) == {"registration_id",
                                           "registration_uuid"}
         assert "SENTINEL" not in json.dumps(payload)
@@ -270,18 +291,40 @@ class TestWhatReachesTheRuntimeIsTheCheckedValue:
 
 
 class TestAFailureInsideTheAgentStaysInside:
-    def test_a_runtime_error_is_a_500_without_its_message(self, registrar):
+    def test_a_failed_read_is_a_500_without_its_message(self, registrar):
         """An exception message can carry anything the runtime held,
         including a token."""
         agent = Agent("linux-1", FakeRuntime(raise_with="leaked tok-ABCDEFGH"),
                       registrar)
         s = AgentServer(agent).start()
         try:
-            status, payload = post(s, "exec_unit.start", {"runner_id": RID})
+            status, payload = post(s, "exec_unit.status", {"runner_id": RID})
         finally:
             s.stop()
         assert status == 500
         assert "tok-ABCDEFGH" not in json.dumps(payload)
+
+    def test_a_failed_slow_verb_says_why_without_the_requests_secrets(
+            self, registrar):
+        """The only report an operator gets of why a create failed, so it
+        carries the reason - with every secret the request held scrubbed by
+        value, because a runtime error can echo the environment it ran
+        with."""
+        secret = "tok-SENTINEL-in-the-environment"
+        agent = Agent("linux-1",
+                      FakeRuntime(raise_with=f"docker run -e X={secret} "
+                                             f"failed: name in use"),
+                      registrar)
+        s = AgentServer(agent).start()
+        try:
+            status, payload = post_and_wait(s, "exec_unit.create", {
+                "runner_id": RID,
+                "spec": {"image": "node:20", "env": {"X": secret}}})
+        finally:
+            s.stop()
+        assert payload["state"] == "failed"
+        assert "name in use" in payload["error"]
+        assert secret not in json.dumps(payload)
 
     def test_a_body_that_is_not_json_is_a_400(self, server):
         assert post(server, "hello", raw=b"{not json")[0] == 400
