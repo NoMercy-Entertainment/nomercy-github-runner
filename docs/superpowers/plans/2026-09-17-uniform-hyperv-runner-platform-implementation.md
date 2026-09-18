@@ -16,13 +16,18 @@ defined in spec section 4 and traced in spec section 8.
 **Tech stack:** Python 3.12, Flask 3.0.3, flask-sock, sqlite3, pytest, the
 `docker` CLI, Hyper-V PowerShell cmdlets, GitHub REST, Forgejo REST v1.
 
-**Status:** Phases 0, 1 and 2 are complete — T-0001 to T-0005, T-0201 to
-T-0204 and T-0301 to T-0308 are implemented and committed. Nothing beyond that
+**Status:** Phases 0 to 3 are complete — T-0001 to T-0005, T-0201 to
+T-0204, T-0301 to T-0308 and T-0401 to T-0406 are implemented and committed. Nothing beyond that
 has been started, and no infrastructure has been touched: every task so far is
 LOCAL, the running fleet was not altered, and no VM, service or forge
 registration was created, stopped or removed. The dashboard runs from its image
 rather than from the repository mount, so none of this is live until the image
 is rebuilt.
+
+**Phase 3 is tested over real mutual TLS on localhost**, with certificates
+minted by the control plane's own authority, a real agent server and a real
+controller client; only the agent's runtime and registrar are fakes. The agent
+is not installed on any machine.
 
 **Everything in Phase 2 is tested against stand-ins.** The controller has been
 driven end to end - plan, reconcile, provision, register, crash, sweep - but
@@ -62,9 +67,34 @@ is not run automatically.
 - T-0003 was closed late, in Phase 2: `registration`, `job_state` and the
   `token` field's redaction were on its symbol list and had not been built.
 
-**For later phases:** spec 11.3 and 18.4 disagree on the audit table's
-columns - 18.4 adds `fleet_id` and an outcome. T-0201 followed 11.3; T-1803,
-which writes audit rows, should settle it.
+Phase 3 departures:
+
+- The verb is in the request path (`POST /v1/op/<verb>`), not the body as
+  13.3's example had it, so an unknown verb is refused before any parsing.
+- New files outside the plan's lists: `dashboard/control/ca.py` (the
+  authority), `control/audit.py` (the minimum both T-0402 and T-0403 need),
+  `control/receiver.py` (the door heartbeats and events come in through),
+  `agent/heartbeat.py`, `agent/link.py`.
+- New columns: `runner_specs.unit_state` (T-0404) and `workers.state_reason`
+  (T-0406), each in the design's tables and in `_migrate`.
+- The heartbeat interval corrected from 5 s to 10 s: T-0301 had taken 17.2's
+  heartbeat timeout for its interval.
+- One read-only dashboard route, `GET /api/control/workers`, to meet T-0406's
+  "visible in the dashboard".
+- The dashboard image gains `cryptography`, used only to issue certificates.
+
+**For later phases:**
+
+- **OPEN-7, drain.** The flow asks the agent to drain a runner, and the closed
+  verb set has no verb for it; neither runner documents a way to pause itself.
+  Recorded in spec 20 with the candidates. Must be settled before the flow is
+  wired to real agents.
+- Wiring the flow to real agents needs an adapter from the flow's `Agent`
+  protocol to `AgentClient.call_and_wait`. The registration plan must be sent
+  without `RegistrationPlan.extra`, which the agent refuses as a field it does
+  not take.
+- Spec 11.3 and 18.4 disagree on the audit table's columns - 18.4 adds
+  `fleet_id` and an outcome. T-0201 followed 11.3; T-1803 should settle it.
 
 ---
 
@@ -92,7 +122,8 @@ A task with several gates needs all of them.
 These hold for every task and are not repeated per task.
 
 - **The tests in `dashboard/tests/` must stay green** — 437 when this plan was
-  written, 1159 passing and 9 expected-to-fail after Phase 2. Run
+  written, 1274 passing and 9 expected-to-fail after Phase 3, plus 69 in
+  `agent/tests`. Run
   `cd dashboard && python -m pytest tests/ -q` before and after every task.
   A task that would require weakening an existing test must stop and report it
   as a behaviour change instead.
@@ -342,6 +373,9 @@ runtime, agent and forges; see the status note at the top.
 ---
 
 ## Phase 3 — Control protocol and agent
+
+**Done:** T-0401 to T-0406, all six committed. Tested over real mutual TLS on
+localhost; the agent is not deployed anywhere.
 
 ### T-0401 — The agent, with a closed verb set
 
