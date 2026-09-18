@@ -52,6 +52,46 @@ class GitHub:
             print(f"[github] {path}: {e}")
             return None
 
+    def _post(self, path):
+        """A POST with no body, returning the parsed answer or None.
+
+        Separate from _get rather than a method parameter on it, because the
+        only POST this client makes mints a credential, and that is worth being
+        able to find by reading the file.
+        """
+        req = urllib.request.Request(API + path, method="POST", data=b"",
+                                     headers={
+            "Authorization": f"Bearer {self.token}",
+            "Accept": "application/vnd.github+json",
+            "X-GitHub-Api-Version": "2022-11-28",
+            "User-Agent": "nomercy-runner-dashboard",
+        })
+        try:
+            with urllib.request.urlopen(req, timeout=20) as r:
+                return json.loads(r.read().decode())
+        except urllib.error.HTTPError as e:
+            print(f"[github] {e.code} POST {path}")
+            return None
+        except Exception as e:  # noqa: BLE001
+            print(f"[github] POST {path}: {type(e).__name__}")
+            return None
+
+    def registration_token(self):
+        """A one-hour token for registering one self-hosted runner.
+
+        Minted by the controller and handed to the runner, rather than minted
+        inside the runner from GH_TOKEN as start.sh does today: the design
+        keeps the long-lived org token out of every execution unit, and a
+        registration token that leaks is worth an hour and one runner, not the
+        org. The exception message above never includes the response body, so
+        a token cannot reach the log through an error.
+        """
+        data = self._post(
+            f"/orgs/{self.org}/actions/runners/registration-token")
+        if not isinstance(data, dict):
+            return None
+        return data.get("token") or None
+
     # ---------------------------------------------------------------- repos
     def repos(self, max_age_days=45):
         """Org repos pushed recently, newest first.

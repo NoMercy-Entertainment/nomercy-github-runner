@@ -48,10 +48,51 @@ X64, ARM64 = "x64", "arm64"
 #: prevent.
 REDACTED_FIELDS = frozenset({
     "registration_token",
+    # RegistrationPlan's own field. Missed in T-0003, which listed
+    # "registration_token" - a name nothing uses - while the dataclass carrying
+    # the credential calls it `token`, so asdict(plan) would have gone out
+    # unmasked. A test now builds a plan and checks every field that holds its
+    # token is on this list, rather than trusting two spellings to agree.
+    "token",
     "GH_TOKEN",
     "FORGEJO_API_TOKEN",
     "FORGEJO_RUNNER_REGISTRATION_TOKEN",
 })
+
+
+#: The four answers `job_state` gives, and the only four.
+BUSY, IDLE, OFFLINE, UNKNOWN = "busy", "idle", "offline", "unknown"
+
+
+def _labels(spec, default):
+    """A spec's labels as the comma list a registration takes.
+
+    The fleet's labels when it has them, else the deployment default. Never
+    empty in practice for Forgejo - that is refused before a token is minted -
+    because a runner with no labels registers, looks healthy, and never picks
+    up a job.
+    """
+    labels = (spec or {}).get("labels")
+    if isinstance(labels, (list, tuple)) and labels:
+        return ",".join(str(x) for x in labels)
+    if isinstance(labels, str) and labels.strip():
+        return labels.strip()
+    return (default or "").strip()
+
+
+def _forge_name(spec):
+    """What the runner is called at the forge.
+
+    Presentation only: the forge's identity for it is `registration_id`, and
+    names are documented as non-unique there. The display name when there is
+    one; otherwise a name built from the runner_id, so it is recognisable in
+    the forge's list and never derived from anything a caller typed.
+    """
+    spec = spec or {}
+    if spec.get("display_name"):
+        return spec["display_name"]
+    rid = str(spec.get("runner_id") or "")
+    return f"rnr-{rid[:8]}" if rid else ""
 
 
 @dataclass(frozen=True)
@@ -170,6 +211,26 @@ class Provider:
         """How to remove this runner from the forge."""
         raise NotImplementedError
 
+    def registration(self, spec, env):
+        """Everything it takes to register one runner, as (plan, error).
+
+        Mints a short-lived registration token, so this talks to the forge.
+        Returns an error rather than raising for the same reason
+        container_env does: a registration that cannot happen must render as
+        a reason, not as a 500. The error never contains the token.
+        """
+        raise NotImplementedError
+
+    def job_state(self, spec, forge_records):
+        """busy, idle, offline or unknown, from the forge's own record.
+
+        `forge_records` is what the forge client returned: a list, or None
+        when the forge could not be asked. None is "unknown" and never "idle".
+        That distinction is not pedantry - a wrong "idle" is what lets a cache
+        clear delete layers a live build needs.
+        """
+        raise NotImplementedError
+
 
 class _GitHub(Provider):
     def container_env(self, env, name=None):
@@ -222,6 +283,54 @@ class _GitHub(Provider):
             reference=f"actions/runner@v{version}",
             notes="published by GitHub; watch its release feed for "
                   "deprecations")
+
+    def registration(self, spec, env):
+        env = env or {}
+        client = self.forge_client(env)
+        if client is None:
+            return None, ("GH_TOKEN and GITHUB_ORG are both required to "
+                          "register a GitHub runner")
+        token = client.registration_token()
+        if not token:
+            return None, ("GitHub issued no registration token - check that "
+                          "GH_TOKEN may administer the org's runners and that "
+                          "the API is reachable")
+        return RegistrationPlan(
+            url=f"https://github.com/{client.org}",
+            token=token,
+            name=_forge_name(spec),
+            labels=_labels(spec, env.get("RUNNER_LABELS",
+                                         "self-hosted,Linux,X64")),
+            runner_group=(spec or {}).get("runner_group")
+            or env.get("RUNNER_GROUP", ""),
+        ), None
+
+    def job_state(self, spec, forge_records):
+        """From GitHub's runner list, matched on the registration id.
+
+        GitHub reports `busy` directly, so nothing is inferred from a log -
+        which is how the Linux fleet decides it today, and why a job whose
+        completion line scrolled out of the tail used to read as still
+        running.
+        """
+        if forge_records is None:
+            return UNKNOWN
+        rid = str((spec or {}).get("registration_id") or "")
+        if not rid:
+            return UNKNOWN
+        record = next((r for r in forge_records
+                       if isinstance(r, dict) and str(r.get("id")) == rid),
+                      None)
+        if record is None:
+            return UNKNOWN
+        if record.get("busy"):
+            return BUSY
+        status = record.get("status")
+        if status == "online":
+            return IDLE
+        if status == "offline":
+            return OFFLINE
+        return UNKNOWN
 
     def deregistration(self, spec):
         """GitHub runners deregister themselves.
@@ -329,6 +438,56 @@ class _Forgejo(Provider):
             reference=(env or {}).get(key, "").strip(),
             notes="built from source; there is no upstream release feed for "
                   "this platform, so its version has to be tracked by hand")
+
+    def registration(self, spec, env):
+        """Checked in the same order as container_env, and for the same
+        reason: every refusal that needs no network comes before the token is
+        minted, so a registration that cannot succeed does not burn one."""
+        env = env or {}
+        url = (env.get("FORGEJO_INSTANCE_URL") or "").strip()
+        if not url:
+            return None, "FORGEJO_INSTANCE_URL is not set"
+        labels = _labels(spec, env.get("FORGEJO_RUNNER_LABELS", ""))
+        if not labels:
+            return None, ("no labels for this runner - a runner with no "
+                          "labels registers, looks healthy, and never picks "
+                          "up a job")
+        client = self.forge_client(env)
+        if client is None:
+            return None, "FORGEJO_API_TOKEN is not set"
+        token = client.registration_token()
+        if not token:
+            return None, ("could not mint a registration token - check "
+                          "FORGEJO_API_TOKEN and that Forgejo is reachable")
+        return RegistrationPlan(url=url, token=token, name=_forge_name(spec),
+                                labels=labels), None
+
+    #: Forgejo's words for a runner's state, and what each means here. Any
+    #: word not in this table reads as unknown - from a future release or a
+    #: bug, assuming it harmless is what would let a cache clear act on a
+    #: runner that is working.
+    _STATUS = {"active": BUSY, "idle": IDLE, "offline": OFFLINE}
+
+    def job_state(self, spec, forge_records):
+        """From Forgejo's runner records, matched on the registration uuid.
+
+        The same reading docker_ops._forgejo_job_state does today, except that
+        idle and offline stay distinct: the platform reports a runner ready
+        only when the forge shows it online, and a process that is up while
+        the forge says offline is the failure that has already been missed
+        once on this fleet.
+        """
+        if forge_records is None:
+            return UNKNOWN
+        uuid = (spec or {}).get("registration_uuid")
+        if not uuid:
+            return UNKNOWN
+        record = next((r for r in forge_records
+                       if isinstance(r, dict) and r.get("uuid") == uuid),
+                      None)
+        if record is None:
+            return UNKNOWN
+        return self._STATUS.get(record.get("status") or "", UNKNOWN)
 
     def deregistration(self, spec):
         """Only the API can delete a Forgejo runner record.
