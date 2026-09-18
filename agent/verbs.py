@@ -184,8 +184,11 @@ def _spec(value):
         for key, val in env.items():
             if not isinstance(key, str) or not _ENV_NAME.match(key):
                 raise Refused("spec.env has a name that is not a variable name")
-            if not isinstance(val, str) or "\x00" in val:
-                raise Refused(f"spec.env.{key} must be text")
+            # One line: the runtime hands the environment to the engine as a
+            # file of KEY=value lines, and a line break inside a value would
+            # write a second variable of the sender's choosing.
+            if not isinstance(val, str) or any(c in val for c in "\x00\r\n"):
+                raise Refused(f"spec.env.{key} must be one line of text")
         out["env"] = dict(env)
     if "labels" in spec:
         labels = spec["labels"]

@@ -487,3 +487,16 @@ class TestTheWorkersOwnPolicy:
             self, runtime, registrar):
         with pytest.raises(ValueError):
             Agent("linux-1", runtime, registrar, permitted={"shell"})
+
+
+class TestAnEnvironmentValueIsOneLine:
+    """The Linux runtime writes the environment as KEY=value lines; a line
+    break inside a value would write a second variable."""
+
+    @pytest.mark.parametrize("value", ["a\nPATH=/evil", "a\rb", "a\x00b"])
+    def test_it_is_refused_at_the_door(self, server, runtime, value):
+        status, _ = post(server, "exec_unit.create",
+                         {"runner_id": RID,
+                          "spec": {"image": "node:20", "env": {"A": value}}})
+        assert status == 400
+        assert runtime.calls == []

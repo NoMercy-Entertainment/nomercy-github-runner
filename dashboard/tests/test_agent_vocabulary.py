@@ -60,3 +60,21 @@ def test_the_slow_verbs_are_the_same_on_both_sides():
     expecting a result."""
     from control import agent_client
     assert agent_client.ASYNC_VERBS == agent_protocol().ASYNC_VERBS
+
+
+def test_the_storage_and_unit_names_are_the_same_on_both_sides():
+    """The controller computes these to reason about ownership and to find a
+    unit after a crash; the agent uses them to create and remove what is
+    really there. A difference would orphan data on one side and delete the
+    wrong thing on the other."""
+    import uuid
+
+    from store import storage
+    agent_protocol()
+    from agent import naming
+    for _ in range(50):
+        rid = str(uuid.uuid4())
+        for platform in ("linux", "windows", "macos"):
+            assert naming.names(rid, platform) == storage.names(rid, platform)
+        assert naming.unit_name(rid) == storage.unit_name(rid)
+    assert naming.AREAS == storage.AREAS
