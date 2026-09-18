@@ -857,9 +857,9 @@ class _Forgejo(Provider):
 
     def drain_plan(self, spec):
         """forgejo-runner finishes the job it has on SIGTERM and takes no
-        other - its daemon waits up to `shutdown_timeout`, three hours by
-        default - so it is drained on its worker, and its record at Forgejo
-        is not touched."""
+        other - for as long as its `runner.shutdown_timeout`, which a unit
+        sets to 3h; unset, it cancels the job at once - so it is drained on
+        its worker, and its record at Forgejo is not touched."""
         return DrainPlan(
             via_forge=False,
             note="forgejo-runner finishes its job on SIGTERM, then exits; the "

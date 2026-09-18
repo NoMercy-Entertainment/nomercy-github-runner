@@ -216,7 +216,11 @@ class LinuxContainerRuntime:
         its process exits, and then the process is sent SIGTERM - not
         `docker stop`, which kills it when its timeout runs out. What the
         runner does with a running job on SIGTERM is its own business; a
-        forgejo-runner finishes it within its shutdown timeout.
+        forgejo-runner finishes it within its `shutdown_timeout`, which the
+        unit image's `/runner/run` sets (images/linux/unit/) - unset, it
+        would cancel the job at once. The image's entry point must also wait
+        for the runner rather than exit under it: PID 1 exiting ends the
+        container, and every process in it.
 
         Asked again on every reconciler pass until the runner is drained, so
         it must be safe to repeat - and it is: forgejo-runner keeps its

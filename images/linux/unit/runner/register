@@ -1,0 +1,76 @@
+#!/usr/bin/env bash
+# Register this unit's runner with its forge. Run by the agent with
+# `docker exec -i <unit> /runner/register`, the plan on standard input:
+#
+#   {"url": ..., "token": ..., "name": ..., "labels": ..., "runner_group": ...}
+#
+# Prints one line of JSON, {"registration_id": ..., "registration_uuid": ...},
+# which the agent passes back to the controller. Nothing else goes to standard
+# output; progress and errors go to standard error.
+#
+# **The token is never on a command line** where the worker's `ps` would show
+# it, for GitHub. The GitHub runner reads any of its arguments from an
+# ACTIONS_RUNNER_INPUT_<NAME> variable, and the token goes that way.
+# forgejo-runner has no such input; its token is on `register`'s command line
+# for the second the command runs - as scripts/start-forgejo.sh has always
+# done - and a Forgejo registration token is the controller's to rotate.
+#
+# Idempotent: a unit that is registered already answers with the registration
+# it has, and registers nothing.
+set -euo pipefail
+. /runner/lib.sh
+refuse_outside_a_container
+
+plan="$(cat)"
+field() { printf '%s' "$plan" | jq -r --arg k "$1" '.[$k] // ""'; }
+
+answer() {
+  case "$RUNNER_KIND" in
+    github)  jq -c '{registration_id: (.agentId | tostring),
+                     registration_uuid: null}' "$RUNNER_REG_DIR/.runner" ;;
+    forgejo) jq -c '{registration_id: (.id | tostring),
+                     registration_uuid: .uuid}' "$RUNNER_REG_DIR/.runner" ;;
+  esac
+}
+
+if registered; then
+  answer
+  exit 0
+fi
+
+url="$(field url)"; name="$(field name)"; labels="$(field labels)"
+group="$(field runner_group)"
+[ -n "$url" ] || { echo "the plan names no forge" >&2; exit 65; }
+mkdir -p "$RUNNER_REG_DIR"
+
+case "$RUNNER_KIND" in
+  github)
+    for f in $REG_FILES; do
+      ln -sfn "$RUNNER_REG_DIR/$f" "$RUNNER_HOME/$f"
+    done
+    cd "$RUNNER_HOME"
+    export RUNNER_ALLOW_RUNASROOT=1
+    export ACTIONS_RUNNER_INPUT_TOKEN ACTIONS_RUNNER_INPUT_URL \
+           ACTIONS_RUNNER_INPUT_WORK
+    ACTIONS_RUNNER_INPUT_TOKEN="$(field token)"
+    ACTIONS_RUNNER_INPUT_URL="$url"
+    ACTIONS_RUNNER_INPUT_WORK="$RUNNER_WORK_DIR"
+    # Only what the plan names: an empty group or label list set as an empty
+    # input is not the same as none.
+    [ -n "$name" ]   && export ACTIONS_RUNNER_INPUT_NAME="$name"
+    [ -n "$labels" ] && export ACTIONS_RUNNER_INPUT_LABELS="$labels"
+    [ -n "$group" ]  && export ACTIONS_RUNNER_INPUT_RUNNERGROUP="$group"
+    ./config.sh --unattended --replace --disableupdate >&2
+    ;;
+  forgejo)
+    cd "$RUNNER_REG_DIR"
+    "$FORGEJO_RUNNER_BIN" register --no-interactive --instance "$url" \
+      --token "$(field token)" --name "$name" --labels "$labels" >&2
+    ;;
+esac
+
+if ! registered; then
+  echo "the forge's runner reported success but left no registration" >&2
+  exit 70
+fi
+answer

@@ -1,0 +1,142 @@
+#!/usr/bin/env bash
+# The unit's entry point: a nested engine, then the forge's runner once it is
+# registered, and a shutdown that waits for the runner instead of ending it.
+#
+# Registration is not done here. The agent does it, after the unit exists, by
+# running /runner/register with the plan on standard input - so no token is
+# ever in this unit's environment or on a command line of its creation. Until
+# the registration is there, this waits with the engine up and the runner not
+# started.
+#
+# **SIGTERM is passed on, and then waited for, however long it takes.** That is
+# the drain (design 13.1): the agent turns the restart policy off and sends
+# SIGTERM, and a forgejo-runner - configured below with a shutdown_timeout -
+# finishes the job it has and exits. This process is PID 1, and PID 1 exiting
+# ends every process in the unit, so leaving before the runner does would
+# cancel the very job the drain exists to let finish. `docker stop` still ends
+# it all after the unit's stop timeout: that is a stop, which the controller
+# asks for only of a runner with no job.
+set -euo pipefail
+. /runner/lib.sh
+refuse_outside_a_container
+
+mkdir -p "$RUNNER_WORK_DIR" "$RUNNER_CACHE_DIR" "$RUNNER_REG_DIR" \
+         "$RUNNER_LOG_DIR"
+
+# --- the nested engine ------------------------------------------------------
+# overlay2 where /var/lib/docker is a real filesystem (the agent mounts a volume
+# there), fuse-overlayfs where it is itself an overlay. The build cache is
+# capped, because an uncapped nested engine has filled a 1 TB disk on this
+# fleet before; the containerd snapshotter stays off so the cap applies to
+# BuildKit as well.
+fstype="$(stat -f -c %T /var/lib/docker 2>/dev/null || echo unknown)"
+case "$fstype" in
+  overlayfs|overlay|unknown) driver=fuse-overlayfs ;;
+  *)                         driver=overlay2 ;;
+esac
+mkdir -p /etc/docker
+cat > /etc/docker/daemon.json <<JSON
+{
+  "storage-driver": "${driver}",
+  "features": { "containerd-snapshotter": false },
+  "builder": { "gc": { "enabled": true, "policy": [
+    { "maxUsedSpace": "${RUNNER_BUILD_CACHE_GC:-20GB}" } ] } }
+}
+JSON
+rm -f /var/run/docker.pid
+dockerd --host=unix:///var/run/docker.sock \
+  > "$RUNNER_LOG_DIR/dockerd.log" 2>&1 &
+DOCKERD_PID=$!
+for _ in $(seq 1 60); do
+  docker info >/dev/null 2>&1 && break
+  sleep 1
+done
+if ! docker info >/dev/null 2>&1; then
+  echo "the nested engine did not come up; its log:" >&2
+  tail -n 50 "$RUNNER_LOG_DIR/dockerd.log" >&2
+  exit 1
+fi
+echo "nested engine up (${driver} on ${fstype})"
+
+RUNNER_PID=""
+STOPPING=0
+
+stop_engine() {
+  kill -TERM "$DOCKERD_PID" 2>/dev/null || true
+  for _ in $(seq 1 20); do
+    kill -0 "$DOCKERD_PID" 2>/dev/null || return 0
+    sleep 1
+  done
+}
+
+on_signal() {
+  STOPPING=1
+  if [ -n "$RUNNER_PID" ]; then
+    echo "signal received: the runner is told to finish and is waited for"
+    kill -TERM "$RUNNER_PID" 2>/dev/null || true
+  fi
+}
+trap on_signal TERM INT
+
+# --- wait for the registration ----------------------------------------------
+until registered; do
+  if [ "$STOPPING" -eq 1 ]; then
+    stop_engine
+    exit 0
+  fi
+  sleep 2
+done
+
+# --- the runner ---------------------------------------------------------------
+# Job control on: without it bash starts a background child with SIGINT
+# ignored, and the GitHub runner's run.sh stops the listener with SIGINT.
+set -m
+case "$RUNNER_KIND" in
+  github)
+    # The GitHub runner keeps its registration beside its binaries; those
+    # files are links into the registration volume, so a new unit on the same
+    # volume is the same runner and a recreate, which drops the volume, is not.
+    for f in $REG_FILES; do
+      ln -sfn "$RUNNER_REG_DIR/$f" "$RUNNER_HOME/$f"
+    done
+    export RUNNER_ALLOW_RUNASROOT=1
+    # Makes run.sh pass TERM on to the listener instead of dying and leaving
+    # the listener to be killed with the unit.
+    export RUNNER_MANUALLY_TRAP_SIG=1
+    cd "$RUNNER_HOME"
+    ./run.sh &
+    RUNNER_PID=$!
+    ;;
+  forgejo)
+    # Unset or zero, shutdown_timeout makes forgejo-runner cancel its jobs
+    # the moment it is signalled (its config.example.yaml says so). 3h, as
+    # the job timeout is, lets a drained runner finish what it has.
+    cat > "$RUNNER_REG_DIR/config.yaml" <<YAML
+runner:
+  file: ${RUNNER_REG_DIR}/.runner
+  capacity: 1
+  timeout: 3h
+  shutdown_timeout: 3h
+cache:
+  dir: ${RUNNER_CACHE_DIR}/actcache
+host:
+  workdir_parent: ${RUNNER_WORK_DIR}
+YAML
+    cd "$RUNNER_REG_DIR"
+    "$FORGEJO_RUNNER_BIN" daemon --config "$RUNNER_REG_DIR/config.yaml" &
+    RUNNER_PID=$!
+    ;;
+esac
+echo "runner started (${RUNNER_KIND}, pid ${RUNNER_PID})"
+
+# `wait` returns early when a trapped signal arrives, and also when the child
+# is merely stopped; only the child actually being gone ends this loop, and
+# the last `wait` is the one that saw it go, so its status is the runner's.
+status=0
+while :; do
+  if wait "$RUNNER_PID"; then status=0; else status=$?; fi
+  kill -0 "$RUNNER_PID" 2>/dev/null || break
+done
+echo "runner exited (status ${status})"
+stop_engine
+exit "$status"

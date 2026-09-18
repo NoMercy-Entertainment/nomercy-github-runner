@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+# Deregister this unit's runner from inside the unit - which neither forge's
+# runner can do with what a unit holds.
+#
+# A GitHub runner removes itself with a removal token minted from the org's
+# own token, and a unit is never given that (design 18.3). forgejo-runner has
+# no unregister at all. So this says so, with a status the agent reports as a
+# failure, and the controller deletes the record at the forge by its id - the
+# flow's fallback, taken only when the forge does not show the runner working
+# (control/provision.py). Exiting 0 here would be the lie that strands a
+# record: the controller would take the runner as deregistered.
+#
+# The registration files stay; they go with the registration volume when the
+# unit is removed, and a recreate drops that volume.
+set -euo pipefail
+. /runner/lib.sh
+refuse_outside_a_container
+
+if ! registered; then
+  echo "not registered: nothing to remove at the forge" >&2
+  exit 0
+fi
+echo "a ${RUNNER_KIND} unit holds no credential that can remove its runner;" \
+     "the controller deletes the record at the forge by its id" >&2
+exit 3

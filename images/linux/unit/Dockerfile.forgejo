@@ -1,0 +1,20 @@
+# The Forgejo runner in the unit layout (design 15.1): the image the fleet
+# runs today, plus the three entry points the agent uses. Built beside it under
+# its own tag, so nothing running changes until a unit is made from this one.
+#
+#   docker build -f images/linux/unit/Dockerfile.forgejo \
+#     --build-arg BASE=<the Forgejo runner image> -t <name>:unit images/linux/unit
+ARG BASE=ghcr.io/nomercy-entertainment/nomercy-forgejo-runner:latest
+FROM ${BASE}
+
+# jq reads the registration plan and the forge's registration file.
+RUN apt-get update && apt-get install -y --no-install-recommends jq \
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
+
+ENV RUNNER_KIND=forgejo \
+    RUNNER_BUILD_CACHE_GC=20GB
+COPY runner/ /runner/
+RUN chmod 0755 /runner/run /runner/register /runner/deregister \
+    && chmod 0644 /runner/lib.sh
+
+ENTRYPOINT ["/runner/run"]

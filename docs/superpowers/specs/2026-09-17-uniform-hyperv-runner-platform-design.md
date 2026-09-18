@@ -1174,12 +1174,21 @@ ways, so the controller drains them in opposite places (`DrainPlan` in
 `providers.py`).
 
 - **Forgejo, on the worker.** forgejo-runner finishes its job on SIGTERM
-  and exits. Its daemon waits up to `shutdown_timeout`, which defaults to three
-  hours. **DOCUMENTED** in its source: `main.go` creates the signal context
-  with `signal.NotifyContext(..., SIGINT, SIGTERM)` and stops it only when
-  `main` returns. So a second SIGTERM while it finishes a job is ignored, and
-  the drain can be asked for again safely. Go delivers Ctrl+Break on Windows
-  as the same interrupt. Its record at Forgejo is not touched.
+  and exits, **but only when its configuration sets `runner.shutdown_timeout`**.
+  **DOCUMENTED** in `config.example.yaml`: "If unset or zero, the jobs will be
+  canceled immediately". In the source, the poller's `Shutdown` cancels the
+  jobs as soon as its context expires, and with no configuration file the
+  timeout is zero. So every Forgejo unit runs its runner with a configuration
+  that sets it to 3h, the same as `runner.timeout`: the Linux unit's
+  `/runner/run` writes one (`images/linux/unit/`), and the Windows and macOS
+  templates must do the same. **The Forgejo containers running today do not**:
+  `scripts/start-forgejo.sh` starts the daemon without `--config`, so a
+  SIGTERM to one, from `docker stop` or a recreate, cancels the job it has.
+  Also **DOCUMENTED** in the source: `main.go` creates the signal context with
+  `signal.NotifyContext(..., SIGINT, SIGTERM)` and stops it only when `main`
+  returns. So a second SIGTERM while it finishes a job is ignored, and the
+  drain can be asked for again safely. Go delivers Ctrl+Break on Windows as
+  the same interrupt. Its record at Forgejo is not touched.
 - **GitHub, at the forge.** The GitHub runner cancels its job on SIGTERM, so
   it is never signalled while it may be working. GitHub is told to stop giving
   it jobs instead:
@@ -1752,7 +1761,7 @@ does not exist yet.
 | ~~OPEN-4~~ | **Decided 2026-09-18: maintained, and built traceably in a container.** The Forgejo x Windows and x macOS cells need a self-built runner, and one without provenance already runs (R-4, `images/windows/build-forgejo-runner.md`). It is built in a pinned `golang` container on the existing engine, not with Go installed on the host. The build uses a pinned tag, `CGO_ENABLED=0`, `-trimpath` and the version ldflags. Its tag, commit, Go version and SHA-256 are recorded in `images/windows/manifest.json`, and it is added to the version-deprecation runbook | - | nothing |
 | ~~OPEN-5~~ | **Decided 2026-09-18: static memory, small, and inside the measured margin.** **MEASURED** 2026-09-18: commit is 157.1 of 255.9 GB, with no pagefile. `.wslconfig` budgets WSL at 120 GB and everything outside it at about 90 GB, which leaves about 45 GB. The control plane gets 4 GB static and the Linux worker for the parallel run 16 GB static: 20 GB, leaving about 25 GB. Dynamic memory is not used, because it grows towards its maximum under load, and that commit growth is what killed the WSL VM twice. The Linux worker grows only as the Linux fleet leaves WSL, with the WSL cap lowered by the same amount. That change restarts WSL, which stops every runner and Docker Desktop, so it happens only with no job running and with the operator's go (NEVER-AUTO) | - | nothing |
 | ~~OPEN-6~~ | **Decided 2026-09-18: keep the portproxy.** The VMs sit on an Internal switch `rnr-internal`, 10.77.0.0/24, with the host at 10.77.0.1 and a NetNat for their outbound traffic. They have static addresses: the control plane .10, the Linux worker .20. One portproxy rule publishes the dashboard on the LAN. **MEASURED** 2026-09-18: no NetNat exists yet, and the LAN is 192.168.178.0/24, so the range does not collide. An External switch would briefly interrupt the host's network, and every running job's network with it. The portproxy's one known failure, a rule whose listener is not bound, has a runbook | - | nothing |
-| ~~OPEN-7~~ | **Settled 2026-09-18: both mechanisms, one per forge.** Forgejo is drained on its worker, through the new agent verbs `exec_unit.drain` and `.cancel_drain`, because forgejo-runner finishes its job on SIGTERM. GitHub is drained at GitHub, by runner group or by custom labels, because its runner cancels its job on SIGTERM. See 13.1 for the mechanism and 12.2 for what proves a runner drained. Residual: until `GITHUB_DRAIN_GROUP` names a group no repository may use, a job that asks only for `self-hosted`, the OS or the architecture can still reach a drained GitHub runner. The reconciler catches it, and nothing is aborted | - | nothing |
+| ~~OPEN-7~~ | **Settled 2026-09-18: both mechanisms, one per forge.** Forgejo is drained on its worker, through the new agent verbs `exec_unit.drain` and `.cancel_drain`, because forgejo-runner finishes its job on SIGTERM when its configuration sets `shutdown_timeout`, which every unit's does. GitHub is drained at GitHub, by runner group or by custom labels, because its runner cancels its job on SIGTERM. See 13.1 for the mechanism and 12.2 for what proves a runner drained. Residual: until `GITHUB_DRAIN_GROUP` names a group no repository may use, a job that asks only for `self-hosted`, the OS or the architecture can still reach a drained GitHub runner. The reconciler catches it, and nothing is aborted | - | nothing |
 
 No decision is open. OPEN-2 to OPEN-6 were decided on 2026-09-18 by
 delegation. The operator asked for every open point to be settled so that
