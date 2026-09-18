@@ -57,6 +57,8 @@ REDACTED_FIELDS = frozenset({
     "GH_TOKEN",
     "FORGEJO_API_TOKEN",
     "FORGEJO_RUNNER_REGISTRATION_TOKEN",
+    # Design 18.3 names it; it was missing until T-1901.
+    "OIDC_CLIENT_SECRET",
 })
 
 

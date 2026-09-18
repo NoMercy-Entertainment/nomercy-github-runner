@@ -576,3 +576,55 @@ def audit_log():
                          fleet_id=request.args.get("fleet_id"),
                          decision=request.args.get("decision"), limit=limit)
     return jsonify(audit=rows)
+
+
+# ---------------------------------------------------------------------------
+# secrets (T-1901): set, never read back
+# ---------------------------------------------------------------------------
+
+@bp.route("/api/v2/secrets")
+def secrets_status():
+    """Which forge tokens the control plane holds, when they were set and by
+    whom - never a value. Admin only (app.guard)."""
+    service, err = _need_plane()
+    if err:
+        return err
+    from control.secrets import SecretStore
+    return jsonify(secrets=SecretStore(_db_path()).status())
+
+
+@bp.route("/api/v2/secrets/<name>", methods=["POST"])
+def secret_set(name):
+    """Set one token. The answer says it is set; it never echoes it."""
+    service, err = _need_plane()
+    if err:
+        return err
+    from control import audit
+    from control.secrets import SecretRefused, SecretStore
+    value = (request.get_json(silent=True) or {}).get("value")
+    try:
+        SecretStore(_db_path()).set(name, value, requested_by())
+    except SecretRefused as e:
+        audit.record(_db_path(), "set_secret", "refused",
+                     actor=requested_by(), parameters={"name": name},
+                     outcome=str(e))
+        return _refuse(400, str(e))
+    audit.record(_db_path(), "set_secret", "accepted", actor=requested_by(),
+                 parameters={"name": name})
+    return jsonify(ok=True, note=f"{name} is set")
+
+
+@bp.route("/api/v2/secrets/<name>/clear", methods=["POST"])
+def secret_clear(name):
+    service, err = _need_plane()
+    if err:
+        return err
+    from control import audit
+    from control.secrets import SecretRefused, SecretStore
+    try:
+        SecretStore(_db_path()).clear(name)
+    except SecretRefused as e:
+        return _refuse(400, str(e))
+    audit.record(_db_path(), "clear_secret", "accepted",
+                 actor=requested_by(), parameters={"name": name})
+    return jsonify(ok=True, note=f"{name} is cleared")

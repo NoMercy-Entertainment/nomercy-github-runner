@@ -244,6 +244,16 @@ def _secret_values():
         if os.environ.get(key):
             env.setdefault(key, os.environ[key])
     values = redact.secret_values(env)
+    # And the tokens the control plane's own store holds (T-1901), so a
+    # value set there is masked everywhere too.
+    try:
+        from store import schema as control_schema
+        if os.path.exists(control_schema.DB_PATH):
+            from control.secrets import SecretStore
+            values += list(SecretStore(control_schema.DB_PATH)
+                           ._values().values())
+    except Exception:   # noqa: BLE001 - masking must never break a response
+        pass
     redact.remember(*values)
     return tuple(values) + redact.known()
 
@@ -291,6 +301,9 @@ def guard():
     if path == "/users" or path.startswith("/api/users/"):
         if role != "admin":
             return _forbid("Only an admin can manage access.")
+    elif path.startswith("/api/v2/secrets"):
+        if role != "admin":
+            return _forbid("Only an admin can see or set the forge tokens.")
     elif path == "/settings" and role == "viewer":
         return _forbid("Settings are not available with read-only access.")
     elif request.method == "POST" and role == "viewer":

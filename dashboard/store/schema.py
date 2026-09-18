@@ -169,6 +169,16 @@ CREATE TABLE IF NOT EXISTS audit (
   outcome      TEXT
 );
 
+-- T-1901: the forge tokens, sealed. Set and cleared, never read back through
+-- any route; `fingerprint` tells two apart without revealing either.
+CREATE TABLE IF NOT EXISTS secrets (
+  name        TEXT PRIMARY KEY,
+  sealed      BLOB NOT NULL,
+  fingerprint TEXT NOT NULL,
+  set_at      TEXT NOT NULL,
+  set_by      TEXT
+);
+
 -- NFR-7: append-only, by the database rather than by convention. An
 -- operation's outcome is a row of its own, never an update to the row that
 -- accepted it.
