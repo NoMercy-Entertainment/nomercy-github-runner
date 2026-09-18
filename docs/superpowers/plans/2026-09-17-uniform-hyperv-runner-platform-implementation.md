@@ -16,13 +16,19 @@ defined in spec section 4 and traced in spec section 8.
 **Tech stack:** Python 3.12, Flask 3.0.3, flask-sock, sqlite3, pytest, the
 `docker` CLI, Hyper-V PowerShell cmdlets, GitHub REST, Forgejo REST v1.
 
-**Status:** Phases 0 to 3 are complete — T-0001 to T-0005, T-0201 to
-T-0204, T-0301 to T-0308 and T-0401 to T-0406 are implemented and committed. Nothing beyond that
-has been started, and no infrastructure has been touched: every task so far is
-LOCAL, the running fleet was not altered, and no VM, service or forge
-registration was created, stopped or removed. The dashboard runs from its image
-rather than from the repository mount, so none of this is live until the image
-is rebuilt.
+**Status:** Phases 0 to 4 are complete — T-0001 to T-0005, T-0201 to
+T-0204, T-0301 to T-0308, T-0401 to T-0406 and T-0501 to T-0503 are
+implemented and committed. Nothing beyond that has been started, and no
+infrastructure has been touched: every task so far is LOCAL, the running fleet
+was not altered, and no VM, service or forge registration was created, stopped
+or removed. The dashboard runs from its image rather than from the repository
+mount, so none of this is live until the image is rebuilt.
+
+**Phase 4 is tested against a fake Docker engine and a fake forge**
+(`agent/tests/fake_docker.py`), never against a real engine: the runtime's argv
+is asserted, not executed. The contract suite of spec 19.2 runs all nine
+scenarios against it with no skip, and `test_contract_teeth.py` proves each
+scenario fails a runtime that breaks it.
 
 **Phase 3 is tested over real mutual TLS on localhost**, with certificates
 minted by the control plane's own authority, a real agent server and a real
@@ -32,9 +38,10 @@ is not installed on any machine.
 **Everything in Phase 2 is tested against stand-ins.** The controller has been
 driven end to end - plan, reconcile, provision, register, crash, sweep - but
 against a fake runtime, a fake agent and fake forges. No Docker engine, worker
-or forge has been called through it. The real Docker adapter is wired in behind
-the flow in phase 4 (T-0501 to T-0503); until then the controller is a
-correct design exercised in isolation, not a working deployment.
+or forge has been called through it. Phase 4 built the runtime the agent runs
+(T-0501 to T-0503), but the flow is still not wired to a real agent - see "For
+later phases" - so the controller remains a correct design exercised in
+isolation, not a working deployment.
 
 Phase 0 changed no behaviour by design. What exists is the seam: a runtime
 contract, the Docker adapter behind it, a platform axis on the providers, the
@@ -83,6 +90,26 @@ Phase 3 departures:
   "visible in the dashboard".
 - The dashboard image gains `cryptography`, used only to issue certificates.
 
+Phase 4 departures:
+
+- `supports_drain` is declared **false** for the Linux runtime, because of
+  OPEN-7. Scenarios 2 and 3 therefore run in their other direction: they
+  assert that drain is refused, not that it works.
+- `keep_data=True` keeps the nested engine data, the cache and the logs, and
+  discards the workspace and the registration, because scenario 6 requires a
+  fresh workspace and registration after a recreate. Recorded per area in spec
+  15.1.
+- New files outside the plan's lists: `agent/naming.py` (the agent's copy of
+  `store/storage.py`'s naming, with a drift test, because the agent imports
+  nothing from the dashboard), `agent/tests/fake_docker.py`,
+  `agent/tests/test_contract_teeth.py`, and in the suite
+  `agent/tests/contract/harnesses.py`, `conftest.py` and `test_contract.py`
+  (one harness per runtime; `suite.py` is runtime-blind).
+- Registration happens inside the unit through the image's `/runner/register`
+  and `/runner/deregister`, with the plan on standard input. Spec 15.1 records
+  that **today's images do not have these entry points or the `/runner/*`
+  layout**; adopting them is a prerequisite for phase 5.
+
 **For later phases:**
 
 - **OPEN-7, drain.** The flow asks the agent to drain a runner, and the closed
@@ -122,7 +149,7 @@ A task with several gates needs all of them.
 These hold for every task and are not repeated per task.
 
 - **The tests in `dashboard/tests/` must stay green** — 437 when this plan was
-  written, 1274 passing and 9 expected-to-fail after Phase 3, plus 69 in
+  written, 1275 passing and 9 expected-to-fail after Phase 4, plus 141 in
   `agent/tests`. Run
   `cd dashboard && python -m pytest tests/ -q` before and after every task.
   A task that would require weakening an existing test must stop and report it
@@ -437,6 +464,9 @@ localhost; the agent is not deployed anywhere.
 ---
 
 ## Phase 4 — Runtime adapters behind the contract
+
+**Done:** T-0501 to T-0503, all three committed. Tested against a fake Docker
+engine and a fake forge; the runtime is not installed on any worker.
 
 ### T-0501 — LinuxContainerRuntime
 

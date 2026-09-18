@@ -1257,6 +1257,41 @@ Quotas: Linux by volume-level limits and the builder `gc` ceiling; Windows by
 Job Object and, where a separate VHDX per runner is used, by disk size; macOS
 by the appliance's disk.
 
+**What `keep_data` keeps, per area** (T-0501, 2026-09-18). `remove` takes
+`keep_data`; `recreate` passes true, a plain `remove` false. True is not "keep
+everything": scenario 6 of 19.2 requires a recreate to yield a new workspace
+and a fresh registration, so the two areas that carry the old runner's
+identity and its last job go, and the three that are expensive to rebuild or
+are history stay.
+
+| Area | `keep_data=True` (recreate) | `keep_data=False` (remove) |
+| --- | --- | --- |
+| Workspace | discarded | discarded |
+| Nested engine data | kept | discarded |
+| Cache | kept | discarded |
+| Registration | discarded | discarded |
+| Logs | kept | discarded |
+
+A removal that leaves behind storage it should have deleted fails rather than
+logging it: to the controller, storage outliving its runner is a half
+instance (12.5). The Linux runtime implements this in `KEPT_ON_RECREATE`;
+Windows and macOS runtimes follow the same table.
+
+**The layout inside a Linux unit is fixed, and images must adopt it.** The
+runtime mounts the five areas at `/runner/work`, `/var/lib/docker`,
+`/runner/cache`, `/runner/reg` and `/runner/logs`, and announces them in
+`RUNNER_WORK_DIR`, `RUNNER_CACHE_DIR`, `RUNNER_REG_DIR` and `RUNNER_LOG_DIR`.
+Registration is not done by the runtime but by the image, through two fixed
+entry points: `/runner/register` reads the registration plan as JSON on
+standard input and answers `{"registration_id", "registration_uuid"}` as JSON
+on standard output; `/runner/deregister` takes no input. That keeps the
+runtime forge-blind and keeps the token out of every argument list. **Today's
+images do neither** - they predate this design, register from `start.sh` with
+the token in the environment, and use `/actions-runner/_work`. Adopting the
+layout and the two entry points is a prerequisite for the first Linux worker
+(phase 5), and until then the Linux runtime has been exercised only against a
+fake engine.
+
 ### 15.2 Cache policy and ownership
 
 FR-16 and FR-17. `cache_policy` is JSON on the spec:
