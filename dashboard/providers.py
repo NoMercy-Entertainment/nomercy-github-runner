@@ -80,6 +80,42 @@ def _labels(spec, default):
     return (default or "").strip()
 
 
+#: forgejo-runner's executor types. A label is `<name>:<type>://<image>` for
+#: docker and lxc, and `<name>:host` for host; a bare `<name>` is host too, to
+#: the runner (https://forgejo.org/docs/latest/admin/actions/configuration/).
+FORGEJO_EXECUTORS = ("host", "docker", "lxc")
+
+
+def parse_forgejo_label(text):
+    """(name, executor, image) from one Forgejo label, or raise ValueError
+    saying what is wrong with it."""
+    text = (text or "").strip()
+    name, sep, rest = text.partition(":")
+    if not name:
+        raise ValueError(f"label {text!r} has no name")
+    if not sep:
+        return name, "host", ""
+    executor, _, image = rest.partition("://")
+    if executor not in FORGEJO_EXECUTORS:
+        raise ValueError(f"label {text!r}: {executor!r} is not an executor "
+                         f"forgejo-runner knows ({', '.join(FORGEJO_EXECUTORS)})")
+    if executor == "host" and image:
+        raise ValueError(f"label {text!r}: a host label takes no image")
+    if executor != "host" and not image:
+        raise ValueError(f"label {text!r}: {executor} needs an image, as "
+                         f"{name}:{executor}://<image>")
+    return name, executor, image
+
+
+def forgejo_label(name, executor="host", image=""):
+    """The label text for (name, executor, image) - the inverse of
+    parse_forgejo_label, checked by round trip."""
+    text = f"{name}:host" if executor == "host" else \
+        f"{name}:{executor}://{image}"
+    parse_forgejo_label(text)
+    return text
+
+
 def _forge_name(spec):
     """What the runner is called at the forge.
 
@@ -550,9 +586,38 @@ class _Forgejo(Provider):
                    WINDOWS: "FORGEJO_RUNNER_LABELS_WINDOWS",
                    MACOS: "FORGEJO_RUNNER_LABELS_MACOS"}
 
+    #: Which executors a runner on each platform can offer. Only Linux has an
+    #: engine; a Windows or macOS runner runs jobs on its own OS (T-1003).
+    _EXECUTORS = {LINUX: frozenset(FORGEJO_EXECUTORS),
+                  WINDOWS: frozenset({"host"}),
+                  MACOS: frozenset({"host"})}
+
+    #: When neither the fleet nor the deployment names labels. Linux has no
+    #: default - which image jobs run in is a choice nobody should make by
+    #: omission - so a Linux runner with no labels is refused, as it always
+    #: was. Windows and macOS can only run on the host, so that choice is
+    #: already made.
+    _DEFAULT_LABELS = {WINDOWS: "windows:host", MACOS: "macos:host"}
+
     def default_labels(self, platform, arch=X64, env=None):
-        return ((env or {}).get(self._LABELS_ENV.get(platform, ""))
-                or "").strip()
+        configured = ((env or {}).get(self._LABELS_ENV.get(platform, ""))
+                      or "").strip()
+        return configured or self._DEFAULT_LABELS.get(platform, "")
+
+    def label_problem(self, platform, labels):
+        """Why these labels cannot be registered on this platform, or None.
+        Checked before a token is minted."""
+        allowed = self._EXECUTORS.get(platform, frozenset())
+        for text in (x for x in labels.split(",") if x.strip()):
+            try:
+                name, executor, _ = parse_forgejo_label(text)
+            except ValueError as e:
+                return str(e)
+            if executor not in allowed:
+                return (f"label {text.strip()!r} asks for the {executor} "
+                        f"executor, which a {platform} runner does not have; "
+                        f"use {name}:host")
+        return None
 
     def forge_records(self, env):
         """This user's runner records, or None when Forgejo could not be
@@ -588,6 +653,9 @@ class _Forgejo(Provider):
             return None, ("no labels for this runner - a runner with no "
                           "labels registers, looks healthy, and never picks "
                           "up a job")
+        problem = self.label_problem(platform, labels)
+        if problem:
+            return None, problem
         client = self.forge_client(env)
         if client is None:
             return None, "FORGEJO_API_TOKEN is not set"

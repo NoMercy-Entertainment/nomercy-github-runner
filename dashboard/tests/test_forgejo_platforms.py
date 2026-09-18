@@ -118,16 +118,17 @@ class TestLabels:
     @pytest.mark.parametrize("platform", [P.WINDOWS, P.MACOS])
     def test_the_linux_fleets_labels_are_not_inherited(self, platform):
         """A docker:// label on a runner with no engine sends it jobs it
-        cannot run."""
+        cannot run. It gets the host label instead (T-1003)."""
         env = {"FORGEJO_RUNNER_LABELS": "docker:docker://node:20"}
-        assert FJ.default_labels(platform, P.X64, env) == ""
+        assert FJ.default_labels(platform, P.X64, env) == f"{platform}:host"
 
-    @pytest.mark.parametrize("platform", P.PLATFORMS)
-    def test_no_labels_at_all_is_refused_before_a_token_is_minted(
-            self, api, platform):
+    def test_a_linux_runner_with_no_labels_is_refused_before_a_token(
+            self, api):
+        """As it always was: which image Linux jobs run in is a choice
+        nobody should make by omission."""
         env = {k: v for k, v in BUILT.items()
                if not k.startswith("FORGEJO_RUNNER_LABELS")}
-        plan, error = FJ.registration(spec_for(platform), env)
+        plan, error = FJ.registration(spec_for(P.LINUX), env)
         assert plan is None and "never picks up a job" in error
         assert api["seen"] == []
 
@@ -208,3 +209,58 @@ class TestTheAdapterKnowsNothingElseAboutPlatforms:
                             str(sub.value).lower() in self.PLATFORM_STRINGS:
                         offenders.append(f"line {sub.lineno}: {sub.value!r}")
         assert offenders == []
+
+
+class TestLabelSyntax:
+    """T-1003: `<name>:<type>://<image>`, with docker, lxc and host - and
+    host alone on Windows and macOS, which have no engine."""
+
+    @pytest.mark.parametrize("text,parts", [
+        ("docker:docker://node:20", ("docker", "docker", "node:20")),
+        ("ubuntu-latest:docker://ghcr.io/catthehacker/ubuntu:act-22.04",
+         ("ubuntu-latest", "docker", "ghcr.io/catthehacker/ubuntu:act-22.04")),
+        ("jammy:lxc://ubuntu:22.04", ("jammy", "lxc", "ubuntu:22.04")),
+        ("macos:host", ("macos", "host", "")),
+        ("windows", ("windows", "host", "")),
+    ])
+    def test_a_label_round_trips(self, text, parts):
+        assert P.parse_forgejo_label(text) == parts
+        assert P.parse_forgejo_label(P.forgejo_label(*parts)) == parts
+
+    @pytest.mark.parametrize("bad", [
+        ":docker://x", "a:podman://x", "a:docker://", "a:lxc", "a:host://x"])
+    def test_a_malformed_label_says_what_is_wrong(self, bad):
+        with pytest.raises(ValueError):
+            P.parse_forgejo_label(bad)
+
+    @pytest.mark.parametrize("platform", [P.WINDOWS, P.MACOS])
+    @pytest.mark.parametrize("label", ["docker:docker://node:20",
+                                       "jammy:lxc://ubuntu:22.04"])
+    def test_only_host_on_a_platform_without_an_engine(self, api, platform,
+                                                       label):
+        plan, error = FJ.registration(spec_for(platform, labels=[label]),
+                                      BUILT)
+        assert plan is None
+        assert "does not have" in error and ":host" in error
+        assert api["seen"] == [], "refused before a token is minted"
+
+    @pytest.mark.parametrize("platform,label", [
+        (P.LINUX, "docker:docker://node:20"),
+        (P.LINUX, "jammy:lxc://ubuntu:22.04"),
+        (P.LINUX, "self:host"),
+        (P.WINDOWS, "windows:host"),
+        (P.MACOS, "macos:host")])
+    def test_the_label_a_fleet_declares_is_the_label_it_registers(
+            self, api, platform, label):
+        plan, error = FJ.registration(spec_for(platform, labels=[label]),
+                                      BUILT)
+        assert error is None
+        assert plan.labels == label
+
+    @pytest.mark.parametrize("platform", [P.WINDOWS, P.MACOS])
+    def test_with_nothing_declared_windows_and_macos_run_on_the_host(
+            self, api, platform):
+        env = {k: v for k, v in BUILT.items()
+               if not k.startswith("FORGEJO_RUNNER_LABELS")}
+        plan, error = FJ.registration(spec_for(platform), env)
+        assert error is None and plan.labels == f"{platform}:host"
