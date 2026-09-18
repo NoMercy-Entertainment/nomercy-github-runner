@@ -408,3 +408,35 @@ class TestNoBackDoorToADegradedWorker:
         reconciler.pass_once()
 
         assert the_runner(service)["host_id"] == "linux-2"
+
+
+class TestAnOverdueOperationIsCarriedOnAfterARestart:
+    """T-0306's "an operation past its deadline is re-driven", end to end.
+
+    Design 17.3: the controller restarts mid-operation, and operations still
+    running past their deadline are re-driven - safe because every step is
+    idempotent on the runner_id. The operation tests only show such an
+    operation is listed as overdue; this shows something then finishes it.
+    """
+
+    def test_a_stop_cut_off_by_a_restart_is_finished_by_the_next_controller(
+            self, world):
+        service, flow, agent, forges, reconciler = world
+        service.scale_up(GH)
+        passes(service, reconciler)
+        spec = the_runner(service)
+        operation_id = service.stop(spec["runner_id"])
+        spec = service.specs.get(spec["runner_id"])
+        service.specs.update(spec["runner_id"], spec["spec_version"],
+                             actual_state="stopping")    # died mid-stop
+        expire_deadlines(service)
+        assert [o["operation_id"] for o in service.operations.overdue()] == \
+            [operation_id]
+
+        restarted = Reconciler(service, flow)          # a new process
+        passes(service, restarted, 2)
+
+        assert service.specs.get(spec["runner_id"])["actual_state"] == \
+            "stopped"
+        assert service.operations.get(operation_id)["state"] == "succeeded"
+        assert service.operations.overdue() == []

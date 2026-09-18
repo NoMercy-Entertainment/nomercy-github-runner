@@ -16,12 +16,20 @@ defined in spec section 4 and traced in spec section 8.
 **Tech stack:** Python 3.12, Flask 3.0.3, flask-sock, sqlite3, pytest, the
 `docker` CLI, Hyper-V PowerShell cmdlets, GitHub REST, Forgejo REST v1.
 
-**Status:** Phases 0 and 1 are complete — T-0001 to T-0005 and T-0201 to
-T-0204 are implemented and committed. Nothing beyond that has been started, and
-no infrastructure has been touched: every task so far is LOCAL, the running
-fleet was not altered, and no VM, service or forge registration was created,
-stopped or removed. The dashboard runs from its image rather than from the
-repository mount, so none of this is live until the image is rebuilt.
+**Status:** Phases 0, 1 and 2 are complete — T-0001 to T-0005, T-0201 to
+T-0204 and T-0301 to T-0308 are implemented and committed. Nothing beyond that
+has been started, and no infrastructure has been touched: every task so far is
+LOCAL, the running fleet was not altered, and no VM, service or forge
+registration was created, stopped or removed. The dashboard runs from its image
+rather than from the repository mount, so none of this is live until the image
+is rebuilt.
+
+**Everything in Phase 2 is tested against stand-ins.** The controller has been
+driven end to end - plan, reconcile, provision, register, crash, sweep - but
+against a fake runtime, a fake agent and fake forges. No Docker engine, worker
+or forge has been called through it. The real Docker adapter is wired in behind
+the flow in phase 4 (T-0501 to T-0503); until then the controller is a
+correct design exercised in isolation, not a working deployment.
 
 Phase 0 changed no behaviour by design. What exists is the seam: a runtime
 contract, the Docker adapter behind it, a platform axis on the providers, the
@@ -35,10 +43,28 @@ fleets seeded from `provider.supports()`, and per-instance storage naming.
 `runs` gained a nullable `runner_id` with an explicit, idempotent backfill that
 is not run automatically.
 
-**One deviation from the file lists below.** T-0202 is `store/fleets.py` rather
-than an addition to `store/specs.py`: that module carries one table's rules —
-minted identity, optimistic concurrency, soft delete — and none of the three
-apply to a fleet.
+**Deviations from the plan, recorded where they happened:**
+
+- T-0202 is `store/fleets.py` rather than an addition to `store/specs.py`:
+  that module carries one table's rules and none of them apply to a fleet.
+- T-0303 was built before T-0301: the service validates every verb against the
+  state table, so the dependency runs the other way from how it is listed.
+- Worker inventory tests are `tests/test_worker_inventory.py`, not part of
+  `tests/test_runner_service.py`.
+- Two edges were added to the design's state machine, with reasons in spec
+  12.2: `planned -> absent` (withdraw a runner that exists only on paper) and
+  `removing -> provisioning` (so `recreate` keeps its storage).
+- `service.create` raises a fleet's capacity instead of planning directly. The
+  first version planned runners the next reconciler pass withdrew, because the
+  fleet still wanted zero.
+- Spec 17.2 gained a row for forge record deletion, with no retries.
+- A `leases` table, so two reconciler passes cannot both plan the same gap.
+- T-0003 was closed late, in Phase 2: `registration`, `job_state` and the
+  `token` field's redaction were on its symbol list and had not been built.
+
+**For later phases:** spec 11.3 and 18.4 disagree on the audit table's
+columns - 18.4 adds `fleet_id` and an outcome. T-0201 followed 11.3; T-1803,
+which writes audit rows, should settle it.
 
 ---
 
@@ -66,7 +92,7 @@ A task with several gates needs all of them.
 These hold for every task and are not repeated per task.
 
 - **The tests in `dashboard/tests/` must stay green** — 437 when this plan was
-  written, 642 passing and 9 expected-to-fail after Phase 1. Run
+  written, 1159 passing and 9 expected-to-fail after Phase 2. Run
   `cd dashboard && python -m pytest tests/ -q` before and after every task.
   A task that would require weakening an existing test must stop and report it
   as a behaviour change instead.
@@ -236,6 +262,9 @@ first caller.
 ---
 
 ## Phase 2 — Controller and reconciliation
+
+**Done:** T-0301 to T-0308, all eight committed. Tested against a fake
+runtime, agent and forges; see the status note at the top.
 
 ### T-0301 — RunnerService and the worker inventory
 
