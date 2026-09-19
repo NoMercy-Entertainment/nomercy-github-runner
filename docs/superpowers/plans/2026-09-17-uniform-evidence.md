@@ -224,3 +224,24 @@ actually done" has one answer (ACC-19).
   file declares (overlay2, a fresh layer, as runner-4), then put cpuset 0-15
   back. The recreate was refused by this session's permission check, and it
   waits for the operator.
+
+## 2026-09-19 - github-runner-1 recreated onto its own volume (by the operator)
+
+- **Decided and run by:** the operator, after the diagnosis above. The script
+  refused while the runner had a job and was run once it was idle.
+- **What it did,** in one runner and no other:
+  - renamed the live container (made by the dashboard, so compose could not
+    replace it in place) and stopped it, letting it deregister itself;
+  - had compose create `github-runner-1` with the volume
+    `githubrunners_github-runner-1-docker`;
+  - put cpuset 0-15 back, which a recreate always drops;
+  - removed the old container once the new one was listening.
+- **Output:** `Nested Docker: /var/lib/docker is ext2/ext3 -> overlay2`,
+  registered as `nomercy-72fkt`, `Listening for Jobs` at 2026-09-19T22:28:59Z.
+  The whole run took 5 min 57 s, most of it removing the old writable layer.
+- **After:** 13 runners and the dashboard up, runner-1 with cpuset 0-15 and
+  32 GB, `df -h` inside it answering. The distro's disk went from 677 GB used
+  to 525 GB: 152 GB freed.
+- **Still on the old arrangement:** github-runner-2, -3 and -5 to -10 run
+  their nested engine on fuse-overlayfs in their own layer, and runner-2's
+  layer is already too large for `du` to walk. They were not touched.
