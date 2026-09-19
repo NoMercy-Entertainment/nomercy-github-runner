@@ -624,9 +624,25 @@ class ProvisioningFlow:
                        spec.get("host_id"), self._ref(spec))
 
     def remove(self, spec, keep_data=False):
-        if not spec.get("exec_unit_ref"):
-            return                      # nothing was ever created
-        retry.call(AGENT_SLOW, self._runtime(spec).remove, self._ref(spec),
+        """Remove the unit, by the handle the spec records or - when it
+        records none - by the name every unit of this runner has.
+
+        A create that failed before it could say what it made still made
+        something: the first Windows unit left its directory tree behind,
+        its compensation having failed too, and with no handle recorded
+        nothing would ever have removed it. The name comes from the
+        runner_id alone (15.1), so asking for it is safe: the worst case is
+        that there is nothing by that name, which every runtime treats as
+        done.
+        """
+        from store import storage
+        if spec.get("exec_unit_ref"):
+            ref = self._ref(spec)
+        elif spec.get("host_id"):
+            ref = self._ref(spec, handle=storage.unit_name(spec["runner_id"]))
+        else:
+            return                      # never placed: nothing anywhere
+        retry.call(AGENT_SLOW, self._runtime(spec).remove, ref,
                    keep_data=keep_data)
 
     def clear_cache(self, spec):

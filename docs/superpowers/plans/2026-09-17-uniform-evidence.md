@@ -318,3 +318,56 @@ actually done" has one answer (ACC-19).
   `daa3e0b7-1f49-4bb3-b799-0ab07b0fad5f` and its directory tree
   `D:\runners\daa3e0b7-...`. The fixed agent has to be deployed first, which
   needs `Install-WindowsWorker.ps1` run elevated.
+
+## 2026-09-19 - the Windows cell, made and removed on this host (T-0703)
+
+- **Decided by:** the operator, who confirmed it touches neither the running
+  CI nor the WSL fleet: it is this host and Forgejo only.
+- **Cleared first:** `capacity forgejo-windows-x64 0` removed the failed
+  runner from the store. Its directory tree stayed, because the create had
+  failed before recording a handle and the removal asked for nothing. Fixed
+  in the flow: a removal falls back to the name every unit of that runner
+  has, which is derived from its runner_id (15.1). The tree from that first
+  attempt was deleted by hand afterwards.
+- **Made:** with the fixed agent deployed (`695bca7`), `capacity 1` gave
+  `registering` and then `idle` within 40 s.
+  - The service `rnr-3eddff71-95e2-4132-8f2f-e3343dad7d34` runs under its own
+    virtual account, `SERVICE_START_NAME : NT SERVICE\rnr-3eddff71-...`,
+    through NSSM at `C:\ProgramData\nomercy\bin\nssm.exe`.
+  - Forgejo listed it as `rnr-3eddff71`, idle, with the single label
+    `rnr-pilot-windows` - which no workflow asks for.
+  - **The isolation is real:** `icacls D:\runners\3eddff71-...` from an
+    ordinary account answers "Access is denied". Only SYSTEM, Administrators
+    and the runner's own account are on that tree.
+- **Removed:** `capacity 0` took it through `draining` and `removing` to gone
+  in 90 s. No service is left, no directory tree, and Forgejo lists no `rnr-`
+  runner.
+- **So the Windows cell works end to end on a real worker**: create, register,
+  drain, deregister, remove - each runner its own account, its own tree and
+  its own Job Object.
+
+## 2026-09-19 - github-runner-5 and -6 converted; what compose did to -6
+
+- **github-runner-5:** drained at GitHub, emptied, converted, `overlay2`,
+  registered again with `beast-unit`, cpuset 17-32. About a minute out of
+  service.
+- **github-runner-6 took 45 minutes**, and compose is why. For a runner it
+  manages, compose removes the old container - and its oversized layer -
+  before creating the new one, and that removal wedged: the old container sat
+  `Dead` with no mounts left and no progress, while the new container had
+  been created but never started, under compose's temporary name.
+  - The new container was correct in every other way: the image, the volume
+    `githubrunners_github-runner-6-docker` and 32 GB.
+  - It was renamed to `github-runner-6`, started, and given back cpuset
+    24-39. It came up on `overlay2`, registered as `nomercy-4ttl8` and has
+    `self-hosted, Linux, X64, beast-unit`. No job was touched: it had been
+    drained at GitHub since the start.
+  - The old container is left `Dead`. A container wedged this way cleared
+    itself after about three hours once before, and nothing waits on it.
+- **The lesson for the rest:** `-PruneFirst` was not enough, because the
+  deletion still runs while compose holds the service. Runners 7 to 10 are
+  not compose services, so they take the fast path the dashboard's own
+  `create()` gives - the one runners 1 and 2 took, where the old container is
+  removed only after the new one is serving.
+- **Fleet now:** runners 1 to 6 on their own volumes with `overlay2`; 7 to 10
+  still to do, held at the operator's word while a CI run is in flight.

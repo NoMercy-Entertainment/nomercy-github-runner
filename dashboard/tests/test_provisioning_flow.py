@@ -428,3 +428,37 @@ class TestDrivenByTheReconciler:
         reconciler.pass_once()                   # job done: drained
         assert service.specs.get(spec["runner_id"])["actual_state"] == \
             "drained"
+
+
+class TestRemovingWhatAFailedCreateLeft:
+    """The first Windows unit failed inside `create`, and its compensation
+    failed too, so the spec recorded no handle. A removal that asked for
+    nothing then left the runner's directory tree on the worker for good -
+    seen on 2026-09-19. Every unit's name comes from its runner_id, so it
+    can always be asked for, and a runtime with nothing by that name treats
+    the removal as done."""
+
+    def test_it_is_asked_for_by_the_name_that_runner_s_unit_has(self,
+                                                                platform):
+        from store import storage
+        service, flow, _, _ = platform
+        spec = a_planned(service)
+        service.specs.update(spec["runner_id"], spec["spec_version"],
+                             host_id="linux-1")
+        spec = service.specs.get(spec["runner_id"])
+        assert not spec["exec_unit_ref"], "nothing was recorded"
+
+        flow.remove(spec)
+
+        removed = [c for c in UnitRuntime.log if c[0] == "remove"]
+        assert removed and removed[-1][1] == storage.unit_name(
+            spec["runner_id"])
+
+    def test_a_runner_that_was_never_placed_asks_for_nothing(self, platform):
+        service, flow, _, _ = platform
+        spec = a_planned(service)
+        before = len(UnitRuntime.log)
+
+        flow.remove(spec)               # no worker, so nothing anywhere
+
+        assert len(UnitRuntime.log) == before
