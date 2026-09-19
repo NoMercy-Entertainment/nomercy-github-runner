@@ -11,9 +11,11 @@ nested engine, which Windows runners do not have: `D:\\runners\\<runner_id>\\`
 not a local user the runtime creates. It exists exactly as long as the
 service, has no password to generate, store or pass on a command line, and
 cannot log on interactively. Its SID is derived from the service name
-(`service_sid`), so the directory tree can be locked to it before the service
-exists - which is what lets `create` lay down storage first and make the
-service last.
+(`service_sid`), but Windows maps that SID to an account only once the service
+exists: `icacls` answers "No mapping between account names and security IDs was
+done" for a service that is not there yet. So `create` makes the directories,
+then the service, then locks the tree to it, and starts the service last -
+nothing of this runner's runs while its tree is still open.
 
 **The service runs `agent.jobhost`**, through NSSM, the wrapper this host
 already runs its Windows runner under. The job host creates the Job Object,
@@ -28,13 +30,13 @@ standard input and answers `{"registration_id", "registration_uuid"}`; and
 module never learns which forge a runner serves.
 
 **Every step of `create` is safe to repeat**, so a create the agent died in
-the middle of converges when it is driven again (T-0308). The service is made
-last and configured on every call; the template is copied once, recorded by a
-marker.
+the middle of converges when it is driven again (T-0308). The service is
+configured on every call; the template is copied once, recorded by a marker.
 
-Nothing here has run against a real Windows Server worker yet; that is
-WINDOWS-INFRA (T-0703). The argv is exercised against a fake host, and the Job
-Object in `agent/jobhost.py` against this machine's real kernel.
+The argv is exercised against a fake host, and the Job Object in
+`agent/jobhost.py` against this machine's real kernel. It first ran against a
+real worker - this host - on 2026-09-19, which is where the two corrections
+above come from.
 """
 import hashlib
 import json
@@ -149,7 +151,14 @@ class WindowsProcessRuntime:
         return {scope: p[area] for scope, area in SCOPE_AREAS.items()}
 
     def _nssm(self, *args, timeout=60):
-        return self._run([self._tools["nssm"], *args], timeout=timeout)
+        """NSSM, with its answer made readable. It writes UTF-16, so read as
+        text its output carries a NUL between every character: "Can't open
+        service!" matched none of the strings this module looks for. A
+        removal of a service that was never made then failed instead of being
+        the no-op it is, and every status read came back unknown. Found on
+        the first live Windows worker, 2026-09-19."""
+        ok, out, err = self._run([self._tools["nssm"], *args], timeout=timeout)
+        return ok, _readable(out), _readable(err)
 
     def _sc(self, *args, timeout=30):
         return self._run([self._tools["sc"], *args], timeout=timeout)
@@ -167,30 +176,39 @@ class WindowsProcessRuntime:
             raise RuntimeError(f"no runner template {image!r} on this worker")
         p = self.paths(rid)
 
-        # 1. Storage, locked to this runner before anything is in it.
+        # 1. The directories.
         self._fs.makedirs(p["root"])
-        self._acl(p["root"], name)
         for key in (*AREAS, "tmp"):
             self._fs.makedirs(p[key])
 
-        # 2. The runner's software, once. A re-driven create must not copy
-        #    over a registered runner's files while its service holds them.
-        marker = ntpath.join(p["reg"], TEMPLATE_MARKER)
-        if not self._fs.exists(marker):
-            self._fs.copytree(template, p["reg"])
-            self._fs.write_text(marker, image)
-
-        # 3. What the job host reads: limits and environment, never argv.
-        self._fs.write_text(ntpath.join(p["reg"], "unit.json"),
-                            json.dumps(self._unit(rid, spec, p)))
-
-        # 4. The service last, configured on every call.
+        # 2. The service, before the tree is locked to it. Its virtual
+        #    account's SID is derived from the name, but Windows maps that SID
+        #    to an account only once the service exists: icacls answers "No
+        #    mapping between account names and security IDs was done" for a
+        #    service that is not there yet, which is how the first live
+        #    Windows worker failed (2026-09-19). So the service is made first
+        #    and started last, and nothing runs while the tree is open.
         if self.status(rid)["exists"] is not True:
             ok, out, err = self._nssm(
                 "install", name, self._tools["python"], "-m", "agent.jobhost",
                 "--root", p["root"])
             if not ok and "exists" not in (out + err):
                 raise RuntimeError(err or out or "nssm install failed")
+
+        # 3. Storage, locked to this runner before anything is in it.
+        self._acl(p["root"], name)
+
+        # 4. The runner's software, once. A re-driven create must not copy
+        #    over a registered runner's files while its service holds them.
+        marker = ntpath.join(p["reg"], TEMPLATE_MARKER)
+        if not self._fs.exists(marker):
+            self._fs.copytree(template, p["reg"])
+            self._fs.write_text(marker, image)
+
+        # 5. What the job host reads: limits and environment, never argv.
+        self._fs.write_text(ntpath.join(p["reg"], "unit.json"),
+                            json.dumps(self._unit(rid, spec, p)))
+
         self._configure(name, p)
 
         if not self.status(rid).get("running"):
@@ -501,6 +519,11 @@ class WindowsRegistrar:
         ok, out, err = self._powershell(script, timeout=60)
         if not ok:
             raise RuntimeError(err or out or "deregistration failed")
+
+
+def _readable(text):
+    """NSSM's UTF-16 output as plain text."""
+    return (text or "").replace("\x00", "")
 
 
 def _absent(text):

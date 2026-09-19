@@ -28,7 +28,18 @@ from .fake_docker import Crash, FakeForge
 TOOLS = {"nssm": "nssm.exe", "sc": "sc.exe", "icacls": "icacls.exe",
          "powershell": "powershell.exe", "python": "python.exe",
          "templates": r"C:\ProgramData\nomercy\templates"}
+#: One NUL character: what UTF-16 output looks like read as text.
+NUL = chr(0)
+
+
 TEMPLATE = "github-runner-2.328.0"
+
+
+def _utf16ish(text):
+    """What a UTF-16 answer looks like to something reading plain text."""
+    if not isinstance(text, str):
+        return text
+    return NUL.join(text) + (NUL if text else "")
 
 
 def _key(path):
@@ -183,6 +194,13 @@ class FakeWindows:
         if handler is None:
             return False, "", f"'{tool}' is not recognized"
         result = handler(rest, input)
+        if tool == TOOLS["nssm"]:
+            # NSSM writes UTF-16, so whatever reads it as text sees a NUL
+            # between every character. The runtime reading that as plain
+            # text is how a removal of a service that was never made failed
+            # on the first live Windows worker (2026-09-19).
+            ok, out, err = result
+            result = ok, _utf16ish(out), _utf16ish(err)
         if rest and self.crash_after == rest[0]:
             self.crash_after = None
             raise Crash(f"the agent died after `{tool} {rest[0]}`")

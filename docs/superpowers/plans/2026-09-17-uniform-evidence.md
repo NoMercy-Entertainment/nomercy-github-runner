@@ -286,3 +286,35 @@ actually done" has one answer (ACC-19).
 - **Left:** github-runner-5 and -6 (compose services), and -7 to -10, which
   the dashboard made and which its own `create()` will make again, with the
   volume it has given every new runner since 2026-09-17.
+
+## 2026-09-19 - the first Windows unit, and the two faults it found
+
+- **Asked for:** `capacity forgejo-windows-x64 1` on the control plane, with
+  the pilot label `rnr-pilot-windows:host`, which no workflow asks for.
+- **First it was not planned at all.** The store recorded the fleet
+  available - seeding had seen `FORGEJO_RUNNER_ARTIFACT_WINDOWS` - while every
+  pass refused it: "Forgejo publishes no windows runner binary". `plan()`
+  re-checked availability with whatever the caller passed, and the reconciler
+  passes nothing. Fixed (`7c9c2ce`): the service holds the deployment's
+  settings and plans with them. The control plane was rebuilt at that commit
+  and planned the runner immediately.
+- **Then the create failed on this host**, and both halves of it are real:
+  1. `icacls` refused the service's virtual-account SID:
+     "No mapping between account names and security IDs was done". Windows
+     maps that SID only once the service exists, so a tree cannot be locked to
+     a service that has not been made yet - which is what the runtime did, and
+     what its own docstring claimed was possible.
+  2. The compensation then failed with "Can't open service!", which should be
+     the no-op that says there is nothing to remove. NSSM writes UTF-16, so
+     read as text its answer carries a NUL between every character and matched
+     none of the strings the runtime looks for. Every status read had the same
+     problem.
+- **Fixed** in `agent/runtimes/windows_process.py`: the service is made first,
+  then the tree is locked to it, and it is started last, so nothing of the
+  runner's runs while its tree is open; and NSSM's output is read as text
+  before anything is matched against it. The fake worker now answers as NSSM
+  does, so the suite would have caught the second fault; three tests pin both.
+- **Left as it is for now:** the failed runner
+  `daa3e0b7-1f49-4bb3-b799-0ab07b0fad5f` and its directory tree
+  `D:\runners\daa3e0b7-...`. The fixed agent has to be deployed first, which
+  needs `Install-WindowsWorker.ps1` run elevated.

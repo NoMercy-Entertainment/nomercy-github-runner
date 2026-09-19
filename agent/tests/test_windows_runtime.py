@@ -24,7 +24,7 @@ from agent.runtimes.windows_process import (ADMINISTRATORS_SID,
                                             WindowsRegistrar, service_sid,
                                             size_bytes)
 
-from .fake_windows import TEMPLATE, TOOLS, FakeWindows
+from .fake_windows import TEMPLATE, TOOLS, FakeWindows, _utf16ish
 
 RID = "3f2504e0-4f89-41d3-9a0c-0305e82c3301"
 OTHER = "550e8400-e29b-41d4-a716-446655440000"
@@ -561,3 +561,42 @@ class TestTheJobHostForReal:
         assert p.returncode == 3
         assert "packaged" in p.stderr
         assert not (tmp_path / "reg" / "ran.txt").exists()
+
+
+class TestWhatTheFirstRealWorkerTaught:
+    """Two faults the fake could not show until it was made to answer as
+    NSSM really does, found when the controller made its first Windows unit
+    on this host on 2026-09-19."""
+
+    def test_the_service_is_made_before_the_tree_is_locked_to_it(
+            self, host, runtime):
+        """Windows maps a service's virtual-account SID to an account only
+        once the service exists; icacls on it before that answers "No
+        mapping between account names and security IDs was done", which is
+        how the first create failed."""
+        runtime.create(RID, {"image": TEMPLATE})
+        order = [a[0] for a in host.calls if a[0] in (TOOLS["nssm"],
+                                                      TOOLS["icacls"])]
+        installs = [i for i, a in enumerate(host.calls)
+                    if a[0] == TOOLS["nssm"] and a[1] == "install"]
+        acls = [i for i, a in enumerate(host.calls)
+                if a[0] == TOOLS["icacls"]]
+        assert order and installs and acls
+        assert installs[0] < acls[0], "the ACL needs the service to exist"
+        starts = [i for i, a in enumerate(host.calls)
+                  if a[0] == TOOLS["nssm"] and a[1] == "start"]
+        assert acls[0] < starts[0], "nothing runs while the tree is open"
+
+    def test_removing_a_service_that_was_never_made_is_a_no_op(self,
+                                                               runtime):
+        """NSSM says "Can't open service!" in UTF-16, which read as text
+        carries a NUL between every character and matched nothing. The
+        removal then failed - and it is the compensation that cleans up
+        after a create that failed."""
+        runtime.remove(RID, keep_data=False)        # nothing exists at all
+
+    def test_nssm_answers_are_read_as_text(self, runtime, host):
+        runtime.create(RID, {"image": TEMPLATE})
+        raw = host._nssm(["status", naming.unit_name(RID)], None)
+        assert "\x00" in _utf16ish(raw[1]), "the fake answers as NSSM does"
+        assert runtime.status(RID)["running"] is True
