@@ -32,6 +32,10 @@
 #>
 [CmdletBinding()]
 param(
+    # Only the control plane: its image rebuilt from HEAD, its settings
+    # rewritten, its controller restarted. The workers keep the certificates
+    # they were enrolled with, and their agents are left alone.
+    [switch] $ControlPlaneOnly,
     [string] $PilotLabel = 'rnr-pilot:docker://node:20',
     [string] $EnvFile = (Join-Path (Resolve-Path "$PSScriptRoot\..\..").Path '.env')
 )
@@ -98,6 +102,12 @@ try {
     Invoke-Guest $s $cp 'cd /tmp/rnr-stage && tar -xf code.tar && sudo bash setup.sh'
     Invoke-Guest $s $cp 'sudo rm -rf /tmp/rnr-stage' -Quiet
     Remove-Item -Force (Join-Path $cpStage 'controller.env')
+
+    if ($ControlPlaneOnly) {
+        Write-Host (Invoke-Guest $s $cp 'sudo docker exec rnr-controller python -m control status')
+        Write-Host "The control plane is at $version."
+        return
+    }
 
     # --- the forgejo base image, which is not public -----------------------------
     $baseTar = Join-Path $stage 'forgejo-base.tar'
