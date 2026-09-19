@@ -37,6 +37,11 @@ param(
     # they were enrolled with, and their agents are left alone.
     [switch] $ControlPlaneOnly,
     [string] $PilotLabel = 'rnr-pilot:docker://node:20',
+    # What the Windows cell's runners register with. The pilot label by
+    # default, which no workflow asks for; give it the production labels
+    # (windows-2022:host,windows-latest:host) only when the managed runner is
+    # meant to take over from the one running outside the platform.
+    [string] $WindowsLabels,
     [string] $EnvFile = (Join-Path (Resolve-Path "$PSScriptRoot\..\..").Path '.env')
 )
 . "$PSScriptRoot\lib.ps1"
@@ -80,7 +85,7 @@ try {
         # The Windows cell (Install-WindowsWorker.ps1): available once its
         # self-built artefact is named, units made from its template.
         "FORGEJO_RUNNER_ARTIFACT_WINDOWS=$($win.Template) sha256:$($win.RunnerSha256)",
-        "FORGEJO_RUNNER_LABELS_WINDOWS=$($win.PilotLabel)",
+        "FORGEJO_RUNNER_LABELS_WINDOWS=$(if ($WindowsLabels) { $WindowsLabels } else { $win.PilotLabel })",
         "RUNNER_UNIT_IMAGE_FORGEJO_WINDOWS=$($win.Template)",
         "RUNNER_UNIT_MEMORY_FORGEJO_WINDOWS=$($win.RunnerMemGB)g",
         "CONTROL_INTERVAL=15")

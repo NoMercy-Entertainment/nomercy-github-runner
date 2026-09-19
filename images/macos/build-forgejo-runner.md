@@ -46,10 +46,32 @@ go version
 shasum -a 256 forgejo-runner-darwin-amd64
 ```
 
-**Not run here**, for the same reason as the Windows recipe: this machine
-has no Go toolchain. The recipe follows upstream's `Makefile` as fetched on
-2026-09-18. Reproducibility (the same hash from the same tag and the same
-Go) is a claim until someone builds twice and compares.
+**Built on 2026-09-19**, by the script that recipe became:
+`images/windows/build-forgejo-runner.sh`, which builds windows/amd64 and both
+darwin architectures from one pinned tag, in a `golang` container on the WSL
+engine. Nothing was installed on the host.
+
+```
+docker run --rm -v <out>:/out -v images/windows:/build:ro golang:1.26.7   bash /build/build-forgejo-runner.sh v13.1.0
+```
+
+From tag v13.1.0, commit `6095cb17bfdbded5aa4ea84c18a4b69fd9574cca`, with
+go1.26.7 - the `toolchain` line of that tag's `go.mod`, which the script
+refuses to build without:
+
+| Binary | SHA-256 |
+| --- | --- |
+| `forgejo-runner-v13.1.0-darwin-amd64` | `f9f9ed421d6d1e71436b92e9b8891fb03b44c713e87e545c6e86423be2edb07a` |
+| `forgejo-runner-v13.1.0-darwin-arm64` | `c5f4bff75398edc6961f21a8f6c5916008a3b9ce9895fd627b95bf9d4fc5706b` |
+
+A second build in a fresh container gave the same hashes. Both builds ran on
+the same machine, so reproducibility across machines is still a claim. The
+binaries are kept in `D:/HyperV/runner-platform/artefacts/`, not in the
+repository, and recorded in `manifest.json`.
+
+**Not installed.** The appliance still runs the binary it has always run.
+Replacing it restarts the runner inside the guest, which is MACOS-ENV and
+waits for an idle moment and an operator's go.
 
 ## Becoming a template
 
