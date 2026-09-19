@@ -245,3 +245,44 @@ actually done" has one answer (ACC-19).
 - **Still on the old arrangement:** github-runner-2, -3 and -5 to -10 run
   their nested engine on fuse-overlayfs in their own layer, and runner-2's
   layer is already too large for `du` to walk. They were not touched.
+
+## 2026-09-19 - the first runner on the new platform, made and removed (T-0601 done)
+
+- **Decided by:** the operator ("akkoord"). FORGE-LIVE: a real Forgejo
+  registration, with a label no workflow asks for, so no production job could
+  reach it.
+- **Made:** `python -m control capacity forgejo-linux-x64 1` on the control
+  plane. The controller placed the runner on `rnr-linux-1`, the agent built
+  the unit `rnr-f226fbdd-a04f-4ae8-bf77-5fc3a260fd22` from
+  `nomercy/runner-unit-forgejo:8c83fa7`, registered it at Forgejo, and the
+  flow reported it `idle` - which needs both the agent and the forge to say
+  so.
+- **Removed:** `capacity forgejo-linux-x64 0`. Within a minute:
+  `draining` (the agent's own drain on the worker), then `removing`, then
+  gone from the store. No container was left on the worker.
+- **Checked at the forge, read-only:** Forgejo lists five runners, the three
+  WSL Forgejo containers and the Windows and macOS ones. No `rnr-` runner is
+  left, so the record was deleted with the runner.
+- **This is phase 5's "done when": the controller can create and remove a
+  throwaway Linux instance on its worker.** Both suites were green at the
+  time: agent 403, dashboard 1689 with 9 expected failures.
+
+## 2026-09-19 - github-runner-2 and -3 converted onto their own volumes
+
+- **Decided by:** the operator ("ja ik geef akkoord"), after runner-1.
+- **How, per runner** (`infra/fleet/Convert-RunnerToVolume.ps1`): its custom
+  label `beast-unit` is taken off at GitHub, so no new job is routed to it;
+  the script waits until GitHub and the runner both report no job; only then
+  is the container replaced, its cpuset put back, and the new registration
+  checked for the label again. Nothing is signalled while a job runs.
+- **github-runner-2:** drained, converted, `overlay2`, registered as
+  `nomercy-ngf2a` at 22:40:22Z with `beast-unit`, cpuset 4-19. The old
+  container was removed after the new one was listening.
+- **github-runner-3:** the same, listening at 22:53:32Z, cpuset 8-23. It was
+  down about 8 minutes: unlike 1 and 2 it carried compose labels, so compose
+  removed the old container - and its oversized layer - before making the
+  new one. For the rest, `-PruneFirst` empties the old nested engine while
+  the runner is drained, to keep that deletion off the critical path.
+- **Left:** github-runner-5 and -6 (compose services), and -7 to -10, which
+  the dashboard made and which its own `create()` will make again, with the
+  volume it has given every new runner since 2026-09-17.
