@@ -194,7 +194,8 @@ class Controller:
         client = AgentClient(inventory, _path("controller", tls_dir),
                              _path("controller_key", tls_dir),
                              _path("ca", tls_dir), audit_path=self.db)
-        self.service = RunnerService(self.db, runtimes=agent_runtime.TABLE)
+        self.service = RunnerService(self.db, runtimes=agent_runtime.TABLE,
+                                     env=env)
         self.service.agents = agent_runtime.AgentWiring(
             client, operations=self.service.operations,
             images=unit_images(env), memory=unit_memory(env))

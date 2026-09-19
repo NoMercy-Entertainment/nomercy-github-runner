@@ -85,7 +85,7 @@ class UnknownRunner(Exception):
 
 class RunnerService:
     def __init__(self, path=None, specs=None, fleets=None, operations=None,
-                 inventory=None, runtimes=None, agents=None):
+                 inventory=None, runtimes=None, agents=None, env=None):
         self.specs = specs or SpecStore(path)
         self.fleets = fleets or FleetStore(path)
         self.operations = operations or OperationStore(path)
@@ -95,6 +95,12 @@ class RunnerService:
         #: How workers are reached (control/agent_runtime.AgentWiring), set by
         #: the controller process. None where nothing runs on a worker.
         self.agents = agents
+        #: The deployment's settings, as the controller process was given
+        #: them. A cell can exist only because of one - Forgejo on Windows
+        #: exists when FORGEJO_RUNNER_ARTIFACT_WINDOWS names a self-built
+        #: runner - so a plan that asked without them refused a fleet the
+        #: store itself records as available.
+        self.env = dict(env or {})
 
     # ---- which runtime runs a cell -----------------------------------------
 
@@ -151,6 +157,9 @@ class RunnerService:
                 f"{fid} is unavailable: "
                 f"{fleet['unavailable_reason'] or 'the cell does not exist'}")
 
+        # The deployment's settings when the caller named none; a route that
+        # passes its own still wins.
+        env = self.env if env is None else env
         provider = providers.by_key(fleet["provider"])
         if provider is None:
             raise Refused(f"{fid} names an unknown provider "
@@ -159,7 +168,7 @@ class RunnerService:
         # Asked again here rather than trusting the stored flag: seeding may
         # have run before someone built the artefact, or long before now.
         support = provider.supports(fleet["platform"], fleet["architecture"],
-                                    env if env is not None else {})
+                                    env)
         if not support:
             raise Refused(f"{fid} cannot be built: {support.reason}")
 

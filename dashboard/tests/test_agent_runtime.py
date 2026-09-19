@@ -244,3 +244,42 @@ class TestTheAuthority:
             "RUNNER_UNIT_IMAGE_FORGEJO_WINDOWS": "forgejo-runner-win-v12",
             "RUNNER_UNIT_IMAGE_GITHUB_LINUX": " "}) == {
             ("forgejo", "windows"): "forgejo-runner-win-v12"}
+
+
+class TestTheDeploymentsSettingsReachPlanning:
+    """A cell can exist only because of a setting: Forgejo on Windows exists
+    when FORGEJO_RUNNER_ARTIFACT_WINDOWS names a self-built runner. The
+    reconciler plans without passing any settings, so the service has to
+    hold them - found live, with the store recording the fleet available
+    while every pass refused it as unbuildable."""
+
+    ENV = {"FORGEJO_RUNNER_ARTIFACT_WINDOWS": "forgejo-runner-v13.1.0-windows",
+           "FORGEJO_RUNNER_LABELS_WINDOWS": "rnr-pilot-windows:host"}
+
+    def service(self, tmp_path, env):
+        from control import agent_runtime
+        from control.service import RunnerService
+        from store import schema
+        from store.fleets import FleetStore
+        db = str(tmp_path / "c.db")
+        schema.init(db)
+        FleetStore(db).seed(env)
+        return RunnerService(db, runtimes=agent_runtime.TABLE, env=env)
+
+    def test_a_fleet_that_exists_only_through_them_can_be_planned(
+            self, tmp_path):
+        service = self.service(tmp_path, self.ENV)
+        service.plan("forgejo-windows-x64", 1, requested_by="test")
+        assert len(service.specs.list(fleet_id="forgejo-windows-x64")) == 1
+
+    def test_without_them_it_is_still_refused(self, tmp_path):
+        from control.service import Refused
+        service = self.service(tmp_path, {})
+        with pytest.raises(Refused, match="no windows runner binary"):
+            service.plan("forgejo-windows-x64", 1, requested_by="test")
+
+    def test_what_a_caller_passes_still_wins(self, tmp_path):
+        from control.service import Refused
+        service = self.service(tmp_path, self.ENV)
+        with pytest.raises(Refused, match="no windows runner binary"):
+            service.plan("forgejo-windows-x64", 1, requested_by="test", env={})
