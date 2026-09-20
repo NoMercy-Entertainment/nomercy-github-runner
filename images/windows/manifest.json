@@ -82,5 +82,17 @@
       "verified_against": "the hash GitHub publishes in that release's own notes, read from the API on 2026-09-20",
       "recipe": "images/macos/install-templates.md"
     }
+  ],
+  "actions-runner-linux-x64": [
+    {
+      "status": "pinned in the unit image (images/linux/unit/Dockerfile.github)",
+      "version": "2.336.0",
+      "asset": "actions-runner-linux-x64-2.336.0.tar.gz",
+      "sha256": "04cf0be1aff4c3ec3554466c39124ca250e3effd8873bb7e8d68535aa9505d5d",
+      "source": "https://github.com/actions/runner/releases/tag/v2.336.0",
+      "verified_against": "the hash GitHub publishes in that release's own notes, read from the API on 2026-09-20",
+      "recipe": "images/linux/unit/Dockerfile.github",
+      "why": "GitHub refuses to deliver jobs to a deprecated runner, and the image a unit is built from shipped 2.333.1 while the fleet that was serving had replaced it at start"
+    }
   ]
 }

@@ -11,6 +11,32 @@ FROM ${BASE}
 ENV RUNNER_KIND=github \
     RUNNER_BUILD_CACHE_GC=40GB \
     RUNNER_HOME=/root/actions-runner
+# The runner GitHub will still talk to. GitHub refuses to deliver jobs to a
+# deprecated one - "Runner version v2.333.1 is deprecated and cannot receive
+# messages", and the unit exits - and the image this is built from ships
+# whatever it ships: 2.333.1 when this was written, while every runner that
+# was serving had replaced it with 2.336.0 at its own start. A unit built
+# from the image alone therefore arrived dead (2026-09-20). Pinned here,
+# checked against the hash GitHub publishes for that release
+# (images/windows/manifest.json), and bumped when GitHub deprecates it again.
+# What the listener reports is trusted over the download having arrived: a
+# marker written on a half-finished download is what left github-runner-6 on
+# deprecated binaries for hours (scripts/start.sh, 2026-08-01).
+ARG RUNNER_VERSION=2.336.0
+ARG RUNNER_SHA256=04cf0be1aff4c3ec3554466c39124ca250e3effd8873bb7e8d68535aa9505d5d
+RUN set -eu; \
+    cd "$RUNNER_HOME"; \
+    if [ "$(cat ./.runner_version 2>/dev/null)" != "$RUNNER_VERSION" ]; then \
+      tarball="actions-runner-linux-x64-${RUNNER_VERSION}.tar.gz"; \
+      curl -fsSL -o "/tmp/$tarball" \
+        "https://github.com/actions/runner/releases/download/v${RUNNER_VERSION}/$tarball"; \
+      echo "${RUNNER_SHA256}  /tmp/$tarball" | sha256sum -c -; \
+      tar -xzf "/tmp/$tarball"; \
+      rm -f "/tmp/$tarball"; \
+      ./bin/Runner.Listener --version | tr -d '\r' | grep -qx "$RUNNER_VERSION"; \
+      echo "$RUNNER_VERSION" > ./.runner_version; \
+    fi
+
 COPY runner/ /runner/
 RUN chmod 0755 /runner/run /runner/register /runner/deregister \
     && chmod 0644 /runner/lib.sh \

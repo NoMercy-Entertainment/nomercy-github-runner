@@ -86,7 +86,6 @@ class TestTheToken:
     def test_the_plan_is_read_from_standard_input(self):
         assert 'plan="$(cat)"' in read("runner", "register")
 
-
     def test_a_plan_that_replaces_is_not_answered_from_the_volume(self):
         """A unit keeps its registration files on its volume, and the
         controller cannot make it drop them: `deregister` deliberately
@@ -125,6 +124,37 @@ class TestDeregistration:
                                  re.S | re.M)
         assert unregistered and "exit 0" in unregistered.group(1), \
             "only an unregistered unit succeeds"
+
+
+class TestTheRunnerGitHubWillTalkTo:
+    """GitHub refuses to deliver jobs to a deprecated runner: "Runner
+    version v2.333.1 is deprecated and cannot receive messages", and the
+    unit exits. The image a unit is built from ships whatever it ships -
+    2.333.1 when this was written, while every runner that was serving had
+    replaced it with 2.336.0 at start - so a rebuilt runner arrived dead
+    (2026-09-20). The unit image pins the version, and the pin is the one
+    the manifest records against the hash GitHub publishes.
+    """
+
+    def pins(self):
+        df = read("Dockerfile.github")
+        version = re.search(r"ARG RUNNER_VERSION=([\d.]+)", df)
+        sha = re.search(r"ARG RUNNER_SHA256=([0-9a-f]{64})", df)
+        assert version and sha, "the unit image pins no runner"
+        return df, version.group(1), sha.group(1)
+
+    def test_it_is_checked_against_that_hash_before_it_is_used(self):
+        df, _, _ = self.pins()
+        assert "sha256sum -c" in df
+
+    def test_the_pin_is_what_the_manifest_records(self):
+        import json
+        _, version, sha = self.pins()
+        images = os.path.dirname(os.path.dirname(UNIT))
+        with open(os.path.join(images, "windows", "manifest.json"),
+                  encoding="utf-8") as fh:
+            entry = json.load(fh)["actions-runner-linux-x64"][0]
+        assert (entry["version"], entry["sha256"]) == (version, sha)
 
 
 @pytest.mark.skipif(shutil.which("bash") is None, reason="no bash here")
