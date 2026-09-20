@@ -142,8 +142,14 @@ class AgentRuntime:
         unit = {"image": str(image),
                 "labels": {"nomercy.provider": str(spec.get("provider")),
                            "nomercy.fleet": str(spec.get("fleet_id") or "")}}
-        if spec.get("cpu_limit") not in (None, "", "0"):
-            unit["cpus"] = str(spec["cpu_limit"])
+        limit = str(spec.get("cpu_limit") or "").strip()
+        if limit not in ("", "0"):
+            # 11.1: adapter-interpreted. A window of cores - "0-15", or a
+            # list - is a cpuset, which is the only thing that changes what
+            # `nproc` reports inside the unit; a plain number is a quota,
+            # which does not. This fleet is pinned to 16-core windows so a
+            # build sees sixteen (2026-09-20).
+            unit["cpuset" if ("-" in limit or "," in limit) else "cpus"] = limit
         if spec.get("memory_limit"):
             unit["memory"] = str(int(spec["memory_limit"]))
         else:

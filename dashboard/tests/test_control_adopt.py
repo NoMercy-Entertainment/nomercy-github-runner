@@ -303,3 +303,40 @@ class TestAnAdoptionEndsWithTheUnitItAdopted:
         before = store.get(runner_id)["spec_version"]
         forget_adoption(store, store.get(runner_id))
         assert store.get(runner_id)["spec_version"] == before
+
+
+class TestACpuWindowSurvivesARebuild:
+    """`cpu_limit` is adapter-interpreted: "a cpuset width, a Job Object cap,
+    or a vCPU count" (11.1). For a container it is the cpuset - which is the
+    only thing that changes what `nproc` reports inside it, and this fleet is
+    pinned to 16-core windows precisely so a build sees sixteen.
+
+    A quota (`--cpus`) does not: a rebuilt runner with a quota and no cpuset
+    would report all 64 and spawn a job for each (2026-09-20).
+    """
+
+    class Wiring:
+        images = {}
+        memory = {}
+
+    def unit(self, cpu_limit):
+        from control.agent_runtime import AgentRuntime
+        spec = {"runner_id": "r1", "provider": "github", "platform": "linux",
+                "fleet_id": "github-linux-x64", "cpu_limit": cpu_limit,
+                "runtime_template": "an-image:1"}
+        return AgentRuntime(wiring=self.Wiring(), host_id="w").unit_spec(spec)
+
+    def test_a_window_is_sent_as_a_cpuset(self):
+        assert self.unit("0-15")["cpuset"] == "0-15"
+        assert "cpus" not in self.unit("0-15")
+
+    def test_a_list_of_cores_is_a_window_too(self):
+        assert self.unit("0,2,4,6")["cpuset"] == "0,2,4,6"
+
+    def test_a_plain_number_is_still_a_quota(self):
+        assert self.unit("4")["cpus"] == "4"
+        assert "cpuset" not in self.unit("4")
+
+    def test_nothing_asked_is_nothing_sent(self):
+        unit = self.unit(None)
+        assert "cpus" not in unit and "cpuset" not in unit
