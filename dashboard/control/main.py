@@ -202,7 +202,8 @@ class Controller:
         self.flow = ProvisioningFlow(self.service,
                                      agent_runtime.FlowAgent(
                                          self.service.agents),
-                                     LiveForges(env), env=env)
+                                     LiveForges(env), env=env,
+                                     verify_timeout=verify_timeout(env))
         self.reconciler = Reconciler(
             self.service, self.flow,
             holder=f"controller-{socket.gethostname()}-{os.getpid()}")
@@ -340,6 +341,23 @@ def capacity(fleet, count, db=None, who="cli"):
     from .service import RunnerService
     return RunnerService(_store(db)).set_capacity(fleet, int(count),
                                                   requested_by=who)
+
+
+def verify_timeout(env):
+    """How long a new runner is given to come up and be seen by both its
+    worker and its forge.
+
+    A fresh unit starts a nested engine before its runner answers, which on
+    a busy worker takes minutes; a verification that gives up first undoes a
+    registration that had just succeeded (2026-09-20). Ten minutes unless
+    the deployment says otherwise, and anything unreadable is that default
+    rather than a crash at startup.
+    """
+    try:
+        asked = int((env or {}).get("CONTROL_VERIFY_TIMEOUT") or 0)
+    except (TypeError, ValueError):
+        return 600
+    return asked if asked > 0 else 600
 
 
 def _env():

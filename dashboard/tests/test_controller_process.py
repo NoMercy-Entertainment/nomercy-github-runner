@@ -303,3 +303,15 @@ class TestDrainedAndGone:
         converge(controller, runner, "absent", passes=20)
         assert rid not in github.runners
         assert runner not in units.units
+
+
+@pytest.mark.parametrize("env,expected", [
+    ({}, 600), ({"CONTROL_VERIFY_TIMEOUT": "30"}, 30),
+    ({"CONTROL_VERIFY_TIMEOUT": ""}, 600),
+    ({"CONTROL_VERIFY_TIMEOUT": "not a number"}, 600),
+    ({"CONTROL_VERIFY_TIMEOUT": "0"}, 600)])
+def test_how_long_a_new_runner_is_given_to_come_up(env, expected):
+    """A fresh unit starts a nested engine before its runner answers, which
+    on a busy worker takes minutes. A verification that gives up first
+    undoes a registration that had just succeeded (2026-09-20)."""
+    assert main.verify_timeout(env) == expected
