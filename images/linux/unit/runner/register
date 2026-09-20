@@ -45,8 +45,14 @@ mkdir -p "$RUNNER_REG_DIR"
 
 case "$RUNNER_KIND" in
   github)
+    # config.sh is run in the runner's own directory, with no links in place:
+    # it reads the files it is about to write, and a link pointing at a file
+    # that does not exist yet is a FileNotFoundException rather than a fresh
+    # registration (measured against GitHub, 2026-09-20). The files move into
+    # the registration volume afterwards, and are linked back - which is what
+    # makes a unit on the same volume the same runner.
     for f in $REG_FILES; do
-      ln -sfn "$RUNNER_REG_DIR/$f" "$RUNNER_HOME/$f"
+      rm -f "$RUNNER_HOME/$f"
     done
     cd "$RUNNER_HOME"
     export RUNNER_ALLOW_RUNASROOT=1
@@ -61,6 +67,12 @@ case "$RUNNER_KIND" in
     [ -n "$labels" ] && export ACTIONS_RUNNER_INPUT_LABELS="$labels"
     [ -n "$group" ]  && export ACTIONS_RUNNER_INPUT_RUNNERGROUP="$group"
     ./config.sh --unattended --replace --disableupdate >&2
+    mkdir -p "$RUNNER_REG_DIR"
+    for f in $REG_FILES; do
+      [ -e "$RUNNER_HOME/$f" ] || continue
+      mv -f "$RUNNER_HOME/$f" "$RUNNER_REG_DIR/$f"
+      ln -sfn "$RUNNER_REG_DIR/$f" "$RUNNER_HOME/$f"
+    done
     ;;
   forgejo)
     # Bounded: forgejo-runner pings an unreachable instance for ever, and the
