@@ -68,10 +68,18 @@ def worker(pki, db, host_id="linux-1", units=None, enrolled=True,
     return agent, agent_tls.client_context(cert, key, pki.ca_file)
 
 
-def sender(agent, context, receiver):
-    return hb.HeartbeatSender(
+def sender(agent, context, receiver, measured=True):
+    """A sender with one measurement behind it, which is what the agent has
+    by its second beat: measuring runs on its own thread, so the very first
+    beat of a fresh agent carries only that it is here (agent/heartbeat.py,
+    2026-09-20). The round trips below are about what a measured beat does
+    to the controller."""
+    it = hb.HeartbeatSender(
         agent, f"https://127.0.0.1:{receiver.port}/v1/heartbeat", context,
         timeout=5)
+    if measured:
+        it.measure_once()
+    return it
 
 
 def placed(db, host_id="linux-1"):
@@ -84,6 +92,33 @@ def placed(db, host_id="linux-1"):
     runner_id = store.create(provider="github", platform="linux",
                              host_id=host_id)
     return runner_id
+
+
+class TestABeatThatHasNotMeasuredYet:
+    """A fresh agent, or one whose engine is taking its time, beats before
+    it has measured anything. That beat says the worker is here and says
+    nothing about its units - and saying nothing is what keeps the
+    controller from acting on a guess.
+
+    It is the difference between a worker that is busy and a worker that is
+    gone. Reading one as the other refused a rebuild's removal in the
+    middle of it (2026-09-20).
+    """
+
+    def test_it_still_makes_the_worker_healthy(self, pki, db, receiver):
+        agent, context = worker(pki, db)
+        assert sender(agent, context, receiver,
+                      measured=False).send_once() is True
+        assert inv.Inventory(db).health("linux-1") == inv.HEALTHY
+
+    def test_it_leaves_every_unit_where_it_was(self, pki, db, receiver):
+        runner_id = placed(db)
+        agent, context = worker(pki, db, units=[
+            {"runner_id": runner_id, "state": "running"}])
+        sender(agent, context, receiver).send_once()
+        assert SpecStore(db).get(runner_id)["unit_state"] == "running"
+        sender(agent, context, receiver, measured=False).send_once()
+        assert SpecStore(db).get(runner_id)["unit_state"] == "running"
 
 
 class TestBeatsDriveLastSeen:

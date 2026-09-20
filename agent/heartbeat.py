@@ -19,6 +19,7 @@ which runners live here, and that is not for anyone else.
 A failed beat is not retried: the next one is ten seconds away (design 17.2).
 """
 import threading
+import time
 from datetime import datetime, timezone
 from urllib.parse import urlsplit
 
@@ -33,6 +34,11 @@ TIMEOUT = 5
 #: well - about every five minutes. They mean walking a directory tree or
 #: asking a nested engine, which is too slow to do every ten seconds.
 DEEP_EVERY = 30
+
+#: How old a measurement may be and still go out with a beat. Beyond this a
+#: beat carries none: the controller acts on what a beat says about a unit,
+#: and a state from a minute ago is not evidence about it now.
+STALE_AFTER = 3 * INTERVAL
 
 
 def _telemetry(runtime, runner_ids):
@@ -63,6 +69,32 @@ def _depth(runtime, runner_id):
     return out
 
 
+def _stamp():
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def minimal(agent, server=None):
+    """A beat with everything that costs nothing to know.
+
+    Sent while the agent is still measuring: it says the worker is here,
+    which is what the controller's three-beat window is for, and says
+    nothing about the units, which is what it does not know at this moment.
+    A beat that mentions no unit leaves every unit alone (13.4), so this
+    costs the controller nothing but its own patience.
+    """
+    return {
+        "host_id": agent.host_id,
+        "agent_version": agent.version,
+        "protocol_major": protocol.PROTOCOL_MAJOR,
+        "served": sorted(agent.permitted),
+        "sent_at": _stamp(),
+        "measuring": True,
+        "counters": {
+            "refused_connections": len(server.refusals) if server else 0,
+        },
+    }
+
+
 def build(agent, server=None, deep=False):
     """One heartbeat's payload. `deep` adds each unit's storage and cache."""
     beat = {
@@ -70,7 +102,7 @@ def build(agent, server=None, deep=False):
         "agent_version": agent.version,
         "protocol_major": protocol.PROTOCOL_MAJOR,
         "served": sorted(agent.permitted),
-        "sent_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "sent_at": _stamp(),
     }
     try:
         beat["capabilities"] = dict(agent.runtime.capabilities() or {})
@@ -120,15 +152,43 @@ class HeartbeatSender:
         self.timeout = timeout
         self.sent = 0
         self.failed = 0
+        self.measured = 0
+        #: (monotonic, payload) of the last measurement that finished.
+        self._measured = None
         self._stop = threading.Event()
         self._thread = None
+        self._measuring = None
+
+    def measure_once(self):
+        """Build one measured payload and keep it. The first measurement,
+        and every DEEP_EVERY-th after it, also measures storage and cache.
+
+        Called from its own thread, because this is the slow half: `docker
+        stats` over every running unit, and a deep pass asks each unit's
+        nested engine. A beat that waited for it went silent for minutes on
+        a busy worker, and silence is what the controller reads as an
+        absence (2026-09-20).
+        """
+        deep = self.measured % DEEP_EVERY == 0
+        try:
+            built = build(self.agent, self.server, deep=deep)
+        except Exception:                   # noqa: BLE001 - the next one may
+            return None                     # do better; the beat goes anyway
+        self.measured += 1
+        self._measured = (time.monotonic(), built)
+        return built
+
+    def payload(self):
+        """What the next beat carries: the last measurement while it is
+        fresh, else a beat that says the agent is still measuring."""
+        got = self._measured
+        if got and time.monotonic() - got[0] <= STALE_AFTER:
+            return dict(got[1], sent_at=_stamp())
+        return minimal(self.agent, self.server)
 
     def send_once(self):
-        """Send one beat. True when the controller took it. The first, and
-        every DEEP_EVERY-th after it, also measures storage and cache."""
-        deep = (self.sent + self.failed) % DEEP_EVERY == 0
-        ok = self.link.post(self.path, build(self.agent, self.server,
-                                             deep=deep))
+        """Send one beat. True when the controller took it."""
+        ok = self.link.post(self.path, self.payload())
         if ok:
             self.sent += 1
         else:
@@ -140,13 +200,26 @@ class HeartbeatSender:
             self.send_once()
             self._stop.wait(self.interval)
 
+    def _measure_loop(self):
+        while not self._stop.is_set():
+            self.measure_once()
+            self._stop.wait(self.interval)
+
     def start(self):
         self._thread = threading.Thread(target=self._loop,
                                         name="agent-heartbeat", daemon=True)
         self._thread.start()
+        self._measuring = threading.Thread(target=self._measure_loop,
+                                           name="agent-heartbeat-measure",
+                                           daemon=True)
+        self._measuring.start()
         return self
 
     def stop(self):
         self._stop.set()
         if self._thread:
             self._thread.join(timeout=self.timeout + 1)
+        if self._measuring:
+            # Not waited out: a measurement can be blocked on an engine that
+            # is not answering, and the agent must still be able to stop.
+            self._measuring.join(timeout=0.1)

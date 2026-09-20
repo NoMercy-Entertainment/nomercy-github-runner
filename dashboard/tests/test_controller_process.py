@@ -277,10 +277,15 @@ class TestFromNothingToServing:
               == "running", "a heartbeat naming the unit", timeout=15)
 
     def test_the_worker_declares_what_it_can_hold(self, plant):
+        """Waited for: measuring runs on its own thread, so the beat that
+        makes a fresh worker healthy carries only that it is there, and
+        what it can hold arrives with the first measured one
+        (agent/heartbeat.py, 2026-09-20)."""
         controller, units, registrar, github, db = plant
-        worker = Inventory(db).get(HOST)
-        assert '"max_runners": 2' in (worker.get("capabilities") or "") \
-            or (worker.get("capabilities") or {}).get("max_runners") == 2
+        until(lambda: (Inventory(db).get(HOST).get("capabilities") or {})
+              .get("max_runners") == 2,
+              "a measured heartbeat carrying what the worker can hold",
+              timeout=20)
 
 
 class TestDrainedAndGone:
