@@ -473,13 +473,14 @@ class Reconciler:
             self._fail(spec, operation, e, report, "register")
             return
         spec = self.service.specs.get(spec["runner_id"])
-        extra = {}
-        if result.get("drift"):
-            # Registered and online, but not with what the fleet asked for.
-            # Not a failure - the runner works - and not silent either.
-            extra["last_error"] = (f"{_iso(_now())} registered with other "
-                                   f"labels than the fleet's: "
-                                   f"{result['drift']}"[:500])
+        # Registered and online, but not with what the fleet asked for.
+        # Not a failure - the runner works - and not silent either, so it is
+        # a note: the error's column paints every card red, and a fleet of
+        # adopted runners all carry labels of their own (T-0802).
+        extra = {"last_note": (f"{_iso(_now())} registered with other labels "
+                               f"than the fleet's: "
+                               f"{result['drift']}"[:500])
+                 if result.get("drift") else None}
         spec = self._move(spec, "idle",
                           registration_id=result.get("registration_id"),
                           registration_uuid=result.get("registration_uuid"),

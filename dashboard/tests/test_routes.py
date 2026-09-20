@@ -430,3 +430,18 @@ class TestTheHomePageWhereThereIsNoEngine:
                             lambda *a, **k: (False, "", "no such file"))
         docker_ops.engine_reachable.cache_clear()
         assert docker_ops.engine_reachable() is False
+
+
+class TestWhatTheNavigationOffers:
+    def test_no_link_to_the_v1_page_where_there_is_no_engine(self, client,
+                                                             monkeypatch):
+        """Offering a link that bounces the reader straight back to where
+        they came from is worse than not offering it."""
+        monkeypatch.setattr(docker_ops, "engine_reachable", lambda: False)
+        page = client.get("/v2").get_data(as_text=True)
+        assert 'href="/"' not in page
+        assert 'href="/v2"' in page
+
+    def test_it_is_offered_where_an_engine_answers(self, client, monkeypatch):
+        monkeypatch.setattr(docker_ops, "engine_reachable", lambda: True)
+        assert 'href="/"' in client.get("/v2").get_data(as_text=True)

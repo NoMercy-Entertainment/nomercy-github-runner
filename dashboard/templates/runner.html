@@ -103,7 +103,7 @@ tbody tr[data-id]:hover{background:var(--bg-inset)}
   <div class="stat"><div class="n" id="rd-uptime">&mdash;</div><div class="k">Uptime</div></div>
   <div class="stat"><div class="live" id="live"><span class="dot"></span><span id="live-txt">Connecting</span></div></div>
   <nav>
-    <a href="/">Fleet</a>
+    {% if has_engine %}<a href="/">Fleet</a>{% endif %}
     <a href="/history">History</a>
     <a href="/settings">Settings</a>
     {% if role == 'admin' %}<a href="/users">Access</a>{% endif %}

@@ -62,7 +62,7 @@ svg{display:block;width:100%;height:150px;background:var(--bg-inset);
     <div class="sub">Every job, every runner</div>
   </div>
   <nav>
-    <a href="/">Fleet</a>
+    {% if has_engine %}<a href="/">Fleet</a>{% endif %}
     <a href="/history" class="on">History</a>
     <a href="/settings">Settings</a>
     {% if role == 'admin' %}<a href="/users">Access</a>{% endif %}

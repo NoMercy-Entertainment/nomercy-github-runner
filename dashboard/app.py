@@ -806,6 +806,14 @@ def api_users(action):
     return jsonify(ok=True)
 
 
+@app.context_processor
+def _what_this_host_can_serve():
+    """Templates ask this before offering the v1 page. On a host with no
+    engine that page has nothing to show, and offering a link that bounces
+    the reader straight back is worse than not offering it."""
+    return {"has_engine": ops.engine_reachable()}
+
+
 @app.route("/")
 def index():
     """The page this host can actually serve.

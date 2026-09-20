@@ -239,3 +239,35 @@ class TestUndoingAnAdoption:
         spec = {"runner_id": "r1", "adopt_unit": {"label": "x"}}
         for step in STEPS:
             assert self.undoing(spec, step) == (), step
+
+
+class TestANoteIsNotAnError:
+    """A runner that registered with labels of its own still works - it just
+    takes different jobs. Every adopted runner has them (T-0802), and while
+    that was written into `last_error` every card on the page was red.
+    """
+
+    def test_a_drift_is_recorded_as_a_note(self, db, forge):
+        from store.specs import SpecStore
+        runner_id = adopt(db, forge)
+        store = SpecStore(db)
+        store.update(runner_id, 1,
+                     last_note="2026-09-20T09:45:10Z registered with other "
+                               "labels than the fleet's: beast-unit")
+        spec = store.get(runner_id)
+        assert spec["last_note"]
+        assert spec["last_error"] is None
+
+    def test_the_card_keeps_them_apart(self, db, forge):
+        from cards import from_spec
+        from store.specs import SpecStore
+        runner_id = adopt(db, forge)
+        SpecStore(db).update(runner_id, 1, last_note="other labels",
+                             last_error=None)
+        card = from_spec(SpecStore(db).get(runner_id))
+        assert card["last_note"] == "other labels"
+        assert card["last_error"] is None
+
+    def test_every_card_carries_the_field(self):
+        from cards import FIELDS
+        assert "last_note" in FIELDS

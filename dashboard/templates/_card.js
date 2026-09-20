@@ -14,7 +14,7 @@
 const CARD_FIELDS = ['runner_id', 'display_name', 'provider', 'platform',
   'architecture', 'worker', 'runtime', 'state', 'job', 'cpu', 'memory',
   'storage', 'cache', 'reachable', 'last_seen_at', 'current_operation',
-  'last_error', 'capabilities'];
+  'last_error', 'last_note', 'capabilities'];
 
 function esc(v) {
   return String(v == null ? '' : v).replace(/[&<>"']/g, ch => ({
@@ -112,13 +112,17 @@ function cardHTML(c) {
     (c.current_operation ? ` · operation ${esc(c.current_operation)}` : '') +
     `</div>`;
   const error = c.last_error ? `<div class="cerr">${esc(c.last_error)}</div>` : '';
+  // A note is something true that is not a failure - a runner registered
+  // with labels of its own still works. It reads as a note, not in the
+  // colour that means something is broken.
+  const note = c.last_note ? `<div class="cnote">${esc(c.last_note)}</div>` : '';
   const buttons = (c.actions || []).map(actionButton).join('');
   return `<div class="chead">${name}<span class="badge ${esc(c.state)}">` +
     `${esc(c.state)}</span></div>` +
     `<div class="creg">${esc(where)}</div>` +
     (notes ? `<div class="annots">${notes}</div>` : '') +
     `<div class="cjob${c.job ? '' : ' none'}">${esc(job)}</div>` +
-    meters(c) + status + error +
+    meters(c) + status + note + error +
     (buttons ? `<div class="actions">${buttons}</div>` : '');
 }
 

@@ -216,6 +216,9 @@ class TestTheSchemaMatchesTheDesign:
         # Added in T-0802, and to the design's table with it: what a runner
         # that was already serving was adopted from.
         "adopt_unit": "TEXT",
+        # Something true that is not a failure, which used to live in the
+        # error's column and painted every healthy card red.
+        "last_note": "TEXT",
     }
 
     def columns(self, store, table="runner_specs"):

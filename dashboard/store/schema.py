@@ -115,6 +115,11 @@ CREATE TABLE IF NOT EXISTS runner_specs (
   telemetry        TEXT,
   forge_state      TEXT,
   forge_seen_at    TEXT,
+  -- Something true and worth saying that is not a failure: a runner that
+  -- registered with labels other than its fleet's still works, it just
+  -- takes different jobs. It was written into last_error before, where the
+  -- page paints it red and every healthy runner looked broken.
+  last_note        TEXT,
   -- T-0802: what this runner was adopted from, when it was already serving
   -- before the controller knew it - the execution unit that exists, named in
   -- the worker's own terms (a launchd label and the directory it runs from).
@@ -236,6 +241,9 @@ def _migrate(c):
         # T-0404. Nullable: a runner no heartbeat has mentioned yet has no
         # observed unit state, which is not the same as any value.
         c.execute("ALTER TABLE runner_specs ADD COLUMN unit_state TEXT")
+    if "last_note" not in have:
+        # A note is not an error, and had been living in the error's column.
+        c.execute("ALTER TABLE runner_specs ADD COLUMN last_note TEXT")
     if "adopt_unit" not in have:
         # T-0802. Null for a runner the controller made itself; JSON naming
         # the unit that was already there for one it adopted.

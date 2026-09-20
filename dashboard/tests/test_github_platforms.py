@@ -350,4 +350,7 @@ class TestADriftIsVisible:
         passes(service, reconciler)
         runner = the_runner(service)
         assert runner["actual_state"] == "idle"
-        assert "missing labels gpu" in runner["last_error"]
+        # A note, not an error: the runner serves, it just takes different
+        # jobs than the fleet asked for.
+        assert "missing labels gpu" in runner["last_note"]
+        assert runner["last_error"] is None

@@ -31,7 +31,8 @@ import providers
 FIELDS = ("runner_id", "display_name", "provider", "platform",
           "architecture", "worker", "runtime", "state", "job", "cpu",
           "memory", "storage", "cache", "reachable", "last_seen_at",
-          "current_operation", "last_error", "capabilities")
+          "current_operation", "last_error", "last_note",
+          "capabilities")
 
 #: Design 14.2's actions, plus cancelling a drain, in the order a card shows
 #: them.
@@ -234,6 +235,7 @@ def from_legacy(runner, host=None, generated=None):
         last_seen_at=generated,
         current_operation=None,
         last_error=None,
+        last_note=None,
         capabilities=caps,
         key=f"v1:{name}",
         source="v1",
@@ -290,6 +292,7 @@ def from_unmanaged(entry, generated=None):
         current_operation=None,
         last_error=None if t is not None else
         "no telemetry: the exporter did not answer for this runner",
+        last_note=None,
         capabilities=caps,
         key=f"forge:{entry.get('uuid')}",
         source="forge",
@@ -464,6 +467,7 @@ def from_spec(spec, telemetry=None, worker_reachable=None, now=None):
         last_seen_at=spec.get("last_seen_at"),
         current_operation=spec.get("current_operation"),
         last_error=spec.get("last_error"),
+        last_note=spec.get("last_note"),
         capabilities=caps,
         key=f"rnr:{rid}",
         source="controller",

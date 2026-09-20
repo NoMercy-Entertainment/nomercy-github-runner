@@ -37,6 +37,7 @@ a.cname:hover{text-decoration:underline}
 .cjob.none{color:var(--text-faint);border-color:var(--rule)}
 .cstatus{margin-top:9px}
 .cerr{margin-top:6px;font-size:11px;color:var(--alert)}
+.cnote{margin-top:6px;font-size:11px;color:var(--text-faint)}
 .meter{margin-top:9px}
 .mrow{display:flex;justify-content:space-between;align-items:baseline;font-size:9.5px;
   letter-spacing:.15em;text-transform:uppercase;color:var(--text-faint);margin-bottom:4px}
@@ -66,7 +67,7 @@ button[disabled]{opacity:.45;cursor:not-allowed}
   <div class="stat"><div class="n ok" id="s-online">&mdash;</div><div class="k">Running</div></div>
   <div class="stat"><div class="n work" id="s-busy">&mdash;</div><div class="k">Busy</div></div>
   <nav>
-    <a href="/">Fleet</a>
+    {% if has_engine %}<a href="/">Fleet</a>{% endif %}
     <a href="/v2" class="on">Fleet v2</a>
     <a href="/history">History</a>
     <a href="/settings">Settings</a>

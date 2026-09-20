@@ -15,6 +15,7 @@
 .cjob{margin:9px 0 11px;font-size:11.5px;color:var(--busy);border-left:2px solid var(--busy-dk);padding-left:8px}
 .cjob.none{color:var(--text-faint);border-color:var(--rule)}
 .cerr{margin-top:6px;font-size:11px;color:var(--alert)}
+.cnote{margin-top:6px;font-size:11px;color:var(--text-faint)}
 .meter{margin-top:9px}
 .mrow{display:flex;justify-content:space-between;font-size:9.5px;letter-spacing:.15em;
   text-transform:uppercase;color:var(--text-faint);margin-bottom:4px}
@@ -40,7 +41,7 @@ pre.logs{background:var(--bg-inset);border:1px solid var(--rule);padding:10px;fo
 {% block body %}
 <header>
   <div class="brand"><h1>Runner</h1><div class="sub" id="rid">{{ runner_id }}</div></div>
-  <nav><a href="/v2">Fleet v2</a><a href="/">Fleet</a><a href="/history">History</a></nav>
+  <nav><a href="/v2">Fleet v2</a>{% if has_engine %}<a href="/">Fleet</a>{% endif %}<a href="/history">History</a></nav>
 </header>
 <div class="wrap">
   <article class="card" id="card"><div class="creg">Loading</div></article>
