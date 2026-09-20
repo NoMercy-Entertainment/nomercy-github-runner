@@ -438,3 +438,37 @@ class TestAdoptingARunnerThatIsAlreadyThere:
     def test_telemetry_reads_the_adopted_process(self, runtime, legacy):
         runtime.create(RID, self.ADOPT)
         assert runtime.telemetry(RID)["root_disk_total_bytes"]
+
+
+class TestWhatTheHeartbeatSeesInTheAppliance:
+    """An instance this runtime made has a plist it can find by name. An
+    adopted one has the job it always had, under a name that says nothing
+    about a runner_id - so the record written at adoption answers for it.
+    Without this the runner is in no heartbeat and its card says nothing."""
+
+    LEGACY = "org.forgejo.runner"
+
+    @pytest.fixture
+    def legacy(self, guest):
+        guest.jobs[self.LEGACY] = {"state": "running", "pid": 270,
+                                   "plist": "/Library/LaunchDaemons/x.plist",
+                                   "job": {"Label": self.LEGACY}}
+        return guest
+
+    def test_an_adopted_instance_is_one_of_this_appliance_s(self, runtime,
+                                                            legacy):
+        runtime.create(RID, {"adopt": {"label": self.LEGACY}})
+        assert runtime.instances() == [{"runner_id": RID, "state": "running"}]
+
+    def test_its_state_is_the_job_s(self, runtime, legacy):
+        runtime.create(RID, {"adopt": {"label": self.LEGACY}})
+        runtime.drain(RID)
+        assert runtime.instances()[0]["state"] != "running"
+
+    def test_an_instance_this_runtime_made_is_still_listed_once(
+            self, runtime, legacy, guest):
+        runtime.create(RID, {"adopt": {"label": self.LEGACY}})
+        runtime.create(OTHER, SPEC)
+        seen = [u["runner_id"] for u in runtime.instances()]
+        assert sorted(seen) == sorted([RID, OTHER])
+        assert len(seen) == len(set(seen))

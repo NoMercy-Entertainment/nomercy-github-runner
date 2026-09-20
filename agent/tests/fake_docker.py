@@ -313,12 +313,32 @@ class FakeDocker:
         del self.containers[name]
         return True, name, ""
 
+    #: What `inspect --format` is asked for, and what the engine answers.
+    #: A Go template is not interpreted here; the few this agent uses are
+    #: answered literally, and an unknown one is refused rather than being
+    #: silently served the JSON, which is how a caller that asks for a field
+    #: would otherwise read a whole document as its value.
+    FORMATS = {
+        "{{.Id}}": lambda c: "0123456789abcdef",
+        "{{.State.Status}}": lambda c: c["state"],
+        "{{.State.Running}}": lambda c: str(c["state"] == "running").lower(),
+        "{{json .State}}": lambda c: json.dumps({
+            "Status": c["state"], "Running": c["state"] == "running",
+            "ExitCode": 0, "StartedAt": "2026-09-18T00:00:00Z",
+            "RestartCount": c["restarts"]}),
+    }
+
     def _inspect(self, args, input):
         name = args[-1]
         missing = self._need(name)
         if missing:
             return False, "", f"Error: No such object: {name}"
         c = self.containers[name]
+        if "--format" in args:
+            wanted = args[args.index("--format") + 1]
+            if wanted not in self.FORMATS:
+                return False, "", f"template: unsupported here: {wanted}"
+            return True, self.FORMATS[wanted](c), ""
         return True, json.dumps({
             "Status": c["state"], "Running": c["state"] == "running",
             "ExitCode": 0, "StartedAt": "2026-09-18T00:00:00Z",

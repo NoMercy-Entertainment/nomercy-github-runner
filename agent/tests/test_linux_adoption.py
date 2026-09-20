@@ -48,7 +48,7 @@ def legacy(engine):
     """A container that was there before the controller was."""
     engine.containers[LEGACY] = {"state": "running", "restarts": 0,
                                  "tmp": {}, "draining": False,
-                                 "image": "runner:1",
+                                 "image": "runner:1", "labels": {},
                                  "restart": "unless-stopped"}
     return engine
 
@@ -129,3 +129,46 @@ class TestTheMapItself:
         memory.record(OTHER, "github-runner-2")
         assert memory.name_for(RID, "d") == "github-runner-1"
         assert memory.name_for(OTHER, "d") == "github-runner-2"
+
+
+class TestWhatTheHeartbeatSees:
+    """The heartbeat is how a runner's state reaches the dashboard: the
+    worker lists its units, and the controller writes what it hears.
+
+    A unit this runtime made carries a label saying which runner it is. An
+    adopted container cannot: a container's labels are fixed when it is
+    made, and the whole point of adopting is not to make it again. So the
+    map answers for those - without it, thirteen runners that were serving
+    showed as `unknown` on every card, with no telemetry at all.
+    """
+
+    def test_an_adopted_container_is_one_of_this_worker_s_units(
+            self, runtime, legacy):
+        runtime.create(RID, {"adopt": {"label": LEGACY}})
+        seen = {u["runner_id"]: u["state"] for u in runtime.instances()}
+        assert seen == {RID: "running"}
+
+    def test_its_state_is_the_container_s(self, runtime, legacy):
+        runtime.create(RID, {"adopt": {"label": LEGACY}})
+        runtime.stop(RID)
+        assert runtime.instances()[0]["state"] == "stopped"
+
+    def test_a_unit_this_runtime_made_is_still_listed_once(self, runtime,
+                                                           engine, legacy):
+        runtime.create(RID, {"adopt": {"label": LEGACY}})
+        runtime.create(OTHER, {"image": "runner:1"})
+        seen = [u["runner_id"] for u in runtime.instances()]
+        assert sorted(seen) == sorted([RID, OTHER])
+        assert len(seen) == len(set(seen)), "no runner is listed twice"
+
+    def test_an_adopted_container_that_is_gone_says_so(self, runtime,
+                                                       legacy):
+        runtime.create(RID, {"adopt": {"label": LEGACY}})
+        del legacy.containers[LEGACY]
+        assert runtime.instances() == [{"runner_id": RID, "state": "absent"}]
+
+    def test_telemetry_is_asked_of_the_container_it_is(self, runtime,
+                                                       legacy):
+        runtime.create(RID, {"adopt": {"label": LEGACY}})
+        used = runtime.telemetry_all([RID])
+        assert RID in used

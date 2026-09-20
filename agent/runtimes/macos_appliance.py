@@ -467,8 +467,25 @@ class MacApplianceRuntime:
         return {"ok": True, "value": value}
 
     def instances(self):
-        """Every runner instance in this appliance, and its state."""
-        found = []
+        """Every runner instance in this appliance, and its state.
+
+        An instance this runtime made has a job whose name says which runner
+        it is. An adopted one has the job it always had, under a name that
+        says nothing (T-0802), so the record written at adoption answers for
+        it - without which the runner appears in no heartbeat at all."""
+        found, seen = [], set()
+        for name in self._fs.listdir(naming.MACOS_ROOT):
+            try:
+                rid = naming.check(name)
+            except naming.InvalidRunnerId:
+                continue
+            if not self.adopted(rid):
+                continue
+            state = self.status(rid)
+            seen.add(rid)
+            found.append({"runner_id": rid,
+                          "state": "running" if state.get("running") else
+                          ("stopped" if state.get("exists") else "unknown")})
         prefix = LABEL_PREFIX + naming.PREFIX + "-"
         for name in self._fs.listdir(self._tools["launch_agents"]):
             if not (name.startswith(prefix) and name.endswith(".plist")):
@@ -477,6 +494,8 @@ class MacApplianceRuntime:
             try:
                 naming.check(rid)
             except naming.InvalidRunnerId:
+                continue
+            if rid in seen:
                 continue
             s = self.status(rid)
             found.append({"runner_id": rid,

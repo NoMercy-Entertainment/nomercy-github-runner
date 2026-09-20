@@ -123,6 +123,13 @@ _UNITS = {"B": 1, "KB": 1000, "MB": 1000 ** 2, "GB": 1000 ** 3,
           "TIB": 1024 ** 4}
 
 
+def _state_word(state):
+    """What the engine calls a container, in the three words the protocol
+    has for it."""
+    return {"running": "running", "exited": "stopped", "created": "stopped",
+            "paused": "stopped"}.get((state or "").strip(), "unknown")
+
+
 def _bytes(text):
     """A docker size string in bytes, or None when it cannot be read - never
     0, because "could not measure" is not "empty"."""
@@ -405,17 +412,25 @@ class LinuxContainerRuntime:
                                   "{{.State}}"], timeout=30)
         if not ok:
             raise RuntimeError(err or "docker ps failed")
-        found = []
+        found, seen = [], set()
         for line in out.splitlines():
             rid, _, state = line.partition("\t")
             if not rid:
                 continue
+            seen.add(rid)
+            found.append({"runner_id": rid, "state": _state_word(state)})
+        # The adopted ones, which carry no label: a container's labels are
+        # fixed when it is made, and adopting exists precisely not to make it
+        # again (T-0802). Without this they are in no heartbeat, and a runner
+        # that is serving reads as `unknown` on its card with no telemetry.
+        for rid, name in sorted(self._adopted.all().items()):
+            if rid in seen:
+                continue
+            ok, state, _ = self._run(["inspect", "--type", "container",
+                                      "--format", "{{.State.Status}}", name],
+                                     timeout=30)
             found.append({"runner_id": rid,
-                          "state": {"running": "running",
-                                    "exited": "stopped",
-                                    "created": "stopped",
-                                    "paused": "stopped"}.get(state,
-                                                             "unknown")})
+                          "state": _state_word(state) if ok else "absent"})
         return found
 
     def _df(self, name):
