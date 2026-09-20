@@ -642,3 +642,38 @@ pointing that rule back at `172.28.202.20:9200` restores it exactly.
 dashboard reports `engine_reachable: False` and fifteen runners, and the
 first signed-in requests (`/api/status`, `/api/v2/fleet`) answered 200 -
 the copied session key did its work.
+
+## 2026-09-20 - what the first look at the one dashboard showed
+
+The page came up with every card reading `unknown`, "not reachable", no
+telemetry, and a header counting one runner out of fifteen. Three separate
+faults, each worth keeping:
+
+1. **A heartbeat lists the units a worker can enumerate, and neither runtime
+   could enumerate an adopted one.** On Linux the enumeration filters on the
+   `nomercy.runner_id` label, which a container cannot be given after it is
+   made; in the appliance it looks for a launchd job named after a
+   runner_id, which an adopted job is not. Both now answer from the record
+   written at adoption. That one fix turned every card from `unknown` into
+   `idle` with real CPU and memory.
+2. **A note was living in the error's column.** Every adopted runner carries
+   labels of its own - `beast-unit`, the ubuntu-* set, macos-* - and the
+   reconciler recorded that in `last_error`, which the page paints red. Its
+   own comment said "not a failure - the runner works". It has its own
+   column, its own line and its own colour now, and the fourteen already
+   written were moved across.
+3. **The forge was asked once per runner, not once per pass.** Fifteen
+   runners every fifteen seconds is 3600 calls an hour against a 5000-an-
+   hour limit shared with two dashboards, and GitHub answered 403 - rate
+   limit exceeded - so every GitHub card read `unknown` even once its unit
+   was reported. A pass now reads each forge once, with the pass itself as
+   the boundary; the loop that waits for a new registration still reads
+   afresh, because it is waiting for the forge to change its mind.
+
+Also: the home page no longer offers the v1 link on a host with no engine.
+It redirected the reader straight back to where they came from.
+
+**After:** fifteen cards, all `idle`, all reachable, no errors, fourteen
+notes. The old dashboard in the distro is stopped - it was polling the same
+token and writing a history that had already been copied - and bringing it
+back is `docker start runner-dashboard` and the portproxy rule.
