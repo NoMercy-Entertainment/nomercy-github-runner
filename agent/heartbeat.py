@@ -197,12 +197,24 @@ class HeartbeatSender:
 
     def _loop(self):
         while not self._stop.is_set():
-            self.send_once()
+            try:
+                self.send_once()
+            except Exception:               # noqa: BLE001 - one bad beat
+                # This thread is the worker's only way of saying it is
+                # here. If it ends, the worker is degraded until somebody
+                # restarts the agent, and a degraded worker is sent nothing
+                # destructive: the fleet cannot be managed at all. A
+                # controller recreated under it cost nine minutes of
+                # silence that way (2026-09-20).
+                self.failed += 1
             self._stop.wait(self.interval)
 
     def _measure_loop(self):
         while not self._stop.is_set():
-            self.measure_once()
+            try:
+                self.measure_once()
+            except Exception:               # noqa: BLE001 - as above: the
+                pass                        # next measurement may do better
             self._stop.wait(self.interval)
 
     def start(self):

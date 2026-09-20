@@ -92,6 +92,57 @@ class TestABeatIsNeverHeldUpByMeasuring:
         assert measured_at
 
 
+class TestTheBeatOutlivesOneBadBeat:
+    """The thread that beats is the worker's only way of saying it is here.
+    If it dies the worker is degraded for ever, and a degraded worker is
+    sent nothing destructive - which is a fleet that cannot be managed
+    until someone restarts its agent. The controller was recreated on
+    2026-09-20 and its worker went silent for nine minutes, until the agent
+    was restarted by hand.
+    """
+
+    def test_one_that_raises_does_not_end_the_loop(self, sender):
+        beats = []
+
+        class Angry:
+            def post(self, path, payload):
+                beats.append(payload)
+                if len(beats) == 1:
+                    raise RuntimeError("the controller went away")
+                return True
+
+        sender.link = Angry()
+        sender.interval = 0.01
+        thread = threading.Thread(target=sender._loop, daemon=True)
+        thread.start()
+        for _ in range(200):
+            if len(beats) > 2:
+                break
+            time.sleep(0.01)
+        sender._stop.set()
+        thread.join(timeout=2)
+        assert len(beats) > 2, "it kept beating"
+
+    def test_a_measurement_that_raises_does_not_end_its_loop(self, sender):
+        tries = []
+
+        def angry():
+            tries.append(1)
+            raise RuntimeError("the engine is not answering")
+
+        sender.agent.runtime.instances = angry
+        sender.interval = 0.01
+        thread = threading.Thread(target=sender._measure_loop, daemon=True)
+        thread.start()
+        for _ in range(200):
+            if len(tries) > 2:
+                break
+            time.sleep(0.01)
+        sender._stop.set()
+        thread.join(timeout=2)
+        assert len(tries) > 2
+
+
 class TestTheDeepBeat:
     def test_the_first_measurement_is_deep_and_the_next_are_not(self, sender):
         sender.measure_once()
