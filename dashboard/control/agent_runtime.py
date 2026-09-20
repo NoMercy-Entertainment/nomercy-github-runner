@@ -30,6 +30,8 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, Mapping, Optional
 
+from .agent_client import AgentError
+
 _HANDLE = re.compile(
     r"^rnr-([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$")
 
@@ -270,9 +272,30 @@ class FlowAgent:
         sent = {k: getattr(plan, k) or "" for k in self.PLAN_FIELDS}
         sent.update({k: bool(getattr(plan, k, False))
                      for k in self.PLAN_FLAGS})
-        got = self._call("runner.register", host_id, ref, plan=sent)
+        try:
+            got = self._call("runner.register", host_id, ref, plan=sent)
+        except AgentError as refused:
+            if not self._refused_flags(refused):
+                raise
+            # A worker that has not been upgraded yet does not know this
+            # field and refuses the whole plan for carrying it. The fleet is
+            # deployed a worker at a time, so that worker's runner would be
+            # unregisterable until somebody got to it - which on 2026-09-20
+            # was a Forgejo runner whose unit had already been removed for
+            # its rebuild. It registers without the flags instead.
+            got = self._call("runner.register", host_id, ref,
+                             plan={k: v for k, v in sent.items()
+                                   if k not in self.PLAN_FLAGS})
         return {"registration_id": str(got.get("registration_id") or ""),
                 "registration_uuid": got.get("registration_uuid")}
+
+    def _refused_flags(self, refused):
+        """Whether an agent refused this plan only for the flags it carries:
+        it names the fields it does not take, and they are all ours."""
+        if getattr(refused, "status", None) != 400:
+            return False
+        named = re.findall(r"['\"]([A-Za-z_]+)['\"]", str(refused))
+        return bool(named) and set(named) <= set(self.PLAN_FLAGS)
 
     def deregister(self, host_id, ref):
         self._call("runner.deregister", host_id, ref)

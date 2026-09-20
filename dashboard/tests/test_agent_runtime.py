@@ -158,6 +158,45 @@ class TestTheFlowsAgent:
             agent.register("linux-1", REF, plan)
             assert client.calls[-1][2]["plan"]["replace"] is replace
 
+    def test_a_worker_that_does_not_know_a_flag_still_registers(self):
+        """The fleet is deployed a worker at a time, so a plan field can
+        reach a worker that has not been upgraded yet - and an agent
+        refuses a plan carrying a field it does not know, by name. Its
+        runner would be unregisterable until someone deployed to it: on
+        2026-09-20 that was the Forgejo runner on the Windows worker, whose
+        unit had already been removed for the rebuild."""
+        import providers as P
+        from control.agent_client import AgentError
+
+        class Old(Client):
+            def call_and_wait(self, host_id, verb, body, **kw):
+                self.calls.append((host_id, verb, body))
+                if "replace" in (body.get("plan") or {}):
+                    raise AgentError(400, "plan carries fields this verb "
+                                          "does not take: ['replace']")
+                return {"registration_id": 41}
+
+        client = Old()
+        agent = ar.FlowAgent(ar.AgentWiring(client))
+        plan = P.RegistrationPlan(url="https://github.com/x", token="t0k",
+                                  name="r", labels="a,b", replace=True)
+        assert agent.register("linux-1", REF, plan)["registration_id"] == "41"
+        assert "replace" not in client.calls[-1][2]["plan"]
+
+    def test_a_refusal_that_is_not_about_a_flag_stands(self):
+        import providers as P
+        from control.agent_client import AgentError
+
+        class Cross(Client):
+            def call_and_wait(self, host_id, verb, body, **kw):
+                raise AgentError(400, "plan.token is missing or malformed")
+
+        agent = ar.FlowAgent(ar.AgentWiring(Cross()))
+        plan = P.RegistrationPlan(url="https://github.com/x", token="t0k",
+                                  name="r", labels="a,b", replace=True)
+        with pytest.raises(AgentError):
+            agent.register("linux-1", REF, plan)
+
     def test_running_unknown_proves_nothing(self):
         agent = ar.FlowAgent(ar.AgentWiring(Client(
             {"exec_unit.status": {"exists": None, "running": None}})))
