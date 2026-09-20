@@ -340,3 +340,12 @@ def test_every_kind_of_input_the_pages_use_is_styled():
                     encoding="utf-8").read()
         used |= set(re.findall(r"<input[^>]*type=[\"'](\w+)[\"']", page))
     assert used - styled - {"hidden", "checkbox", "radio", "submit"} == set()
+
+
+def test_the_capacity_field_says_what_it_is():
+    """A bare number box beside a button reads as a stray box. The action
+    carries the question it answers; the field asks it."""
+    card_js = open(os.path.join(HERE, "templates", "_card.js"),
+                   encoding="utf-8").read()
+    assert "how many" in card_js
+    assert "aria-label=" in card_js

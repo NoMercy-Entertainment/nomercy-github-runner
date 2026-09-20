@@ -265,3 +265,18 @@ class TestACellSaysWhatItsWorkersCanBuild:
         add = rows["github-windows-x64"]["actions"][0]
         assert add["enabled"] is False
         assert "template" in (add["reason"] or "")
+
+
+    def test_the_page_uses_the_deployments_settings(self, monkeypatch,
+                                                    tmp_path):
+        """What a unit of a cell is made from is a setting. A service built
+        without them reads every cell as unbuildable, which is how GitHub on
+        Windows stayed unavailable after its template was installed."""
+        import api_v2
+        made = self.service(tmp_path, [])
+        monkeypatch.setattr(api_v2, "_db_path", lambda: made.specs.path)
+        monkeypatch.setenv("RUNNER_UNIT_IMAGE_GITHUB_WINDOWS", "a-template")
+        service, _ = api_v2.control_plane()
+        assert service is not None
+        fleet = service.fleets.get("github-windows-x64")
+        assert service.unit_image(fleet) == "a-template"

@@ -55,7 +55,10 @@ def control_plane():
         return None, "the control plane has not run yet"
     from control.service import RunnerService
     try:
-        return RunnerService(path), None
+        # With the deployment's settings: what a unit of a cell is made from
+        # is one of them, and a service without them reads every cell as
+        # unbuildable (2026-09-20).
+        return RunnerService(path, env=dict(os.environ)), None
     except Exception:   # noqa: BLE001 - a half-made database is "not ready"
         return None, "the control database is not ready"
 

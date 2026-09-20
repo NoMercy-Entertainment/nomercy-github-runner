@@ -132,8 +132,13 @@ function fleetHeadHTML(f) {
   const buttons = (f.actions || []).map((a, i) => {
     if (!a.visible) return '';
     if (a.verb === 'capacity' && a.enabled) {
-      return `<span class="capacity"><input type="number" min="0" ` +
-        `data-capacity="${i}" value="${esc(f.desired == null ? count : f.desired)}">` +
+      // The field is the fleet's desired capacity, and it said so nowhere:
+      // a bare box beside a button reads as a stray box. The action already
+      // carries the question it answers, so the field asks it.
+      return `<span class="capacity"><label>how many` +
+        `<input type="number" min="0" data-capacity="${i}" ` +
+        `title="${esc(a.prompt || '')}" aria-label="${esc(a.prompt || '')}" ` +
+        `value="${esc(f.desired == null ? count : f.desired)}"></label>` +
         `<button data-fleet-action="${i}">Set capacity</button></span>`;
     }
     const title = a.enabled ? '' : ` title="${esc(a.reason)}"`;
