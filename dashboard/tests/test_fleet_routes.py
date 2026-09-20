@@ -235,6 +235,24 @@ class TestACellSaysWhatItsWorkersCanBuild:
         assert not ok
         assert "actions/runner" in reason or "template" in reason
 
+    def test_the_reason_reads_as_a_sentence(self, tmp_path):
+        """It is shown to whoever is looking at the page. A worker with no
+        template at all printed "the ones that could hold it have []", which
+        is a Python list on a fleet's card (2026-09-21)."""
+        bare = ("appliance-1", "hyperv-linux",
+                {"kind": "macos-appliance", "builds_from": "template",
+                 "templates": []})
+        service = self.service(tmp_path, [bare])
+        ok, reason = service.buildable("forgejo-macos-x64")
+        assert not ok
+        assert "[]" not in reason and "'" not in reason.split("template ")[-1][:1]
+        assert "none" in reason
+
+    def test_the_reason_names_what_the_workers_do_have(self, tmp_path):
+        service = self.service(tmp_path, [self.WINDOWS_WITH_FORGEJO])
+        _, reason = service.buildable("github-windows-x64")
+        assert "forgejo-runner.exe" in reason and "[" not in reason
+
     def test_a_template_a_worker_has_is_buildable(self, tmp_path):
         service = self.service(tmp_path, [self.WINDOWS_WITH_FORGEJO])
         ok, _ = service.buildable("forgejo-windows-x64")

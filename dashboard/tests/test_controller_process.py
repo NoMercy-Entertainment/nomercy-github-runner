@@ -273,8 +273,11 @@ class TestFromNothingToServing:
         controller.pass_once()
         runner = the_runner(controller)["runner_id"]
         converge(controller, runner, "idle")
+        # Two beats' worth: measuring runs on its own thread, so the unit
+        # is named by the first *measured* beat, not by the first beat
+        # (agent/heartbeat.py, 2026-09-20).
         until(lambda: controller.service.specs.get(runner)["unit_state"]
-              == "running", "a heartbeat naming the unit", timeout=15)
+              == "running", "a heartbeat naming the unit", timeout=40)
 
     def test_the_worker_declares_what_it_can_hold(self, plant):
         """Waited for: measuring runs on its own thread, so the beat that

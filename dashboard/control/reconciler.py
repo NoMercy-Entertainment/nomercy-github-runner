@@ -363,8 +363,18 @@ class Reconciler:
 
     def _move(self, spec, to, **extra):
         """Record a transition. The machine is consulted every time, so a bug
-        here raises rather than writing a state the design does not have."""
+        here raises rather than writing a state the design does not have.
+
+        A runner that arrives in service has no error: `last_error` is the
+        reason it is where it is, and once it is serving the reason is
+        history - which the operation and the audit trail keep. Left on the
+        row it is painted on the card for ever, and the page showed four
+        idle runners in red over removals that had since succeeded
+        (2026-09-21). A note is not an error and stays.
+        """
         states.check(spec["actual_state"], to)
+        if to in SERVING:
+            extra.setdefault("last_error", None)
         self.service.specs.update(spec["runner_id"], spec["spec_version"],
                                   actual_state=to, **extra)
         return self.service.specs.get(spec["runner_id"])

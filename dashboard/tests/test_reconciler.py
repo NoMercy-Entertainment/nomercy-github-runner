@@ -885,6 +885,53 @@ class TestEveryRunnerIsNamedTheSameWay:
         assert providers._forge_name(spec) == f"{GH}-1"
 
 
+class TestAnErrorIsAboutTheRunnerAsItIs:
+    """A runner that is serving has no error.
+
+    `last_error` is the reason the runner is where it is. Once it is alive
+    again the reason is history, and history is what the operation and the
+    audit trail keep. Left on the row it is painted on the card for ever:
+    the page showed four idle runners in red over removals that had since
+    succeeded, hours after the fact (2026-09-21).
+    """
+
+    def serving(self, service, reconciler, error):
+        service.create(GH)
+        converge(service, reconciler)
+        runner = live(service)[0]
+        service.specs.update(runner["runner_id"],
+                             service.specs.get(
+                                 runner["runner_id"])["spec_version"],
+                             last_error=error)
+        return service.specs.get(runner["runner_id"])
+
+    def test_coming_back_to_life_clears_it(self, world):
+        service, _, reconciler = world
+        spec = self.serving(service, reconciler,
+                            "2026-09-20T19:14:34Z remove: 500: boom")
+        reconciler._move(spec, "busy")
+        assert service.specs.get(spec["runner_id"])["last_error"] is None
+
+    def test_a_note_is_not_an_error_and_stays(self, world):
+        """The labels a runner registered with, say: not a failure, and the
+        card keeps them apart."""
+        service, _, reconciler = world
+        spec = self.serving(service, reconciler, None)
+        service.specs.update(spec["runner_id"], spec["spec_version"],
+                             last_note="registered with other labels")
+        spec = service.specs.get(spec["runner_id"])
+        reconciler._move(spec, "busy")
+        assert service.specs.get(spec["runner_id"])["last_note"]
+
+    def test_one_that_is_still_failing_keeps_its_reason(self, world):
+        """Only life clears it. A runner on its way out of a failure still
+        says what went wrong."""
+        service, _, reconciler = world
+        spec = self.serving(service, reconciler, "boom")
+        reconciler._move(spec, "draining")
+        assert service.specs.get(spec["runner_id"])["last_error"] == "boom"
+
+
 class TestARemovalThatLostItsOperation:
     """A spec in `removing` with no operation open is stranded: nothing will
     move it again. That is what a rebuild left behind when its removal

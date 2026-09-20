@@ -198,9 +198,14 @@ class RunnerService:
                 return True, None
             if template in (placement.declared(worker, "templates") or []):
                 return True, None
-        return False, (f"no worker has the template {template!r} this fleet "
+        # Read on a fleet's card, so it is a sentence: a Python list of
+        # templates - or worse, an empty one printed as "[]" - is not an
+        # answer to why the cell cannot be built (2026-09-21).
+        held = sorted({t for w in workers
+                       for t in (placement.declared(w, "templates") or [])})
+        return False, (f"no worker has the template {template} this fleet "
                        f"is made from; the ones that could hold it have "
-                       f"{sorted({t for w in workers for t in (placement.declared(w, 'templates') or [])})}")
+                       + (", ".join(held) if held else "none installed"))
 
     def plan(self, fid, count, requested_by=None, idempotency_key=None,
              env=None):
