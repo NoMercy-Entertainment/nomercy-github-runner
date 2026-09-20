@@ -519,7 +519,41 @@ class RunnerService:
         return self.act(runner_id, "recreate", **kw)
 
     def remove(self, runner_id, **kw):
+        """The machine's own edge: take this unit away. Refused where the
+        machine refuses it, which is anywhere a runner could still be
+        serving. What an operator means by "remove" is `retire`."""
         return self.act(runner_id, "remove", **kw)
+
+    def retire(self, runner_id, requested_by=None, idempotency_key=None):
+        """This runner may go: one runner fewer, gracefully.
+
+        What an operator means by remove, and the mirror of `create`. Two
+        things had to be true for the word to mean that.
+
+        It is `desired_state = absent`, not the machine's `remove` edge: a
+        runner that is serving cannot be removed where it stands, and asking
+        for that was refused with a state machine's words. The reconciler
+        takes it from here - drain, deregister, remove - which is the
+        graceful path the design already had.
+
+        And it lowers what the fleet wants. Capacity is what the controller
+        keeps true, so a removal that left it alone was a removal the next
+        pass undid: the runner came back. A recreate, a scale-down's own
+        victims and the reconciler's own work all go elsewhere, so this is
+        the one path that shrinks a fleet (2026-09-20).
+        """
+        spec = self._spec(runner_id)
+        operation = self.set_desired(runner_id, "absent",
+                                     requested_by=requested_by,
+                                     idempotency_key=idempotency_key)
+        fleet = self.fleets.get(spec.get("fleet_id") or "")
+        if fleet and fleet["desired_capacity"] > 0:
+            self.fleets.set_capacity(
+                fleet["fleet_id"], fleet["desired_capacity"] - 1,
+                requested_by=requested_by,
+                idempotency_key=f"retire:{runner_id}:"
+                                f"{fleet['desired_capacity']}")
+        return operation
 
     def deregister(self, runner_id, **kw):
         return self.act(runner_id, "deregister", **kw)

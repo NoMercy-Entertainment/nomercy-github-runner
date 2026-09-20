@@ -133,13 +133,27 @@ class TestWhatEachVerbAsksFor:
 
 
 class TestTheSafetyRulesHoldForEveryVerb:
-    def test_nothing_stops_a_busy_runner(self, service):
-        """MIG-9. Every verb that would take a busy runner down is refused;
-        drain is the only way out of busy."""
-        for verb in ("stop", "restart", "remove", "recreate", "clear_cache"):
+    def test_nothing_ends_the_work_of_a_busy_runner(self, service):
+        """MIG-9, and where it is enforced. A verb that would end the work
+        is refused outright."""
+        for verb in ("stop", "remove", "deregister", "clear_cache"):
             runner_id = runner_in(service, "busy")
             with pytest.raises(Refused):
                 getattr(service, verb)(runner_id)
+
+    def test_what_is_accepted_from_busy_drains_before_anything_else(
+            self, service):
+        """Restart and recreate are accepted there - rebuilding the runner
+        that is working is exactly what an operator means - and the first
+        thing done for either is a drain, so the job finishes. The rule is
+        about the steps taken, not about the word asked for."""
+        from control.reconciler import decide
+        for verb in ("restart", "recreate"):
+            runner_id = runner_in(service, "busy")
+            operation_id = getattr(service, verb)(runner_id)
+            spec = service.specs.get(runner_id)
+            operation = service.operations.get(operation_id)
+            assert decide(spec, operation, ()) == "drain", verb
 
     def test_a_busy_runner_can_be_drained(self, service):
         assert service.drain(runner_in(service, "busy"))

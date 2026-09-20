@@ -342,10 +342,12 @@ def test_every_kind_of_input_the_pages_use_is_styled():
     assert used - styled - {"hidden", "checkbox", "radio", "submit"} == set()
 
 
-def test_the_capacity_field_says_what_it_is():
-    """A bare number box beside a button reads as a stray box. The action
-    carries the question it answers; the field asks it."""
+def test_the_page_asks_for_no_numbers():
+    """A fleet has the runners you add, and keeps them until you remove one.
+    Typing a number was a second way of saying the same thing, and the box
+    beside the buttons read as a stray box (2026-09-20). The capacity route
+    stays for a script; the page does not ask."""
     card_js = open(os.path.join(HERE, "templates", "_card.js"),
                    encoding="utf-8").read()
-    assert "how many" in card_js
-    assert "aria-label=" in card_js
+    assert 'type="number"' not in card_js
+    assert "data-capacity" not in card_js

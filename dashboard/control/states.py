@@ -187,6 +187,18 @@ COMPOSITE = {
     "recreate": ("remove", "create"),
 }
 
+#: Where a composite may be asked for, when that is more than its first
+#: step's edge allows. A recreate of a runner that is serving is the
+#: operator's whole point - rebuild this one - and the reconciler has always
+#: known the walk: drain, deregister, remove, build again. Only this gate
+#: refused it, with a state machine's words, which made the button useless
+#: (2026-09-20). Written here rather than in the service, so the machine and
+#: the reconciler agree and the generated matrix checks it.
+WALKS_FROM = {
+    "recreate": frozenset({"idle", "busy"}),
+    "restart": frozenset({"busy"}),
+}
+
 #: Verbs that move the machine, and the edges each may take. A verb with
 #: several edges is one action from several starting points, not several
 #: actions - `stop` from `idle` and from `drained` is the same stop.
@@ -242,6 +254,8 @@ def allows(verb, frm):
     if verb in GUARDED:
         return frm in GUARDED[verb]
     if verb in COMPOSITE:
+        if frm in WALKS_FROM.get(verb, ()):
+            return True
         first, _ = COMPOSITE[verb]
         return allows(first, frm)
     if verb in VERB_EDGES:

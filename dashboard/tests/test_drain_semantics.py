@@ -97,11 +97,19 @@ class TestDrainWhileBusy:
         assert the_runner(service)["actual_state"] == "idle"
 
     @pytest.mark.parametrize("verb", ["restart", "recreate"])
-    def test_a_composite_is_not_asked_of_a_busy_runner(self, world, verb):
-        service = world[0]
+    def test_a_composite_asked_of_a_busy_runner_drains_it_first(self, world,
+                                                                verb):
+        """Rebuilding the runner that is working is what an operator means,
+        so it is accepted - and the job still finishes, because the first
+        step taken is a drain and the unit is not touched before it ends.
+        The rule is about the steps, not the word (2026-09-20)."""
+        service, flow, agent, forges, reconciler = world
         spec = working(world)
-        with pytest.raises(Refused, match="busy"):
-            getattr(service, verb)(spec["runner_id"])
+        getattr(service, verb)(spec["runner_id"])
+        before = len(unit_calls())
+        passes(service, reconciler)
+        assert len(unit_calls()) == before, "the unit was touched"
+        assert the_runner(service)["actual_state"] == "draining"
 
     @pytest.mark.parametrize("verb", ["restart"])
     def test_one_that_became_busy_after_it_was_asked_drains_first(

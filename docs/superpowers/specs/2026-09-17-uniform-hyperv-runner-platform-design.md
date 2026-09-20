@@ -1073,6 +1073,26 @@ worker must also have stopped. `draining` is re-driven on every pass, as an
 interrupted `stopping` is, so a drain that failed or was cut off is asked for
 again instead of being waited on for ever.
 
+**A composite may be asked for where its walk can start, not only where its
+first step can** (added 2026-09-20). `recreate` from `idle` or `busy`, and
+`restart` from `busy`, are accepted: the reconciler has always known the walk
+- drain, then the rest - and only the service's gate refused them, with a
+state machine's words, which made the buttons useless. MIG-9 is unaffected
+and is where it always was: the *steps* that end a runner's work are refused
+while it has one, by the service and again by the reconciler before each
+step. `states.WALKS_FROM` is that list, so the machine and the reconciler
+cannot drift apart.
+
+**Removing a runner is a desired state, and it lowers what the fleet wants**
+(added 2026-09-20). An operator's "remove" is `retire`: `desired_state =
+absent`, which the reconciler walks gracefully, and one fewer runner wanted.
+Capacity is what the controller keeps true, so a removal that left it alone
+was a removal the next pass undid - the runner came back, correct by the rule
+and baffling to use. The machine's own `remove` edge stays what it was, and
+is the reconciler's. A recreate, a scale-down's own victims and the
+reconciler's own work do not go through `retire`, so it is the one path that
+shrinks a fleet.
+
 ### 12.3 Operations, idempotency and tracing
 
 Every mutating call carries an `Idempotency-Key` header. The controller stores

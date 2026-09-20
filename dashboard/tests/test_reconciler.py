@@ -782,3 +782,58 @@ class TestAnOperationThatStartsFromFailedIsNotFailedByIt:
         reconciler.pass_once()
 
         assert service.operations.get(operation_id)["state"] == "failed"
+
+
+class TestAddingAndRemovingIsTheWholeInterface:
+    """An operator's model, and the one the page now offers: there are
+    runners or there are not. Adding one adds one; removing one removes one.
+
+    Until 2026-09-20 removing a runner left the fleet wanting the same
+    number, so the next pass planned a replacement - correct by the design's
+    own rule, and baffling to use: the runner you removed came straight back,
+    and the only way to shrink a fleet was a number box beside the buttons.
+
+    Capacity is still what the controller keeps true, and still what brings
+    a fleet back after a reboot. It is no longer something anyone has to
+    type.
+    """
+
+    def wants(self, service, fid=GH):
+        return service.fleets.get(fid)["desired_capacity"]
+
+    def test_removing_a_runner_lowers_what_the_fleet_wants(self, world):
+        service, executor, reconciler = world
+        service.create(GH)
+        converge(service, reconciler)
+        before = self.wants(service)
+        service.retire(live(service)[0]["runner_id"], requested_by="operator")
+        assert self.wants(service) == before - 1
+
+    def test_so_the_next_pass_plans_no_replacement(self, world):
+        service, executor, reconciler = world
+        service.create(GH)
+        converge(service, reconciler)
+        service.retire(live(service)[0]["runner_id"], requested_by="operator")
+        converge(service, reconciler)
+        assert live(service) == []
+
+    def test_it_never_goes_below_zero(self, world):
+        service, executor, reconciler = world
+        service.create(GH)
+        converge(service, reconciler)
+        runner = live(service)[0]["runner_id"]
+        service.retire(runner, requested_by="operator")
+        service.retire(runner, requested_by="operator",
+                       idempotency_key="again")
+        assert self.wants(service) >= 0
+
+    def test_a_recreate_is_not_a_removal(self, world):
+        """Recreate rebuilds the runners a fleet has; it does not make the
+        fleet smaller."""
+        service, executor, reconciler = world
+        service.create(GH)
+        converge(service, reconciler)
+        before = self.wants(service)
+        service.recreate(live(service)[0]["runner_id"],
+                         requested_by="operator")
+        assert self.wants(service) == before

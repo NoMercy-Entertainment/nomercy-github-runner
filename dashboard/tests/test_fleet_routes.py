@@ -105,14 +105,27 @@ def with_runners(service, states_):
 
 
 class TestRecreateAndClear:
-    def test_recreate_asks_every_runner_and_says_what_each_answered(
-            self, client, plane):
+    def test_recreate_rebuilds_every_runner_the_fleet_has(self, client,
+                                                          plane):
+        """Recreating a fleet means the runners it has, whatever each of
+        them is doing. One that is serving is drained first and rebuilt when
+        its job is done - the reconciler has always known how; it was this
+        gate that refused it with a state machine's words (2026-09-20)."""
         service, _ = plane
         drained, idle = with_runners(service, ["drained", "idle"])
         body = post(client, f"/api/v2/fleets/{GH}/recreate", "r").get_json()
         by_id = {r["runner_id"]: r for r in body["results"]}
         assert by_id[drained]["ok"] is True
-        assert by_id[idle]["ok"] is False and by_id[idle]["error"]
+        assert by_id[idle]["ok"] is True
+
+    def test_a_runner_that_cannot_be_recreated_says_why(self, client, plane):
+        """Not everything is walkable: a runner already on its way out has
+        nothing to rebuild."""
+        service, _ = plane
+        gone, = with_runners(service, ["absent"])
+        body = post(client, f"/api/v2/fleets/{GH}/recreate", "r2").get_json()
+        by_id = {r["runner_id"]: r for r in body["results"]}
+        assert by_id[gone]["ok"] is False and by_id[gone]["error"]
 
     def test_clear_cache_skips_a_busy_runner_with_the_reason(self, client,
                                                              plane):

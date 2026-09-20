@@ -436,15 +436,27 @@ class TestTheHomePageWhereThereIsNoEngine:
 
 
 class TestWhatTheNavigationOffers:
-    def test_no_link_to_the_v1_page_where_there_is_no_engine(self, client,
-                                                             monkeypatch):
-        """Offering a link that bounces the reader straight back to where
-        they came from is worse than not offering it."""
+    def test_only_one_fleet_page_is_offered_where_there_is_no_engine(
+            self, client, monkeypatch):
+        """There is one fleet page on such a host and it lives at `/`. Two
+        links, one of them a detour to the page you are on, is what made the
+        reader think they were being redirected."""
         monkeypatch.setattr(docker_ops, "engine_reachable", lambda: False)
         page = client.get("/v2").get_data(as_text=True)
-        assert 'href="/"' not in page
-        assert 'href="/v2"' in page
+        assert 'href="/v2"' not in page
+        assert 'href="/"' in page
 
     def test_it_is_offered_where_an_engine_answers(self, client, monkeypatch):
         monkeypatch.setattr(docker_ops, "engine_reachable", lambda: True)
         assert 'href="/"' in client.get("/v2").get_data(as_text=True)
+
+
+    def test_the_fleet_page_is_linked_at_the_address_it_has(self, client,
+                                                            monkeypatch):
+        """Where `/` is the fleet page, the navigation says Fleet and points
+        there. Sending someone to /v2 for the page they are already on is
+        the detour this was supposed to end."""
+        monkeypatch.setattr(docker_ops, "engine_reachable", lambda: False)
+        page = client.get("/").get_data(as_text=True)
+        assert 'href="/v2"' not in page
+        assert 'href="/" class="on">Fleet<' in page

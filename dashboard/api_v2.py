@@ -168,7 +168,12 @@ PLATFORM_NAMES = {providers.LINUX: "Linux", providers.WINDOWS: "Windows",
 #: still go to v1 until T-1407. Data, looked up - not a branch in the page.
 V1_FLEETS = {("github", providers.LINUX), ("forgejo", providers.LINUX)}
 
-FLEET_ACTIONS = ("add", "capacity", "recreate", "clear_cache")
+#: What the page offers per fleet. Capacity is not among them any more: a
+#: fleet has the runners you add and keeps them until you remove one, and
+#: typing a number was a second way of saying the same thing (2026-09-20).
+#: The route stays - `POST /api/v2/fleets/<id>/capacity` is how a script or
+#: the CLI sets a whole fleet at once, and it is what a reboot restores.
+FLEET_ACTIONS = ("add", "recreate", "clear_cache")
 FLEET_LABELS = {"add": "+ Add runner", "capacity": "Capacity",
                 "recreate": "Recreate fleet", "clear_cache": "Clear all cache"}
 FLEET_TONES = {"add": "primary", "recreate": "warn", "clear_cache": "warn"}
@@ -351,8 +356,16 @@ def runner_action(runner_id, verb):
         return _refuse(409, f"{verb}: this runner "
                             f"{cards.ANNOTATIONS[capability]}")
     try:
-        op = service.act(runner_id, verb, requested_by=requested_by(),
-                         idempotency_key=key)
+        if verb == "remove":
+            # An operator's remove is "this runner may go": desired absent,
+            # which the reconciler walks gracefully, and one fewer runner
+            # wanted so it does not come back (2026-09-20). The machine's
+            # own `remove` edge is the reconciler's, further down that walk.
+            op = service.retire(runner_id, requested_by=requested_by(),
+                                idempotency_key=key)
+        else:
+            op = service.act(runner_id, verb, requested_by=requested_by(),
+                             idempotency_key=key)
     except UnknownRunner:
         return _refuse(404, f"no runner {runner_id}")
     except Refused as e:
