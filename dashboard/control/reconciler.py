@@ -658,6 +658,15 @@ class Reconciler:
             self._finish(spec, operation, report)
         report.did("remove", spec["runner_id"])
 
+    def _do_rebuild(self, spec, operation, report):
+        """Continue a rebuild whose removal already happened. The unit is
+        gone and the storage, where there was any, is kept - which is the
+        `removing -> provisioning` edge the machine has for exactly this."""
+        self._move(spec, "provisioning", exec_unit_ref=None,
+                   registration_id=None, registration_uuid=None,
+                   last_error=None)
+        report.did("rebuild", spec["runner_id"])
+
     def _do_repair(self, spec, operation, report):
         self._attempt(operation, "repairing")
         self._move(spec, "provisioning", last_error=None)
@@ -824,6 +833,15 @@ def decide(spec, operation=None, progress=None):
 
     if actual == states.TERMINAL:
         return None
+
+    # -- a removal whose operation is gone -----------------------------------
+    # Nothing else looks at this: the sweep watches creations that are
+    # overdue, and every other transitional state re-drives itself through
+    # its operation. A spec left in `removing` with none open is stranded -
+    # its unit is already gone - so the desired state says what to finish
+    # (2026-09-20).
+    if actual == "removing" and verb is None:
+        return "remove" if desired == "absent" else "rebuild"
 
     # -- operations that are more than a desired state ----------------------
     if verb == "clear_cache":

@@ -656,6 +656,9 @@ STEP_FROM = {
     "withdraw": {"planned"},
     "remove": {"removing", "failed"},
     "repair": {"failed"},
+    # A removal whose operation is gone: its unit is already away, and the
+    # machine's own `removing -> provisioning` edge is what continues it.
+    "rebuild": {"removing"},
 }
 
 
@@ -883,3 +886,52 @@ class TestEveryRunnerIsNamedTheSameWay:
         service.plan(GH, 1)
         spec = service.specs.list(fleet_id=GH)[0]
         assert providers._forge_name(spec) == f"{GH}-1"
+
+
+class TestARemovalThatLostItsOperation:
+    """A spec in `removing` with no operation open is stranded: the unit is
+    already gone and nothing will move it again. That is what a rebuild left
+    behind when its removal failed on volumes that were never there
+    (2026-09-20) - and nothing in the design picked it up, because the sweep
+    only looks at creations that are overdue.
+
+    The unit is gone either way, so the state says what to do next: wanted
+    running, it is a rebuild to continue; wanted absent, it is a removal to
+    finish.
+    """
+
+    def stuck(self, service, desired="running"):
+        # Wanted by its fleet, or the pass would rightly withdraw it as
+        # surplus before anything else looked at it.
+        if desired == "running":
+            service.fleets.set_capacity(GH, 1)
+        runner_id = service.specs.create(
+            provider="github", platform="linux", fleet_id=GH,
+            host_id=WORKER, actual_state="removing", desired_state=desired,
+            exec_unit_ref="a-unit-that-is-gone")
+        return service.specs.get(runner_id)
+
+    def test_one_that_should_run_is_built_again(self, world):
+        service, executor, reconciler = world
+        spec = self.stuck(service, "running")
+        reconciler.pass_once()
+        assert service.specs.get(spec["runner_id"])["actual_state"] == \
+            "provisioning"
+
+    def test_one_that_should_go_is_finished(self, world):
+        service, executor, reconciler = world
+        spec = self.stuck(service, "absent")
+        reconciler.pass_once()
+        assert service.specs.get(spec["runner_id"])["actual_state"] == \
+            "absent"
+
+    def test_one_with_its_operation_still_open_is_left_to_it(self, world):
+        """The operation drives it; two things driving one runner is how a
+        step gets taken twice."""
+        service, executor, reconciler = world
+        service.create(GH)
+        converge(service, reconciler)
+        runner = live(service)[0]
+        service.recreate(runner["runner_id"])
+        before = service.specs.get(runner["runner_id"])["current_operation"]
+        assert before
