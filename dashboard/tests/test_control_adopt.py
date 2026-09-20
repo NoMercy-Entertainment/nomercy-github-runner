@@ -69,9 +69,7 @@ def forge():
 def adopt(db, forge, **changes):
     call = dict(fleet=MAC, name=NAME, host_id=HOST,
                 label="org.forgejo.runner",
-                root="/usr/local/forgejo-runner",
                 template="forgejo-runner-darwin-amd64-v12.0.1",
-                plist="/Library/LaunchDaemons/org.forgejo.runner.plist",
                 db=db, env=ENV, forge=forge)
     call.update(changes)
     return main.adopt(**call)
@@ -128,9 +126,13 @@ class TestWhatTheWorkerIsToldLater:
         spec = SpecStore(db).get(adopt(db, forge))
         assert spec["adopt_unit"] == {
             "label": "org.forgejo.runner",
-            "root": "/usr/local/forgejo-runner",
-            "template": "forgejo-runner-darwin-amd64-v12.0.1",
-            "plist": "/Library/LaunchDaemons/org.forgejo.runner.plist"}
+            "template": "forgejo-runner-darwin-amd64-v12.0.1"}
+
+    def test_it_names_no_path_on_the_worker(self, db, forge):
+        """Where the unit's definition lives is the worker's answer."""
+        spec = SpecStore(db).get(adopt(db, forge))
+        assert not [v for v in spec["adopt_unit"].values()
+                    if isinstance(v, str) and "/" in v]
 
     def test_the_unit_it_asks_for_is_an_adoption_not_an_image(self, db,
                                                               forge):

@@ -254,18 +254,21 @@ class MacApplianceRuntime:
         if not ok:
             raise RuntimeError(f"no launchd job {label!r} in this appliance "
                                f"to adopt: {err or out}".strip())
+        # Where its definition lives is launchd's answer, not something the
+        # controller told this worker: a path is a worker's own business
+        # (13.3), and the job knows its own.
+        plist = _field(out, "path")
         p = self.paths(rid)
         self._fs.makedirs(p["root"])
         self._fs.chmod(p["root"], 0o700)
         for key in ("logs",):
             self._fs.makedirs(p[key])
         record = {"label": label,
-                  "root": (adopt or {}).get("root"),
                   "template": (adopt or {}).get("template"),
-                  # Where its job definition lives, so an instance that has
-                  # been stopped can be loaded again. Without it, stopping an
-                  # adopted runner is a one-way door.
-                  "plist": (adopt or {}).get("plist"),
+                  # Kept so an instance that has been stopped can be loaded
+                  # again. Without it, stopping an adopted runner would be a
+                  # one-way door.
+                  "plist": plist,
                   "adopted_at": time.strftime("%Y-%m-%dT%H:%M:%SZ",
                                               time.gmtime())}
         self._fs.write_text(posixpath.join(p["root"], ADOPTED_MARKER),

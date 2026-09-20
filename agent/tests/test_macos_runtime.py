@@ -10,6 +10,7 @@ of design 10.6 - an instance says what template it was made from.
 import json
 import os
 import plistlib
+import posixpath
 import re
 
 import pytest
@@ -351,12 +352,13 @@ class TestAdoptingARunnerThatIsAlreadyThere:
 
     LEGACY = "org.forgejo.runner"
     ADOPT = {"adopt": {"label": LEGACY,
-                       "root": "/usr/local/forgejo-runner",
                        "template": "forgejo-runner-darwin-amd64-v12.0.1"}}
+    PLIST = "/Library/LaunchDaemons/org.forgejo.runner.plist"
 
     @pytest.fixture
     def legacy(self, guest):
         guest.jobs[self.LEGACY] = {"state": "running", "pid": 270,
+                                   "plist": self.PLIST,
                                    "job": {"Label": self.LEGACY}}
         return guest
 
@@ -404,6 +406,24 @@ class TestAdoptingARunnerThatIsAlreadyThere:
         runtime.create(RID, self.ADOPT)
         runtime.stop(RID)
         assert self.LEGACY not in legacy.jobs
+
+    def test_it_learns_where_the_job_lives_from_launchd(self, runtime,
+                                                        legacy):
+        """Not from the controller: a path is this worker's own answer, and
+        without it a stopped runner could never be started again."""
+        runtime.create(RID, self.ADOPT)
+        assert runtime.adopted(RID)["plist"] == self.PLIST
+
+    def test_a_stopped_adopted_instance_can_be_started_again(self, runtime,
+                                                             legacy):
+        runtime.create(RID, self.ADOPT)
+        runtime.stop(RID)
+        assert self.LEGACY not in legacy.jobs
+        legacy.makedirs(posixpath.dirname(self.PLIST))
+        legacy.write_text(self.PLIST, plistlib.dumps(
+            {"Label": self.LEGACY, "RunAtLoad": True}).decode())
+        runtime.start(RID)
+        assert legacy.jobs[self.LEGACY]["state"] == "running"
 
     def test_removing_it_leaves_the_software_it_was_adopted_from(
             self, runtime, legacy):

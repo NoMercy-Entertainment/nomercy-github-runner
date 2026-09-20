@@ -500,3 +500,40 @@ class TestAnEnvironmentValueIsOneLine:
                           "spec": {"image": "node:20", "env": {"A": value}}})
         assert status == 400
         assert runtime.calls == []
+
+
+class TestAdoptingInTheSpec:
+    """T-0802: a create may say the unit is already there and name which one.
+    It names nothing else - not where it lives, not how it runs - because a
+    path is the worker's own answer and it asks launchd for it."""
+
+    def adopt(self, **changes):
+        from agent.verbs import _spec
+        return _spec({"adopt": dict({"label": "org.forgejo.runner"},
+                                    **changes)})
+
+    def test_a_label_is_enough(self):
+        assert self.adopt() == {"adopt": {"label": "org.forgejo.runner"}}
+
+    def test_the_template_it_was_built_from_is_kept(self):
+        spec = self.adopt(template="forgejo-runner-darwin-amd64-v13.1.0")
+        assert spec["adopt"]["template"] == \
+            "forgejo-runner-darwin-amd64-v13.1.0"
+
+    @pytest.mark.parametrize("label", [
+        "/Library/LaunchDaemons/org.forgejo.runner.plist",
+        "org.forgejo runner", "../../etc/passwd", "", 17])
+    def test_a_label_that_could_be_a_path_is_refused(self, label):
+        with pytest.raises(Refused, match="spec.adopt.label"):
+            self.adopt(label=label)
+
+    def test_no_other_field_gets_through(self):
+        from agent.verbs import _spec
+        with pytest.raises(Refused, match="spec.adopt"):
+            _spec({"adopt": {"label": "org.forgejo.runner",
+                             "plist": "/Library/LaunchDaemons/x.plist"}})
+
+    def test_it_is_not_a_way_to_send_a_path_under_another_name(self):
+        from agent import verbs
+        assert not (verbs.ADOPT_FIELDS & {"path", "root", "plist", "dir",
+                                          "program", "command"})

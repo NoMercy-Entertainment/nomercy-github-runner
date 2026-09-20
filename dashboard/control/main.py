@@ -250,8 +250,8 @@ class Refused(Exception):
     written, so a refusal leaves no half-adopted runner behind."""
 
 
-def adopt(fleet, name, host_id, label, root=None, template=None, plist=None,
-          db=None, env=None, forge=None, requested_by="cli"):
+def adopt(fleet, name, host_id, label, template=None, db=None, env=None,
+          forge=None, requested_by="cli"):
     """Take over a runner that is already serving, without making it again.
 
     MIG-4: the macOS runner has been taking jobs from its appliance for
@@ -304,8 +304,7 @@ def adopt(fleet, name, host_id, label, root=None, template=None, plist=None,
         fleet, name, host_id,
         registration={"id": str(record.get("id") or "") or None,
                       "uuid": record.get("uuid")},
-        unit={"label": label, "root": root, "template": template,
-              "plist": plist},
+        unit={"label": label, "template": template},
         requested_by=requested_by)
 
 
@@ -367,11 +366,8 @@ def main(argv=None):
     a.add_argument("name", help="the name the forge knows it by")
     a.add_argument("host_id", help="the worker whose agent can reach it")
     a.add_argument("label", help="what the unit is called on that worker")
-    a.add_argument("--root", help="the directory it runs from")
     a.add_argument("--template", help="what it was built from, for the "
                                       "record")
-    a.add_argument("--plist", help="where its job definition lives, so it "
-                                   "can be loaded again after a stop")
     args = parser.parse_args(argv)
 
     if args.command == "status":
@@ -383,8 +379,7 @@ def main(argv=None):
     if args.command == "adopt":
         try:
             runner_id = adopt(args.fleet, args.name, args.host_id, args.label,
-                              root=args.root, template=args.template,
-                              plist=args.plist)
+                              template=args.template)
         except Refused as e:
             print(f"refused: {e}")
             return 2

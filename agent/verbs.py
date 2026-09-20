@@ -117,6 +117,9 @@ _NAME = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
 #: colons, slashes and dots are allowed. Nothing a shell treats specially is.
 _LABELS = re.compile(r"^[A-Za-z0-9:/._@+,=-]{1,1024}$")
 _LABEL_KEY = re.compile(r"^[a-z0-9][a-z0-9._-]{0,127}$")
+#: What a unit may be called on a worker: a launchd label, a service name, a
+#: container name. No slash and no space, so it cannot be a path.
+_UNIT_LABEL = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 
 #: The fields each verb reads. Anything else in a body is refused.
 FIELDS = MappingProxyType({
@@ -142,7 +145,11 @@ FIELDS = MappingProxyType({
 #: capability or privilege: how a unit is run is the runtime's decision, made
 #: on the worker, and where its data lives is derived from its runner_id.
 SPEC_FIELDS = frozenset({"image", "env", "labels", "cpus", "memory", "cpuset",
-                         "stop_timeout"})
+                         "stop_timeout", "adopt"})
+#: Adopting names WHICH unit on this worker a runner already is, and nothing
+#: about how it runs: no path, because where a job's definition lives is
+#: launchd's answer and the worker asks it (T-0802).
+ADOPT_FIELDS = frozenset({"label", "template"})
 PLAN_FIELDS = frozenset({"url", "token", "name", "labels", "runner_group"})
 POLICY_FIELDS = frozenset({"max_bytes", "scopes", "on_clear", "timeout"})
 
@@ -204,6 +211,17 @@ def _spec(value):
             if not isinstance(val, str) or len(val) > 256:
                 raise Refused(f"spec.labels.{key} must be short text")
         out["labels"] = dict(labels)
+    if "adopt" in spec:
+        adopt = _closed(spec["adopt"], ADOPT_FIELDS, "spec.adopt")
+        label = adopt.get("label")
+        if not isinstance(label, str) or not _UNIT_LABEL.match(label):
+            raise Refused("spec.adopt.label is not a unit name")
+        out["adopt"] = {"label": label}
+        if "template" in adopt:
+            template = adopt["template"]
+            if not isinstance(template, str) or len(template) > 256:
+                raise Refused("spec.adopt.template must be short text")
+            out["adopt"]["template"] = template
     for key in ("cpus", "memory"):
         if key in spec:
             val = str(spec[key])

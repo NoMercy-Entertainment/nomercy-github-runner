@@ -241,6 +241,10 @@ class FakeMac:
             lines = [f"{target} = {{", f"\tstate = {job['state']}"]
             if job["pid"]:
                 lines.append(f"\tpid = {job['pid']}")
+            if job.get("plist"):
+                # launchd answers where a job's definition lives, which is
+                # how an adopted one is loaded again after a stop.
+                lines.append(f"\tpath = {job['plist']}")
             return True, "\n".join(lines + ["}"]), ""
         if verb == "kickstart":
             if "-k" in args:
