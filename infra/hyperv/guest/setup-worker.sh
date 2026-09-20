@@ -28,16 +28,12 @@ install -m 600 agent.json /etc/runner-agent/agent.json
 install -m 644 runner-agent.service /etc/systemd/system/runner-agent.service
 
 # --- the unit images ----------------------------------------------------------------
-# Pay the snapshotter's unpack here rather than in the first rebuild that uses
-# the image: a cold create of the 17 GB GitHub unit was measured at three
-# minutes on the WSL worker, a warm one at two seconds, and the deadline a
-# provision gives it sits in between (2026-09-20).
-warm() {
-  docker rm -f rnr-image-warm >/dev/null 2>&1 || true
-  docker create --name rnr-image-warm "$1" /bin/true >/dev/null
-  docker rm -f rnr-image-warm >/dev/null
-  echo "warmed $1"
-}
+# The build unpacks the image it writes, so nothing here has to create a
+# container to make the first one faster. A throwaway container for that was
+# tried and dropped: it left a corpse the engine could not finish removing,
+# whose name then blocked the next install, and creates were measured at
+# around a minute either way - the cost is preparing each container's own
+# snapshot, not the image (2026-09-20).
 
 if [ -f forgejo-base.tar ]; then
   docker load -q -i forgejo-base.tar
@@ -48,14 +44,12 @@ fi
 if [ -s BASE_github ]; then
   docker build -q -f images/linux/unit/Dockerfile.github     --build-arg BASE="$(cat BASE_github)"     --label "org.opencontainers.image.revision=${VERSION}"     -t "nomercy/runner-unit-github:${VERSION}" images/linux/unit >/dev/null
   echo "unit image nomercy/runner-unit-github:${VERSION}"
-  warm "nomercy/runner-unit-github:${VERSION}"
 fi
 docker build -q -f images/linux/unit/Dockerfile.forgejo \
   --build-arg BASE=ghcr.io/nomercy-entertainment/nomercy-forgejo-runner:latest \
   --label "org.opencontainers.image.revision=${VERSION}" \
   -t "nomercy/runner-unit-forgejo:${VERSION}" images/linux/unit >/dev/null
 echo "unit image nomercy/runner-unit-forgejo:${VERSION}"
-warm "nomercy/runner-unit-forgejo:${VERSION}"
 
 # --- the firewall -------------------------------------------------------------------
 # SSH from the host only, the agent's port from the control plane only (13.2).
