@@ -787,3 +787,69 @@ throughout, four of them busy at the time.
 warmed by its install script, so a controller deploy that moves the image
 tag needs the worker deployed first - the order is worker, control plane,
 dashboard.
+
+## 2026-09-20 - the rest of the fleet renamed, and what the engine cost
+
+**The second rebuild found four more things**, all of them about time and
+about what the engine is really doing while the controller waits.
+
+**A removal is not over when the client returns.** Docker's removal is
+asynchronous: `docker rm` answers while the daemon is still taking the unit
+apart, and everything said to it meanwhile is refused - "container is
+marked for removal" for an update, "volume is in use" for its storage.
+That is what left five volumes behind on the first rebuild and what broke
+the second. A removal is now waited out, before a unit is built over one
+that is going and before its storage is removed.
+
+**A unit is stopped before it is forced.** `rm -f` gives a container ten
+seconds and then kills it, which takes its nested engine down mid-write.
+Twice the engine was left unable to finish such a removal: the container
+sat in `removing` with no processes and no mounts left, its name unusable,
+for half an hour. Nothing is aborted by stopping first - a removal comes
+after the drain and the deregistration (MIG-9).
+
+**A removal that was refused is taken again.** A spec resting in `removing`
+with no operation open was read as a unit already gone, and the rebuild
+continued without it. A removal that finished does not rest there. What
+rested there was a removal refused because the worker had been degraded for
+a minute by the agent's own redeployment - with the runner still running
+and its forge record already deleted. `github-runner-3` was left serving
+nothing, unmanaged, while a second unit was built beside it. Removing is
+safe to repeat, so it is taken again; the separate `rebuild` step that
+assumed otherwise is gone.
+
+**And the numbers were wrong, so they were measured.** On the WSL worker,
+with the image already built:
+
+| what | measured |
+| --- | --- |
+| `docker create` from the 17 GB GitHub unit image | 58 s quiet, 3 min busy |
+| `docker start` of that container | 0.7 s |
+| `docker rm -f` of a container holding nothing | 34 s |
+| `docker volume create` / `rm` | 0.4 s |
+
+So the cost is preparing each container's own snapshot, and it is paid
+every time - warming the image buys nothing, and the throwaway container
+that was doing it left a corpse whose name would have blocked the next
+install. A slow agent verb had 300 seconds; every rebuild died at that
+deadline with its runner already deregistered and removed. The deadline is
+now 900 seconds, in 17.2's table and in the code, the create inside the
+agent has 600, and a volume has 120 rather than 30 - it failed at 30 once,
+with the runner already gone.
+
+**Why the worker kept going degraded, which is the one that mattered.**
+Not the deploys: the beats themselves. A heartbeat measured before it was
+sent - `docker stats` over every running unit, and every thirtieth beat a
+storage and cache probe that asks each unit's own nested engine - and all
+of it ran on the thread that sends. On this worker that took minutes, so
+the beats stopped: "degraded - no heartbeat for 344s" while the agent was
+perfectly well and simply counting. Three missed beats is an absence, an
+absence is a gate, and the gate refused the removals. Measuring now has a
+thread of its own; a beat carries the last measurement while it is fresh,
+and otherwise says only that the worker is here - which leaves every unit
+exactly where it was. After the fix the worker was healthy again within
+two seconds of the agent restarting.
+
+**What the operator should know.** A rebuild and a deploy still do not mix:
+restarting the agent interrupts whatever verb was in flight. Deploy first,
+see the worker healthy, then rebuild.
