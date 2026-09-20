@@ -221,6 +221,8 @@ class TestEveryValueIsValidated:
         {"url": "https://x$(id)"}, {"url": "file:///etc/passwd"},
         {"token": "has space"}, {"token": ""},
         {"labels": "a;rm -rf /"}, {"name": "x`id`"},
+        # A flag, not text: a string here would be true whatever it said.
+        {"replace": "yes"}, {"replace": 1},
     ])
     def test_a_registration_plan_is_checked(self, server, registrar,
                                             plan_change):
@@ -231,6 +233,18 @@ class TestEveryValueIsValidated:
                          {"runner_id": RID, "plan": plan})
         assert status == 400
         assert registrar.calls == []
+
+    def test_a_plan_may_say_the_units_own_registration_is_void(
+            self, server, registrar):
+        """The controller holds no registration for this runner, so whatever
+        the unit holds is from a life before this one (2026-09-20)."""
+        plan = {"url": "https://git.example", "token": "tok-123456789",
+                "name": "rnr-3f2504e0", "labels": "self-hosted",
+                "replace": True}
+        status, _ = post(server, "runner.register",
+                         {"runner_id": RID, "plan": plan})
+        assert status in (200, 202)
+        assert registrar.calls[-1][-1]["replace"] is True
 
     def test_a_cache_clear_cannot_name_a_scope_that_is_not_the_runners(
             self, server, runtime):

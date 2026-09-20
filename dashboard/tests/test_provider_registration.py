@@ -115,6 +115,34 @@ class TestForgejoRegistration:
         assert "never picks up a job" in error
 
 
+class TestWhoseRegistrationIsAuthoritative:
+    """The controller's, not the unit's.
+
+    A unit keeps its registration files on its own volume and cannot be made
+    to drop them - `deregister` leaves them deliberately. So a unit whose
+    record the controller has since deleted still answers every later
+    registration with the id of a record that no longer exists. When the
+    controller holds no registration for a runner, the plan says so, and the
+    unit registers rather than answering from its volume (2026-09-20).
+    """
+
+    def test_a_runner_the_controller_has_no_record_of_replaces(self, github):
+        plan, _ = P.GITHUB.registration(SPEC, {"GH_TOKEN": "x"})
+        assert plan.replace is True
+
+    def test_one_it_does_keeps_what_it_has(self, github):
+        plan, _ = P.GITHUB.registration(dict(SPEC, registration_id="2007"),
+                                        {"GH_TOKEN": "x"})
+        assert plan.replace is False
+
+    def test_the_same_holds_at_the_other_forge(self, forgejo):
+        plan, _ = P.FORGEJO.registration(SPEC, FORGEJO_ENV)
+        assert plan.replace is True
+        kept, _ = P.FORGEJO.registration(dict(SPEC, registration_id="9"),
+                                         FORGEJO_ENV)
+        assert kept.replace is False
+
+
 class TestTheForgeNameIsNeverAnIdentity:
     def test_the_display_name_when_there_is_one(self, github):
         plan, _ = P.GITHUB.registration(

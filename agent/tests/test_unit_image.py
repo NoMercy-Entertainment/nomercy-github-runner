@@ -87,6 +87,34 @@ class TestTheToken:
         assert 'plan="$(cat)"' in read("runner", "register")
 
 
+    def test_a_plan_that_replaces_is_not_answered_from_the_volume(self):
+        """A unit keeps its registration files on its volume, and the
+        controller cannot make it drop them: `deregister` deliberately
+        leaves them. So a unit whose record the controller has since
+        deleted answered every later registration with the id of a record
+        that no longer exists, and the wait for it to come online could
+        only end at the deadline (2026-09-20). When the plan says replace,
+        the unit registers.
+        """
+        reg = read("runner", "register")
+        early = re.search(r"^if registered(.*?)^fi$", reg, re.S | re.M)
+        assert early, "no early answer to guard"
+        assert "replace" in early.group(1)
+
+    def test_a_link_is_never_moved_onto_the_volume(self):
+        """Two registrations of one unit can overlap - the controller
+        retries an exec that has not answered - and the second would move
+        the link the first had just made into the volume, leaving
+        `/runner/reg/.credentials` pointing at itself. The runner reads
+        that as "too many levels of symbolic links" and aborts, for ever
+        (2026-09-20).
+        """
+        github = branch(read("runner", "register"), "github")
+        moves = github.rsplit("for f in $REG_FILES; do", 1)[-1]
+        assert "-L" in moves, \
+            "the move must skip a file that is already a link"
+
+
 class TestDeregistration:
     def test_a_registered_unit_says_it_cannot_and_fails(self):
         """Exit 0 would tell the controller the record is gone, and it

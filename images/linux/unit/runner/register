@@ -16,7 +16,13 @@
 # done - and a Forgejo registration token is the controller's to rotate.
 #
 # Idempotent: a unit that is registered already answers with the registration
-# it has, and registers nothing.
+# it has, and registers nothing - unless the plan says `replace`, which is the
+# controller saying it holds no registration for this runner. The files on the
+# registration volume outlive the record at the forge: `deregister` leaves
+# them deliberately, and a record the controller deleted while undoing a
+# failed provision is gone while the unit still answers with its id. Every
+# registration after that named a record that did not exist, and the wait for
+# it to come online could only end at the deadline (2026-09-20).
 set -euo pipefail
 . /runner/lib.sh
 refuse_outside_a_container
@@ -33,7 +39,7 @@ answer() {
   esac
 }
 
-if registered; then
+if registered && [ "$(field replace)" != "true" ]; then
   answer
   exit 0
 fi
@@ -70,6 +76,12 @@ case "$RUNNER_KIND" in
     mkdir -p "$RUNNER_REG_DIR"
     for f in $REG_FILES; do
       [ -e "$RUNNER_HOME/$f" ] || continue
+      # A link rather than a file: another registration of this unit moved
+      # it and linked it back while this one was running - the controller
+      # retries an exec that has not answered. Moving the link into the
+      # volume makes it point at itself, and the runner aborts on "too many
+      # levels of symbolic links" every time it starts (2026-09-20).
+      if [ -L "$RUNNER_HOME/$f" ]; then continue; fi
       mv -f "$RUNNER_HOME/$f" "$RUNNER_REG_DIR/$f"
       ln -sfn "$RUNNER_REG_DIR/$f" "$RUNNER_HOME/$f"
     done

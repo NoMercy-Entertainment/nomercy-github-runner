@@ -143,7 +143,20 @@ class TestTheFlowsAgent:
         assert agent.register("linux-1", REF, plan)["registration_id"] == \
             "41"
         assert set(client.calls[0][2]["plan"]) == set(
-            ar.FlowAgent.PLAN_FIELDS)
+            ar.FlowAgent.PLAN_FIELDS + ar.FlowAgent.PLAN_FLAGS)
+
+    def test_whether_it_replaces_goes_as_a_flag(self):
+        """`_plan` in the agent refuses anything but a boolean here: a
+        string would be true whatever it said."""
+        import providers as P
+        client = Client({"runner.register": {"registration_id": 41}})
+        agent = ar.FlowAgent(ar.AgentWiring(client))
+        for replace in (True, False):
+            plan = P.RegistrationPlan(url="https://github.com/x", token="t0k",
+                                      name="r", labels="a,b",
+                                      replace=replace)
+            agent.register("linux-1", REF, plan)
+            assert client.calls[-1][2]["plan"]["replace"] is replace
 
     def test_running_unknown_proves_nothing(self):
         agent = ar.FlowAgent(ar.AgentWiring(Client(

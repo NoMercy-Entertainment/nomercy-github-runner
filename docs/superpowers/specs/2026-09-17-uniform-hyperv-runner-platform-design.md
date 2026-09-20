@@ -1406,7 +1406,14 @@ runtime mounts the five areas at `/runner/work`, `/var/lib/docker`,
 Registration is not done by the runtime but by the image, through two fixed
 entry points: `/runner/register` reads the registration plan as JSON on
 standard input and answers `{"registration_id", "registration_uuid"}` as JSON
-on standard output; `/runner/deregister` takes no input. That keeps the
+on standard output; `/runner/deregister` takes no input. A unit that is
+registered already answers with what it holds and registers nothing, unless
+the plan carries `replace` - the controller saying it has no registration for
+this runner, so whatever is on the unit's registration volume belongs to a
+life before this one. The controller sets it whenever its own spec names no
+registration, because a unit cannot be made to drop those files: `deregister`
+leaves them deliberately, and a record deleted while undoing a failed
+provision is gone at the forge while the unit still answers with its id. That keeps the
 runtime forge-blind and keeps the token out of every argument list. **Today's
 images do neither** - they predate this design, register from `start.sh` with
 the token in the environment, and use `/actions-runner/_work`. Adopting the

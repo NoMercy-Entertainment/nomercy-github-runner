@@ -150,7 +150,8 @@ SPEC_FIELDS = frozenset({"image", "env", "labels", "cpus", "memory", "cpuset",
 #: about how it runs: no path, because where a job's definition lives is
 #: launchd's answer and the worker asks it (T-0802).
 ADOPT_FIELDS = frozenset({"label", "template"})
-PLAN_FIELDS = frozenset({"url", "token", "name", "labels", "runner_group"})
+PLAN_FIELDS = frozenset({"url", "token", "name", "labels", "runner_group",
+                         "replace"})
 POLICY_FIELDS = frozenset({"max_bytes", "scopes", "on_clear", "timeout"})
 
 
@@ -258,8 +259,14 @@ def _plan(value):
     group = plan.get("runner_group", "")
     if group and (not isinstance(group, str) or not _NAME.match(group)):
         raise Refused("plan.runner_group is not a group name")
+    # Whether the registration the unit may hold is the controller's to
+    # override. A flag, not text: "false" would be true and so would
+    # anything else a caller happened to send.
+    replace = plan.get("replace", False)
+    if not isinstance(replace, bool):
+        raise Refused("plan.replace is a flag, not a value")
     return {"url": url, "token": token, "name": name, "labels": labels,
-            "runner_group": group}
+            "runner_group": group, "replace": replace}
 
 
 def _policy(value):

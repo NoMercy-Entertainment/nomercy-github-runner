@@ -178,6 +178,12 @@ class RegistrationPlan:
     labels: str
     runner_group: str = ""
     extra: tuple = ()
+    #: Whether the registration the unit may still hold is this one's to
+    #: override. True when the controller has no registration for the
+    #: runner: whatever is on the unit's volume then belongs to a life
+    #: before this one, and answering with it names a record the forge no
+    #: longer has (2026-09-20).
+    replace: bool = False
 
 
 @dataclass(frozen=True)
@@ -431,6 +437,7 @@ class _GitHub(Provider):
                 spec.get("architecture") or X64, env)),
             runner_group=spec.get("runner_group")
             or env.get("RUNNER_GROUP", ""),
+            replace=not spec.get("registration_id"),
         ), None
 
     def forge_records(self, env):
@@ -789,7 +796,8 @@ class _Forgejo(Provider):
             return None, ("could not mint a registration token - check "
                           "FORGEJO_API_TOKEN and that Forgejo is reachable")
         return RegistrationPlan(url=url, token=token, name=_forge_name(spec),
-                                labels=labels), None
+                                labels=labels,
+                                replace=not spec.get("registration_id")), None
 
     #: Forgejo's words for a runner's state, and what each means here. Any
     #: word not in this table reads as unknown - from a future release or a

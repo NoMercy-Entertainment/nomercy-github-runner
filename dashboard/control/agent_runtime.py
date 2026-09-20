@@ -247,8 +247,11 @@ class FlowAgent:
     """The provisioning flow's `Agent`, over the same client."""
 
     #: What a registration plan carries to a worker - `_plan` in
-    #: agent/verbs.py takes these and refuses anything else.
+    #: agent/verbs.py takes these and refuses anything else. `replace` is
+    #: apart from the rest because it is a flag: sent as text it would be
+    #: true whatever it said, and the agent refuses anything but a boolean.
     PLAN_FIELDS = ("url", "token", "name", "labels", "runner_group")
+    PLAN_FLAGS = ("replace",)
 
     def __init__(self, wiring: AgentWiring):
         self.wiring = wiring
@@ -261,6 +264,8 @@ class FlowAgent:
 
     def register(self, host_id, ref, plan):
         sent = {k: getattr(plan, k) or "" for k in self.PLAN_FIELDS}
+        sent.update({k: bool(getattr(plan, k, False))
+                     for k in self.PLAN_FLAGS})
         got = self._call("runner.register", host_id, ref, plan=sent)
         return {"registration_id": str(got.get("registration_id") or ""),
                 "registration_uuid": got.get("registration_uuid")}
