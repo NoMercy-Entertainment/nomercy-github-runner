@@ -165,6 +165,17 @@ def test_every_script_parses(script):
                    check=True)
 
 
+def test_forgejo_registration_is_tried_again():
+    """The instance answers its ping in about five seconds through the gate
+    in front of it, and five seconds is where forgejo-runner gives up:
+    "Cannot ping the Forgejo instance server ... context deadline
+    exceeded". A rebuild that failed on it succeeded on the next attempt,
+    so the unit makes that attempt itself (2026-09-20)."""
+    forgejo = branch(read("runner", "register"), "forgejo")
+    assert "until timeout 90" in forgejo
+    assert re.search(r"attempt", forgejo)
+
+
 def test_forgejo_registration_is_bounded():
     """It pings an unreachable instance for ever; the agent stops waiting
     after 120 s and would leave it running in the unit."""

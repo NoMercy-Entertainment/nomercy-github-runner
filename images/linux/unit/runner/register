@@ -89,10 +89,26 @@ case "$RUNNER_KIND" in
   forgejo)
     # Bounded: forgejo-runner pings an unreachable instance for ever, and the
     # agent gives up on this after 120 s, leaving it running in the unit.
+    #
+    # And tried again: the instance answers that ping in about five seconds
+    # through the gate in front of it, which is where forgejo-runner gives
+    # up - "Cannot ping the Forgejo instance server ... context deadline
+    # exceeded" - and a registration that failed for that reason succeeded
+    # on the next attempt (2026-09-20). A registration token may be used
+    # again, so an attempt that never reached the instance costs nothing.
     cd "$RUNNER_REG_DIR"
-    timeout 90 "$FORGEJO_RUNNER_BIN" register --no-interactive \
-      --instance "$url" --token "$(field token)" --name "$name" \
-      --labels "$labels" >&2
+    attempt=1
+    until timeout 90 "$FORGEJO_RUNNER_BIN" register --no-interactive \
+        --instance "$url" --token "$(field token)" --name "$name" \
+        --labels "$labels" >&2; do
+      if [ "$attempt" -ge 3 ]; then
+        echo "the forge did not register this runner in $attempt attempts" >&2
+        exit 71
+      fi
+      attempt=$((attempt + 1))
+      echo "registration attempt $attempt" >&2
+      sleep 5
+    done
     ;;
 esac
 
