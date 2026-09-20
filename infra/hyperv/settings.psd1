@@ -48,6 +48,11 @@
         UnitImage   = 'ghcr.io/nomercy-entertainment/nomercy-github-runner:latest'
         RunnerMemGB = 32
         DrainGroup  = 'drain'
+        # What a GitHub runner on the Windows worker is made from: a template
+        # on that worker holding the runner GitHub publishes, checked against
+        # the hash from its own release notes (images/windows/manifest.json).
+        WindowsTemplate    = 'actions-runner-v2.336.0-windows'
+        WindowsRunnerMemGB = 8
     }
 
     # OPEN-5: static memory, inside the measured margin.

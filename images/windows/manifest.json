@@ -49,5 +49,38 @@
       "recipe": "images/windows/build-forgejo-runner.sh in golang:1.26.7",
       "reproduced": "same SHA-256 from a second build in a fresh container on the same machine"
     }
+  ],
+  "actions-runner-win-x64": [
+    {
+      "status": "published by GitHub, not yet installed",
+      "version": "2.336.0",
+      "asset": "actions-runner-win-x64-2.336.0.zip",
+      "sha256": "d59123a43003e357b0805b5d0f611d0bd2f65ab67d51bd070dd4e7a0f685c162",
+      "source": "https://github.com/actions/runner/releases/tag/v2.336.0",
+      "verified_against": "the hash GitHub publishes in that release's own notes, read from the API on 2026-09-20 - not against our own download",
+      "recipe": "images/windows/fetch-actions-runner.ps1"
+    }
+  ],
+  "actions-runner-osx-x64": [
+    {
+      "status": "published by GitHub, not yet installed",
+      "version": "2.336.0",
+      "asset": "actions-runner-osx-x64-2.336.0.tar.gz",
+      "sha256": "f79c43232761ca495fc18df550bb2865aa99984b37c173c0aa1f8c09d0d548fe",
+      "source": "https://github.com/actions/runner/releases/tag/v2.336.0",
+      "verified_against": "the hash GitHub publishes in that release's own notes, read from the API on 2026-09-20",
+      "recipe": "images/macos/install-templates.md"
+    }
+  ],
+  "actions-runner-osx-arm64": [
+    {
+      "status": "published by GitHub, not yet installed",
+      "version": "2.336.0",
+      "asset": "actions-runner-osx-arm64-2.336.0.tar.gz",
+      "sha256": "8e8839c49b7060b6b2154f4931f815df330c27f167d53ef2239ee3dfce28b079",
+      "source": "https://github.com/actions/runner/releases/tag/v2.336.0",
+      "verified_against": "the hash GitHub publishes in that release's own notes, read from the API on 2026-09-20",
+      "recipe": "images/macos/install-templates.md"
+    }
   ]
 }

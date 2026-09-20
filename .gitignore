@@ -13,3 +13,7 @@ __pycache__/
 # Working notes for a plan in flight, not part of the deliverable.
 .superpowers/
 .claude/superpowers/
+
+# The GitHub runner's payload is fetched and verified, never committed:
+# images/windows/fetch-actions-runner.ps1 puts it here.
+infra/windows/templates/*/agent/

@@ -69,6 +69,8 @@ $lines = ($Settings | ForEach-Object { "$_=$($values[$_])" }) + @(
     "RUNNER_UNIT_IMAGE_GITHUB_LINUX=$($s.GitHub.UnitImage)",
     "RUNNER_UNIT_MEMORY_GITHUB_LINUX=$($s.GitHub.RunnerMemGB)g",
     "GITHUB_DRAIN_GROUP=$($s.GitHub.DrainGroup)",
+    "RUNNER_UNIT_IMAGE_GITHUB_WINDOWS=$($s.GitHub.WindowsTemplate)",
+    "RUNNER_UNIT_MEMORY_GITHUB_WINDOWS=$($s.GitHub.WindowsRunnerMemGB)g",
     "RUNNER_UNIT_MEMORY_FORGEJO_LINUX=${unitMemGB}g",
     "FORGEJO_RUNNER_ARTIFACT_WINDOWS=$($win.Template) sha256:$($win.RunnerSha256)",
     "RUNNER_UNIT_IMAGE_FORGEJO_WINDOWS=$($win.Template)",

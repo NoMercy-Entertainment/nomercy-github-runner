@@ -87,9 +87,24 @@ Assert-Hash $w.NssmSource $w.NssmSha256
 if (-not (Test-Path $nssm)) { Copy-Item -LiteralPath $w.NssmSource -Destination $nssm }
 Assert-Hash $nssm $w.NssmSha256
 
+# Every template the repository has, not only the Forgejo one: a worker can
+# only build the cells whose template is on it, and it now says which those
+# are - its capabilities carry the list. A template whose payload is fetched
+# rather than committed is skipped with a word, instead of being installed
+# empty for a create to fail on.
+$source = Join-Path $PSScriptRoot '..\windows\templates'
+foreach ($dir in Get-ChildItem -Directory $source) {
+    $into = Join-Path $templates $dir.Name
+    if ($dir.Name -like 'actions-runner-*' -and
+        -not (Test-Path (Join-Path $dir.FullName 'agent\config.cmd'))) {
+        Write-Host "  $($dir.Name): no payload yet - run images\windows\fetch-actions-runner.ps1"
+        continue
+    }
+    New-Item -ItemType Directory -Force -Path $into | Out-Null
+    Copy-Item -Recurse -Force -Path (Join-Path $dir.FullName '*') -Destination $into
+    Write-Host "  template $($dir.Name)"
+}
 $template = Join-Path $templates $w.Template
-New-Item -ItemType Directory -Force -Path $template | Out-Null
-Copy-Item -Force -Path (Join-Path $PSScriptRoot "..\windows\templates\$($w.Template)\*") -Destination $template
 Assert-Hash $w.RunnerBinary $w.RunnerSha256
 Copy-Item -Force -LiteralPath $w.RunnerBinary -Destination (Join-Path $template 'forgejo-runner.exe')
 
