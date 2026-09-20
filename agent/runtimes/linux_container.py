@@ -558,10 +558,18 @@ class LinuxRegistrar:
         rid = naming.check(runner_id)
         return self._adopted.name_for(rid, naming.unit_name(rid))
 
+    #: What a registration is given. Two minutes was not enough on a busy
+    #: worker: a fresh unit is starting its nested engine while config.sh
+    #: runs, and the exec was cut off after the credentials were written and
+    #: before `.runner` was - a runner registered at the forge that no unit
+    #: could use (2026-09-20). The controller's own step allows longer.
+    REGISTER_TIMEOUT = 300
+
     def register(self, runner_id, plan):
         ok, out, err = self._run(["exec", "-i", self._unit(runner_id),
                                   "/runner/register"],
-                                 input=json.dumps(plan), timeout=120)
+                                 input=json.dumps(plan),
+                                 timeout=self.REGISTER_TIMEOUT)
         if not ok:
             raise RuntimeError(err or "registration failed")
         try:
