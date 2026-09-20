@@ -408,3 +408,26 @@ actually done" has one answer (ACC-19).
   not a compose service - and back listening as `nomercy-sbirg` with
   `beast-unit`, on its own volume. About a minute out of service, against
   github-runner-6's 45 minutes through compose.
+
+## 2026-09-20 - T-1701 pre-flight: the migration baseline
+
+Read-only, 00:05Z. Every later migration step is compared against this.
+
+- **Disk** (the distro's docker data): 1007 G, 409 G used, 548 G free, 43%.
+  It was 677 G used before the conversions started.
+- **Containers:** 14 running - 10 GitHub runners, 3 Forgejo runners, the
+  dashboard.
+- **GitHub:** 20 registrations. 10 online with `beast-unit`; 3 belong to other
+  machines (`ffmpeg-verify-*`), 2 to other runners (`nomercy-fq47l` Eagle,
+  `nomercy-mac-mini`); **5 are offline leftovers of tonight's conversions**
+  (`nomercy-1jsjo`, `-9pusj`, `-c70mu`, `-o3wh9`, `-s8mvr`).
+- **Forgejo:** 5 registrations - 3 WSL runners, the macOS appliance, and the
+  managed Windows runner `rnr-249c8d01`.
+- **History:** 4793 runs over 13 runners.
+
+**Found by this baseline:** every conversion leaves an offline registration
+behind, because the old container's `config.sh remove` times out after five
+seconds. The conversion script now deletes the old record itself, once the
+container is stopped and its replacement is registering. The five already
+left behind are reported, not deleted - T-1709's rule - and wait for the
+operator's word.

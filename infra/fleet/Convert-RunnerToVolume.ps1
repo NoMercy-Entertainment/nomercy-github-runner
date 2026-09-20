@@ -138,6 +138,14 @@ DistroOk @('docker', 'rename', $Runner, $old) | Out-Null
 Write-Host 'stopping the old one (it deregisters itself at GitHub)...'
 Distro @('docker', 'stop', '-t', '60', $old) | Out-Null
 
+# The old runner had its own five seconds to deregister while it stopped, and
+# on this fleet that is not enough: `config.sh remove` times out and leaves an
+# offline record behind at GitHub for every conversion. Its container is gone
+# by now and its replacement registers afresh, so the record is deleted here.
+gh api -X DELETE "orgs/$org/actions/runners/$id" --silent 2>$null
+if ($LASTEXITCODE -eq 0) { Write-Host "old registration $name deleted at GitHub" }
+else { Write-Warning "could not delete the old registration $name (id $id); it will sit there offline" }
+
 function Restore-Container {
     param([string] $Why)
     Write-Warning "$Why - putting the old $Runner back"
