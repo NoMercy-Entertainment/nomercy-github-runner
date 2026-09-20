@@ -202,3 +202,40 @@ class TestAddressingAnAdoptedUnit:
         ref = ExecUnitRef(kind=ExecUnitKind.LINUX_CONTAINER,
                           handle=storage.unit_name(rid))
         assert runner_id_of(ref) == rid
+
+
+class TestUndoingAnAdoption:
+    """A compensation undoes what the flow did. For an adopted runner the
+    flow made nothing: the unit was serving before this controller knew it,
+    and the forge's record is older still.
+
+    This cost three live runners on 2026-09-20. A registration step failed on
+    a runner adopted an hour earlier, the flow compensated the way it does
+    for a runner it built - deregister, then remove the unit - and removed
+    two containers that were serving. The agent had been refusing those
+    removals by accident, for an unrelated reason, until that accident was
+    fixed.
+    """
+
+    def undoing(self, spec, step="verify_online"):
+        """What the flow would undo for this spec after `step` failed."""
+        from control.provision import ProvisioningFlow
+        from control.service import RunnerService
+        flow = ProvisioningFlow(RunnerService(":memory:", env=ENV),
+                                agent=None, forges=None, env=ENV)
+        return flow.compensations(spec, step)
+
+    def test_an_adopted_runner_is_never_removed_or_deregistered(self):
+        spec = {"runner_id": "r1", "adopt_unit": {"label": "github-runner-1"}}
+        assert self.undoing(spec) == ()
+
+    def test_a_runner_this_controller_built_is_undone_as_before(self):
+        spec = {"runner_id": "r1", "adopt_unit": None}
+        assert self.undoing(spec) == ("deregister", "remove_unit")
+        assert self.undoing(spec, "create_unit") == ("remove_unit",)
+
+    def test_it_holds_for_every_step_that_can_fail(self):
+        from control.provision import STEPS
+        spec = {"runner_id": "r1", "adopt_unit": {"label": "x"}}
+        for step in STEPS:
+            assert self.undoing(spec, step) == (), step

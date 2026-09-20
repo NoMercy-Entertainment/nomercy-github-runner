@@ -396,8 +396,22 @@ class ProvisioningFlow:
                     from None
         return result()
 
+    def compensations(self, spec, failed_step):
+        """What undoes the work up to and including a failed step.
+
+        Nothing, for a runner that was adopted (T-0802). A compensation
+        undoes what this flow did, and for an adopted runner the flow made
+        nothing: the unit was serving before the controller knew it and the
+        forge's record is older still. Removing it is not an undo, it is a
+        deletion of someone else's work - which is exactly what happened to
+        two live runners before this rule existed.
+        """
+        if (spec or {}).get("adopt_unit"):
+            return ()
+        return COMPENSATIONS[failed_step]
+
     def _compensate(self, spec, failed_step, state):
-        return self._undo(spec, COMPENSATIONS[failed_step], state)
+        return self._undo(spec, self.compensations(spec, failed_step), state)
 
     def _undo(self, spec, actions, state):
         """Run compensations in order. **A unit is never removed after its
@@ -511,7 +525,9 @@ class ProvisioningFlow:
                      "registration_uuid": spec.get("registration_uuid")}}
         if spec.get("exec_unit_ref"):
             state["ref"] = self._ref(spec)
-        done, errors = self._undo(spec, COMPENSATIONS["verify_online"], state)
+        done, errors = self._undo(spec, self.compensations(spec,
+                                                           "verify_online"),
+                                  state)
         if errors:
             raise StepFailed("abandon", "could not finish undoing", done,
                              errors)
