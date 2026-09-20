@@ -251,8 +251,11 @@ class ProvisioningFlow:
             # adopt and this runner is built from its fleet's image like any
             # other - the alternative is asking a worker, for ever, to adopt
             # something that is gone (2026-09-20).
-            self.service.specs.update(spec["runner_id"], spec["spec_version"],
-                                      adopt_unit=None)
+            # Read again first: a pass writes to this row several times,
+            # and the version in hand is the one this step started with.
+            fresh = self.service.specs.get(spec["runner_id"])
+            self.service.specs.update(fresh["runner_id"],
+                                      fresh["spec_version"], adopt_unit=None)
             spec = self.service.specs.get(spec["runner_id"])
         unit = dict(spec)
         unit["name"] = name

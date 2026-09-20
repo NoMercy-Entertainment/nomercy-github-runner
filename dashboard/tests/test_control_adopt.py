@@ -383,7 +383,10 @@ class TestACpuWindowSurvivesARebuild:
         store = SpecStore(db)
         flow = ProvisioningFlow(service, agent=None, forges=None, env=ENV)
         flow._runtime = lambda spec, host: Runtime()
-        flow._step_create_unit(store.get(runner_id), {"host_id": HOST})
+        stale = store.get(runner_id)
+        # Written to since this step read it, as a busy pass does.
+        store.update(runner_id, stale["spec_version"], last_note="a note")
+        flow._step_create_unit(stale, {"host_id": HOST})
         assert store.get(runner_id)["adopt_unit"] is None
         assert "adopt" not in Runtime.asked
 
