@@ -448,6 +448,71 @@ class TestDrivenByTheReconciler:
             "drained"
 
 
+class TestAnAdoptionWithNothingLeftToAdopt:
+    """The worker reports no unit, so this runner is built from its fleet's
+    image like any other - and takes the name its fleet gives it.
+
+    A runner adopted from the fleet that served before the controller
+    existed carries whatever name it was given then. Ending the adoption
+    without renaming left those names on the runner and at the forge, which
+    is where "the names are still not uniform" came from (2026-09-20).
+    """
+
+    def test_it_takes_the_name_its_fleet_gives(self, platform):
+        service, flow, _, _ = platform
+        spec = a_planned(service)
+        service.specs.update(spec["runner_id"], spec["spec_version"],
+                             adopt_unit="github-runner-1",
+                             display_name="nomercy-g0zqg")
+        flow.provision(service.specs.get(spec["runner_id"]))
+        after = service.specs.get(spec["runner_id"])
+        assert after["adopt_unit"] is None
+        assert after["display_name"] == "github-linux-x64-1"
+
+
+class TestAUnitJustMadeHasNoRegistrationYet:
+    """A registration belongs to the unit it was made for.
+
+    When that unit is replaced the record is a ghost, and a spec that still
+    names it makes the register step find it at the forge, take it for this
+    runner's own and wait for a container that no longer exists to come
+    online. That is how a rebuild sat in `registering` until its deadline
+    without ever being registered (2026-09-20).
+    """
+
+    def replaced(self, service, flow):
+        """A runner registered and serving, whose unit is then gone."""
+        spec = provisioned(service, flow, a_planned(service))
+        registration = flow.register(spec)
+        service.specs.update(spec["runner_id"], spec["spec_version"],
+                             actual_state="idle", **registration)
+        UnitRuntime.reset()
+        return service.specs.get(spec["runner_id"]), registration
+
+    def test_the_replaced_units_record_is_dropped_and_deleted(self, platform):
+        service, flow, _, forges = platform
+        spec, registration = self.replaced(service, flow)
+        flow.provision(spec)
+        after = service.specs.get(spec["runner_id"])
+        assert after["registration_id"] is None
+        assert after["registration_uuid"] is None
+        assert ("github", registration["registration_id"]) in forges.deleted
+
+    def test_a_record_the_forge_shows_at_work_is_left_where_it_is(self,
+                                                                  platform):
+        """MIG-9: whatever is answering under that record is running a job,
+        and deleting it would abort it. The new unit still gets a
+        registration of its own; what was left behind is said in the note."""
+        service, flow, _, forges = platform
+        spec, registration = self.replaced(service, flow)
+        forges.busy.add(registration["registration_id"])
+        flow.provision(spec)
+        after = service.specs.get(spec["runner_id"])
+        assert after["registration_id"] is None
+        assert forges.deleted == []
+        assert registration["registration_id"] in (after["last_note"] or "")
+
+
 class TestRemovingWhatAFailedCreateLeft:
     """The first Windows unit failed inside `create`, and its compensation
     failed too, so the spec recorded no handle. A removal that asked for

@@ -46,6 +46,10 @@ $repo = Split-Path (Split-Path $PSScriptRoot -Parent) -Parent
 $control = @($s.VMs.Keys | Where-Object { $s.VMs[$_].Role -eq 'control-plane' })
 if ($control.Count -ne 1) { throw 'settings.psd1 must name exactly one control-plane VM' }
 $cp = $s.VMs[$control[0]].Address
+# The commit the control plane is at: the dashboard's cells name the unit
+# images each worker built under that tag.
+$version = (& git -C $repo rev-parse --short HEAD 2>$null)
+if (-not $version) { throw 'git rev-parse failed; the unit images are tagged by commit' }
 $stage = Join-Path $s.Root 'stage\dashboard'
 Remove-Item -Recurse -Force $stage -ErrorAction SilentlyContinue
 New-Item -ItemType Directory -Force -Path $stage | Out-Null

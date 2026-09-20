@@ -45,6 +45,7 @@ import time
 import providers
 
 from . import placement, retry
+from .service import forget_adoption
 from .redact import redact
 from .retry import (AGENT_FAST, AGENT_SLOW, FORGE_DELETE, FORGE_DRAIN,
                     FORGE_REGISTRATION, FORGE_STATUS)
@@ -251,12 +252,13 @@ class ProvisioningFlow:
             # adopt and this runner is built from its fleet's image like any
             # other - the alternative is asking a worker, for ever, to adopt
             # something that is gone (2026-09-20).
-            # Read again first: a pass writes to this row several times,
-            # and the version in hand is the one this step started with.
-            fresh = self.service.specs.get(spec["runner_id"])
-            self.service.specs.update(fresh["runner_id"],
-                                      fresh["spec_version"], adopt_unit=None)
+            # Ended the one way an adoption ends, so this runner also
+            # takes the name its fleet gives rather than keeping the one the
+            # unit it was adopted from happened to carry.
+            forget_adoption(self.service.specs, spec)
             spec = self.service.specs.get(spec["runner_id"])
+        self._void_registration(spec)
+        spec = self.service.specs.get(spec["runner_id"])
         unit = dict(spec)
         unit["name"] = name
         unit["storage"] = storage.names(spec["runner_id"], spec["platform"])
@@ -310,6 +312,41 @@ class ProvisioningFlow:
         if records is None:
             return None
         return provider.record_for(spec, records) is not None
+
+    def _void_registration(self, spec):
+        """A unit about to be made carries none of the old one's registration.
+
+        The record this spec names belongs to the unit being replaced. Left
+        in place, the register step finds it still at the forge, takes it for
+        this runner and waits for a container that is gone to come online -
+        which is a wait that can only end at the deadline (2026-09-20). So
+        the record is deleted, and the spec stops naming it either way: the
+        unit being built needs a registration of its own.
+
+        A record the forge shows at work is left exactly where it is (MIG-9)
+        and said in the note, because whatever is answering under it is
+        running somebody's job.
+        """
+        if not (spec.get("registration_id") or spec.get("registration_uuid")):
+            return
+        provider = self._provider(spec)
+        note = None
+        try:
+            self._delete_record_instead(
+                provider, spec, provider.deregistration(spec),
+                RuntimeError("the unit it belonged to is being replaced"))
+        except Exception as e:                  # noqa: BLE001 - a record
+            # left behind is said, not raised: the runner still needs one.
+            named = (spec.get("registration_id")
+                     or spec.get("registration_uuid"))
+            note = (f"{time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())} "
+                    f"forge record {named}, of the unit this runner "
+                    f"replaces, was left behind: {e}")[:500]
+        fresh = self.service.specs.get(spec["runner_id"])
+        self.service.specs.update(fresh["runner_id"], fresh["spec_version"],
+                                  registration_id=None,
+                                  registration_uuid=None,
+                                  **({"last_note": note} if note else {}))
 
     def _step_mint_token(self, spec, state):
         provider = self._provider(spec)
@@ -550,7 +587,10 @@ class ProvisioningFlow:
         deleting the record from under one would abort it (MIG-9)."""
         if not plan.registration_id:
             raise cause
-        if provider.job_state(spec, self._records(provider)) == \
+        # Asked fresh: this is the check that keeps a deletion off a
+        # running job, and a list read seconds ago can already be out of
+        # date.
+        if provider.job_state(spec, self._records(provider, fresh=True)) == \
                 providers.BUSY:
             raise RuntimeError(
                 f"the runner could not deregister itself ({cause}) and the "

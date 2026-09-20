@@ -83,6 +83,30 @@ class UnknownRunner(Exception):
     pass
 
 
+def forget_adoption(specs, spec):
+    """End an adoption whose unit has been removed.
+
+    The one definition of what ending an adoption means, for both the
+    reconciler, when the unit has been removed, and the provisioning flow,
+    when the worker reports there is none left.
+
+    An adopted runner is driven through the unit that was already there.
+    Once that unit is gone, keeping the record would make the next create
+    try to adopt a unit it has just removed - a failure with no way out but
+    an edit of the database. Its name goes with it, so the rebuilt runner
+    takes the one its fleet gives (2026-09-20)."""
+    if not spec.get("adopt_unit"):
+        return
+    fresh = specs.get(spec["runner_id"])
+    name = None
+    try:
+        name = RunnerService(specs.path).next_name(fresh["fleet_id"])
+    except Exception:                           # noqa: BLE001
+        pass
+    specs.update(fresh["runner_id"], fresh["spec_version"], adopt_unit=None,
+                 **({"display_name": name} if name else {}))
+
+
 class RunnerService:
     def __init__(self, path=None, specs=None, fleets=None, operations=None,
                  inventory=None, runtimes=None, agents=None, env=None):
