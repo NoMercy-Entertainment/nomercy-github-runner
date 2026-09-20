@@ -173,7 +173,8 @@ class ProvisioningFlow:
         from runtime.base import ExecUnitKind, ExecUnitRef
         from .service import EXEC_KINDS
         return ExecUnitRef(kind=ExecUnitKind(EXEC_KINDS[spec["platform"]]),
-                           handle=handle or spec["exec_unit_ref"])
+                           handle=handle or spec["exec_unit_ref"],
+                           runner_id=spec["runner_id"])
 
     # ---- steps 3-4 ----------------------------------------------------------
 

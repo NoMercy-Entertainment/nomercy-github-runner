@@ -77,11 +77,21 @@ class AgentWiring:
 
 
 def runner_id_of(ref) -> str:
+    """Which runner a unit reference belongs to.
+
+    Carried by the reference when the controller made it. Falling back to
+    reading it out of the handle is for references built from a name alone;
+    it works only for units this controller named, and a runner adopted as
+    it stood is not one of those.
+    """
+    carried = str(getattr(ref, "runner_id", "") or "")
+    if carried:
+        return carried
     handle = getattr(ref, "handle", ref)
     m = _HANDLE.match(str(handle or ""))
     if not m:
-        raise NotBound(f"{handle!r} is not a unit this controller made; no "
-                       f"runner_id can be read from it")
+        raise NotBound(f"{handle!r} is not a unit this controller made and "
+                       f"the reference carries no runner_id")
     return m.group(1)
 
 
@@ -152,7 +162,7 @@ class AgentRuntime:
         if not handle:
             raise RuntimeError("the agent made the unit but did not name it")
         return ExecUnitRef(kind=ExecUnitKind(EXEC_KINDS[spec["platform"]]),
-                           handle=handle)
+                           handle=handle, runner_id=spec["runner_id"])
 
     def start(self, ref) -> None:
         self._call("exec_unit.start", ref)

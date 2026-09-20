@@ -165,3 +165,40 @@ class TestWhatItRefuses:
         assert adopt(db, forge) == first, \
             "adopting twice adopts once; it does not make a second spec"
         assert len(SpecStore(db).list()) == 1
+
+
+class TestAddressingAnAdoptedUnit:
+    """A unit's handle is the worker's own word for it - `github-runner-1`
+    for a container that was there first. The controller stores it and hands
+    it back; it must never read a runner_id out of it, which is what
+    `ExecUnitRef` has said from the start and what adoption proves.
+    """
+
+    def test_a_ref_carries_the_runner_it_belongs_to(self, db, forge):
+        from control.provision import ProvisioningFlow
+        from control.agent_runtime import runner_id_of
+        from control.service import RunnerService
+        from store.specs import SpecStore
+
+        runner_id = adopt(db, forge)
+        SpecStore(db).update(runner_id, 1, exec_unit_ref="github-runner-1")
+        spec = SpecStore(db).get(runner_id)
+        flow = ProvisioningFlow(RunnerService(db, env=ENV), agent=None,
+                                forges=None, env=ENV)
+        assert runner_id_of(flow._ref(spec)) == runner_id
+
+    def test_a_handle_that_names_no_runner_and_carries_none_is_refused(self):
+        from control.agent_runtime import NotBound, runner_id_of
+        from runtime.base import ExecUnitKind, ExecUnitRef
+        with pytest.raises(NotBound):
+            runner_id_of(ExecUnitRef(kind=ExecUnitKind.LINUX_CONTAINER,
+                                     handle="github-runner-1"))
+
+    def test_a_unit_this_controller_made_still_yields_its_runner(self):
+        from control.agent_runtime import runner_id_of
+        from runtime.base import ExecUnitKind, ExecUnitRef
+        from store import storage
+        rid = "3f2504e0-4f89-41d3-9a0c-0305e82c3301"
+        ref = ExecUnitRef(kind=ExecUnitKind.LINUX_CONTAINER,
+                          handle=storage.unit_name(rid))
+        assert runner_id_of(ref) == rid

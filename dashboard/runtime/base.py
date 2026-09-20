@@ -58,6 +58,12 @@ class ExecUnitRef:
 
     kind: ExecUnitKind
     handle: str
+    #: Which runner this unit is. Carried, never derived: a handle is the
+    #: worker's own word for the unit, and for a runner adopted as it stood
+    #: (T-0802) that word is `github-runner-1`, which says nothing about a
+    #: runner_id. Optional so the adapters that make a ref from a name alone
+    #: keep working; the controller always sets it.
+    runner_id: str = ""
 
 
 @dataclass(frozen=True)

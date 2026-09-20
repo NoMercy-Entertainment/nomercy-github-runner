@@ -584,7 +584,8 @@ class RunnerService:
         from runtime.base import ExecUnitKind, ExecUnitRef
         runtime = self.runtime(spec)
         ref = ExecUnitRef(kind=ExecUnitKind(EXEC_KINDS[spec["platform"]]),
-                          handle=spec["exec_unit_ref"])
+                          handle=spec["exec_unit_ref"],
+                          runner_id=spec["runner_id"])
         return runtime, ref
 
     # ---- helpers -----------------------------------------------------------
