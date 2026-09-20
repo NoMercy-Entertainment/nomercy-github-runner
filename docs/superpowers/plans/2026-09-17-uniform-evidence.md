@@ -556,3 +556,53 @@ on every boot, so the old record is stranded rather than reused. Seventeen
 offline records were left this morning. That is precisely what a RunnerSpec
 ends - the platform registers once and records the id - and it is the
 strongest argument yet for adopting this fleet into the controller.
+
+## 2026-09-20 - the WSL fleet adopted, and the three runners it cost
+
+All thirteen runners on the WSL engine are managed: ten GitHub, three
+Forgejo, each with the registration it already had and the container it
+already was. With the Windows and macOS cells, the controller now holds
+fifteen runners on four workers.
+
+**How.** `Install-WslAgent.ps1` put the agent in the distro as a systemd
+service; `Publish-WslAgent.ps1`, elevated, carried the control plane's calls
+over a portproxy on 10.77.0.1:8453, because nothing routes between the
+internal switch and WSL's own network. Then one `adopt` per runner, naming
+the forge record and the container.
+
+**What went wrong, in order:**
+
+1. Every adoption reached `provisioned` and then failed at `verify_online`.
+   The cause was `runner_id_of`, which read a runner_id out of the unit's
+   handle - possible only because every handle so far was `rnr-<uuid>`.
+   `github-runner-1` is not, so the readiness call raised and the flow waited
+   120 s for a runner that was online the whole time. `ExecUnitRef` had said
+   from the start that the controller "stores it and hands it back, and never
+   parses it"; the reference now carries the runner it belongs to.
+2. Fixing that removed an accident that had been protecting the fleet. While
+   the handle could not be read, every compensation failed harmlessly -
+   `remove_unit: 'github-runner-1' is not a unit this controller made`. With
+   the handle readable, the next failed step compensated the way it does for
+   a runner the controller built: delete the forge record, then remove the
+   unit. **github-runner-4 and -5 were removed and github-runner-1 was left
+   dead.**
+
+**What it cost and how it was put back.** Three runners were out of service
+for about twenty minutes. Their volumes survived, so compose rebuilt all
+three onto their own data - caches intact - and their cpusets were put back
+(0-15, 12-27, 17-32). Each registered afresh at GitHub; their specs were
+pointed at the new records and repaired. The forge records of the two that
+were removed had been deleted by the compensation, which is why they could
+not simply be re-adopted.
+
+**The rule that now exists:** `compensations()` answers nothing at all for a
+spec that carries `adopt_unit`, at every step that can fail. A compensation
+undoes what the flow did, and for an adopted runner the flow made nothing.
+Removing such a runner deliberately still works; only the automatic undo is
+refused.
+
+**Also recorded:** every adopted runner reports "registered with other
+labels than the fleet's" - `beast-unit` for the GitHub ones, the ubuntu-*
+set for Forgejo, macos-* for the appliance. That is true and deliberate:
+adopting keeps a runner exactly as it is, and the fleet's own labels are
+what a *new* runner would get.
