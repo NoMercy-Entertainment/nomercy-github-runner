@@ -622,6 +622,13 @@ The agent (`python -m agent`), the controller (`python -m control`) and the Linu
 
 ### T-0603 — Move the state store
 
+**Done 2026-09-20**, the other way round from how it was written: the store
+stayed where the controller writes it and the dashboard came to it, with the
+deployment's history, users and session key copied into that volume
+(`Install-ControlPlaneDashboard.ps1`). The WSL dashboard still runs on its
+untouched volume, which is the rollback.
+
+
 - **Gate:** HYPERV, NEVER-AUTO · **Requirements:** NFR-11 · **Depends on:** T-0602, T-0204
 - **Steps:** stop the WSL dashboard, copy `dashboard-data` (history.db, users.json, secret.key, state.json), start the new one, verify row counts, keep the old volume untouched as the rollback.
 - **Verify:** `SELECT COUNT(*) FROM runs` identical; a user can sign in without re-approval.
@@ -629,6 +636,12 @@ The agent (`python -m agent`), the controller (`python -m control`) and the Linu
 - **Done when:** ACC-15 is evidenced.
 
 ### T-0604 — Networking and publication
+
+**Done 2026-09-20:** the public name is unchanged and now carried to the
+control plane by the host portproxy it already went through
+(`192.168.178.19:9200 -> 10.77.0.10:9200`), so `DASH_PUBLIC_URL` and the
+OIDC redirect registered for it keep working.
+
 
 - **Gate:** HYPERV, WINDOWS-INFRA · **Requirements:** CON-2 · **Depends on:** T-0602 · **Decision:** OPEN-6
 - **Steps:** give the control plane a stable address; if OPEN-6 chooses an External switch, create it during a maintenance window because creating one briefly interrupts host networking; otherwise keep an Internal switch with a static address and one portproxy rule.

@@ -606,3 +606,39 @@ labels than the fleet's" - `beast-unit` for the GitHub ones, the ubuntu-*
 set for Forgejo, macos-* for the appliance. That is true and deliberate:
 adopting keeps a runner exactly as it is, and the fleet's own labels are
 what a *new* runner would get.
+
+## 2026-09-20 - one dashboard, where the store is (T-0603, T-0604)
+
+`https://gh-runners.phillippepelzer.me` now serves the dashboard on the
+control plane, beside the store the controller writes. Its fleet page shows
+all fifteen runners on four workers; the one in the WSL distro showed none of
+them, because it was reading a `/data/control.db` that does not exist there.
+
+**What moved.** The deployment's `history.db` (4965 runs), `users.json`,
+`auth.json`, `state.json` and `secret.key`, into the controller's own volume.
+The history was taken with sqlite's backup rather than copied as a file - it
+is being written to while the old dashboard serves - and the session key was
+carried deliberately: a cookie signed by the old dashboard is accepted by the
+new one, so the switch signed nobody out. The public URL had to stay the
+same for the same reason the OIDC redirect is registered for it.
+
+**What it runs with.** The settings it needs, read from the deployment's own
+`.env` and written only on the control plane (`/etc/runner-platform/
+dashboard.env`), plus what the platform itself decides - unit images, unit
+memory, the drain group. No Docker socket: every runner it shows is reached
+through its worker's agent, which is what CON-2 asks for.
+
+**The home page follows the host.** Where there is an engine it is the page
+it has always been; where there is none it redirects to the fleet page.
+Sending someone to a v1 page on the control plane would be a page of errors
+about a socket that is deliberately absent.
+
+**The switch, and the way back.** One portproxy rule on the host:
+`192.168.178.19:9200` pointed at `10.77.0.10:9200` instead of the distro.
+The old dashboard is still running and its volume was never touched, so
+pointing that rule back at `172.28.202.20:9200` restores it exactly.
+
+**Verified after the switch:** `/login` answers 200 on the public name, the
+dashboard reports `engine_reachable: False` and fifteen runners, and the
+first signed-in requests (`/api/status`, `/api/v2/fleet`) answered 200 -
+the copied session key did its work.
