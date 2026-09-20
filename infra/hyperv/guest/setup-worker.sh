@@ -31,6 +31,13 @@ install -m 644 runner-agent.service /etc/systemd/system/runner-agent.service
 if [ -f forgejo-base.tar ]; then
   docker load -q -i forgejo-base.tar
 fi
+if [ -f github-base.tar ]; then
+  docker load -q -i github-base.tar
+fi
+if [ -s BASE_github ]; then
+  docker build -q -f images/linux/unit/Dockerfile.github     --build-arg BASE="$(cat BASE_github)"     --label "org.opencontainers.image.revision=${VERSION}"     -t "nomercy/runner-unit-github:${VERSION}" images/linux/unit >/dev/null
+  echo "unit image nomercy/runner-unit-github:${VERSION}"
+fi
 docker build -q -f images/linux/unit/Dockerfile.forgejo \
   --build-arg BASE=ghcr.io/nomercy-entertainment/nomercy-forgejo-runner:latest \
   --label "org.opencontainers.image.revision=${VERSION}" \

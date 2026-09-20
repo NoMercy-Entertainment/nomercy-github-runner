@@ -27,6 +27,18 @@ install -m 644 runner-agent.service /etc/systemd/system/runner-agent.service
 # runners that were serving long before the controller knew them (T-0802).
 install -d -m 700 /var/lib/runner-agent
 
+# --- the unit images this worker's cells are made from -------------------------
+# The fleet's own images plus the three entry points the agent drives
+# (images/linux/unit). A runner rebuilt on this worker is made from these;
+# the images the containers ran before have no /runner/register, which is
+# what a rebuild discovered the hard way (2026-09-20).
+for cell in github forgejo; do
+  base="$(cat "BASE_${cell}" 2>/dev/null || true)"
+  [ -n "$base" ] || continue
+  docker build -q -f images/linux/unit/Dockerfile."$cell"     --build-arg BASE="$base"     --label "org.opencontainers.image.revision=${VERSION}"     -t "nomercy/runner-unit-${cell}:${VERSION}" images/linux/unit >/dev/null
+  echo "unit image nomercy/runner-unit-${cell}:${VERSION}"
+done
+
 systemctl daemon-reload
 systemctl enable runner-agent >/dev/null
 systemctl restart runner-agent

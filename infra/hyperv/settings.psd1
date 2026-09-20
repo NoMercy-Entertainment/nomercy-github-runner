@@ -44,8 +44,18 @@
     # The GitHub cells. The image is what the fleet on the WSL worker is
     # already made from; the drain group is a runner group with no repository
     # in it, which is where a runner waits while it finishes its last job.
+    # What a unit is built FROM, per forge: the image that fleet's runners
+    # already run. The unit image itself is built on each Linux worker from
+    # these plus the three entry points the agent drives
+    # (images/linux/unit), and is what `RUNNER_UNIT_IMAGE_*` names. A runner
+    # rebuilt from the base alone has no /runner/register - which is what a
+    # rebuild discovered the hard way (2026-09-20).
+    Forgejo = @{
+        BaseImage = 'ghcr.io/nomercy-entertainment/nomercy-forgejo-runner:latest'
+    }
+
     GitHub = @{
-        UnitImage   = 'ghcr.io/nomercy-entertainment/nomercy-github-runner:latest'
+        BaseImage   = 'ghcr.io/nomercy-entertainment/nomercy-github-runner:latest'
         RunnerMemGB = 32
         DrainGroup  = 'drain'
         # What a GitHub runner on the Windows worker is made from: a template

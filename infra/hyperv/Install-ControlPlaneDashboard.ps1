@@ -66,7 +66,7 @@ $win = $s.Windows
 $unitMemGB = ($s.VMs.Keys | Where-Object { $s.VMs[$_].Role -eq 'linux-worker' } |
     ForEach-Object { $s.VMs[$_].RunnerMemGB } | Measure-Object -Minimum).Minimum
 $lines = ($Settings | ForEach-Object { "$_=$($values[$_])" }) + @(
-    "RUNNER_UNIT_IMAGE_GITHUB_LINUX=$($s.GitHub.UnitImage)",
+    "RUNNER_UNIT_IMAGE_GITHUB_LINUX=nomercy/runner-unit-github:$version",
     "RUNNER_UNIT_MEMORY_GITHUB_LINUX=$($s.GitHub.RunnerMemGB)g",
     "GITHUB_DRAIN_GROUP=$($s.GitHub.DrainGroup)",
     "RUNNER_UNIT_IMAGE_GITHUB_WINDOWS=$($s.GitHub.WindowsTemplate)",

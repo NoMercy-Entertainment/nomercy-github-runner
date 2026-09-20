@@ -98,8 +98,14 @@ Write-LfFile (Join-Path $stage 'setup.sh') (Get-Content -Raw `
     (Join-Path (Join-Path (Split-Path $PSScriptRoot -Parent) 'hyperv') 'guest\setup-wsl-agent.sh'))
 
 $tar = Join-Path $s.Root 'stage\agent-code.tar'
-& tar -C $repo -cf $tar --exclude='__pycache__' --exclude='tests' agent
+& tar -C $repo -cf $tar --exclude='__pycache__' --exclude='tests' agent images/linux/unit
 if ($LASTEXITCODE -ne 0) { throw 'could not pack the agent' }
+
+# What this worker's unit images are built from: the images its runners run
+# today. The unit image adds the three entry points the agent drives, which
+# is what makes a rebuilt runner drivable at all.
+Write-LfFile (Join-Path $stage 'BASE_github') "$($s.GitHub.BaseImage)`n"
+Write-LfFile (Join-Path $stage 'BASE_forgejo') "$($s.Forgejo.BaseImage)`n"
 
 # --- into the distro ------------------------------------------------------------
 $linuxStage = '/tmp/rnr-stage'

@@ -96,7 +96,7 @@ try {
         # The GitHub Linux cell: what the fleet on the WSL worker is already
         # made from, so a runner added beside the adopted ones is the same
         # thing they are.
-        "RUNNER_UNIT_IMAGE_GITHUB_LINUX=$($s.GitHub.UnitImage)",
+        "RUNNER_UNIT_IMAGE_GITHUB_LINUX=nomercy/runner-unit-github:$version",
         "RUNNER_UNIT_MEMORY_GITHUB_LINUX=$($s.GitHub.RunnerMemGB)g",
         # A runner group no repository may use, which a runner is moved into
         # while it drains: no job can follow it there (OPEN-7).
@@ -130,10 +130,15 @@ try {
         return
     }
 
-    # --- the forgejo base image, which is not public -----------------------------
+    # --- the base images, which are not public -----------------------------------
+    # Each worker builds its unit images from these: the fleet's own runner
+    # image plus the entry points the agent drives.
     $baseTar = Join-Path $stage 'forgejo-base.tar'
     Invoke-InDistro $s @('docker', 'save', '-o', (ConvertTo-WslPath $baseTar),
-        'ghcr.io/nomercy-entertainment/nomercy-forgejo-runner:latest')
+        $s.Forgejo.BaseImage)
+    $githubTar = Join-Path $stage 'github-base.tar'
+    Invoke-InDistro $s @('docker', 'save', '-o', (ConvertTo-WslPath $githubTar),
+        $s.GitHub.BaseImage)
 
     # --- each worker ----------------------------------------------------------------
     foreach ($name in $workers) {
@@ -164,6 +169,7 @@ try {
         }
         Write-LfFile (Join-Path $wStage 'agent.json') ($agentConfig | ConvertTo-Json -Depth 4)
         Write-LfFile (Join-Path $wStage 'VERSION') "$version`n"
+        Write-LfFile (Join-Path $wStage 'BASE_github') "$($s.GitHub.BaseImage)`n"
         Write-LfFile (Join-Path $wStage 'CONTROL_PLANE') "$cp`n"
         Write-LfFile (Join-Path $wStage 'HOST_ADDRESS') "$($s.HostAddress)`n"
         Write-LfFile (Join-Path $wStage 'AGENT_PORT') "$($s.AgentPort)`n"
@@ -173,6 +179,7 @@ try {
         Invoke-Guest $s $w.Address 'rm -rf /tmp/rnr-stage && mkdir -p -m 700 /tmp/rnr-stage/bundle' -Quiet
         Send-ToGuest $s $w.Address $tar '/tmp/rnr-stage/code.tar'
         Send-ToGuest $s $w.Address $baseTar '/tmp/rnr-stage/forgejo-base.tar'
+        Send-ToGuest $s $w.Address $githubTar '/tmp/rnr-stage/github-base.tar'
         foreach ($f in Get-ChildItem $wStage) { Send-ToGuest $s $w.Address $f.FullName "/tmp/rnr-stage/$($f.Name)" }
         Invoke-Guest $s $w.Address ('cd /tmp/rnr-stage && tar -xf code.tar && tar -C bundle -xf bundle.tar' +
             ' && sudo bash setup.sh')
