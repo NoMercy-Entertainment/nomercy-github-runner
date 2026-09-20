@@ -46,6 +46,7 @@ import subprocess
 import tempfile
 
 from .. import naming
+from .adopted import Adopted
 
 #: Where each storage area is mounted inside the unit.
 MOUNTS = {"work": "/runner/work", "docker": "/var/lib/docker",
@@ -134,13 +135,26 @@ def _bytes(text):
 class LinuxContainerRuntime:
     kind = "linux-container"
 
-    def __init__(self, run=None):
+    def __init__(self, run=None, adopted=None):
         self._run = run or _docker
+        # Which container on this engine a runner already is, for the few
+        # that were serving before the controller knew them (T-0802). Every
+        # other runner's unit is named by its runner_id, and nothing about
+        # it has to be remembered.
+        self._adopted = adopted if adopted is not None else Adopted()
+
+    def _unit(self, runner_id):
+        """The container this runner is: the one it was adopted as, or the
+        name its runner_id gives."""
+        rid = naming.check(runner_id)
+        return self._adopted.name_for(rid, naming.unit_name(rid))
 
     # ---- lifecycle ---------------------------------------------------------
 
     def create(self, runner_id, spec):
         rid = naming.check(runner_id)
+        if (spec or {}).get("adopt"):
+            return self._adopt(rid, spec["adopt"])
         name = naming.unit_name(rid)
         image = (spec or {}).get("image")
         if not image:
@@ -193,22 +207,46 @@ class LinuxContainerRuntime:
             raise RuntimeError(err or out or "docker run failed")
         return name
 
+    def _adopt(self, rid, adopt):
+        """Take over a container that is already a runner.
+
+        It keeps its name, its volumes, its registration and the job it may
+        be running: all that is written is this worker's note of which
+        container the runner_id means. Nothing is created, started, stopped
+        or relabelled - a container cannot be relabelled after it is made,
+        and a runner with a job must not notice this at all.
+
+        Idempotent, and refused for a container that is not there: adopting
+        what does not exist would leave a spec pointing at nothing.
+        """
+        name = str((adopt or {}).get("label") or "")
+        if not name:
+            raise ValueError("adopting needs the name of the container that "
+                             "is already there")
+        ok, _, err = self._run(["inspect", "--type", "container",
+                                "--format", "{{.Id}}", name], timeout=30)
+        if not ok:
+            raise RuntimeError(f"no container {name!r} on this engine to "
+                               f"adopt: {err}".strip())
+        self._adopted.record(rid, name)
+        return name
+
     def start(self, runner_id):
         """Started, and in service. The restart policy a drain takes off is
         put back first, so a unit started after a drain is not left one exit
         away from staying down."""
-        name = naming.unit_name(runner_id)
+        name = self._unit(runner_id)
         self._check(["update", "--restart=unless-stopped", name], timeout=30)
         self._check(["start", name], timeout=60)
 
     def stop(self, runner_id):
         """SIGTERM with a grace period long enough to deregister."""
         self._check(["stop", "-t", str(STOP_TIMEOUT),
-                     naming.unit_name(runner_id)], timeout=STOP_TIMEOUT + 20)
+                     self._unit(runner_id)], timeout=STOP_TIMEOUT + 20)
 
     def restart(self, runner_id):
         self._check(["restart", "-t", str(STOP_TIMEOUT),
-                     naming.unit_name(runner_id)], timeout=STOP_TIMEOUT + 30)
+                     self._unit(runner_id)], timeout=STOP_TIMEOUT + 30)
 
     def drain(self, runner_id):
         """A graceful stop that stays stopped (OPEN-7): the restart policy
@@ -226,7 +264,7 @@ class LinuxContainerRuntime:
         it must be safe to repeat - and it is: forgejo-runner keeps its
         signal handler until it exits, so a second SIGTERM while it finishes
         a job is ignored (its main.go: NotifyContext, `defer stop()`)."""
-        name = naming.unit_name(runner_id)
+        name = self._unit(runner_id)
         self._check(["update", "--restart=no", name], timeout=30)
         if self.status(runner_id).get("running"):
             self._check(["kill", "--signal=TERM", name], timeout=30)
@@ -239,10 +277,14 @@ class LinuxContainerRuntime:
     def remove(self, runner_id, keep_data):
         """Remove the unit and its storage. Safe when any of it is absent."""
         rid = naming.check(runner_id)
-        ok, _, err = self._run(["rm", "-f", "-v", naming.unit_name(rid)],
+        ok, _, err = self._run(["rm", "-f", "-v", self._unit(rid)],
                                timeout=180)
         if not ok and "No such container" not in err:
             raise RuntimeError(err)
+        # The unit is gone, so the note of which one it was means nothing.
+        # Forgotten after the removal, so a removal that failed leaves the
+        # runner still pointing at its container.
+        self._adopted.forget(rid)
         volumes = naming.names(rid, "linux")
         left = []
         for area in naming.AREAS:
@@ -266,7 +308,7 @@ class LinuxContainerRuntime:
         """Whether the unit exists and runs. `exists` is None - unknown - when
         the engine could not be asked, which is never read as absent."""
         ok, out, err = self._run(["inspect", "--format", "{{json .State}}",
-                                  naming.unit_name(runner_id)], timeout=30)
+                                  self._unit(runner_id)], timeout=30)
         if not ok:
             if "No such" in err:
                 return {"exists": False, "running": False, "state": "absent"}
@@ -284,7 +326,7 @@ class LinuxContainerRuntime:
     def telemetry(self, runner_id):
         ok, out, _ = self._run(["stats", "--no-stream", "--format",
                                 "{{.CPUPerc}}\t{{.MemUsage}}",
-                                naming.unit_name(runner_id)], timeout=25)
+                                self._unit(runner_id)], timeout=25)
         result = {"cpu_percent": None, "mem_used_bytes": None,
                   "mem_limit_bytes": None}
         if ok and "\t" in out:
@@ -302,7 +344,7 @@ class LinuxContainerRuntime:
         """CPU and memory of several units in one `docker stats` call - one
         per unit would take longer than a heartbeat's interval on a full
         worker. A unit missing from the answer is left out: unknown."""
-        names = {naming.unit_name(r): r for r in runner_ids}
+        names = {self._unit(r): r for r in runner_ids}
         if not names:
             return {}
         ok, out, _ = self._run(["stats", "--no-stream", "--format",
@@ -329,12 +371,12 @@ class LinuxContainerRuntime:
         """The unit's own output, stdout and stderr merged in order - the
         GitHub runner logs to one and forgejo-runner to the other."""
         ok, out, _ = self._run(["logs", "--since", f"{since_seconds}s",
-                                naming.unit_name(runner_id)],
+                                self._unit(runner_id)],
                                timeout=20, merge_stderr=True)
         return out if ok else ""
 
     def probe(self, runner_id, probe):
-        name = naming.unit_name(runner_id)
+        name = self._unit(runner_id)
         if probe in ("disk_usage", "cache_size"):
             rows = self._df(name)
             if rows is None:
@@ -401,7 +443,7 @@ class LinuxContainerRuntime:
         for that scope rather than skipped in silence. A second call finds
         nothing to free and still succeeds.
         """
-        name = naming.unit_name(runner_id)
+        name = self._unit(runner_id)
         policy = policy or {}
         scopes = list(policy.get("scopes") or DEFAULT_SCOPES)
         timeout = int(policy.get("timeout", 300))
@@ -477,11 +519,18 @@ class LinuxRegistrar:
     anyone on the worker could read it in `ps` for as long as the command ran.
     """
 
-    def __init__(self, run=None):
+    def __init__(self, run=None, adopted=None):
         self._run = run or _docker
+        self._adopted = adopted if adopted is not None else Adopted()
+
+    def _unit(self, runner_id):
+        """The same container the runtime means: registering an adopted
+        runner has to reach the unit it already is."""
+        rid = naming.check(runner_id)
+        return self._adopted.name_for(rid, naming.unit_name(rid))
 
     def register(self, runner_id, plan):
-        ok, out, err = self._run(["exec", "-i", naming.unit_name(runner_id),
+        ok, out, err = self._run(["exec", "-i", self._unit(runner_id),
                                   "/runner/register"],
                                  input=json.dumps(plan), timeout=120)
         if not ok:
@@ -497,7 +546,7 @@ class LinuxRegistrar:
         """From inside the unit, where the runner's own credentials are. A
         unit that is gone cannot do it, and says so rather than pretending:
         that registration can only be removed at the forge."""
-        ok, _, err = self._run(["exec", naming.unit_name(runner_id),
+        ok, _, err = self._run(["exec", self._unit(runner_id),
                                 "/runner/deregister"], timeout=60)
         if not ok:
             if "No such container" in err:

@@ -92,17 +92,14 @@ class TestItsData:
         assert body["operations"][0]["operation_id"] == op
 
 
-EDGE = next((p for p in (
-    r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
-    r"C:\Program Files\Microsoft\Edge\Application\msedge.exe")
-    if os.path.exists(p)), None)
-
-
-@pytest.mark.skipif(EDGE is None, reason="no headless browser installed")
 def test_the_page_renders_it_in_a_real_browser(tmp_path, one_runner,
                                                monkeypatch):
     from flask import Flask, render_template
     from werkzeug.serving import make_server
+
+    import browser
+    if not browser.works(tmp_path):
+        pytest.skip(browser.reason())
 
     service, rid, _ = one_runner
     stub = Flask("stub", template_folder=os.path.join(HERE, "templates"))
@@ -116,15 +113,11 @@ def test_the_page_renders_it_in_a_real_browser(tmp_path, one_runner,
     server = make_server("127.0.0.1", 0, stub)
     threading.Thread(target=server.serve_forever, daemon=True).start()
     try:
-        p = subprocess.run(
-            [EDGE, "--headless=new", "--disable-gpu", "--no-first-run",
-             f"--user-data-dir={tmp_path / 'edge'}",
-             "--virtual-time-budget=5000", "--dump-dom",
-             f"http://127.0.0.1:{server.server_port}/runners/{rid}"],
-            capture_output=True, text=True, timeout=120)
+        dom = browser.dump_dom(
+            f"http://127.0.0.1:{server.server_port}/runners/{rid}",
+            tmp_path / "edge")
     finally:
         server.shutdown()
-    dom = p.stdout
     assert "a_capability_added_later" in dom, dom[-1500:]
     assert "registered with other labels" in dom
     assert "no job containers" in dom

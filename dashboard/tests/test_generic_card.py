@@ -289,20 +289,16 @@ class TestThePagesData:
 # the page, in a real browser
 # ---------------------------------------------------------------------------
 
-EDGE = next((p for p in (
-    r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
-    r"C:\Program Files\Microsoft\Edge\Application\msedge.exe",
-    shutil.which("msedge") or "", shutil.which("chromium") or "",
-    shutil.which("google-chrome") or "") if p and os.path.exists(p)), None)
-
-
-@pytest.mark.skipif(EDGE is None, reason="no headless browser installed")
 def test_the_page_renders_all_six_fleets_in_a_real_browser(tmp_path,
                                                              monkeypatch):
     """A stub serving the page and the v2 data - no docker, no forge, no
     sign-in - loaded by headless Edge, whose DOM is then read back."""
     from flask import Flask, render_template
     from werkzeug.serving import make_server
+
+    import browser
+    if not browser.works(tmp_path):
+        pytest.skip(browser.reason())
 
     monkeypatch.setattr(api_v2, "_db_path",
                         lambda: str(tmp_path / "control.db"))
@@ -317,15 +313,10 @@ def test_the_page_renders_all_six_fleets_in_a_real_browser(tmp_path,
     t = threading.Thread(target=server.serve_forever, daemon=True)
     t.start()
     try:
-        p = subprocess.run(
-            [EDGE, "--headless=new", "--disable-gpu", "--no-first-run",
-             f"--user-data-dir={tmp_path / 'edge'}",
-             "--virtual-time-budget=5000", "--dump-dom",
-             f"http://127.0.0.1:{port}/v2"],
-            capture_output=True, text=True, timeout=120)
+        dom = browser.dump_dom(f"http://127.0.0.1:{port}/v2",
+                               tmp_path / "edge")
     finally:
         server.shutdown()
-    dom = p.stdout
     assert dom.count('class="fleet"') == 6, dom[-2000:]
     assert dom.count("<article") == 4, "two containers, two forge-only"
     assert "beaststack-windows-runner" in dom

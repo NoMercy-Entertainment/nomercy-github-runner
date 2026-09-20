@@ -510,3 +510,49 @@ refusal was the protocol doing its job.
 - The adopted runner carries `macos-13, macos-14, macos-15, macos-latest`,
   which are not the fleet's labels, and the reconciler says so on every pass.
   That is true and worth saying: adopting keeps a runner exactly as it is.
+
+## 2026-09-20 - the WSL VM was killed for commit exhaustion, and what it cost
+
+At 10:28:40 Windows' Resource-Exhaustion-Detector diagnosed a low virtual
+memory condition and killed the WSL VM. It named the consumers: `vmmem` at
+128 GiB, `ffmpeg` at 7.6 GiB and `ffprobe` at 7.4 GiB - and there were seven
+of those, about 48 GiB between them. The VM came back at 10:29:23.
+
+**What went down with it.** Everything in that VM: the thirteen runners and
+the dashboard in the `github-runners` distro, and the whole Docker Desktop
+stack in the other - Forgejo, Immich, MinIO, the AI gateway. Every job that
+was running was lost. Docker Desktop's own distro did not come back on its
+own; its engine answered only after the application was restarted.
+
+**Why the budget was wrong.** `.wslconfig` gave WSL 120 GB against about
+90 GB outside it, leaving 45 GB of margin. Two things had changed since that
+sum was written: the platform's own VMs arrived on 18-09 (control plane 4 GB
++ worker 16 GB = 20 GB of commit), and today's ffmpeg peak was about 48 GiB
+rather than the ~14 GiB the budget assumed. 120 + 90 + 20 = 230 of 256,
+with a spike of that size on top.
+
+**The change, at 10:36, with every runner idle** (so it interrupted no job):
+the cap is now `memory=96GB`, backed up as `.wslconfig.bak-20260920-103500`,
+with the new sum in the file's own comments: 96 + 90 + 20 = about 206, ~50 GB
+of margin. The runners keep their 32 g ceiling each; what shrinks is how many
+heavy jobs can run at once - about four rather than five - which is cheaper
+than a VM that is shot and takes every running job with it.
+
+**Afterwards, verified:** the distro reports 94 GB, all fourteen containers
+are up with their cpusets intact (0-15, 24-39, 38-53 spot-checked), the agent
+in the distro came back by itself, the ten GitHub runners are online, and the
+address did not change, so the dashboard's portproxy still points at it.
+
+**One repair was needed.** Forgejo answered 502 from outside for eight
+minutes while `forgejo` itself was healthy and its gate was serving runners
+200s. The published port was the broken part: Docker Desktop's port
+forwarder accepted connections on 3300 and closed them ("empty reply"), a
+stale mapping left by the VM being killed under it. Restarting the container
+that publishes the port restored it, locally and publicly.
+
+**A finding worth keeping.** Each of the two restarts left every GitHub
+runner a fresh registration: `nomercy-<random>` is minted by the start script
+on every boot, so the old record is stranded rather than reused. Seventeen
+offline records were left this morning. That is precisely what a RunnerSpec
+ends - the platform registers once and records the id - and it is the
+strongest argument yet for adopting this fleet into the controller.

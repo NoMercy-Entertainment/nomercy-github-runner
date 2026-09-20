@@ -66,7 +66,12 @@ try {
     & git -C $script:RepoRoot archive --format=tar -o $tar HEAD dashboard agent images/linux/unit scripts/install-docker.sh
     if ($LASTEXITCODE -ne 0) { throw 'git archive failed' }
 
-    $wanted = 'FORGEJO_INSTANCE_URL', 'FORGEJO_API_TOKEN'
+    # Read from the deployment's own .env and never written back to it: the
+    # controller needs the same credentials the dashboard has, because the
+    # runners it manages are registered at the same two forges (T-0802 puts
+    # the WSL fleet under it).
+    $wanted = 'FORGEJO_INSTANCE_URL', 'FORGEJO_API_TOKEN', 'GH_TOKEN',
+              'GITHUB_ORG', 'RUNNER_LABELS'
     $values = @{}
     foreach ($line in Get-Content -LiteralPath $EnvFile) {
         if ($line -match '^\s*([A-Z_][A-Z0-9_]*)\s*=(.*)$' -and $wanted -contains $Matches[1]) {
@@ -88,6 +93,14 @@ try {
         "FORGEJO_RUNNER_LABELS_WINDOWS=$(if ($WindowsLabels) { $WindowsLabels } else { $win.PilotLabel })",
         "RUNNER_UNIT_IMAGE_FORGEJO_WINDOWS=$($win.Template)",
         "RUNNER_UNIT_MEMORY_FORGEJO_WINDOWS=$($win.RunnerMemGB)g",
+        # The GitHub Linux cell: what the fleet on the WSL worker is already
+        # made from, so a runner added beside the adopted ones is the same
+        # thing they are.
+        "RUNNER_UNIT_IMAGE_GITHUB_LINUX=$($s.GitHub.UnitImage)",
+        "RUNNER_UNIT_MEMORY_GITHUB_LINUX=$($s.GitHub.RunnerMemGB)g",
+        # A runner group no repository may use, which a runner is moved into
+        # while it drains: no job can follow it there (OPEN-7).
+        "GITHUB_DRAIN_GROUP=$($s.GitHub.DrainGroup)",
         "CONTROL_INTERVAL=15")
 
     # --- the control plane ------------------------------------------------------

@@ -41,6 +41,15 @@
     # so about 45 GB is left, and this takes 30 of it (OPEN-5).
     VmBudgetGB    = 30
 
+    # The GitHub cells. The image is what the fleet on the WSL worker is
+    # already made from; the drain group is a runner group with no repository
+    # in it, which is where a runner waits while it finishes its last job.
+    GitHub = @{
+        UnitImage   = 'ghcr.io/nomercy-entertainment/nomercy-github-runner:latest'
+        RunnerMemGB = 32
+        DrainGroup  = 'drain'
+    }
+
     # OPEN-5: static memory, inside the measured margin.
     VMs = @{
         'rnr-control' = @{
