@@ -123,6 +123,17 @@ _UNITS = {"B": 1, "KB": 1000, "MB": 1000 ** 2, "GB": 1000 ** 3,
           "TIB": 1024 ** 4}
 
 
+def _absent(err, what):
+    """Whether the engine is saying this thing does not exist.
+
+    Read case-insensitively and without its article: Engine 29 answers `get
+    <name>: no such volume` where older ones said `No such volume`, and a
+    rebuild that took that for a failure stopped half-way with the unit
+    already gone (2026-09-20). What does not exist cannot be left behind.
+    """
+    return f"no such {what}" in (err or "").lower()
+
+
 def _state_word(state):
     """What the engine calls a container, in the three words the protocol
     has for it."""
@@ -286,7 +297,7 @@ class LinuxContainerRuntime:
         rid = naming.check(runner_id)
         ok, _, err = self._run(["rm", "-f", "-v", self._unit(rid)],
                                timeout=180)
-        if not ok and "No such container" not in err:
+        if not ok and not _absent(err, "container"):
             raise RuntimeError(err)
         # The unit is gone, so the note of which one it was means nothing.
         # Forgotten after the removal, so a removal that failed leaves the
@@ -299,7 +310,7 @@ class LinuxContainerRuntime:
                 continue
             ok, _, err = self._run(["volume", "rm", volumes[area]],
                                    timeout=60)
-            if not ok and "No such volume" not in err:
+            if not ok and not _absent(err, "volume"):
                 left.append(f"{area}: {err}")
         if left:
             raise RuntimeError("storage left behind: " + "; ".join(left))
@@ -567,7 +578,7 @@ class LinuxRegistrar:
         ok, _, err = self._run(["exec", self._unit(runner_id),
                                 "/runner/deregister"], timeout=60)
         if not ok:
-            if "No such container" in err:
+            if _absent(err, "container"):
                 raise RuntimeError("the unit is gone; its registration can "
                                    "only be removed at the forge")
             raise RuntimeError(err or "deregistration failed")

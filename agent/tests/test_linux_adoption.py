@@ -172,3 +172,46 @@ class TestWhatTheHeartbeatSees:
         runtime.create(RID, {"adopt": {"label": LEGACY}})
         used = runtime.telemetry_all([RID])
         assert RID in used
+
+
+class TestRemovingWhatWasNeverThere:
+    """A volume that does not exist is not storage left behind.
+
+    The engine's wording is not stable: Docker Engine 29 answers `get
+    <name>: no such volume` where the check looked for `No such volume`, and
+    a rebuild of an adopted runner - whose volumes are named by whoever made
+    it, not by its runner_id - failed on every one of them and stopped
+    half-way, unit gone and spec stuck in `removing` (2026-09-20).
+    """
+
+    def test_a_missing_volume_in_any_casing_is_not_a_failure(self, runtime,
+                                                             engine):
+        engine.containers[LEGACY] = {"state": "exited", "restarts": 0,
+                                     "tmp": {}, "draining": False,
+                                     "labels": {}, "image": "runner:1"}
+        runtime.create(RID, {"adopt": {"label": LEGACY}})
+
+        def answer(args, **kw):
+            if args[:2] == ["volume", "rm"]:
+                return False, "", f"Error response from daemon: get " \
+                                  f"{args[-1]}: no such volume"
+            return engine(args, **kw)
+
+        runtime._run = answer
+        runtime.remove(RID, keep_data=False)     # no raise
+
+    def test_a_volume_that_could_not_be_removed_is_still_reported(
+            self, runtime, engine):
+        engine.containers[LEGACY] = {"state": "exited", "restarts": 0,
+                                     "tmp": {}, "draining": False,
+                                     "labels": {}, "image": "runner:1"}
+        runtime.create(RID, {"adopt": {"label": LEGACY}})
+
+        def answer(args, **kw):
+            if args[:2] == ["volume", "rm"]:
+                return False, "", "volume is in use"
+            return engine(args, **kw)
+
+        runtime._run = answer
+        with pytest.raises(RuntimeError, match="storage left behind"):
+            runtime.remove(RID, keep_data=False)
