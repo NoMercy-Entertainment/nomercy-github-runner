@@ -342,21 +342,6 @@ class TestACpuWindowSurvivesARebuild:
         assert "cpus" not in unit and "cpuset" not in unit
 
 
-    def test_a_rebuild_that_resumes_forgets_it_too(self, db, forge):
-        """The unit is gone whichever step noticed it; trying to adopt what
-        was just removed is the same mistake twice (2026-09-20)."""
-        from control.reconciler import Reconciler
-        from control.service import RunnerService
-        from store.specs import SpecStore
-        service = RunnerService(db, env=ENV)
-        runner_id = adopt(db, forge)
-        store = SpecStore(db)
-        store.update(runner_id, 1, actual_state="removing",
-                     exec_unit_ref="org.forgejo.runner")
-        reconciler = Reconciler(service, executor=None)
-        reconciler._do_rebuild(store.get(runner_id), None, _Report())
-        assert store.get(runner_id)["adopt_unit"] is None
-        assert store.get(runner_id)["actual_state"] == "provisioning"
     def test_a_unit_that_is_no_longer_there_ends_the_adoption(self, db,
                                                               forge):
         """The worker says there is no unit; asking it to adopt one anyway

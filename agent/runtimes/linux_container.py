@@ -78,6 +78,13 @@ STOP_TIMEOUT = 60
 #: the margin rather than the rule.
 CREATE_TIMEOUT = 240
 
+#: How long a volume of a unit may take to be made or removed. Thirty
+#: seconds was not enough on a busy engine - a rebuild failed on "volume
+#: logs: timed out after 30s" with the runner it was rebuilding already
+#: deregistered and removed - and this engine took 34 seconds to remove a
+#: container holding nothing at all (2026-09-20).
+VOLUME_TIMEOUT = 120
+
 #: How long a unit that the engine is still taking apart is waited for.
 #: Docker's removal is asynchronous - the client returns while the daemon
 #: works - and everything said to a container meanwhile is refused with
@@ -217,7 +224,8 @@ class LinuxContainerRuntime:
             ok, _, err = self._run(["volume", "create",
                                     "--label", f"{RUNNER_LABEL}={rid}",
                                     "--label", f"nomercy.area={area}",
-                                    volumes[area]], timeout=30)
+                                    volumes[area]],
+                                   timeout=VOLUME_TIMEOUT)
             if not ok:
                 raise RuntimeError(f"volume {area}: {err}")
 
@@ -372,7 +380,7 @@ class LinuxContainerRuntime:
             if keep_data and area in KEPT_ON_RECREATE:
                 continue
             ok, _, err = self._run(["volume", "rm", volumes[area]],
-                                   timeout=60)
+                                   timeout=VOLUME_TIMEOUT)
             if not ok and not _absent(err, "volume"):
                 left.append(f"{area}: {err}")
         if left:

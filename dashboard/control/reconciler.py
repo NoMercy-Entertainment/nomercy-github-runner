@@ -616,7 +616,12 @@ class Reconciler:
             spec = self.service.specs.get(spec["runner_id"])
         if spec["actual_state"] == "failed":
             spec = self._move(spec, "removing")
-        recreating = bool(operation and operation["verb"] == "recreate")
+        # A recreate keeps the storage and comes back under the same
+        # runner_id; a removal keeps nothing and ends at absent. The desired
+        # state says which, and says it for a pass with no operation too -
+        # a rebuild whose removal was refused has nothing else to go on
+        # (2026-09-20).
+        recreating = spec["desired_state"] != "absent"
         self._attempt(operation, "removing"
                       + (" (keeping storage)" if recreating else ""))
         try:
@@ -637,19 +642,6 @@ class Reconciler:
             spec = self._move(spec, "absent")
             self._finish(spec, operation, report)
         report.did("remove", spec["runner_id"])
-
-    def _do_rebuild(self, spec, operation, report):
-        """Continue a rebuild whose removal already happened. The unit is
-        gone and the storage, where there was any, is kept - which is the
-        `removing -> provisioning` edge the machine has for exactly this."""
-        # Its unit is gone, so an adoption of it cannot be repeated: the
-        # runner is built from its fleet's image, under its fleet's name.
-        forget_adoption(self.service.specs, spec)
-        spec = self.service.specs.get(spec["runner_id"])
-        self._move(spec, "provisioning", exec_unit_ref=None,
-                   registration_id=None, registration_uuid=None,
-                   last_error=None)
-        report.did("rebuild", spec["runner_id"])
 
     def _do_repair(self, spec, operation, report):
         self._attempt(operation, "repairing")
@@ -821,11 +813,15 @@ def decide(spec, operation=None, progress=None):
     # -- a removal whose operation is gone -----------------------------------
     # Nothing else looks at this: the sweep watches creations that are
     # overdue, and every other transitional state re-drives itself through
-    # its operation. A spec left in `removing` with none open is stranded -
-    # its unit is already gone - so the desired state says what to finish
+    # its operation. A spec left in `removing` with none open is stranded,
+    # and its removal is the step to take again: one that finished would
+    # have left `provisioning` or `absent`. Removing is safe to repeat, and
+    # the desired state says where it ends. Assuming the unit was already
+    # gone left a runner that had been deregistered still running and
+    # unmanaged, when the removal had been refused for a degraded worker
     # (2026-09-20).
     if actual == "removing" and verb is None:
-        return "remove" if desired == "absent" else "rebuild"
+        return "remove"
 
     # -- operations that are more than a desired state ----------------------
     if verb == "clear_cache":

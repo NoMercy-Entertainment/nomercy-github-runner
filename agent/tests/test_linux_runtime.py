@@ -19,7 +19,8 @@ import pytest
 from agent import naming
 from agent.runtimes.linux_container import (CREATE_TIMEOUT,
                                             KEPT_ON_RECREATE, LAYOUT_ENV,
-                                            MOUNTS, LinuxContainerRuntime,
+                                            MOUNTS, VOLUME_TIMEOUT,
+                                            LinuxContainerRuntime,
                                             LinuxRegistrar)
 
 from .fake_docker import FakeDocker, FakeForge
@@ -94,6 +95,21 @@ class TestTheArgv:
 
         LinuxContainerRuntime(run=run).remove(RID, keep_data=False)
         assert seen["timeout"] == 180
+
+    def test_a_volume_has_room_on_a_loaded_engine(self, docker):
+        """Thirty seconds was not enough. A rebuild failed on "volume logs:
+        timed out after 30s" while the engine was busy - and the runner it
+        was rebuilding had already been deregistered and removed
+        (2026-09-20)."""
+        seen = {}
+
+        def run(args, **kw):
+            if args[0] == "volume":
+                seen[args[1]] = kw.get("timeout")
+            return docker(args, **kw)
+
+        LinuxContainerRuntime(run=run).create(RID, SPEC)
+        assert seen["create"] == VOLUME_TIMEOUT == 120
 
     def test_stop_gives_the_runner_its_grace_period(self, runtime, docker):
         runtime.create(RID, SPEC)

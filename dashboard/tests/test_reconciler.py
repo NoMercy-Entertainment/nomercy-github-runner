@@ -656,9 +656,6 @@ STEP_FROM = {
     "withdraw": {"planned"},
     "remove": {"removing", "failed"},
     "repair": {"failed"},
-    # A removal whose operation is gone: its unit is already away, and the
-    # machine's own `removing -> provisioning` edge is what continues it.
-    "rebuild": {"removing"},
 }
 
 
@@ -889,15 +886,19 @@ class TestEveryRunnerIsNamedTheSameWay:
 
 
 class TestARemovalThatLostItsOperation:
-    """A spec in `removing` with no operation open is stranded: the unit is
-    already gone and nothing will move it again. That is what a rebuild left
-    behind when its removal failed on volumes that were never there
-    (2026-09-20) - and nothing in the design picked it up, because the sweep
-    only looks at creations that are overdue.
+    """A spec in `removing` with no operation open is stranded: nothing will
+    move it again. That is what a rebuild left behind when its removal
+    failed on volumes that were never there (2026-09-20) - and nothing in
+    the design picked it up, because the sweep only looks at creations that
+    are overdue.
 
-    The unit is gone either way, so the state says what to do next: wanted
-    running, it is a rebuild to continue; wanted absent, it is a removal to
-    finish.
+    The removal is taken again, because a spec resting here is one whose
+    removal did not finish: a successful one leaves `provisioning` or
+    `absent`. Removing is safe to repeat, and the desired state says where
+    it ends - wanted running, the runner is built again; wanted absent, it
+    is finished. Assuming the unit was already gone left a runner that had
+    been deregistered still running, unmanaged, when its removal had been
+    refused for a degraded worker (2026-09-20).
     """
 
     def stuck(self, service, desired="running"):
@@ -924,6 +925,28 @@ class TestARemovalThatLostItsOperation:
         reconciler.pass_once()
         assert service.specs.get(spec["runner_id"])["actual_state"] == \
             "absent"
+
+    def test_its_unit_is_removed_rather_than_assumed_gone(self, world):
+        service, executor, reconciler = world
+        spec = self.stuck(service, "running")
+        reconciler.pass_once()
+        assert ("remove", spec["runner_id"]) in [(c[0], c[1]) for c
+                                                 in executor.calls]
+
+    def test_what_it_keeps_is_what_a_rebuild_keeps(self, world):
+        """Its storage: the runner is coming back under the same id."""
+        service, executor, reconciler = world
+        spec = self.stuck(service, "running")
+        reconciler.pass_once()
+        removal = next(c for c in executor.calls if c[0] == "remove")
+        assert removal[2]["keep_data"] is True
+
+    def test_one_that_should_go_keeps_nothing(self, world):
+        service, executor, reconciler = world
+        spec = self.stuck(service, "absent")
+        reconciler.pass_once()
+        removal = next(c for c in executor.calls if c[0] == "remove")
+        assert removal[2]["keep_data"] is False
 
     def test_one_with_its_operation_still_open_is_left_to_it(self, world):
         """The operation drives it; two things driving one runner is how a
