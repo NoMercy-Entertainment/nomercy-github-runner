@@ -837,3 +837,49 @@ class TestAddingAndRemovingIsTheWholeInterface:
         service.recreate(live(service)[0]["runner_id"],
                          requested_by="operator")
         assert self.wants(service) == before
+
+
+class TestEveryRunnerIsNamedTheSameWay:
+    """One name, the same shape for every runner, decided here and used at
+    the forge (2026-09-20).
+
+    The fleet had three eras of naming in it - `nomercy-zecti` that GitHub
+    invented, `forgejo-runner-1` typed by hand, `beaststack-macos-sequoia`
+    that came with the appliance - because each runner kept whatever it was
+    called when it arrived. A name is presentation (11.2), so this is a
+    presentation rule: the fleet it belongs to and the lowest free number in
+    it.
+    """
+
+    def names(self, service, fid=GH):
+        return sorted(s["display_name"] for s in service.specs.list(fleet_id=fid)
+                      if s["actual_state"] != "absent")
+
+    def test_a_planned_runner_is_named_after_its_fleet(self, world):
+        service, executor, reconciler = world
+        service.plan(GH, 2)
+        assert self.names(service) == [f"{GH}-1", f"{GH}-2"]
+
+    def test_the_lowest_free_number_is_taken(self, world):
+        service, executor, reconciler = world
+        service.plan(GH, 3)
+        second = [s for s in service.specs.list(fleet_id=GH)
+                  if s["display_name"] == f"{GH}-2"][0]
+        service.specs.update(second["runner_id"], second["spec_version"],
+                             actual_state="absent")
+        service.plan(GH, 1)
+        assert self.names(service) == [f"{GH}-1", f"{GH}-2", f"{GH}-3"]
+
+    def test_each_fleet_counts_for_itself(self, world):
+        service, executor, reconciler = world
+        service.plan(GH, 1)
+        service.plan(FJ, 1)
+        assert self.names(service) == [f"{GH}-1"]
+        assert self.names(service, FJ) == [f"{FJ}-1"]
+
+    def test_the_forge_is_told_that_name(self, world):
+        import providers
+        service, executor, reconciler = world
+        service.plan(GH, 1)
+        spec = service.specs.list(fleet_id=GH)[0]
+        assert providers._forge_name(spec) == f"{GH}-1"

@@ -915,6 +915,14 @@ The rule from now on:
   (`(?:github|forgejo)-runner-\d+` today) because a name reaches a command
   line. The allowlist is an input-validation control, not an identity.
 
+**What a runner is called** (added 2026-09-20): its fleet and the lowest
+free number in that fleet - `github-linux-x64-3`. Presentation, as this
+section says, and the forge is told the same name, so one runner has one
+name everywhere instead of three from three eras: the name GitHub invented,
+the name someone typed into a compose file, and the one the appliance came
+with. A number freed by a removal is used again. Identity stays the
+`runner_id`; nothing is derived from the name.
+
 ### 11.3 Other tables
 
 **`workers`** - the inventory of FR-8: `host_id`, `display_name`, `kind`

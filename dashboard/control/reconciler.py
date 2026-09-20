@@ -122,6 +122,26 @@ def _iso(moment):
     return moment.strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+def forget_adoption(specs, spec):
+    """End an adoption whose unit has been removed.
+
+    An adopted runner is driven through the unit that was already there.
+    Once that unit is gone, keeping the record would make the next create
+    try to adopt a unit it has just removed - a failure with no way out but
+    an edit of the database. Its name goes with it, so the rebuilt runner
+    takes the one its fleet gives (2026-09-20)."""
+    if not spec.get("adopt_unit"):
+        return
+    fresh = specs.get(spec["runner_id"])
+    from .service import RunnerService
+    name = None
+    try:
+        name = RunnerService(specs.path).next_name(fresh["fleet_id"])
+    except Exception:                           # noqa: BLE001
+        pass
+    specs.update(fresh["runner_id"], fresh["spec_version"], adopt_unit=None,
+                 **({"display_name": name} if name else {}))
+
 class Reconciler:
     def __init__(self, service: RunnerService, executor: Executor,
                  holder: Optional[str] = None):
@@ -625,6 +645,11 @@ class Reconciler:
             self._fail(spec, operation, e, report, "remove")
             return
         if recreating:
+            # The unit it was adopted from is gone, so there is nothing left
+            # to adopt: the runner is built from its fleet's image like any
+            # other, and under the fleet's own name (T-0802, 2026-09-20).
+            forget_adoption(self.service.specs, spec)
+            spec = self.service.specs.get(spec["runner_id"])
             self._move(spec, "provisioning", exec_unit_ref=None,
                        registration_id=None, registration_uuid=None)
             self._advance(operation, "rebuilding")

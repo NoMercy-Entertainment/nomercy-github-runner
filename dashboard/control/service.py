@@ -233,6 +233,7 @@ class RunnerService:
         runner_ids = []
         for _ in range(count):
             runner_ids.append(self.specs.create(
+                display_name=self.next_name(fid),
                 provider=fleet["provider"],
                 platform=fleet["platform"],
                 architecture=fleet["architecture"],
@@ -250,6 +251,28 @@ class RunnerService:
         self.operations.succeed(operation["operation_id"],
                                 {"runner_ids": runner_ids})
         return operation["operation_id"]
+
+    def next_name(self, fid):
+        """What the next runner of this fleet is called: its fleet and the
+        lowest free number in it.
+
+        A name is presentation (11.2) - identity is the runner_id - and this
+        is the presentation rule. The fleet used to hold three eras of
+        naming at once, one per way a runner had arrived, which is no way to
+        read a page (2026-09-20). A number freed by a removal is used again,
+        so the set stays small and dense.
+        """
+        taken = set()
+        for spec in self.specs.list(fleet_id=fid):
+            if spec["actual_state"] == states.TERMINAL:
+                continue
+            name = str(spec.get("display_name") or "")
+            if name.startswith(f"{fid}-") and name[len(fid) + 1:].isdigit():
+                taken.add(int(name[len(fid) + 1:]))
+        n = 1
+        while n in taken:
+            n += 1
+        return f"{fid}-{n}"
 
     def planned_ids(self, operation_id):
         """The runner ids a `plan` produced, read back from its result."""

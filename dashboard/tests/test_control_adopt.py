@@ -271,3 +271,35 @@ class TestANoteIsNotAnError:
     def test_every_card_carries_the_field(self):
         from cards import FIELDS
         assert "last_note" in FIELDS
+
+
+class TestAnAdoptionEndsWithTheUnitItAdopted:
+    """Adopting means driving the unit that was already there. Once that
+    unit is gone - a recreate removes it - there is nothing left to adopt,
+    and the runner is built from its fleet's image like any other.
+
+    Without this a recreate of an adopted runner removed its container and
+    then tried to adopt the container it had just removed, which is a
+    failure with no way out but a hand-written database edit (2026-09-20).
+    """
+
+    def test_removing_the_unit_forgets_what_it_was_adopted_from(self, db,
+                                                                forge):
+        from control.reconciler import forget_adoption
+        from store.specs import SpecStore
+        runner_id = adopt(db, forge)
+        store = SpecStore(db)
+        store.update(runner_id, 1, exec_unit_ref="org.forgejo.runner")
+        forget_adoption(store, store.get(runner_id))
+        assert store.get(runner_id)["adopt_unit"] is None
+
+    def test_a_runner_that_was_never_adopted_is_untouched(self, db, forge):
+        from control.reconciler import forget_adoption
+        from store.specs import SpecStore
+        store = SpecStore(db)
+        runner_id = store.create(provider="github", platform="linux",
+                                 fleet_id="github-linux-x64",
+                                 actual_state="removing")
+        before = store.get(runner_id)["spec_version"]
+        forget_adoption(store, store.get(runner_id))
+        assert store.get(runner_id)["spec_version"] == before
