@@ -662,6 +662,10 @@ class Reconciler:
         """Continue a rebuild whose removal already happened. The unit is
         gone and the storage, where there was any, is kept - which is the
         `removing -> provisioning` edge the machine has for exactly this."""
+        # Its unit is gone, so an adoption of it cannot be repeated: the
+        # runner is built from its fleet's image, under its fleet's name.
+        forget_adoption(self.service.specs, spec)
+        spec = self.service.specs.get(spec["runner_id"])
         self._move(spec, "provisioning", exec_unit_ref=None,
                    registration_id=None, registration_uuid=None,
                    last_error=None)
