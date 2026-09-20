@@ -206,15 +206,16 @@ class TestACellSaysWhatItsWorkersCanBuild:
     could only fail on the worker (2026-09-20).
     """
 
-    def service(self, tmp_path, workers):
+    def service(self, tmp_path, workers, env=None):
         from control.service import RunnerService
         from store import schema
         from store.fleets import FleetStore
+        env = BUILT if env is None else env
         path = str(tmp_path / "control.db")
         schema.init(path)
-        FleetStore(path).seed(BUILT)
+        FleetStore(path).seed(env)
         from control import agent_runtime
-        service = RunnerService(path, env=BUILT,
+        service = RunnerService(path, env=env,
                                 runtimes=agent_runtime.TABLE)
         for host_id, kind, caps in workers:
             service.inventory.register_worker(host_id, kind,
@@ -247,6 +248,21 @@ class TestACellSaysWhatItsWorkersCanBuild:
         assert not ok
         assert "[]" not in reason and "'" not in reason.split("template ")[-1][:1]
         assert "none" in reason
+
+    def test_a_fleet_that_names_no_template_says_that(self, tmp_path):
+        """Forgejo on macOS has no artefact named until one is built, so
+        there is no template to look for - and the sentence read "no worker
+        has the template  this fleet is made from", with a hole where the
+        name should be (2026-09-21)."""
+        bare = ("appliance-1", "hyperv-linux",
+                {"kind": "macos-appliance", "builds_from": "template",
+                 "templates": []})
+        unnamed = {k: v for k, v in BUILT.items()
+                   if k != "FORGEJO_RUNNER_ARTIFACT_MACOS"}
+        service = self.service(tmp_path, [bare], env=unnamed)
+        _, reason = service.buildable("forgejo-macos-x64")
+        assert "  " not in reason
+        assert "names no template" in reason
 
     def test_the_reason_names_what_the_workers_do_have(self, tmp_path):
         service = self.service(tmp_path, [self.WINDOWS_WITH_FORGEJO])

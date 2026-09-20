@@ -193,6 +193,14 @@ class RunnerService:
             return True, (f"no healthy worker that drives {drives} right "
                           f"now; a runner would wait for one")
         template = self.unit_image(fleet)
+        if not template and any(
+                placement.declared(w, "builds_from") == "template"
+                for w in workers):
+            # Nothing to look for: the fleet's own reason says what is
+            # missing, and a sentence with a hole where a name should be
+            # says nothing (2026-09-21).
+            return False, ("this fleet names no template to build a runner "
+                           "from yet")
         for worker in workers:
             if placement.declared(worker, "builds_from") != "template":
                 return True, None
