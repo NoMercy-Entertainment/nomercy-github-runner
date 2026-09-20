@@ -40,6 +40,8 @@ sentinel token and searches every table and all captured output for it.
 """
 from typing import Any, Callable, Mapping, Optional, Protocol
 
+import time
+
 import providers
 
 from . import placement, retry
@@ -71,6 +73,11 @@ COMPENSATIONS = {
 
 #: Which worker kind hosts which platform; one table, in placement.py.
 WORKER_KIND = placement.WORKER_KIND
+
+#: How long one reading of a forge's runner list serves every runner that
+#: pass looks at. Shorter than the shortest pass interval, so a pass reads
+#: once and the next pass reads again.
+FORGE_WINDOW = 10
 
 
 class Agent(Protocol):
@@ -155,6 +162,10 @@ class ProvisioningFlow:
         self.trail = []
         #: runner_id -> what the forge last said of it in `observe`.
         self.forge_words = {}
+        #: One reading of each forge's runner list, for the runners of one
+        #: pass. See `_records` for why.
+        self._forge_records = {}
+        self._forge_read_at = {}
 
     # ---- the two adapters, looked up per cell ------------------------------
 
@@ -335,7 +346,10 @@ class ProvisioningFlow:
         waited = 0
         while True:
             if self._ready(state["host_id"], state["ref"]):
-                records = self._records(provider)
+                # Asked afresh every time round: this loop is waiting for
+                # the forge to change its mind, and a remembered answer
+                # would make it wait for something it could never see.
+                records = self._records(provider, fresh=True)
                 seen = provider.job_state(probe, records)
                 if seen in (providers.IDLE, providers.BUSY):
                     # Online. Whether it registered with what the fleet
@@ -365,13 +379,43 @@ class ProvisioningFlow:
         except Exception:               # noqa: BLE001
             return False
 
-    def _records(self, provider):
+    def begin_pass(self):
+        """A pass is starting: forget what the forges said during the last
+        one. The window in `_records` is a safety net for callers outside a
+        pass; this is the real boundary, and it keeps the freshness of an
+        observation tied to the pass it belongs to rather than to a clock."""
+        self._forge_records.clear()
+        self._forge_read_at.clear()
+
+    def _records(self, provider, fresh=False):
         """The forge's runner list, or None - unknown - when it could not be
-        read. Never the last list that did arrive: 17.2."""
+        read. Never the last list that did arrive: 17.2.
+
+        Read once for all the runners a pass looks at, except where a caller
+        asks for it `fresh` - a loop waiting for the forge to change its
+        mind must not be served a remembered answer. Asking per runner is
+        how a token's hour is spent - fifteen runners on a pass every fifteen
+        seconds is 3600 calls an hour against a limit shared with everything
+        else - and GitHub answered 403 for it, which made every card on the
+        page read `unknown` (2026-09-20). The window is shorter than a pass,
+        and a failure is never kept: 17.2 is about not serving a stale list
+        when the forge cannot be asked, not about two reads a second apart.
+        """
+        key = getattr(provider, "key", str(provider))
+        age = time.monotonic() - self._forge_read_at.get(key, -FORGE_WINDOW)
+        if not fresh and age < FORGE_WINDOW and key in self._forge_records:
+            return self._forge_records[key]
         try:
-            return retry.call(FORGE_STATUS, self.forges.records, provider)
+            records = retry.call(FORGE_STATUS, self.forges.records, provider)
         except Exception:               # noqa: BLE001
+            records = None
+        if records is None:
+            self._forge_records.pop(key, None)
+            self._forge_read_at.pop(key, None)
             return None
+        self._forge_records[key] = records
+        self._forge_read_at[key] = time.monotonic()
+        return records
 
     # ---- running steps, and undoing them ------------------------------------
 

@@ -166,6 +166,12 @@ class Reconciler:
             report.skipped = True
             return report
         try:
+            # One reading of each forge serves every runner this pass looks
+            # at; asking per runner spent a token's hourly budget in minutes
+            # and left every card reading `unknown`.
+            begin = getattr(self.executor, "begin_pass", None)
+            if begin:
+                begin()
             self._sweep(report)
             for fleet in self.service.fleets.list():
                 self._converge_capacity(fleet, report)

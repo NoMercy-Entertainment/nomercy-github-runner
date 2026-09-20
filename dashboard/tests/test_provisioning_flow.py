@@ -480,3 +480,67 @@ class TestRemovingWhatAFailedCreateLeft:
         flow.remove(spec)               # no worker, so nothing anywhere
 
         assert len(UnitRuntime.log) == before
+
+
+class TestTheForgeIsAskedOncePerPass:
+    """Every runner's observation needs the forge's runner list, and asking
+    per runner is how a token's hour is spent: fifteen runners on a pass
+    every fifteen seconds is 3600 calls an hour, against a limit of 5000
+    shared with everything else. GitHub answered 403 - rate limit exceeded -
+    and every card on the page went `unknown` (2026-09-20).
+
+    So one pass asks once. The window is shorter than a pass, and a failure
+    is never remembered: 17.2's "never the last list that did arrive" is
+    about failures, not about two reads a second apart.
+    """
+
+    def test_several_runners_in_one_pass_cost_one_call(self, platform):
+        service, flow, agent, forges = platform
+        asked = []
+        real = forges.records
+        forges.records = lambda p: asked.append(p) or real(p)
+        specs = [a_planned(service) for _ in range(3)]
+        for spec in specs:
+            flow._records(P.GITHUB)
+        assert len(asked) == 1
+
+    def test_the_next_pass_asks_again(self, platform, monkeypatch):
+        service, flow, agent, forges = platform
+        asked = []
+        real = forges.records
+        forges.records = lambda p: asked.append(p) or real(p)
+        flow._records(P.GITHUB)
+        monkeypatch.setattr(flow, "_forge_read_at",
+                            {k: v - 999 for k, v in flow._forge_read_at.items()})
+        flow._records(P.GITHUB)
+        assert len(asked) == 2
+
+    def test_a_forge_that_could_not_be_asked_is_not_remembered(self, platform):
+        service, flow, agent, forges = platform
+        forges.records = lambda p: None
+        assert flow._records(P.GITHUB) is None
+        answers = []
+        forges.records = lambda p: answers.append(p) or []
+        assert flow._records(P.GITHUB) == []
+        assert answers, "a failure must not be cached as an answer"
+
+    def test_each_forge_is_cached_on_its_own(self, platform):
+        service, flow, agent, forges = platform
+        asked = []
+        forges.records = lambda p: asked.append(p.key) or []
+        flow._records(P.GITHUB)
+        flow._records(P.FORGEJO)
+        assert asked == ["github", "forgejo"]
+
+
+    def test_a_loop_waiting_for_the_forge_reads_it_afresh(self, platform):
+        """Verification waits for the forge to change its mind. Serving it
+        a remembered answer would make it wait for something it could never
+        see - a registration that timed out while the runner was online."""
+        service, flow, agent, forges = platform
+        asked = []
+        real = forges.records
+        forges.records = lambda p: asked.append(p) or real(p)
+        flow._records(P.GITHUB)
+        flow._records(P.GITHUB, fresh=True)
+        assert len(asked) == 2
