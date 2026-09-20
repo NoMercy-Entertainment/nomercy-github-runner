@@ -195,6 +195,42 @@ class TestTheFleetsAreRows:
         assert fj["enabled"] is False, "Forgejo is not configured in v1"
 
 
+class TestThePageOffersNoCapacity:
+    """A fleet has the runners you add and keeps them until you remove one.
+    The number went from the page on 2026-09-20; its button did not, and
+    pressing it posted no number at all: "Capacity failed - desired must be
+    a whole number, 0 or more" (2026-09-21). The route stays for scripts.
+    """
+
+    def verbs(self, client):
+        return {f["fleet_id"]: [a["verb"] for a in f["actions"]]
+                for f in client.get("/api/v2/fleets").get_json()["fleets"]}
+
+    def test_with_the_control_plane(self, client, plane):
+        for fid, verbs in self.verbs(client).items():
+            assert "capacity" not in verbs, fid
+
+    def test_and_on_the_fleets_v1_still_serves(self, client, tmp_path,
+                                               monkeypatch):
+        monkeypatch.setattr(api_v2, "_db_path",
+                            lambda: str(tmp_path / "none.db"))
+        monkeypatch.setitem(api_v2._status, "fn", lambda: {
+            "providers_configured": {"github": True, "forgejo": True}})
+        for fid, verbs in self.verbs(client).items():
+            assert "capacity" not in verbs, fid
+
+    def test_every_fleet_offers_the_same_three(self, client, plane):
+        for fid, verbs in self.verbs(client).items():
+            assert verbs == list(api_v2.FLEET_ACTIONS), fid
+
+    def test_the_page_has_nothing_left_that_asks_for_a_number(self):
+        import os
+        page = os.path.join(os.path.dirname(os.path.dirname(
+            os.path.abspath(__file__))), "templates", "fleet_v2.html")
+        with open(page, encoding="utf-8") as fh:
+            assert "capacity" not in fh.read().lower()
+
+
 class TestACellSaysWhatItsWorkersCanBuild:
     """A forge supporting a platform is not enough to make a runner: some
     worker has to be able to build one. A worker that makes units from

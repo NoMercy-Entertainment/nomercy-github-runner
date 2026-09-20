@@ -168,24 +168,25 @@ PLATFORM_NAMES = {providers.LINUX: "Linux", providers.WINDOWS: "Windows",
 #: still go to v1 until T-1407. Data, looked up - not a branch in the page.
 V1_FLEETS = {("github", providers.LINUX), ("forgejo", providers.LINUX)}
 
-#: What the page offers per fleet. Capacity is not among them any more: a
-#: fleet has the runners you add and keeps them until you remove one, and
-#: typing a number was a second way of saying the same thing (2026-09-20).
-#: The route stays - `POST /api/v2/fleets/<id>/capacity` is how a script or
-#: the CLI sets a whole fleet at once, and it is what a reboot restores.
+#: What the page offers per fleet, and every fleet is offered exactly these.
+#: A number is not among them: a fleet has the runners you add and keeps them
+#: until you remove one, and typing a count was a second way of saying the
+#: same thing (2026-09-20). Its button outlived its input by a day and then
+#: posted no number at all, so both lists below are built from this one
+#: (2026-09-21). The route stays - `POST /api/v2/fleets/<id>/capacity` is how
+#: a script or the CLI sets a whole fleet at once.
 FLEET_ACTIONS = ("add", "recreate", "clear_cache")
-FLEET_LABELS = {"add": "+ Add runner", "capacity": "Capacity",
-                "recreate": "Recreate fleet", "clear_cache": "Clear all cache"}
+FLEET_LABELS = {"add": "+ Add runner", "recreate": "Recreate fleet",
+                "clear_cache": "Clear all cache"}
 FLEET_TONES = {"add": "primary", "recreate": "warn", "clear_cache": "warn"}
 
 
 def _fleet_action(verb, url=None, body=None, reason=None, confirm=None,
-                  idempotent=False, visible=True, prompt=None):
+                  idempotent=False, visible=True):
     return {"verb": verb, "label": FLEET_LABELS[verb],
             "tone": FLEET_TONES.get(verb, ""), "url": url, "body": body,
             "enabled": bool(url), "reason": None if url else reason,
-            "confirm": confirm, "idempotent": idempotent, "visible": visible,
-            "prompt": prompt}
+            "confirm": confirm, "idempotent": idempotent, "visible": visible}
 
 
 def fleet_actions(fid, provider_key, platform, available, reason,
@@ -207,9 +208,6 @@ def fleet_actions(fid, provider_key, platform, available, reason,
     if (provider_key, platform) in V1_FLEETS and v1_configured:
         return [
             _fleet_action("add", "/api/runner/add", {"provider": provider_key}),
-            _fleet_action("capacity", reason="capacity comes with the "
-                                             "control plane; add or remove "
-                                             "runners one at a time"),
             _fleet_action("recreate", "/api/recreate",
                           {"provider": provider_key},
                           confirm=recreate_confirm, visible=has_runners),
@@ -222,8 +220,6 @@ def fleet_actions(fid, provider_key, platform, available, reason,
     base = f"/api/v2/fleets/{fid}"
     return [
         _fleet_action("add", f"{base}/runners", {}, idempotent=True),
-        _fleet_action("capacity", f"{base}/capacity", {}, idempotent=True,
-                      prompt="How many runners should this fleet have?"),
         _fleet_action("recreate", f"{base}/recreate", {}, idempotent=True,
                       confirm=recreate_confirm, visible=has_runners),
         _fleet_action("clear_cache", f"{base}/clear-cache", {},

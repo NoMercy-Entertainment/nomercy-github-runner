@@ -8,11 +8,6 @@
   display:flex;gap:10px;align-items:baseline}
 .fcount{font-size:10px;letter-spacing:.08em;color:var(--text-faint);text-transform:none;font-weight:400}
 .fleet-actions{display:flex;gap:8px;margin-bottom:14px;flex-wrap:wrap;align-items:center}
-.fleet-actions input{width:4.5em;padding:5px 7px;font-size:11px;text-align:right}
-.capacity{display:inline-flex;align-items:center;gap:6px}
-.capacity label{display:inline-flex;align-items:center;gap:6px;margin:0;
-  font-size:9.5px;letter-spacing:.15em;text-transform:uppercase;
-  color:var(--text-faint)}
 .unavailable{margin-bottom:8px}
 .grid{display:grid;gap:12px;grid-template-columns:repeat(auto-fill,minmax(330px,1fr))}
 .card{background:var(--bg-panel);border:1px solid var(--rule);padding:14px 15px 13px;
@@ -173,7 +168,7 @@ function newKey() {
 
 // Runs one action exactly as its data describes it: where it goes, with what
 // body, whether it needs confirming and whether it carries an idempotency key.
-async function run(a, btn, extraBody) {
+async function run(a, btn) {
   if (!a.enabled) { toast(a.reason || 'not available', true); return; }
   if (a.method === 'LINK') { location.href = a.url; return; }
   if (a.confirm && !(await confirmDialog(a.confirm))) return;
@@ -182,7 +177,7 @@ async function run(a, btn, extraBody) {
     const headers = {'Content-Type': 'application/json'};
     if (a.idempotent) headers['Idempotency-Key'] = newKey();
     const res = await fetch(a.url, {method: 'POST', headers,
-      body: JSON.stringify(Object.assign({}, a.body || {}, extraBody || {}))});
+      body: JSON.stringify(a.body || {})});
     const d = await res.json().catch(() => ({}));
     if (!res.ok || d.ok === false) throw new Error(d.error || ('HTTP ' + res.status));
     toast(a.label + ': ' + (d.note || d.operation_id || 'ok'));
@@ -205,9 +200,7 @@ document.addEventListener('click', ev => {
     const sec = b.closest('section');
     const f = (state.fleets || []).find(x => x.fleet_id === sec.dataset.fleet);
     if (!f) return;
-    const i = Number(b.dataset.fleetAction);
-    const input = sec.querySelector(`[data-capacity="${i}"]`);
-    run(f.actions[i], b, input ? {desired: Number(input.value)} : null);
+    run(f.actions[Number(b.dataset.fleetAction)], b);
   }
 });
 
