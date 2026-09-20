@@ -853,3 +853,78 @@ two seconds of the agent restarting.
 **What the operator should know.** A rebuild and a deploy still do not mix:
 restarting the agent interrupts whatever verb was in flight. Deploy first,
 see the worker healthy, then rebuild.
+
+## 2026-09-21 - one fleet, one naming, and the four defects the last ten found
+
+**After:** every runner the controller manages carries its fleet's name, at
+the forge and on the page.
+
+| fleet | runners |
+| --- | --- |
+| `github-linux-x64` | `github-linux-x64-1` … `-10`, all idle or serving |
+| `forgejo-linux-x64` | `forgejo-linux-x64-1`, `-2`, `-3` |
+| `forgejo-windows-x64` | `forgejo-windows-x64-1` |
+| `forgejo-macos-x64` | `beaststack-macos-sequoia`, still adopted |
+
+The thirteen containers in the WSL distro are all `rnr-<runner_id>` units
+built from `nomercy/runner-unit-{github,forgejo}`, each on its own five
+volumes. Nothing there is adopted any more; the `github-runner-N` and
+`forgejo-runner-N` containers, and the compose file that made them, serve
+nothing. The macOS runner is the one exception, and stays adopted under its
+own name until its worker has a template to rebuild one from.
+
+**A removal the client gave up on.** Tearing a unit down takes its nested
+engine and its layers apart, which outlived the 180 seconds `docker rm` was
+given. The client giving up does not stop the daemon - the unit was gone a
+minute later - but the step had already reported a failure and stranded the
+rebuild with its runner deregistered. A removal now has 420 s, and a client
+that still gives up waits for the unit to go rather than calling it a
+failure.
+
+**A poll that does not answer.** Asking an agent how its work is going is
+not the work. A poll timed out after ten seconds on the saturated worker,
+and the create it was watching - which finished - came back as a bare
+`TimeoutError` two minutes into a half-hour budget. An unanswered poll now
+leaves the state as it was and the loop keeps asking.
+
+**A heartbeat that stopped.** Measuring ran on the thread that beats, so a
+busy engine silenced the beats for minutes: "degraded - no heartbeat for
+344s" while the agent was perfectly well and merely counting. Three missed
+beats is an absence, an absence is a gate, and the gate refused the
+removals. Measuring has its own thread now. Then the beat thread died
+outright when the controller was recreated under it - nine minutes of
+silence, ended by restarting the agent by hand - so a beat that raises is
+now one beat, not the end of the loop.
+
+**And the numbers, measured on a worker under its own fleet.** `docker
+create` took two and a half minutes there, the same for a 700 MB image as
+for a 17 GB one, because what it waits for is a disk at 58% full I/O
+pressure (`/proc/pressure/io`, avg300) - while `docker start` took under a
+second and a volume under half of one. A slow agent verb now has half an
+hour, its create 1500 s, and a volume 120 s.
+
+**Two more, from the forges themselves.** Forgejo answers a runner's ping
+in about five seconds through the gate in front of it, and five seconds is
+where forgejo-runner gives up; the unit now makes three attempts, and the
+second succeeded every time. And GitHub refuses a deprecated runner, so the
+unit image pins 2.336.0 against the hash GitHub publishes.
+
+**A worker that had not been upgraded.** The fleet is deployed a worker at
+a time, and `replace` reached the Windows worker's older agent, which
+refuses a plan carrying a field it does not know - by name. Its runner had
+already been removed for its rebuild, so it was unregisterable until
+somebody could run an elevated installer. A refusal that names only flags
+is now answered by registering without them; any other refusal stands. The
+Windows runner came back under its fleet's name a minute later.
+
+**Left for the operator.**
+
+- `beast-unit`, `rnr-linux-1` and `macos-appliance-1` still run the agent
+  from an earlier commit. The Windows one needs `Install-WindowsWorker.ps1`
+  elevated; the other two are a deploy away.
+- Two offline GitHub records, `nomercy-9x9fl` (2002) and `nomercy-ty0g9`
+  (2001), are ghosts of the first rebuild's failures and want deleting.
+- 26 volumes on the WSL worker belong to no container: the old fleet's
+  caches and workspaces. Nothing reads them.
+- The WSL worker is I/O-bound under its own fleet. Every number above is a
+  consequence; the fleet's own builds pay it too.
