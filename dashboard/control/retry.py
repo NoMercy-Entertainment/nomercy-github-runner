@@ -49,7 +49,7 @@ class Policy:
 
 
 AGENT_FAST = Policy("agent-fast", 10, 2, (1, 3))
-AGENT_SLOW = Policy("agent-slow", 900, 0)
+AGENT_SLOW = Policy("agent-slow", 1800, 0)
 FORGE_REGISTRATION = Policy("forge-registration", 20, 2, (2, 6))
 FORGE_STATUS = Policy("forge-status", 20, 0)
 FORGE_DELETE = Policy("forge-delete", 20, 0)

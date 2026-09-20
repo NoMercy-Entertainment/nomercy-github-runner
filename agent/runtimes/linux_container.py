@@ -73,12 +73,14 @@ STOP_TIMEOUT = 60
 #: worker, and at two seconds for every container after it. A deadline of 180
 #: seconds sat just under that, so every rebuild timed out with the unit made
 #: but not started, and the undo that followed found its storage in use
-#: (2026-09-20). Measured again with the image already built and warmed:
-#: `docker create` alone took 58 seconds on a quiet engine, and the start
-#: after it under a second - the cost is preparing this container's snapshot,
-#: and it is paid every time. The room here stays inside the controller's own
-#: deadline for a slow verb.
-CREATE_TIMEOUT = 600
+#: (2026-09-20). Measured again with the image already built: `docker
+#: create` alone took 58 seconds on a quiet engine and two and a half
+#: minutes while that worker's ten runners were building, with the start
+#: after it under a second - and the same two and a half minutes for a
+#: 700 MB image as for a 17 GB one, because what it waits for is a disk at
+#: 58% full I/O pressure. The room here is what a saturated worker needs,
+#: inside the controller's own deadline for a slow verb.
+CREATE_TIMEOUT = 1500
 
 #: How long a volume of a unit may take to be made or removed. Thirty
 #: seconds was not enough on a busy engine - a rebuild failed on "volume

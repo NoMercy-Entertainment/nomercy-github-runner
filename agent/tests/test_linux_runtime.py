@@ -208,12 +208,14 @@ class TestCreatingIsSafeToRepeat:
         assert runtime.status(RID)["running"] is True
 
     def test_the_create_has_room_for_the_snapshot_it_prepares(self, docker):
-        """Making a container from the 17 GB GitHub unit image means
-        preparing its snapshot, measured at 58 seconds on a quiet engine
-        and three minutes on a busy one - while the start after it takes
-        under a second. Against a deadline of 180 seconds no rebuild
-        survived. The room is bounded by the controller's own deadline for
-        a slow verb."""
+        """Making a container means preparing its snapshot: measured at 58
+        seconds on a quiet engine and two and a half minutes while that
+        worker's ten runners were building, the same either way for a
+        700 MB image as for a 17 GB one - what it waits for is the disk.
+        The start after it takes under a second. Against a deadline of 180
+        seconds no rebuild survived, and one of 600 died on a saturated
+        worker. The room is bounded by the controller's own deadline for a
+        slow verb."""
         seen = {}
 
         def run(args, **kw):
@@ -222,7 +224,7 @@ class TestCreatingIsSafeToRepeat:
             return docker(args, **kw)
 
         LinuxContainerRuntime(run=run).create(RID, SPEC)
-        assert seen["timeout"] == CREATE_TIMEOUT == 600
+        assert seen["timeout"] == CREATE_TIMEOUT == 1500
 
     def test_a_unit_still_being_removed_is_waited_out(self, docker,
                                                      monkeypatch):

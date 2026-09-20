@@ -40,7 +40,7 @@ _HANDLE = re.compile(
 #: 58 seconds on a quiet engine and three minutes on a busy one
 #: (2026-09-20). Just inside the operation deadline of 17.2, so the
 #: controller hears an answer rather than giving up on one.
-DEADLINE = 890
+DEADLINE = 1790
 
 
 #: The controller's runtime table: every cell's units live on a worker and
