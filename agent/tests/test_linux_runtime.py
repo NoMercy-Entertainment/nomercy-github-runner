@@ -19,7 +19,8 @@ import pytest
 from agent import naming
 from agent.runtimes.linux_container import (CREATE_TIMEOUT,
                                             KEPT_ON_RECREATE, LAYOUT_ENV,
-                                            MOUNTS, VOLUME_TIMEOUT,
+                                            MOUNTS, REMOVE_TIMEOUT,
+                                            VOLUME_TIMEOUT,
                                             LinuxContainerRuntime,
                                             LinuxRegistrar)
 
@@ -85,7 +86,10 @@ class TestTheArgv:
         assert run_argv(docker)[-1] == SPEC["image"]
 
     def test_removal_has_the_long_timeout(self, docker):
-        """Tearing down a nested engine has been measured at 110 seconds."""
+        """Tearing down a nested engine was measured at 110 seconds, and
+        then at more than 180 on the WSL worker, where `docker rm` of a
+        runner outlived the deadline while the daemon went on removing
+        it (2026-09-20)."""
         seen = {}
 
         def run(args, **kw):
@@ -94,7 +98,7 @@ class TestTheArgv:
             return docker(args, **kw)
 
         LinuxContainerRuntime(run=run).remove(RID, keep_data=False)
-        assert seen["timeout"] == 180
+        assert seen["timeout"] == REMOVE_TIMEOUT == 420
 
     def test_a_volume_has_room_on_a_loaded_engine(self, docker):
         """Thirty seconds was not enough. A rebuild failed on "volume logs:
@@ -289,6 +293,46 @@ class TestRemoving:
         runtime.remove(RID, keep_data=False)
         verbs = [c[0] for c in docker.calls]
         assert verbs.index("stop") < verbs.index("rm")
+
+    def test_a_removal_the_client_gave_up_on_is_waited_out(self, docker,
+                                                          monkeypatch):
+        """`docker rm` of a unit with a nested engine outlived its deadline
+        on the WSL worker - and the client giving up does not stop the
+        daemon. Reported as a failure it stranded the rebuild with the
+        runner already deregistered; the unit was gone a minute later
+        (2026-09-20)."""
+        import agent.runtimes.linux_container as lc
+        monkeypatch.setattr(lc, "sleep", lambda seconds: None)
+        runtime = LinuxContainerRuntime(run=docker)
+        runtime.create(RID, SPEC)
+        docker.fail_once["rm"] = "timed out after 420s"
+        # What the daemon does after the client has gone: it finishes.
+        docker.containers.pop(naming.unit_name(RID))
+        answers = iter([{"exists": True, "running": True,
+                         "state": "removing"},
+                        {"exists": False, "running": False,
+                         "state": "absent"}])
+        gone = {"exists": False, "running": False, "state": "absent"}
+        monkeypatch.setattr(runtime, "status", lambda rid: next(answers, gone))
+        runtime.remove(RID, keep_data=False)        # no raise
+        assert not docker.volumes
+
+    def test_one_that_is_still_there_afterwards_is_a_failure(self, docker,
+                                                             monkeypatch):
+        """Waiting is not pretending: a unit that is still on the engine
+        when the wait is over is said so, because its storage is about to be
+        removed from under it."""
+        import agent.runtimes.linux_container as lc
+        monkeypatch.setattr(lc, "sleep", lambda seconds: None)
+        monkeypatch.setattr(lc, "REMOVAL_WAIT", 0.05)
+        runtime = LinuxContainerRuntime(run=docker)
+        runtime.create(RID, SPEC)
+        docker.fail_once["rm"] = "timed out after 420s"
+        monkeypatch.setattr(runtime, "status",
+                            lambda rid: {"exists": True, "running": True,
+                                         "state": "removing"})
+        with pytest.raises(RuntimeError, match="still there"):
+            runtime.remove(RID, keep_data=False)
 
     def test_storage_goes_only_once_the_unit_has(self, docker,
                                                 monkeypatch):

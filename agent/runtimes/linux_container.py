@@ -87,6 +87,17 @@ CREATE_TIMEOUT = 600
 #: container holding nothing at all (2026-09-20).
 VOLUME_TIMEOUT = 120
 
+#: What `_docker` says when the client gave up: the daemon is still doing
+#: whatever was asked, and for a removal that matters - it is the difference
+#: between "it did not happen" and "it is not finished yet".
+TIMED_OUT = "timed out after"
+
+#: How long a removal is given before the client stops waiting on it.
+#: Tearing down a unit's nested engine and its layers outlived 180 seconds
+#: on the WSL worker, which read as a failed removal and stranded a rebuild
+#: whose runner was already deregistered (2026-09-20).
+REMOVE_TIMEOUT = 420
+
 #: How long a unit that the engine is still taking apart is waited for.
 #: Docker's removal is asynchronous - the client returns while the daemon
 #: works - and everything said to a container meanwhile is refused with
@@ -145,7 +156,7 @@ def _docker(args, input=None, timeout=30, merge_stderr=False):
                            capture_output=True, timeout=timeout)
         return p.returncode == 0, p.stdout.strip(), p.stderr.strip()
     except subprocess.TimeoutExpired:
-        return False, "", f"timed out after {timeout}s"
+        return False, "", f"{TIMED_OUT} {timeout}s"
     except OSError as e:
         return False, "", str(e)
 
@@ -219,7 +230,7 @@ class LinuxContainerRuntime:
             self.start(rid)
             return name
         if existing["exists"]:
-            self._await_removal(rid)
+            self._gone(rid)
 
         volumes = naming.names(rid, "linux")
         for area in naming.AREAS:
@@ -266,20 +277,20 @@ class LinuxContainerRuntime:
             raise RuntimeError(err or out or "docker run failed")
         return name
 
-    def _await_removal(self, rid, wait=REMOVAL_WAIT):
-        """Wait out a removal the engine is still doing, so this create
-        builds the unit again rather than talking to the one on its way
-        out. Raises when it is still there: a unit that will not go is not
-        a unit to build over."""
+    def _gone(self, rid, wait=None):
+        """Wait out a removal the engine is still doing. True once the unit
+        is away, False when it is still there after `wait` - or when it is
+        there and not being removed at all, which is nothing to wait for."""
+        wait = REMOVAL_WAIT if wait is None else wait
         deadline = time.monotonic() + wait
         while True:
             state = self.status(rid)
-            if not state["exists"] or state.get("state") != "removing":
-                return
+            if not state["exists"]:
+                return True
+            if state.get("state") != "removing":
+                return False
             if time.monotonic() >= deadline:
-                raise RuntimeError(
-                    f"the unit of {rid} has been marked for removal for "
-                    f"{wait}s and is still there")
+                return False
             sleep(2)
 
     def _adopt(self, rid, adopt):
@@ -363,15 +374,18 @@ class LinuxContainerRuntime:
         self._run(["stop", "-t", str(STOP_TIMEOUT), self._unit(rid)],
                   timeout=STOP_TIMEOUT + 30)
         ok, _, err = self._run(["rm", "-f", "-v", self._unit(rid)],
-                               timeout=180)
-        if not ok and not _absent(err, "container"):
+                               timeout=REMOVE_TIMEOUT)
+        if not ok and not _absent(err, "container")                 and not err.startswith(TIMED_OUT):
             raise RuntimeError(err)
-        # The client returns while the daemon is still taking the unit
-        # apart, and a volume it still holds cannot be removed. Waited out
-        # here rather than reported as storage left behind, which is what
-        # the undo of a failed create said while the engine was still
-        # working (2026-09-20).
-        self._await_removal(rid)
+        # The client returns - or gives up - while the daemon is still
+        # taking the unit apart, and a volume it still holds cannot be
+        # removed. Waited out here rather than reported as storage left
+        # behind, which is what the undo of a failed create said while the
+        # engine was still working (2026-09-20).
+        if not self._gone(rid):
+            raise RuntimeError(
+                f"the unit of {rid} is still there {REMOVAL_WAIT}s after it "
+                f"was removed; its storage is left alone")
         # The unit is gone, so the note of which one it was means nothing.
         # Forgotten after the removal, so a removal that failed leaves the
         # runner still pointing at its container.
