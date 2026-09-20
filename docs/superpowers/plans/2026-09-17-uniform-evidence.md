@@ -928,3 +928,27 @@ Windows runner came back under its fleet's name a minute later.
   caches and workspaces. Nothing reads them.
 - The WSL worker is I/O-bound under its own fleet. Every number above is a
   consequence; the fleet's own builds pay it too.
+
+## 2026-09-21 - the page painted healthy runners red
+
+**Reported by the operator, with a screenshot:** fifteen runners, all idle,
+and six of their cards carrying red error text - removals "already in
+progress", a registration that "did not come online", a plan field a worker
+"does not take". Every one of those had since succeeded, some of them hours
+earlier.
+
+**Cause.** `last_error` was written when a step failed and never cleared
+when the runner came good. It is the reason a runner is where it is; once
+the runner is serving, the reason is history, and the operation and the
+audit trail keep that. The reconciler now clears it whenever a runner
+arrives in `idle` or `busy`. A note is not an error and stays - the macOS
+runner still says which labels it registered with.
+
+**Live repair, once:** the six rows that were already serving were cleared
+by hand, which is what the fixed code writes from now on -
+`forgejo-linux-x64-1`, `forgejo-windows-x64-1`, `github-linux-x64-1`, `-2`,
+`-4` and `-5`. After: fifteen cards, none with an error.
+
+**Two sentences on empty fleets** were fixed with it: a cell nobody can
+build printed a Python list ("the ones that could hold it have []"), and
+one whose fleet names no template yet had a hole where the name should be.
