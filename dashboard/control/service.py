@@ -24,7 +24,7 @@ import providers
 from store.fleets import FleetStore
 from store.specs import SpecStore
 
-from . import retry, states
+from . import placement, retry, states
 from .inventory import Inventory
 from .operations import OperationStore
 
@@ -134,6 +134,50 @@ class RunnerService:
 
     # ---- planning ----------------------------------------------------------
 
+    def unit_image(self, fleet):
+        """What a unit of this fleet is made from, the way the runtime will
+        resolve it: what the deployment names for the cell, else the fleet's
+        own template. A reference may carry its digest after a space - the
+        worker knows it by its name."""
+        from .main import unit_images
+        named = unit_images(self.env or {}).get(
+            (fleet["provider"], fleet["platform"]))
+        return str(named or fleet.get("template") or "").split(" ")[0]
+
+    def buildable(self, fid):
+        """Whether some healthy worker could actually build a runner of this
+        fleet, and why not when none could.
+
+        A forge supporting a platform says nothing about this deployment. A
+        worker that makes units from templates on its own disk can only make
+        the ones it has; one that makes them from images can make anything
+        it can pull. Asked here rather than found out on the worker, because
+        a page that offers `+ Add runner` for a cell whose creation can only
+        fail is a page that lies (2026-09-20).
+        """
+        fleet = self.fleets.get(fid)
+        if fleet is None:
+            return False, f"no fleet {fid}"
+        kind = placement.WORKER_KIND.get(fleet["platform"])
+        drives = placement.RUNTIME_KIND.get(fleet["platform"])
+        workers = [w for w in self.inventory.healthy(kind=kind)
+                   if (placement.declared(w, "kind") or drives) == drives]
+        if not workers:
+            # Not a refusal: a worker that is down comes back, and a runner
+            # planned meanwhile waits in `planned` until one does. Saying so
+            # is still worth it - the page shows why nothing is happening.
+            return True, (f"no healthy worker that drives {drives} right "
+                          f"now; a runner would wait for one")
+        template = self.unit_image(fleet)
+        for worker in workers:
+            if placement.declared(worker, "builds_from") != "template":
+                return True, None
+            if template in (placement.declared(worker, "templates") or []):
+                return True, None
+        return False, (f"no worker has the template {template!r} this fleet "
+                       f"is made from; the ones that could hold it have "
+                       f"{sorted({t for w in workers for t in (placement.declared(w, 'templates') or [])})}")
+
     def plan(self, fid, count, requested_by=None, idempotency_key=None,
              env=None):
         """Produce `count` RunnerSpecs for a fleet, or refuse saying why.
@@ -175,6 +219,9 @@ class RunnerService:
         # Refused before anything is created, which is the whole point of
         # doing it at plan time.
         self.runtime_for(fleet["provider"], fleet["platform"])
+        can, why = self.buildable(fid)
+        if not can:
+            raise Refused(f"{fid} cannot be built: {why}")
 
         operation, created = self.operations.open(
             "plan", fleet_id=fid, requested_by=requested_by,

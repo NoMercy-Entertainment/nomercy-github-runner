@@ -99,6 +99,20 @@ class FakeWindows:
         k = _key(path)
         return k in self.dirs or k in self.files
 
+    #: Set by a test: a directory this host will not let anyone read.
+    explode_on_listdir = False
+
+    def listdir(self, path):
+        if self.explode_on_listdir:
+            raise OSError("access is denied")
+        base = _key(path)
+        names = set()
+        for k in list(self.dirs) + list(self.files):
+            if k != base and k.startswith(base + "\\"):
+                names.add(self.names.get(k, k)[len(path.rstrip("\\")) + 1:]
+                          .split("\\")[0])
+        return sorted(names)
+
     def makedirs(self, path):
         k = _key(path)
         while k and k not in self.dirs:

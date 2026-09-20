@@ -124,6 +124,19 @@ def fleet_list(service, note, all_runner_cards):
             available, reason = bool(row["available"]), \
                 row.get("unavailable_reason")
             desired = row["desired_capacity"]
+            if available:
+                # What the forge supports is not what this deployment can
+                # build: a worker that makes units from templates can only
+                # make the ones it has, and offering `+ Add runner` for the
+                # others is a page that lies (2026-09-20).
+                try:
+                    can, why = service.buildable(fid)
+                except Exception:       # noqa: BLE001
+                    can, why = True, None
+                if not can:
+                    available, reason = False, why
+                elif why and not reason:
+                    reason = why
         else:
             support = provider.supports(platform, arch, {})
             available, reason, desired = bool(support), support.reason, None

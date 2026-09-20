@@ -513,6 +513,9 @@ class LinuxContainerRuntime:
 
     def capabilities(self):
         return {"kind": self.kind,
+                # Any image this engine can pull, so no list: what a unit is
+                # made from is a reference, not something installed here.
+                "builds_from": "image",
                 "job_containers": True,
                 "nested_builds": True,
                 "resettable_os": False,

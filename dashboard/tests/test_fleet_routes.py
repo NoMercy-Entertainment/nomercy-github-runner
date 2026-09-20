@@ -180,3 +180,88 @@ class TestTheFleetsAreRows:
         fj = next(a for a in fleets["forgejo-linux-x64"]["actions"]
                   if a["verb"] == "add")
         assert fj["enabled"] is False, "Forgejo is not configured in v1"
+
+
+class TestACellSaysWhatItsWorkersCanBuild:
+    """A forge supporting a platform is not enough to make a runner: some
+    worker has to be able to build one. A worker that makes units from
+    templates on its own disk lists them; one that makes them from images
+    can build anything it can pull.
+
+    Without this the page offered `+ Add runner` for GitHub on Windows and
+    macOS, where the only template installed was Forgejo's, and the creation
+    could only fail on the worker (2026-09-20).
+    """
+
+    def service(self, tmp_path, workers):
+        from control.service import RunnerService
+        from store import schema
+        from store.fleets import FleetStore
+        path = str(tmp_path / "control.db")
+        schema.init(path)
+        FleetStore(path).seed(BUILT)
+        from control import agent_runtime
+        service = RunnerService(path, env=BUILT,
+                                runtimes=agent_runtime.TABLE)
+        for host_id, kind, caps in workers:
+            service.inventory.register_worker(host_id, kind,
+                                              capabilities=caps)
+            service.inventory.heartbeat(host_id, capabilities=caps)
+        return service
+
+    WINDOWS_WITH_FORGEJO = ("beast-unit", "hyperv-windows",
+                            {"kind": "windows-process",
+                             "builds_from": "template",
+                             "templates": ["forgejo-runner.exe"]})
+    LINUX_ENGINE = ("wsl-linux-1", "hyperv-linux",
+                    {"kind": "linux-container", "builds_from": "image"})
+
+    def test_a_template_no_worker_has_is_not_buildable(self, tmp_path):
+        service = self.service(tmp_path, [self.WINDOWS_WITH_FORGEJO])
+        ok, reason = service.buildable("github-windows-x64")
+        assert not ok
+        assert "actions/runner" in reason or "template" in reason
+
+    def test_a_template_a_worker_has_is_buildable(self, tmp_path):
+        service = self.service(tmp_path, [self.WINDOWS_WITH_FORGEJO])
+        ok, _ = service.buildable("forgejo-windows-x64")
+        assert ok
+
+    def test_a_worker_that_builds_from_images_can_build_anything(self,
+                                                                 tmp_path):
+        service = self.service(tmp_path, [self.LINUX_ENGINE])
+        assert service.buildable("github-linux-x64")[0]
+        assert service.buildable("forgejo-linux-x64")[0]
+
+    def test_no_worker_at_all_is_a_note_not_a_refusal(self, tmp_path):
+        """A worker that is down comes back, and a runner planned meanwhile
+        waits for one. Only a template nobody has is a refusal."""
+        service = self.service(tmp_path, [])
+        ok, reason = service.buildable("github-windows-x64")
+        assert ok
+        assert "worker" in reason
+
+    def test_planning_one_is_refused_with_that_reason(self, tmp_path):
+        from control.service import Refused
+        service = self.service(tmp_path, [self.WINDOWS_WITH_FORGEJO])
+        with pytest.raises(Refused, match="template"):
+            service.plan("github-windows-x64", 1)
+
+
+    def test_the_page_shows_the_cell_as_unavailable(self, tmp_path):
+        import api_v2
+        service = self.service(tmp_path, [self.WINDOWS_WITH_FORGEJO])
+        rows = {f["fleet_id"]: f
+                for f in api_v2.fleet_list(service, None, [])}
+        assert rows["github-windows-x64"]["available"] is False
+        assert "template" in rows["github-windows-x64"]["reason"]
+        assert rows["forgejo-windows-x64"]["available"] is True
+
+    def test_the_add_button_is_disabled_with_that_reason(self, tmp_path):
+        import api_v2
+        service = self.service(tmp_path, [self.WINDOWS_WITH_FORGEJO])
+        rows = {f["fleet_id"]: f
+                for f in api_v2.fleet_list(service, None, [])}
+        add = rows["github-windows-x64"]["actions"][0]
+        assert add["enabled"] is False
+        assert "template" in (add["reason"] or "")

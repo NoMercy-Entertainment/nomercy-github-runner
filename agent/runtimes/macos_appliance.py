@@ -529,8 +529,20 @@ class MacApplianceRuntime:
 
     # ---- what this runtime can do --------------------------------------------
 
+
+    def _templates(self):
+        """The templates on this worker, which are the only units it can
+        make. A directory that cannot be read is no templates rather than a
+        crash: a worker must keep answering."""
+        try:
+            return sorted(self._fs.listdir(self._tools["templates"]))
+        except OSError:
+            return []
+
     def capabilities(self):
         return {"kind": self.kind,
+                "builds_from": "template",
+                "templates": self._templates(),
                 # A macOS guest runs no job images (design 9.5).
                 "job_containers": False,
                 "nested_builds": False,

@@ -97,11 +97,14 @@ def test_a_directory_runtime_never_names_the_other_runner(kind):
         for area in ("work", "cache", "reg", "logs", "tmp"):
             host.put(rt.paths(rid)[area] + f"{sep}{area}.bin", 1000)
     theirs = host.snapshot(rt.paths(THEIRS)["root"])
+    # Asked before the recorder is installed: what is being asserted is what
+    # a cache clear touches, and a worker describing itself reads the
+    # templates it has, which is nobody's runner directory.
+    scopes = sorted(rt.capabilities()["cache_scopes"])
     recording = _RecordingFs(host)
     rt._fs = recording
 
-    freed = rt.clear_cache(MINE, {"scopes": sorted(rt.capabilities()[
-        "cache_scopes"])})
+    freed = rt.clear_cache(MINE, {"scopes": scopes})
 
     assert freed["total_bytes"] == 3000, "workspace, toolcache and temp"
     assert host.snapshot(rt.paths(THEIRS)["root"]) == theirs

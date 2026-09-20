@@ -463,8 +463,23 @@ class WindowsProcessRuntime:
 
     # ---- what this runtime can do --------------------------------------------
 
+
+    def _templates(self):
+        """The templates on this worker, which are the only units it can
+        make. A directory that cannot be read is no templates rather than a
+        crash: a worker must keep answering."""
+        try:
+            return sorted(self._fs.listdir(self._tools["templates"]))
+        except OSError:
+            return []
+
     def capabilities(self):
         return {"kind": self.kind,
+                # What a unit here is made from, and which ones exist: a
+                # cell whose template is not on any worker cannot be built,
+                # and saying so is cheaper than failing at create.
+                "builds_from": "template",
+                "templates": self._templates(),
                 # GitHub runs job containers on Linux only; Windows runners
                 # here run on the OS (design 9.2).
                 "job_containers": False,

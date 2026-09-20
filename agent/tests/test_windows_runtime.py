@@ -10,6 +10,7 @@ run on Windows, because a Job Object that is only faked proves nothing about
 the cap.
 """
 import json
+import ntpath
 import os
 import subprocess
 import sys
@@ -600,3 +601,40 @@ class TestWhatTheFirstRealWorkerTaught:
         raw = host._nssm(["status", naming.unit_name(RID)], None)
         assert "\x00" in _utf16ish(raw[1]), "the fake answers as NSSM does"
         assert runtime.status(RID)["running"] is True
+
+
+class TestWhatThisWorkerCanBuildFrom:
+    """A worker that makes units from templates on its own disk can only
+    make the ones it has. Saying so is what stops a fleet from offering
+    `+ Add runner` for a cell whose creation could only fail here - which is
+    what GitHub on Windows did, with one Forgejo template installed and
+    nothing for GitHub (2026-09-20).
+    """
+
+    def test_it_says_it_builds_from_templates(self, runtime):
+        assert runtime.capabilities()["builds_from"] == "template"
+
+    def test_it_lists_the_templates_it_has(self, runtime, host):
+        host.makedirs(ntpath.join(TOOLS["templates"],
+                                  "forgejo-runner-v13.1.0-windows"))
+        host.makedirs(ntpath.join(TOOLS["templates"],
+                                  "actions-runner-v2.336.0"))
+        listed = runtime.capabilities()["templates"]
+        assert {"actions-runner-v2.336.0",
+                "forgejo-runner-v13.1.0-windows"} <= set(listed)
+        assert listed == sorted(listed)
+
+    def test_no_templates_is_an_empty_list_not_a_missing_key(self, host):
+        """A worker with nothing installed says so, which is what makes a
+        cell unavailable rather than merely unknown."""
+        bare = WindowsProcessRuntime(run=host, fs=host,
+                                     tools=dict(TOOLS,
+                                                templates=r"D:\none"))
+        caps = bare.capabilities()
+        assert caps["templates"] == []
+        assert caps["builds_from"] == "template"
+
+    def test_a_directory_it_cannot_read_is_no_templates_not_a_crash(
+            self, runtime, host):
+        host.explode_on_listdir = True
+        assert runtime.capabilities()["templates"] == []
