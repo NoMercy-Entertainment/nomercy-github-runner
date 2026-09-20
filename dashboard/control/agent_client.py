@@ -293,5 +293,15 @@ class AgentClient:
                 raise TimeoutError(
                     f"{verb} on {host_id} not finished within {deadline}s")
             sleep(poll)
-            answer = self.call(host_id, verb, body, idempotency_key=key,
-                               operation_id=operation_id)
+            try:
+                answer = self.call(host_id, verb, body, idempotency_key=key,
+                                   operation_id=operation_id)
+            except (TimeoutError, AgentUnreachable) as not_now:
+                # Asking again is not the work - the agent is doing that -
+                # so a poll that did not answer says nothing about the verb.
+                # On a worker whose disk was saturated by its own runners a
+                # poll timed out after ten seconds, and a create that went
+                # on to finish was reported as a failure two minutes in
+                # (2026-09-20). The deadline above still ends it.
+                answer = {"accepted": True, "handle": handle,
+                          "state": "running", "unanswered": str(not_now)}

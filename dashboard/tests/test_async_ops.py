@@ -347,6 +347,40 @@ class TestWaitingForAnOutcome:
         finally:
             server.stop()
 
+    def test_a_poll_that_does_not_answer_is_not_an_answer(self, pki, db):
+        """Asking again is not the work: the agent is doing that. On a
+        worker whose disk was saturated by its own runners a poll timed out
+        after ten seconds, and the create it was watching - which went on to
+        finish - was reported as a bare TimeoutError two minutes in, with
+        the runner it was rebuilding already deregistered and removed
+        (2026-09-20).
+        """
+        runtime = FakeRuntime()
+        runtime.delay = 0.3
+        server, _ = an_agent(pki, db, runtime=runtime)
+        runner_id = SpecStore(db).create(provider="github", platform="linux",
+                                         host_id="linux-1")
+        client = controller(pki, db)
+        asked = {"n": 0}
+        real = client.call
+
+        def sometimes(*args, **kw):
+            asked["n"] += 1
+            if asked["n"] == 2:             # the first poll after the 202
+                raise TimeoutError("the read timed out")
+            return real(*args, **kw)
+
+        client.call = sometimes
+        try:
+            result = client.call_and_wait(
+                "linux-1", "exec_unit.create",
+                {"runner_id": runner_id, "spec": {"image": "node:20"}},
+                poll=0.05, deadline=10)
+        finally:
+            server.stop()
+        assert result["handle"] == f"rnr-{runner_id}"
+        assert asked["n"] > 2, "it kept asking"
+
     def test_work_that_never_finishes_is_given_up_on(self, pki, db):
         """Bounded by the deadline, not by any one request."""
         runtime = FakeRuntime()
