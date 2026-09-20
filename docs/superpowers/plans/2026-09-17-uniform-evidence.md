@@ -719,3 +719,71 @@ yet - and `forgejo-macos-x64` still wants its artefact named.
 **One more thing the live page showed:** it built its service without the
 deployment's settings, so every cell read as unbuildable even after the
 template was installed. The page's service now carries them.
+
+## 2026-09-20 - the first rebuild under a uniform name, and the four things in its way
+
+**What was asked.** One fleet, one naming. `github-runner-1`, adopted that
+morning, was the first to be rebuilt as what its fleet calls it:
+`github-linux-x64-1`. It took four fixes, each found by measuring rather
+than by reasoning about it, and each one is a defect the next twelve
+rebuilds would have hit.
+
+**1. A cold image takes longer than the create was given.** The create
+timed out at 180 s, twice, leaving a container made but never started,
+whose storage the undo then found in use. Measured on the worker: `docker
+create` from the freshly built 17 GB GitHub unit image took **3 m 2 s**; a
+second create from the same image took **2.5 s**. The first container from
+an image pays for its layers being unpacked into the snapshotter. The
+create now has 240 s, a unit found made but stopped is started rather than
+handed back, and `setup-worker.sh` and `setup-wsl-agent.sh` warm each image
+they build, so the wait is paid at install time. (`7b21479`)
+
+**2. The name only changed where the adoption ended.** Two places end an
+adoption; only the reconciler's gave the runner its fleet's name. The
+flow's own - the worker reports no unit left to adopt - kept whatever the
+adopted container was called, which is why the fleet still read as three
+eras of naming at once. One definition now, next to the naming rule it
+uses. (`4612a22`)
+
+**3. A registration outlived the unit it belonged to.** After the undo
+deleted the forge record, the spec still named it: the register step found
+that record at the forge, took it for this runner's own and waited for a
+container that no longer existed to come online. Ten minutes, then the
+deadline. A unit about to be made now drops that record, and a record the
+forge shows at work is left exactly where it is (MIG-9) and said in the
+note. The check that keeps a deletion off a running job reads the forge
+fresh rather than from the pass's list. (`4612a22`)
+
+**4. The unit answered from its own volume.** A unit keeps `.runner` and
+`.credentials` on its registration volume and cannot be made to drop them -
+`deregister` leaves them deliberately - so it answered every later
+registration with the id of a record the controller had deleted. A plan now
+carries `replace`, set whenever the controller's own spec names no
+registration. Two registrations of one unit can also overlap, and the
+second moved the link the first had just made into the volume:
+`/runner/reg/.credentials -> /runner/reg/.credentials`, which the runner
+reads as "too many levels of symbolic links" and aborts on, for ever. A
+link is no longer moved. (`d91be1d`)
+
+**5. And then GitHub would not talk to it.** The rebuilt runner registered,
+connected, and was told: *Runner version v2.333.1 is deprecated and cannot
+receive messages*. The image a unit is built from ships 2.333.1; every
+runner that was serving had replaced it with 2.336.0 at its own start,
+through `scripts/start.sh`, which the unit entry point deliberately does
+not run. The unit image now pins the version and checks the download
+against the hash GitHub publishes for that release
+(`04cf0be1...5d5d`), recorded in `images/windows/manifest.json` beside the
+Windows and macOS ones. (`c1d8083`)
+
+**After, measured:** `github-linux-x64-1` idle, registration 2013, GitHub
+showing it online under that name; container
+`rnr-1d7c4bc9-...` from `nomercy/runner-unit-github:c1d8083`, cpuset
+`0-15`, memory 32 GiB, runner 2.336.0, "Listening for Jobs". The rebuild
+from `failed` to `idle` took 90 seconds. Nothing else in the fleet was
+touched: nine GitHub runners and three Forgejo runners kept serving
+throughout, four of them busy at the time.
+
+**What the operator should know.** A worker's unit images are built and
+warmed by its install script, so a controller deploy that moves the image
+tag needs the worker deployed first - the order is worker, control plane,
+dashboard.
