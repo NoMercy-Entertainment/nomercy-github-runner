@@ -72,9 +72,15 @@ def platform(tmp_path, monkeypatch):
     schema.init(path)
     FleetStore(path).seed(BUILT)
     service = RunnerService(path, runtimes=dict(ALL_CELLS))
-    for host, kind in (("linux-1", inv.HYPERV_LINUX),
-                       ("windows-1", inv.HYPERV_WINDOWS)):
-        service.inventory.register_worker(host, kind)
+    # Three workers, because two of them are Linux and only one of those
+    # drives the macOS appliance (T-0802). What a worker declares it drives
+    # is what a runner is placed on.
+    for host, kind, drives in (
+            ("linux-1", inv.HYPERV_LINUX, "linux-container"),
+            ("windows-1", inv.HYPERV_WINDOWS, "windows-process"),
+            ("appliance-1", inv.HYPERV_LINUX, "macos-appliance")):
+        service.inventory.register_worker(host, kind,
+                                          capabilities={"kind": drives})
         service.inventory.heartbeat(host)
     agent = FakeAgent()
     forges = FakeForges(agent)
@@ -235,12 +241,24 @@ class TestPlacement:
         result = flow.provision(a_planned(service, "github", "windows"))
         assert result["host_id"] == "windows-1"
 
-    def test_macos_is_an_appliance_on_a_linux_worker(self, platform):
-        """No apple-host kind: the appliance is an execution unit of the Linux
-        worker (16.4)."""
+    def test_macos_is_an_appliance_on_the_linux_worker_that_has_one(
+            self, platform):
+        """No apple-host kind: the appliance is an execution unit of a Linux
+        worker (16.4). Which Linux worker is not a matter of kind - both are
+        `hyperv-linux` - but of what each declares it drives, the same way
+        placement reads what each declares it can hold."""
         service, flow, agent, forges = platform
         result = flow.provision(a_planned(service, "github", "macos"))
-        assert result["host_id"] == "linux-1"
+        assert result["host_id"] == "appliance-1"
+
+    def test_a_linux_runner_is_never_placed_on_an_appliance_host(
+            self, platform):
+        """It would find no engine there."""
+        service, flow, agent, forges = platform
+        with schema.connect(service.specs.path) as c:
+            c.execute("DELETE FROM workers WHERE host_id = 'linux-1'")
+        with pytest.raises(Exception, match="macos-appliance|no worker"):
+            flow.provision(a_planned(service, "github", "linux"))
 
     def test_the_least_loaded_worker_is_chosen(self, platform):
         service, flow, agent, forges = platform

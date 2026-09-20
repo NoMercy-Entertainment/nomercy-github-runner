@@ -245,6 +245,69 @@ class Controller:
         self._stop.set()
 
 
+class Refused(Exception):
+    """An adoption that must not happen, and why. Raised before anything is
+    written, so a refusal leaves no half-adopted runner behind."""
+
+
+def adopt(fleet, name, host_id, label, root=None, template=None, db=None,
+          env=None, forge=None, requested_by="cli"):
+    """Take over a runner that is already serving, without making it again.
+
+    MIG-4: the macOS runner has been taking jobs from its appliance for
+    months, with its own launchd job and its own registration. A managed
+    runner is not a new runner, so the record the forge already holds is
+    read here and written into the spec: nothing is minted, and no record is
+    stranded. The spec also carries what the runner already is on its
+    worker - the launchd job and the directory it runs from - and the
+    reconciler provisions it from there, which for a unit that exists means
+    adopting it rather than building one.
+
+    Idempotent: adopting the same runner twice returns the first spec.
+    """
+    import providers
+    from . import retry
+    from .inventory import Inventory
+    from .service import RunnerService
+
+    db = _store(db)
+    env = _env() if env is None else env
+    service = RunnerService(db, env=env)
+
+    cell = service.fleets.get(fleet)
+    if cell is None:
+        raise Refused(f"no fleet {fleet}")
+    if Inventory(db).get(host_id) is None:
+        raise Refused(f"no worker {host_id}: enrol it before adopting onto "
+                      f"it")
+
+    provider = forge or providers.by_key(cell["provider"])
+    if provider is None:
+        raise Refused(f"{fleet} names an unknown provider "
+                      f"{cell['provider']!r}")
+
+    def ask():
+        return provider.forge_records(env)
+
+    # The same deadline the reconciler reads the forge under.
+    records = retry.call(retry.FORGE_STATUS, ask)
+    if records is None:
+        raise Refused("the forge could not be asked which runners it has; "
+                      "adopting blind would strand the record it holds")
+    record = next((r for r in records
+                   if str(r.get("name") or "") == str(name)), None)
+    if record is None:
+        raise Refused(f"no runner named {name} at this forge; it is the "
+                      f"forge's own record that is being adopted")
+
+    return service.adopt(
+        fleet, name, host_id,
+        registration={"id": str(record.get("id") or "") or None,
+                      "uuid": record.get("uuid")},
+        unit={"label": label, "root": root, "template": template},
+        requested_by=requested_by)
+
+
 def status(db=None):
     """Workers, fleets and runners as lines of text. Reads the store only."""
     from .inventory import Inventory
@@ -298,6 +361,14 @@ def main(argv=None):
     c = sub.add_parser("capacity")
     c.add_argument("fleet", help="e.g. forgejo-linux-x64")
     c.add_argument("count", type=int)
+    a = sub.add_parser("adopt", help="take over a runner that already serves")
+    a.add_argument("fleet", help="e.g. forgejo-macos-x64")
+    a.add_argument("name", help="the name the forge knows it by")
+    a.add_argument("host_id", help="the worker whose agent can reach it")
+    a.add_argument("label", help="what the unit is called on that worker")
+    a.add_argument("--root", help="the directory it runs from")
+    a.add_argument("--template", help="what it was built from, for the "
+                                      "record")
     args = parser.parse_args(argv)
 
     if args.command == "status":
@@ -305,6 +376,16 @@ def main(argv=None):
         return 0
     if args.command == "capacity":
         print(f"operation {capacity(args.fleet, args.count)}")
+        return 0
+    if args.command == "adopt":
+        try:
+            runner_id = adopt(args.fleet, args.name, args.host_id, args.label,
+                              root=args.root, template=args.template)
+        except Refused as e:
+            print(f"refused: {e}")
+            return 2
+        print(f"adopted {args.name} as {runner_id}; the next pass provisions "
+              f"it from what is already there")
         return 0
 
     if args.command == "init-pki":

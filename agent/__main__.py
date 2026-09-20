@@ -26,6 +26,16 @@ from .server import AgentServer
 from .verbs import Agent
 
 
+def _secret(path):
+    """A credential read from its own file, so the configuration holds the
+    path and never the secret. Nothing else reads it: it goes straight into
+    the environment of the one process that needs it."""
+    if not path:
+        return None
+    with open(path, encoding="utf-8") as fh:
+        return fh.read().strip()
+
+
 def runtime_for(config):
     """(runtime, registrar) for the runtime the configuration names."""
     if config.runtime == "linux-container":
@@ -42,7 +52,20 @@ def runtime_for(config):
         # host is the other side's (T-0803), so none is given here.
         from .runtimes.macos_appliance import (MacApplianceRuntime,
                                                MacRegistrar)
-        return MacApplianceRuntime(tools=config.tools), MacRegistrar()
+        if not config.guest:
+            return MacApplianceRuntime(tools=config.tools), MacRegistrar()
+        # On the appliance host instead: every call acts inside the guest,
+        # over the SSH port the host forwards.
+        from .runtimes.guest_ssh import GuestExec, GuestFs
+        run = GuestExec(host=config.guest["host"], user=config.guest["user"],
+                        port=config.guest.get("port", 22),
+                        key=config.guest.get("key"),
+                        password=_secret(config.guest.get("password_file")),
+                        ssh=config.guest.get("ssh", "ssh"),
+                        sshpass=config.guest.get("sshpass", "sshpass"))
+        fs = GuestFs(run)
+        return (MacApplianceRuntime(run=run, fs=fs, tools=config.tools),
+                MacRegistrar(run=run, fs=fs))
     raise ConfigError(f"no runtime {config.runtime!r}")      # pragma: no cover
 
 

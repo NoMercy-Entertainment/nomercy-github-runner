@@ -893,6 +893,7 @@ Stored in the control plane's SQLite database, one row per runner instance.
 | `telemetry` | TEXT (JSON) | What the unit last used, from heartbeats: CPU and memory every beat, storage and cache every thirtieth, each with its time. An observation, outside `spec_version` like `unit_state`. Added in T-1803 |
 | `forge_state` | TEXT | What the forge last said of the runner: `idle`, `busy`, `offline`, or `unknown` when it could not be asked. Written by the reconciler's observation. Added in T-1803 |
 | `forge_seen_at` | TEXT | When the forge last answered about the runner at all. `ready` needs it recent as well as the unit running (18.5). Added in T-1803 |
+| `adopt_unit` | TEXT (JSON) | What a runner that was already serving was adopted from, in the worker's own terms: the launchd job and the directory it runs from. Null for every runner this controller made. Read when the runner is provisioned, which for a unit that exists means adopting it (T-0802, MIG-4) |
 | `deleted_at` | TEXT | Soft delete, so history keeps a referent (NFR-11) |
 
 ### 11.2 Identity, and the problem it solves

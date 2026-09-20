@@ -54,11 +54,12 @@ WRITABLE = (
     "cpu_limit", "memory_limit", "disk_limit", "cache_policy",
     "desired_state", "actual_state", "registration_id", "registration_uuid",
     "last_seen_at", "current_operation", "last_error", "capabilities",
-    "exec_unit_ref", "fleet_id",
+    "exec_unit_ref", "fleet_id", "adopt_unit",
 )
 
 #: Stored as JSON text, decoded on the way out so callers never parse.
-JSON_FIELDS = ("labels", "cache_policy", "capabilities", "telemetry")
+JSON_FIELDS = ("labels", "cache_policy", "capabilities", "telemetry",
+               "adopt_unit")
 
 REQUIRED = ("provider", "platform")
 
@@ -131,6 +132,43 @@ class SpecStore:
             c.execute(
                 f"INSERT INTO runner_specs ({', '.join(columns)}) "
                 f"VALUES ({placeholders})", params)
+        return runner_id
+
+    def adopt(self, capacity, **fields):
+        """Mint a spec for a runner that already exists, and raise its
+        fleet's capacity to keep it - in one transaction (T-0802).
+
+        The two writes cannot be apart. A spec whose fleet still wants zero
+        runners is surplus, and the next reconciler pass marks it for
+        withdrawal; raising capacity first instead makes the pass plan a
+        second runner for a cell that already has one serving. Either way a
+        pass landing between them undoes an adoption, so neither may be
+        visible without the other.
+        """
+        if "runner_id" in fields:
+            raise ValueError("runner_id is minted by the store")
+        if not fields.get("fleet_id"):
+            raise ValueError("an adopted runner joins a fleet; its capacity "
+                             "is what keeps it")
+        missing = [k for k in REQUIRED if not fields.get(k)]
+        if missing:
+            raise ValueError(f"a spec needs {', '.join(missing)}")
+        unknown = sorted(set(fields) - set(WRITABLE))
+        if unknown:
+            raise ValueError(f"not settable: {unknown}")
+
+        runner_id = str(uuid.uuid4())
+        values = _encode(fields)
+        columns = ["runner_id", "created_at", "spec_version"] + list(values)
+        params = [runner_id, now(), 1] + [values[k] for k in values]
+        placeholders = ", ".join("?" * len(columns))
+        with self._conn() as c:
+            c.execute(
+                f"INSERT INTO runner_specs ({', '.join(columns)}) "
+                f"VALUES ({placeholders})", params)
+            c.execute("UPDATE fleets SET desired_capacity = ? "
+                      "WHERE fleet_id = ?",
+                      (int(capacity), fields["fleet_id"]))
         return runner_id
 
     def update(self, runner_id, spec_version, **changes):

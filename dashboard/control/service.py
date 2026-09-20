@@ -400,6 +400,50 @@ class RunnerService:
             raise ValueError("create needs a positive count")
         return self._scale(fid, count, requested_by, idempotency_key)
 
+    def adopt(self, fid, display_name, host_id, registration, unit,
+              requested_by=None):
+        """Take a runner that is already serving into this fleet (T-0802).
+
+        Intent only, like everything else here: the spec is born `planned`
+        with the forge's own identifiers for the runner and with the unit it
+        already is, and the reconciler provisions it the ordinary way -
+        which, for a unit that exists and a registration the forge still
+        holds, means adopting the one and keeping the other. Nothing is
+        registered, rebuilt or restarted by adopting.
+
+        The fleet's capacity rises with it, in the same transaction, because
+        a runner nobody counted is a runner the next pass withdraws.
+        """
+        fleet = self.fleets.get(fid)
+        if fleet is None:
+            raise Refused(f"no fleet {fid}")
+        already = [s for s in self.specs.list(fleet_id=fid)
+                   if s.get("display_name") == display_name
+                   and s["actual_state"] != "absent"]
+        if already:
+            return already[0]["runner_id"]
+
+        runner_id = self.specs.adopt(
+            fleet["desired_capacity"] + 1,
+            display_name=str(display_name),
+            provider=fleet["provider"], platform=fleet["platform"],
+            architecture=fleet["architecture"],
+            runtime_template=fleet.get("template"),
+            labels=fleet.get("labels") or [],
+            runner_group=fleet.get("runner_group"),
+            cache_policy=fleet.get("cache_policy"),
+            fleet_id=fid, host_id=host_id,
+            desired_state="running", actual_state="planned",
+            registration_id=registration.get("id"),
+            registration_uuid=registration.get("uuid"),
+            adopt_unit=dict(unit))
+        self._audit("adopt", "accepted", requested_by, runner_id=runner_id,
+                    fleet_id=fid,
+                    parameters={"display_name": display_name,
+                                "registration_id": registration.get("id"),
+                                "unit": unit.get("label")})
+        return runner_id
+
     def provision(self, runner_id, **kw):
         return self.act(runner_id, "provision", **kw)
 

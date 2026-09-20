@@ -63,6 +63,12 @@ KEPT_ON_RECREATE = ("cache", "logs")
 LAYOUT_ENV_KEYS = {"work": "RUNNER_WORK_DIR", "cache": "RUNNER_CACHE_DIR",
                    "reg": "RUNNER_REG_DIR", "logs": "RUNNER_LOG_DIR"}
 TEMPLATE_MARKER = ".template"
+#: What an adopted instance is: the launchd job and the directory that were
+#: already there when the controller took it over (MIG-4). Written by
+#: `create` when its spec carries an `adopt` block, and read by every verb
+#: afterwards, so a runner installed by hand is driven like any other
+#: without being rebuilt.
+ADOPTED_MARKER = ".adopted"
 LABEL_PREFIX = "com.nomercy."
 
 #: Which of the runner's own directories each clearable scope is (T-1601);
@@ -144,13 +150,32 @@ class MacApplianceRuntime:
     def label(runner_id):
         return LABEL_PREFIX + naming.unit_name(runner_id)
 
+    def adopted(self, runner_id):
+        """What this instance was adopted from, or None when this runtime
+        made it itself. Read from the guest, so an agent restart does not
+        forget which job a spec means."""
+        rid = naming.check(runner_id)
+        areas = naming.names(rid, "macos")
+        marker = posixpath.join(posixpath.dirname(areas["work"]),
+                                ADOPTED_MARKER)
+        try:
+            return json.loads(self._fs.read_text(marker))
+        except (OSError, ValueError):
+            return None
+
+    def _label_of(self, runner_id):
+        """The launchd label this instance is: its own, or the one it was
+        adopted from."""
+        record = self.adopted(runner_id)
+        return (record or {}).get("label") or self.label(runner_id)
+
     def _domain(self):
         if self._tools["domain"]:
             return self._tools["domain"]
         return f"gui/{os.getuid()}"
 
     def _target(self, runner_id):
-        return f"{self._domain()}/{self.label(runner_id)}"
+        return f"{self._domain()}/{self._label_of(runner_id)}"
 
     def _launchctl(self, *args, timeout=30):
         return self._run([self._tools["launchctl"], *args], timeout=timeout)
@@ -175,6 +200,8 @@ class MacApplianceRuntime:
 
     def create(self, runner_id, spec):
         rid = naming.check(runner_id)
+        if (spec or {}).get("adopt"):
+            return self._adopt(rid, spec["adopt"])
         image = (spec or {}).get("image")
         if not image:
             raise ValueError("an instance needs a template")
@@ -209,6 +236,38 @@ class MacApplianceRuntime:
             self._check(self._launchctl("kickstart", self._target(rid)))
         return naming.unit_name(rid)
 
+    def _adopt(self, rid, adopt):
+        """Take over a runner that is already installed and serving.
+
+        It keeps its launchd job, its directory and its registration; what
+        is written here is the record that says so, and the tree this
+        runtime keeps its own data in. Nothing is loaded, kickstarted or
+        stopped: a runner with a job running must not notice this at all.
+        Idempotent - adopting twice writes the same record."""
+        label = (adopt or {}).get("label")
+        if not label:
+            raise ValueError("adopting needs the launchd label of the job "
+                             "that is already there")
+        self._appliance_up()
+        ok, out, err = self._launchctl("print",
+                                       f"{self._domain()}/{label}")
+        if not ok:
+            raise RuntimeError(f"no launchd job {label!r} in this appliance "
+                               f"to adopt: {err or out}".strip())
+        p = self.paths(rid)
+        self._fs.makedirs(p["root"])
+        self._fs.chmod(p["root"], 0o700)
+        for key in ("logs",):
+            self._fs.makedirs(p[key])
+        record = {"label": label,
+                  "root": (adopt or {}).get("root"),
+                  "template": (adopt or {}).get("template"),
+                  "adopted_at": time.strftime("%Y-%m-%dT%H:%M:%SZ",
+                                              time.gmtime())}
+        self._fs.write_text(posixpath.join(p["root"], ADOPTED_MARKER),
+                            json.dumps(record, sort_keys=True), mode=0o600)
+        return naming.unit_name(rid)
+
     def _plist(self, rid, spec, p):
         env = dict(spec.get("env") or {})
         for area, key in LAYOUT_ENV_KEYS.items():
@@ -230,8 +289,15 @@ class MacApplianceRuntime:
         """Bootstrap the job unless launchd already has it."""
         if self._loaded(rid):
             return
-        ok, out, err = self._launchctl("bootstrap", self._domain(),
-                                       self.paths(rid)["plist"])
+        record = self.adopted(rid)
+        if record and not record.get("plist"):
+            raise RuntimeError(
+                f"the adopted job {record['label']!r} is not loaded and this "
+                f"runtime does not know where its definition lives; adopt it "
+                f"again naming its plist, or recreate it as an ordinary "
+                f"instance")
+        plist = (record or {}).get("plist") or self.paths(rid)["plist"]
+        ok, out, err = self._launchctl("bootstrap", self._domain(), plist)
         if not ok and "already" not in (out + err).lower():
             raise RuntimeError(err or out or "launchctl bootstrap failed")
 
@@ -309,10 +375,11 @@ class MacApplianceRuntime:
         `exists` is None - unknown - when launchd could not be asked."""
         rid = naming.check(runner_id)
         p = self.paths(rid)
-        if not self._fs.exists(p["plist"]):
+        record = self.adopted(rid)
+        if not record and not self._fs.exists(p["plist"]):
             return {"exists": False, "running": False, "state": "absent"}
         ok, out, err = self._launchctl("print", self._target(rid))
-        template = self._template(p)
+        template = record.get("template") if record else self._template(p)
         if not ok:
             if _not_found(out + err):
                 return {"exists": True, "running": False, "state": "exited",

@@ -213,6 +213,9 @@ class TestTheSchemaMatchesTheDesign:
         "unit_state": "TEXT",
         # Added in T-1803, and to the design's table with them.
         "telemetry": "TEXT", "forge_state": "TEXT", "forge_seen_at": "TEXT",
+        # Added in T-0802, and to the design's table with it: what a runner
+        # that was already serving was adopted from.
+        "adopt_unit": "TEXT",
     }
 
     def columns(self, store, table="runner_specs"):
@@ -329,3 +332,38 @@ class TestADatabaseFromBeforeUnitState:
                 "PRAGMA table_info(runner_specs)")}
         assert "unit_state" in columns
         assert store.get(runner_id)["unit_state"] is None
+
+
+class TestADatabaseFromBeforeAdoption:
+    """adopt_unit arrived in T-0802, long after this database was deployed.
+    The controller's own store on the control plane is such a database."""
+
+    def test_init_adds_the_column_and_keeps_the_specs(self, tmp_path):
+        path = str(tmp_path / "control.db")
+        schema.init(path)
+        store = SpecStore(path)
+        runner_id = store.create(**a_spec())
+        with schema.connect(path) as c:
+            c.execute("ALTER TABLE runner_specs DROP COLUMN adopt_unit")
+
+        schema.init(path)
+
+        with schema.connect(path) as c:
+            columns = {r["name"] for r in c.execute(
+                "PRAGMA table_info(runner_specs)")}
+        assert "adopt_unit" in columns
+        assert store.get(runner_id)["adopt_unit"] is None, \
+            "a runner the controller made itself was adopted from nothing"
+
+    def test_a_spec_written_before_it_can_still_be_adopted_onto(self,
+                                                                tmp_path):
+        """The column is not only present but usable on an old database."""
+        path = str(tmp_path / "control.db")
+        schema.init(path)
+        store = SpecStore(path)
+        runner_id = store.create(**a_spec())
+        spec = store.get(runner_id)
+        store.update(runner_id, spec["spec_version"],
+                     adopt_unit={"label": "org.forgejo.runner"})
+        assert store.get(runner_id)["adopt_unit"] == {
+            "label": "org.forgejo.runner"}

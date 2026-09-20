@@ -119,6 +119,10 @@ class AgentRuntime:
 
     def unit_spec(self, spec: Mapping[str, Any]) -> dict:
         """The agent's unit spec, built field by field (module docstring)."""
+        if spec.get("adopt_unit"):
+            # An adoption names what is already on the worker; there is no
+            # image to make it from, and nothing to size (T-0802).
+            return {"adopt": dict(spec["adopt_unit"])}
         image = (self.wiring.images.get((spec.get("provider"),
                                          spec.get("platform")))
                  or spec.get("runtime_template"))

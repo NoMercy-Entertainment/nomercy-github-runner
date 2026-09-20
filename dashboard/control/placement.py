@@ -33,6 +33,18 @@ WORKER_KIND = {
     providers.MACOS: "hyperv-linux",
 }
 
+#: Which runtime drives which platform - what a worker declares in its
+#: capabilities. The worker kind alone cannot tell two Linux workers apart,
+#: and by T-0802 there are two: one that runs containers and one that drives
+#: a macOS appliance. A macOS runner belongs only on the second, and a Linux
+#: runner would find no engine there. So placement reads what the worker says
+#: it drives, the same way it reads what it says it can hold.
+RUNTIME_KIND = {
+    providers.LINUX: "linux-container",
+    providers.WINDOWS: "windows-process",
+    providers.MACOS: "macos-appliance",
+}
+
 
 def declared(worker, key):
     caps = worker.get("capabilities") or {}
@@ -59,8 +71,19 @@ def choose(spec: Mapping, workers: Iterable[Mapping],
     want_memory = int(spec.get("memory_limit") or 0)
     kind = WORKER_KIND.get(spec.get("platform"))
     fits, why_not = [], []
+    want_runtime = RUNTIME_KIND.get(spec.get("platform"))
     for w in workers:
         host = w["host_id"]
+        drives = declared(w, "kind")
+        # A worker that has declared nothing is taken at its worker kind,
+        # which says what it is for every platform but macOS: an appliance
+        # host and an ordinary Linux worker are both `hyperv-linux`, so an
+        # appliance runner is placed only where an appliance was declared.
+        if drives != want_runtime and (drives or want_runtime ==
+                                       RUNTIME_KIND[providers.MACOS]):
+            why_not.append(f"{host}: drives {drives or 'nothing it declared'},"
+                           f" this runner needs {want_runtime}")
+            continue
         arch = declared(w, "architecture") or providers.X64
         if arch != want_arch:
             why_not.append(f"{host}: {arch}, the runner needs {want_arch}")

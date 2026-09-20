@@ -335,3 +335,86 @@ class TestCapabilities:
         assert caps["nested_builds"] is False
         assert caps["supports_drain"] is True
         assert "no per-instance memory or CPU cap" in caps["notes"]
+
+
+class TestAdoptingARunnerThatIsAlreadyThere:
+    """MIG-4: the Forgejo runner that has been serving from this appliance
+    for months becomes an ordinary managed instance without being rebuilt,
+    re-registered or interrupted.
+
+    It was installed by hand: its own launchd label, its own directory,
+    neither of them the ones a runner_id derives. So `create` takes an
+    `adopt` block naming what is already there, records it, and from then on
+    every verb acts on that job. Nothing is copied, nothing is loaded, and
+    the job is not touched - a runner with a job running must not notice
+    that it has been adopted."""
+
+    LEGACY = "org.forgejo.runner"
+    ADOPT = {"adopt": {"label": LEGACY,
+                       "root": "/usr/local/forgejo-runner",
+                       "template": "forgejo-runner-darwin-amd64-v12.0.1"}}
+
+    @pytest.fixture
+    def legacy(self, guest):
+        guest.jobs[self.LEGACY] = {"state": "running", "pid": 270,
+                                   "job": {"Label": self.LEGACY}}
+        return guest
+
+    def test_it_does_not_touch_the_running_job(self, runtime, legacy):
+        before = dict(legacy.jobs[self.LEGACY])
+        runtime.create(RID, self.ADOPT)
+        assert legacy.jobs[self.LEGACY] == before
+        assert not [c for c in legacy.calls
+                    if c[0] == TOOLS["launchctl"]
+                    and c[1] in ("bootstrap", "kickstart", "bootout", "kill")]
+
+    def test_it_writes_no_plist_and_copies_no_template(self, runtime, legacy):
+        runtime.create(RID, self.ADOPT)
+        assert not legacy.exists(runtime.paths(RID)["plist"])
+
+    def test_afterwards_it_is_an_ordinary_running_instance(self, runtime,
+                                                           legacy):
+        runtime.create(RID, self.ADOPT)
+        status = runtime.status(RID)
+        assert status["exists"] is True
+        assert status["running"] is True
+        assert status["pid"] == 270
+
+    def test_it_reports_what_it_was_adopted_from(self, runtime, legacy):
+        runtime.create(RID, self.ADOPT)
+        assert runtime.status(RID)["runtime_template"] == \
+            self.ADOPT["adopt"]["template"]
+
+    def test_adopting_twice_is_the_same_as_adopting_once(self, runtime,
+                                                         legacy):
+        first = runtime.create(RID, self.ADOPT)
+        assert runtime.create(RID, self.ADOPT) == first
+        assert runtime.status(RID)["running"] is True
+
+    def test_adopting_what_is_not_there_is_refused(self, runtime, guest):
+        with pytest.raises(RuntimeError, match="no launchd job"):
+            runtime.create(RID, {"adopt": {"label": "org.absent.runner"}})
+
+    def test_an_adopted_instance_drains_like_any_other(self, runtime, legacy):
+        runtime.create(RID, self.ADOPT)
+        runtime.drain(RID)
+        assert legacy.jobs[self.LEGACY]["state"] != "running"
+
+    def test_an_adopted_instance_stops_like_any_other(self, runtime, legacy):
+        runtime.create(RID, self.ADOPT)
+        runtime.stop(RID)
+        assert self.LEGACY not in legacy.jobs
+
+    def test_removing_it_leaves_the_software_it_was_adopted_from(
+            self, runtime, legacy):
+        legacy.makedirs("/usr/local/forgejo-runner")
+        legacy.write_text("/usr/local/forgejo-runner/forgejo-runner", "bin")
+        runtime.create(RID, self.ADOPT)
+        runtime.remove(RID, keep_data=False)
+        assert legacy.exists("/usr/local/forgejo-runner/forgejo-runner"), \
+            "what this runtime did not install, it does not delete"
+        assert not legacy.exists(runtime.paths(RID)["root"])
+
+    def test_telemetry_reads_the_adopted_process(self, runtime, legacy):
+        runtime.create(RID, self.ADOPT)
+        assert runtime.telemetry(RID)["root_disk_total_bytes"]

@@ -36,11 +36,17 @@ from . import protocol
 
 RUNTIMES = ("linux-container", "windows-process", "macos-appliance")
 FIELDS = frozenset({"host_id", "runtime", "listen", "controller", "tls",
-                    "permitted", "tools", "version", "capacity"})
+                    "permitted", "tools", "version", "capacity", "guest"})
 #: What a worker may declare it can hold. Placement reads these and never
 #: puts a runner where it would not fit (dashboard/control/placement.py).
 CAPACITY_FIELDS = frozenset({"max_runners", "memory_bytes", "architecture"})
 TLS_FIELDS = frozenset({"cert", "key", "ca"})
+#: How an appliance host reaches the guest it drives. Only an appliance has
+#: one: the other runtimes act on the machine the agent runs on. The
+#: credential is a path, never the secret itself - the same rule that keeps
+#: forge tokens out of this file.
+GUEST_FIELDS = frozenset({"host", "user", "port", "key", "password_file",
+                          "ssh", "sshpass"})
 
 
 class ConfigError(ValueError):
@@ -60,6 +66,7 @@ class Config:
     tools: Mapping[str, str] = field(default_factory=dict)
     version: str = "0"
     capacity: Mapping[str, object] = field(default_factory=dict)
+    guest: Mapping[str, object] = field(default_factory=dict)
 
 
 def _listen(text):
@@ -77,6 +84,31 @@ def _listen(text):
         raise ConfigError("listen on the management address, not on every "
                           "address")
     return str(address), int(port)
+
+
+def _guest(guest, runtime, exists):
+    """The appliance guest block, checked whole. Empty when there is none,
+    which means the agent runs inside the guest and acts on its own disk."""
+    if not guest:
+        return {}
+    if runtime != "macos-appliance":
+        raise ConfigError("only a macos-appliance runtime drives a guest; "
+                          "every other runtime acts on its own machine")
+    if not isinstance(guest, dict) or set(guest) - GUEST_FIELDS:
+        raise ConfigError(f"guest may name only {sorted(GUEST_FIELDS)}")
+    for name in ("host", "user"):
+        if not guest.get(name):
+            raise ConfigError(f"guest {name} is required")
+    port = guest.get("port", 22)
+    if isinstance(port, bool) or not isinstance(port, int)             or not 0 < port < 65536:
+        raise ConfigError(f"guest port must be a port number, not {port!r}")
+    if not guest.get("key") and not guest.get("password_file"):
+        raise ConfigError("guest must name a key or password_file: the agent "
+                          "never asks a human for a credential")
+    for name in ("key", "password_file"):
+        if guest.get(name) and not exists(str(guest[name])):
+            raise ConfigError(f"guest {name} file not found: {guest[name]}")
+    return dict(guest, port=port)
 
 
 def parse(data, exists=os.path.isfile):
@@ -139,12 +171,14 @@ def parse(data, exists=os.path.isfile):
             "x64", "arm64"):
         raise ConfigError("capacity.architecture must be x64 or arm64")
 
+    guest = _guest(data.get("guest"), data["runtime"], exists)
+
     return Config(host_id=host_id, runtime=data["runtime"],
                   listen=_listen(data["listen"]), controller=controller,
                   cert=str(tls["cert"]), key=str(tls["key"]),
                   ca=str(tls["ca"]), permitted=permitted, tools=dict(tools),
                   version=str(data.get("version") or "0"),
-                  capacity=dict(capacity))
+                  capacity=dict(capacity), guest=guest)
 
 
 def load(path):

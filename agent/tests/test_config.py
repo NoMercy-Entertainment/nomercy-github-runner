@@ -140,3 +140,73 @@ class TestCapacity:
             "max_runners": 2}
         assert declared.status("x") == {"exists": True}, \
             "everything else goes straight through"
+
+
+class TestTheGuestOfAnAppliance:
+    """An appliance's agent runs on the appliance host, not inside the guest
+    (the worker kind the store names `macos-appliance-host`). `guest` says
+    how to reach the guest from there; without it the agent is inside the
+    guest and acts on its own disk."""
+
+    GUEST = {"host": "127.0.0.1", "port": 50922, "user": "user",
+             "password_file": "guest.pass"}
+
+    def mac(self, **changes):
+        return ok(runtime="macos-appliance",
+                  guest=dict(self.GUEST, **changes))
+
+    def test_it_is_kept_whole(self):
+        c = self.mac()
+        assert c.guest["host"] == "127.0.0.1"
+        assert c.guest["port"] == 50922
+        assert c.guest["user"] == "user"
+
+    def test_without_it_the_agent_is_inside_the_guest(self):
+        assert ok(runtime="macos-appliance").guest == {}
+
+    def test_only_an_appliance_has_one(self):
+        refused("guest", runtime="linux-container", guest=self.GUEST)
+
+    def test_it_must_say_how_to_authenticate(self):
+        with pytest.raises(ConfigError, match="key or password_file"):
+            ok(runtime="macos-appliance",
+               guest={"host": "127.0.0.1", "user": "user"})
+
+    def test_a_credential_that_is_not_there_stops_the_agent(self):
+        with pytest.raises(ConfigError, match="guest password_file"):
+            parse(dict(GOOD, runtime="macos-appliance", guest=self.GUEST),
+                  exists=lambda p: p != "guest.pass")
+
+    @pytest.mark.parametrize("guest", [
+        {"host": "h", "user": "u", "key": "k", "port": 0},
+        {"host": "h", "user": "u", "key": "k", "port": "fifty"},
+        {"user": "u", "key": "k"},
+        {"host": "h", "key": "k"},
+        {"host": "h", "user": "u", "key": "k", "shell": "/bin/sh"},
+        ["host"]])
+    def test_what_is_not_a_guest(self, guest):
+        refused("guest", runtime="macos-appliance", guest=guest)
+
+    def test_the_runtime_acts_inside_the_guest(self, tmp_path):
+        secret = tmp_path / "guest.pass"
+        secret.write_text("alpine\n", encoding="utf-8")
+        c = parse(dict(GOOD, runtime="macos-appliance",
+                       guest=dict(self.GUEST,
+                                  password_file=str(secret))),
+                  exists=lambda p: True)
+        built, registrar = entry.runtime_for(c)
+        assert built.kind == "macos-appliance"
+        assert built._fs.__class__.__name__ == "GuestFs"
+        assert registrar._fs.__class__.__name__ == "GuestFs"
+
+    def test_the_password_is_read_from_its_file_not_from_the_config(
+            self, tmp_path):
+        secret = tmp_path / "guest.pass"
+        secret.write_text("alpine\n", encoding="utf-8")
+        c = parse(dict(GOOD, runtime="macos-appliance",
+                       guest=dict(self.GUEST, password_file=str(secret))),
+                  exists=lambda p: True)
+        assert "alpine" not in json.dumps(c.guest), \
+            "the configuration holds the path, never the credential"
+        built, _ = entry.runtime_for(c)
+        assert built._run._password == "alpine"

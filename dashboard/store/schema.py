@@ -38,7 +38,9 @@ SCHEMA = """
 CREATE TABLE IF NOT EXISTS workers (
   host_id                 TEXT PRIMARY KEY,
   display_name            TEXT,
-  -- hyperv-linux | hyperv-windows | macos-appliance-host
+  -- hyperv-linux | hyperv-windows. A macOS appliance host is a Linux
+  -- worker that declares it drives an appliance (placement.RUNTIME_KIND);
+  -- a third kind here is where "uniform" would quietly stop being true.
   kind                    TEXT NOT NULL,
   endpoint                TEXT,
   agent_version           TEXT,
@@ -113,6 +115,11 @@ CREATE TABLE IF NOT EXISTS runner_specs (
   telemetry        TEXT,
   forge_state      TEXT,
   forge_seen_at    TEXT,
+  -- T-0802: what this runner was adopted from, when it was already serving
+  -- before the controller knew it - the execution unit that exists, named in
+  -- the worker's own terms (a launchd label and the directory it runs from).
+  -- Null for every runner this controller made, which is nearly all of them.
+  adopt_unit       TEXT,
   -- Soft delete. History keeps a referent, so a run from a runner that no
   -- longer exists still resolves to something that says what it was.
   deleted_at       TEXT
@@ -229,6 +236,10 @@ def _migrate(c):
         # T-0404. Nullable: a runner no heartbeat has mentioned yet has no
         # observed unit state, which is not the same as any value.
         c.execute("ALTER TABLE runner_specs ADD COLUMN unit_state TEXT")
+    if "adopt_unit" not in have:
+        # T-0802. Null for a runner the controller made itself; JSON naming
+        # the unit that was already there for one it adopted.
+        c.execute("ALTER TABLE runner_specs ADD COLUMN adopt_unit TEXT")
     for column in ("telemetry", "forge_state", "forge_seen_at"):
         # T-1803. Observations, like unit_state: what the unit last used,
         # what the forge last said of the runner, and when it last said
