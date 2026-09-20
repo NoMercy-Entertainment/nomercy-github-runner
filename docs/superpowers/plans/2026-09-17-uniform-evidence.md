@@ -460,3 +460,53 @@ the script's, not the engine's.
 each with its 16-core cpuset. Disk 447 G used of 1007 G, against 677 G before
 the conversions started. No runner is on the nested `fuse-overlayfs` layer
 that made `df` hang inside jobs.
+
+## 2026-09-20 - T-0802: the macOS runner adopted, without being touched
+
+The Forgejo runner on the macOS appliance has been serving since June. It is
+now an ordinary managed runner, and nothing about it changed to make it one.
+
+- **Its machine became a worker.** `Install-ApplianceHost.ps1` enrolled
+  `macos-appliance-1` (172.19.136.46) and installed the agent there as a
+  systemd service. The agent runs on the machine that hosts the appliance,
+  not inside the guest: the guest forwards one port, its SSH, and the
+  hypervisor side can only be reached from the machine. `guest_ssh` is the
+  runtime's `run` and `fs` acting inside the guest over that port.
+- **Two things were put inside the guest, both harmless:** a wrapper that
+  runs `launchctl` through `sudo` (the runner is a *system* daemon there, so
+  only root may ask launchd about it) and the directory an instance keeps its
+  own data in.
+- **Adopted at 01:56Z** as `fc5bc5c1-65da-4295-9109-58183d9c4d1f`, reported
+  `idle` on the next pass.
+
+**What was checked afterwards:**
+
+| | before | after |
+| --- | --- | --- |
+| Forgejo record | id 4, uuid 82dc2d96-ff8c-4e4e-8d67-6ffdf9d9362f, idle | identical |
+| launchd job | `system/org.forgejo.runner`, running, pid 270 | running, same |
+| its files | `/usr/local/forgejo-runner` | untouched |
+
+The runner never left `idle` and no token was minted.
+
+**What the first attempt taught.** The worker refused the create: `spec
+carries fields this verb does not take: ['adopt']`. Adding the fields as
+sent would have meant letting the controller hand a worker a path, which a
+unit spec has never done. So the block names the unit and the template it
+was built from, and the worker asks launchd where the job's definition lives
+- which is also what lets a stopped adopted runner be started again. The
+refusal was the protocol doing its job.
+
+**Departures, recorded:**
+- The appliance is a machine of its own, not a guest of the platform's Linux
+  worker as 16.4 expected. No new worker kind was added for it: placement now
+  reads what a worker declares it drives, the way it already reads what it
+  declares it can hold. A third kind is where "uniform" would quietly stop
+  being true.
+- That machine's firewall is left alone. It existed before the platform and
+  is reached for other things, VNC among them; a default-deny under it would
+  take those away. Its agent's port is on the host-internal network and still
+  refuses everyone without the controller's certificate (13.2).
+- The adopted runner carries `macos-13, macos-14, macos-15, macos-latest`,
+  which are not the fleet's labels, and the reconciler says so on every pass.
+  That is true and worth saying: adopting keeps a runner exactly as it is.

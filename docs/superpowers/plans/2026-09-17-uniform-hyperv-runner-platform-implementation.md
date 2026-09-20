@@ -701,7 +701,13 @@ The agent (`python -m agent`), the controller (`python -m control`) and the Linu
 
 ## Phase 7 — macOS appliance
 
-**Done:** T-0801 (against a fake guest) and T-0805's recipe (not built, not measured). **Not started:** T-0802 to T-0804, which are gated.
+**Done:** T-0801 (against a fake guest), T-0805's recipe, and **T-0802, live on 2026-09-20** - the runner that has served since June is managed, with its registration, its launchd job and its files untouched (evidence file). **Not started:** T-0803 and T-0804.
+
+**Departures (T-0802):**
+- The appliance is a machine of its own, not a guest of the platform's Linux worker as 16.4 expected. Its agent runs on that machine and drives the guest over the SSH port the guest forwards (`agent/runtimes/guest_ssh.py`).
+- No worker kind was added for it. Placement reads what a worker declares it drives (`placement.RUNTIME_KIND`), because two Linux workers are no longer alike.
+- An adoption names which unit a runner already is and the template it was built from - never a path. The worker asks launchd where the job lives.
+- That machine's firewall is left alone; see the evidence file for why.
 
 ### T-0801 — The appliance contract
 
