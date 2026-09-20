@@ -245,6 +245,15 @@ class ProvisioningFlow:
         if existing is not None and getattr(existing, "exists", False):
             state["ref"] = ref
             return
+        if spec.get("adopt_unit"):
+            # An adoption drives the unit that was already there. The worker
+            # has just said there is no unit, so there is nothing left to
+            # adopt and this runner is built from its fleet's image like any
+            # other - the alternative is asking a worker, for ever, to adopt
+            # something that is gone (2026-09-20).
+            self.service.specs.update(spec["runner_id"], spec["spec_version"],
+                                      adopt_unit=None)
+            spec = self.service.specs.get(spec["runner_id"])
         unit = dict(spec)
         unit["name"] = name
         unit["storage"] = storage.names(spec["runner_id"], spec["platform"])

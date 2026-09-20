@@ -357,6 +357,35 @@ class TestACpuWindowSurvivesARebuild:
         reconciler._do_rebuild(store.get(runner_id), None, _Report())
         assert store.get(runner_id)["adopt_unit"] is None
         assert store.get(runner_id)["actual_state"] == "provisioning"
+    def test_a_unit_that_is_no_longer_there_ends_the_adoption(self, db,
+                                                              forge):
+        """The worker says there is no unit; asking it to adopt one anyway
+        is a failure that repeats for ever (2026-09-20)."""
+        from control.provision import ProvisioningFlow
+        from control.service import RunnerService
+        from store.specs import SpecStore
+
+        class Gone:
+            exists = False
+
+        class Runtime:
+            kind = "linux-container"
+
+            def status(self, ref):
+                return Gone()
+
+            def create(self, unit):
+                Runtime.asked = dict(unit)
+                return "rnr-new"
+
+        service = RunnerService(db, env=ENV)
+        runner_id = adopt(db, forge)
+        store = SpecStore(db)
+        flow = ProvisioningFlow(service, agent=None, forges=None, env=ENV)
+        flow._runtime = lambda spec, host: Runtime()
+        flow._step_create_unit(store.get(runner_id), {"host_id": HOST})
+        assert store.get(runner_id)["adopt_unit"] is None
+        assert "adopt" not in Runtime.asked
 
 
 class _Report:
