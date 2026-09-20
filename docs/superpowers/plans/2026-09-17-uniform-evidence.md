@@ -431,3 +431,32 @@ seconds. The conversion script now deletes the old record itself, once the
 container is stopped and its replacement is registering. The five already
 left behind are reported, not deleted - T-1709's rule - and wait for the
 operator's word.
+
+## 2026-09-20 - the last two conversions, and what runner-9 taught the script
+
+`github-runner-9` was the one conversion that went wrong, and the fault was
+the script's, not the engine's.
+
+- **What happened:** the dashboard's `create()` reports a timeout after 180 s.
+  On a busy engine the container was still being made, so the timeout was not
+  a failure - it was impatience. The script believed it, rolled back, and
+  `docker rm -f github-runner-9` ran against a container that did not exist
+  yet. Seconds later it did exist, in `Created`, holding the name; the
+  rename that would have put the old container back then failed on that name,
+  and runner-9 was out of service.
+- **What repaired it:** nothing had to be rebuilt. The created container was
+  intact, with its own volume and `beast-unit`. Starting it, putting cpuset
+  34-49 back and waiting 90 s brought it back as `nomercy-4z8l3`, online with
+  `self-hosted,Linux,X64,beast-unit`. Its old container was removed after.
+- **What changed in the script:** after a `create()` timeout it now asks the
+  engine for up to five minutes whether the container appeared, and only rolls
+  back when it truly did not. A timeout is a report about waiting, not about
+  the result.
+- **github-runner-10** then converted cleanly with that script: drained,
+  old record deleted, made by the dashboard, cpuset 38-53 back, listening as
+  `nomercy-vusuv` at 00:33Z and running a job within the minute.
+
+**The fleet now:** all ten GitHub runners run on their own `overlay2` volume,
+each with its 16-core cpuset. Disk 447 G used of 1007 G, against 677 G before
+the conversions started. No runner is on the nested `fuse-overlayfs` layer
+that made `df` hang inside jobs.

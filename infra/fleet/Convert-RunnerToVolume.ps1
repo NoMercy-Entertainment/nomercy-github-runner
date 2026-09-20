@@ -162,8 +162,18 @@ if ($byCompose) {
         "from app import read_env; import docker_ops; print(docker_ops.create($index, read_env()))")
     Write-Host "  dashboard: $made"
 }
-Distro @('docker', 'inspect', $Runner) | Out-Null
-if ($LASTEXITCODE -ne 0) { Restore-Container 'the replacement was not created' }
+# The dashboard's create gives up after 180 s and says so, but the engine may
+# still be making the container - it was, on a busy engine, and a rollback
+# that fired on the timeout removed a container that had just appeared and
+# left the name held by a wedged removal. So the engine is asked, patiently,
+# what actually exists before anything is undone.
+$appeared = $false
+foreach ($i in 1..30) {
+    Distro @('docker', 'inspect', $Runner) | Out-Null
+    if ($LASTEXITCODE -eq 0) { $appeared = $true; break }
+    Start-Sleep -Seconds 10
+}
+if (-not $appeared) { Restore-Container 'the replacement was not created' }
 if ($cpuset) {
     Distro @('docker', 'update', '--cpuset-cpus', $cpuset, $Runner) | Out-Null
     Write-Host "cpuset $cpuset put back"
