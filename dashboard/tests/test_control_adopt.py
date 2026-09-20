@@ -71,6 +71,7 @@ def adopt(db, forge, **changes):
                 label="org.forgejo.runner",
                 root="/usr/local/forgejo-runner",
                 template="forgejo-runner-darwin-amd64-v12.0.1",
+                plist="/Library/LaunchDaemons/org.forgejo.runner.plist",
                 db=db, env=ENV, forge=forge)
     call.update(changes)
     return main.adopt(**call)
@@ -128,7 +129,8 @@ class TestWhatTheWorkerIsToldLater:
         assert spec["adopt_unit"] == {
             "label": "org.forgejo.runner",
             "root": "/usr/local/forgejo-runner",
-            "template": "forgejo-runner-darwin-amd64-v12.0.1"}
+            "template": "forgejo-runner-darwin-amd64-v12.0.1",
+            "plist": "/Library/LaunchDaemons/org.forgejo.runner.plist"}
 
     def test_the_unit_it_asks_for_is_an_adoption_not_an_image(self, db,
                                                               forge):

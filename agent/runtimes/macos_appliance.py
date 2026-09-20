@@ -262,6 +262,10 @@ class MacApplianceRuntime:
         record = {"label": label,
                   "root": (adopt or {}).get("root"),
                   "template": (adopt or {}).get("template"),
+                  # Where its job definition lives, so an instance that has
+                  # been stopped can be loaded again. Without it, stopping an
+                  # adopted runner is a one-way door.
+                  "plist": (adopt or {}).get("plist"),
                   "adopted_at": time.strftime("%Y-%m-%dT%H:%M:%SZ",
                                               time.gmtime())}
         self._fs.write_text(posixpath.join(p["root"], ADOPTED_MARKER),
