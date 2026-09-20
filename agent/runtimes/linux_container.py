@@ -342,6 +342,16 @@ class LinuxContainerRuntime:
     def remove(self, runner_id, keep_data):
         """Remove the unit and its storage. Safe when any of it is absent."""
         rid = naming.check(runner_id)
+        # Stopped before it is forced. `rm -f` gives a unit ten seconds and
+        # then kills it, which takes its nested engine down mid-write, and
+        # the engine has twice been left unable to finish such a removal:
+        # the container sits in `removing`, its name cannot be used again,
+        # and the runner being rebuilt is already gone (2026-09-20). A
+        # failure here is not one - what will not stop is still removed
+        # below - and nothing is aborted: a remove comes after the drain
+        # and the deregistration (MIG-9).
+        self._run(["stop", "-t", str(STOP_TIMEOUT), self._unit(rid)],
+                  timeout=STOP_TIMEOUT + 30)
         ok, _, err = self._run(["rm", "-f", "-v", self._unit(rid)],
                                timeout=180)
         if not ok and not _absent(err, "container"):

@@ -262,6 +262,17 @@ class TestRemoving:
             assert (names[area] in docker.volumes) == \
                 (area in KEPT_ON_RECREATE), area
 
+    def test_the_unit_is_stopped_before_it_is_forced(self, runtime, docker):
+        """`rm -f` kills a unit ten seconds after asking, which takes its
+        nested engine down mid-write. The engine was twice left unable to
+        finish such a removal: the container sits in "removing", its name
+        cannot be used again, and the runner that was being rebuilt is
+        already gone (2026-09-20)."""
+        runtime.create(RID, SPEC)
+        runtime.remove(RID, keep_data=False)
+        verbs = [c[0] for c in docker.calls]
+        assert verbs.index("stop") < verbs.index("rm")
+
     def test_storage_goes_only_once_the_unit_has(self, docker,
                                                 monkeypatch):
         """`docker rm` returns while the daemon is still taking the unit
