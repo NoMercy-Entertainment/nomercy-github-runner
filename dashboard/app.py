@@ -808,6 +808,15 @@ def api_users(action):
 
 @app.route("/")
 def index():
+    """The page this host can actually serve.
+
+    Where there is an engine, the page it has always been. Where there is
+    none - the control plane, where the dashboard sits beside the state
+    store - the fleet page, which reads that store and shows every runner on
+    every worker. Sending someone to a v1 page there would be a page of
+    errors about a socket that is deliberately absent."""
+    if not ops.engine_reachable():
+        return redirect(url_for("fleet_v2_page"))
     return render_template("index.html")
 
 

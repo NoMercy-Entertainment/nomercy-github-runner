@@ -390,3 +390,43 @@ def test_prune_all_still_reports_when_one_runner_fails(client, monkeypatch):
     assert len(body["data"]["results"]) == 2
     assert body["data"]["freed_bytes"] == 10
     assert body["ok"] is False
+
+
+class TestTheHomePageWhereThereIsNoEngine:
+    """The v1 page talks to a container engine directly. On the control
+    plane there is none, on purpose (T-0603): every runner is reached
+    through its worker's agent, and the fleet page is the whole fleet.
+
+    So the home page follows the host it runs on. With an engine it is the
+    page it has always been; without one it is the fleet page, rather than a
+    page of errors about a socket that is deliberately absent.
+    """
+
+    def test_it_is_the_fleet_page_when_no_engine_answers(self, client,
+                                                          monkeypatch):
+        monkeypatch.setattr(docker_ops, "engine_reachable", lambda: False)
+        r = client.get("/")
+        assert r.status_code in (301, 302)
+        assert r.headers["Location"].endswith("/v2")
+
+    def test_it_is_the_old_page_where_an_engine_answers(self, client,
+                                                        monkeypatch):
+        monkeypatch.setattr(docker_ops, "engine_reachable", lambda: True)
+        assert client.get("/").status_code == 200
+
+    def test_asking_is_cheap_enough_to_do_on_a_page_load(self, monkeypatch):
+        """Asked once and remembered: a landing page must not wait on a
+        subprocess every time someone reloads it."""
+        calls = []
+        monkeypatch.setattr(docker_ops, "_docker",
+                            lambda *a, **k: calls.append(a) or (True, "29", ""))
+        docker_ops.engine_reachable.cache_clear()
+        assert docker_ops.engine_reachable() is True
+        assert docker_ops.engine_reachable() is True
+        assert len(calls) == 1
+
+    def test_an_engine_that_is_not_there_is_not_an_error(self, monkeypatch):
+        monkeypatch.setattr(docker_ops, "_docker",
+                            lambda *a, **k: (False, "", "no such file"))
+        docker_ops.engine_reachable.cache_clear()
+        assert docker_ops.engine_reachable() is False

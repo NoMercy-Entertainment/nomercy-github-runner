@@ -1,7 +1,10 @@
-# The control plane's controller: the reconciler and the receiver agents
-# report to. Its dashboard arrives with the state store (T-0603); until then
-# the WSL dashboard keeps serving the live fleet, and this is driven with
-# `docker exec rnr-controller python -m control status|capacity`.
+# The control plane: the controller - the reconciler, and the receiver agents
+# report to - and the dashboard that reads the same store (T-0603).
+#
+# The dashboard has no Docker socket here, on purpose: every runner it shows
+# is reached through its worker's agent, which is what CON-2 asks for and
+# what T-1407 finishes. Its v1 pages, which talk to an engine directly, are
+# therefore blind on this host; the v2 pages are the whole fleet.
 name: runner-platform
 services:
   controller:
@@ -19,5 +22,23 @@ services:
     volumes:
       - controller-data:/data
     restart: unless-stopped
+
+  dashboard:
+    image: nomercy/runner-dashboard:platform
+    container_name: rnr-dashboard
+    env_file: /etc/runner-platform/dashboard.env
+    environment:
+      DASH_DATA: /data
+      DASH_PORT: "9200"
+    # The same store the controller writes: one state, read where it is
+    # written, which is the whole point of moving the dashboard here.
+    volumes:
+      - controller-data:/data
+    ports:
+      - "{{ADDRESS}}:9200:9200"
+    depends_on:
+      - controller
+    restart: unless-stopped
+
 volumes:
   controller-data:

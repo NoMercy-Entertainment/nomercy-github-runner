@@ -10,6 +10,7 @@ process serving that request. Talking to the API directly keeps the dashboard
 out of its own blast radius and leaves the compose file untouched.
 """
 
+import functools
 import json
 import os
 import re
@@ -78,6 +79,21 @@ def _run(args, timeout=30, merge_stderr=False):
 
 def _docker(*args, timeout=30, merge_stderr=False):
     return _run(["docker", *args], timeout=timeout, merge_stderr=merge_stderr)
+
+
+@functools.lru_cache(maxsize=1)
+def engine_reachable():
+    """Whether this process can reach a container engine at all.
+
+    False on the control plane, where the dashboard runs beside the state
+    store with no socket and reaches every runner through its worker's agent
+    (T-0603). Asked once and remembered: a page must not wait on a
+    subprocess each time it is loaded, and an engine does not appear and
+    disappear under a running dashboard - a restart is what changes this.
+    """
+    ok, out, _ = _docker("version", "--format", "{{.Server.Version}}",
+                         timeout=5)
+    return bool(ok and out.strip())
 
 
 def _docker_logs(*args, timeout=30):
