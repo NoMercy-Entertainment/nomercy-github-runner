@@ -1618,7 +1618,7 @@ NFR-6. Every remote call has a deadline; no call is unbounded.
 | Call | Timeout | Retries | Backoff |
 | --- | --- | --- | --- |
 | Agent verb, fast (`status`, `probe`) | 10 s | 2 | 1 s, 3 s |
-| Agent verb, slow (`create`, `remove`) | operation deadline, default 300 s | 0 | n/a, the reconciler retries the whole step |
+| Agent verb, slow (`create`, `remove`) | operation deadline, default 900 s | 0 | n/a, the reconciler retries the whole step |
 | Forge registration | 20 s | 2 | 2 s, 6 s |
 | Forge status poll | 20 s | 0 | cached; a failure caches "unknown", never the last good answer |
 | Forge record deletion | 20 s | 0 | n/a; a retried delete whose first reply was lost finds nothing and reads as a failure |
@@ -1630,6 +1630,15 @@ provisioning flow deletes Forgejo records to deregister, and the first five
 rows had no place for it. It is not retried because it cannot be retried
 safely: the Forgejo client reports a delete of a record that is already gone
 as a failure, so a retry after a lost reply would turn a success into one.
+
+The slow verb's deadline was 300 s until it was measured (2026-09-20).
+Making a unit on the WSL worker means preparing a container's snapshot from
+a 17 GB image, and `docker create` alone took 58 seconds on a quiet engine,
+three minutes on a busy one - before the volumes, the start and the nested
+engine. Every rebuild died at the deadline with its runner already
+deregistered and removed. The number now has room for what was measured,
+and the step is still bounded: what a worker cannot finish in fifteen
+minutes is a worker in trouble, not a slow one.
 
 The drain row was added when OPEN-7 was settled (2026-09-18). A GitHub runner
 is drained at GitHub, by editing its labels or its runner group (13.1). The

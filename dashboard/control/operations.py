@@ -41,8 +41,11 @@ SUCCEEDED, FAILED, CANCELLED = "succeeded", "failed", "cancelled"
 CLOSED = frozenset({SUCCEEDED, FAILED, CANCELLED})
 OPEN = frozenset({PENDING, RUNNING})
 
-#: Spec 17.2: slow agent verbs run to the operation deadline, 300s by default.
-DEFAULT_DEADLINE_SECONDS = 300
+#: Spec 17.2: slow agent verbs run to the operation deadline, 900s by
+#: default. It was 300 until making a unit was measured: `docker create`
+#: from a 17 GB image took 58 seconds on a quiet engine and three minutes on
+#: a busy one, and every rebuild died at the deadline (2026-09-20).
+DEFAULT_DEADLINE_SECONDS = 900
 
 
 class UnknownOperation(Exception):

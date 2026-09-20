@@ -35,8 +35,12 @@ _HANDLE = re.compile(
 
 #: How long an asynchronous verb may take before the controller stops
 #: waiting. Longer than the agent's own slowest step: a remove waits out the
-#: runner's stop grace, and a create may pull an image.
-DEADLINE = 290
+#: runner's stop grace and then the engine's own removal, and a create
+#: prepares a container's snapshot from an image of some size - measured at
+#: 58 seconds on a quiet engine and three minutes on a busy one
+#: (2026-09-20). Just inside the operation deadline of 17.2, so the
+#: controller hears an answer rather than giving up on one.
+DEADLINE = 890
 
 
 #: The controller's runtime table: every cell's units live on a worker and
