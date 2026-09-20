@@ -88,9 +88,14 @@ nav a.on{color:var(--signal);border-color:var(--signal-dk)}
 
 label{display:block;font-size:9.5px;letter-spacing:.15em;text-transform:uppercase;
   color:var(--text-faint);margin-bottom:5px}
-input[type=text],input[type=password]{
+input[type=text],input[type=password],input[type=number]{
   width:100%;background:var(--bg-inset);border:1px solid var(--rule);color:var(--text);
   font-family:var(--mono);font-size:12.5px;padding:8px 10px;outline:none}
+/* A number field left to the browser is a white box on a dark page. The
+   spinners go with it: the value is typed, and they only widen the box. */
+input[type=number]{-moz-appearance:textfield;appearance:textfield}
+input[type=number]::-webkit-outer-spin-button,
+input[type=number]::-webkit-inner-spin-button{-webkit-appearance:none;margin:0}
 input:focus{border-color:var(--signal-dk)}
 .field{margin-bottom:14px}
 .hint{font-size:10.5px;color:var(--text-faint);margin-top:5px}

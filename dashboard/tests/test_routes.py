@@ -404,10 +404,13 @@ class TestTheHomePageWhereThereIsNoEngine:
 
     def test_it_is_the_fleet_page_when_no_engine_answers(self, client,
                                                           monkeypatch):
+        """Rendered at `/`, not redirected away from it: that address is the
+        one people have, and it should simply be the page."""
         monkeypatch.setattr(docker_ops, "engine_reachable", lambda: False)
         r = client.get("/")
-        assert r.status_code in (301, 302)
-        assert r.headers["Location"].endswith("/v2")
+        assert r.status_code == 200
+        assert "fleet" in r.get_data(as_text=True).lower()
+        assert "id=\"grid-elsewhere\"" not in r.get_data(as_text=True)
 
     def test_it_is_the_old_page_where_an_engine_answers(self, client,
                                                         monkeypatch):

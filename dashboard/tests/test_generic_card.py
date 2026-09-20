@@ -323,3 +323,20 @@ def test_the_page_renders_all_six_fleets_in_a_real_browser(tmp_path,
     assert "no job containers" in dom
     assert "T-0802" in dom
     assert "wsl:github-runners" in dom
+
+
+def test_every_kind_of_input_the_pages_use_is_styled():
+    """A field the stylesheet does not name is a white box on a dark page,
+    which is what the capacity field was until 2026-09-20."""
+    import re
+    base = open(os.path.join(HERE, "templates", "base.html"),
+                encoding="utf-8").read()
+    styled = set(re.findall(r"input\[type=(\w+)\]", base))
+    used = set()
+    for name in os.listdir(os.path.join(HERE, "templates")):
+        if not name.endswith(".html"):
+            continue
+        page = open(os.path.join(HERE, "templates", name),
+                    encoding="utf-8").read()
+        used |= set(re.findall(r"<input[^>]*type=[\"'](\w+)[\"']", page))
+    assert used - styled - {"hidden", "checkbox", "radio", "submit"} == set()
