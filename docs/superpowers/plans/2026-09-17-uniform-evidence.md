@@ -677,3 +677,45 @@ It redirected the reader straight back to where they came from.
 notes. The old dashboard in the distro is stopped - it was polling the same
 token and writing a history that had already been copied - and bringing it
 back is `docker start runner-dashboard` and the portproxy rule.
+
+## 2026-09-20 - a cell that cannot be built says so, and Windows gained one
+
+The page offered `+ Add runner` for GitHub on Windows and on macOS. Neither
+could work: the Windows worker had one template installed, Forgejo's, and
+the appliance had none. The creation would have failed on the worker after a
+spec was written.
+
+**What a worker now says.** Each runtime declares what it builds units from:
+`template` with the list it has (Windows, the appliance) or `image`, which
+means anything it can pull (Linux). The controller resolves what a unit of a
+fleet is made from the way the runtime will - what the deployment names for
+the cell, else the fleet's own template, without a digest - and answers
+whether some healthy worker could build it. A cell nobody can build is
+unavailable with the reason; a cell whose workers are merely down is not
+refused, because a worker comes back and a runner planned meanwhile waits.
+
+**Two attempts that were wrong, and why.** Putting the check in
+`provider.supports()` broke 394 tests, rightly: that method answers what the
+*forge* supports, not what this deployment has. Putting it in the fleet's
+seed broke ten, for the same reason at one remove: a seed knows the
+deployment's settings but not its workers. It belongs where both are known,
+which is the service.
+
+**GitHub's runner on the Windows worker.** Fetched rather than built -
+GitHub publishes it - and checked against the SHA-256 GitHub states in the
+release's own notes, read from its API: `d59123a4...c162` for
+actions-runner-win-x64-2.336.0. The template has the same three entry points
+as the Forgejo one, with the runner one level down in `agent\` because it
+ships a `run.cmd` of its own. Registration goes through
+ACTIONS_RUNNER_INPUT_* so the token is never on a command line, and
+deregistration says what it cannot do, so the controller deletes the record
+by its id. The 103 MB payload is never committed.
+
+**After:** `github-windows-x64` reports available; the Windows worker lists
+`actions-runner-v2.336.0-windows` and `forgejo-runner-v13.1.0-windows`.
+`github-macos-x64` still reports the reason - the appliance has no templates
+yet - and `forgejo-macos-x64` still wants its artefact named.
+
+**One more thing the live page showed:** it built its service without the
+deployment's settings, so every cell read as unbuildable even after the
+template was installed. The page's service now carries them.
