@@ -17,7 +17,8 @@ import os
 import pytest
 
 from agent import naming
-from agent.runtimes.linux_container import (KEPT_ON_RECREATE, LAYOUT_ENV,
+from agent.runtimes.linux_container import (CREATE_TIMEOUT,
+                                            KEPT_ON_RECREATE, LAYOUT_ENV,
                                             MOUNTS, LinuxContainerRuntime,
                                             LinuxRegistrar)
 
@@ -173,6 +174,34 @@ class TestCreatingIsSafeToRepeat:
         second = runtime.create(RID, SPEC)
         assert first == second
         assert [c[0] for c in docker.calls].count("run") == 1
+
+    def test_a_create_that_stopped_half_way_is_finished(self, runtime,
+                                                        docker):
+        """A create whose client gave up while the engine was still
+        unpacking the image leaves the unit made but never started. The
+        next create must finish it: handing back a unit that is not running
+        makes the registration that follows exec into nothing, which is
+        what every rebuild did on 2026-09-20."""
+        runtime.create(RID, SPEC)
+        runtime.stop(RID)
+        assert runtime.create(RID, SPEC) == naming.unit_name(RID)
+        assert runtime.status(RID)["running"] is True
+
+    def test_the_create_has_room_for_a_cold_image(self, docker):
+        """The first container made from a freshly built unit image waits
+        for its layers to be unpacked into the snapshotter: measured at
+        three minutes for the 17 GB GitHub unit on the WSL worker, against
+        a deadline of 180 seconds that no rebuild ever survived. The room
+        is bounded by the controller's own deadline for a slow verb."""
+        seen = {}
+
+        def run(args, **kw):
+            if args[0] == "run":
+                seen["timeout"] = kw.get("timeout")
+            return docker(args, **kw)
+
+        LinuxContainerRuntime(run=run).create(RID, SPEC)
+        assert seen["timeout"] == CREATE_TIMEOUT == 240
 
     def test_losing_a_race_to_another_create_adopts_too(self, docker):
         runtime = LinuxContainerRuntime(run=docker)

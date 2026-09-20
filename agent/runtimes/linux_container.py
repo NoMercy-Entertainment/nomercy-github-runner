@@ -66,6 +66,17 @@ KEPT_ON_RECREATE = ("docker", "cache", "logs")
 RUNNER_LABEL = "nomercy.runner_id"
 STOP_TIMEOUT = 60
 
+#: How long a unit may take to be made. The first container built from a
+#: freshly built unit image pays for its layers being unpacked into the
+#: snapshotter: measured at three minutes for the 17 GB GitHub unit on the WSL
+#: worker, and at two seconds for every container after it. A deadline of 180
+#: seconds sat just under that, so every rebuild timed out with the unit made
+#: but not started, and the undo that followed found its storage in use
+#: (2026-09-20). The room here stays inside the controller's own deadline for
+#: a slow verb, and `setup-worker.sh` warms each image it builds so this is
+#: the margin rather than the rule.
+CREATE_TIMEOUT = 240
+
 #: Which of this runner's own storage each clearable scope lives in (T-1601):
 #: an area of design 15.1, or "unit" for the unit's own writable layer -
 #: which is this runner's alone, because the unit is. The scopes this runtime
@@ -179,7 +190,12 @@ class LinuxContainerRuntime:
             raise ValueError("a unit needs an image")
 
         if self.status(rid)["exists"]:
-            return name                     # adopt: see the module docstring
+            # Adopt: see the module docstring. A unit left made but not
+            # started - a create whose client gave up while the engine was
+            # still unpacking the image - is finished here, because the
+            # registration that follows has to exec into it.
+            self.start(rid)
+            return name
 
         volumes = naming.names(rid, "linux")
         for area in naming.AREAS:
@@ -216,7 +232,7 @@ class LinuxContainerRuntime:
         env_file = _env_file(env)
         try:
             args += ["--env-file", env_file, image]
-            ok, out, err = self._run(args, timeout=180)
+            ok, out, err = self._run(args, timeout=CREATE_TIMEOUT)
         finally:
             os.unlink(env_file)
         if not ok:

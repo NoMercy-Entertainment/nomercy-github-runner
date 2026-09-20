@@ -32,11 +32,23 @@ install -d -m 700 /var/lib/runner-agent
 # (images/linux/unit). A runner rebuilt on this worker is made from these;
 # the images the containers ran before have no /runner/register, which is
 # what a rebuild discovered the hard way (2026-09-20).
+# Pay the snapshotter's unpack here rather than in the first rebuild that uses
+# the image: a cold create of the 17 GB GitHub unit was measured at three
+# minutes on the WSL worker, a warm one at two seconds, and the deadline a
+# provision gives it sits in between (2026-09-20).
+warm() {
+  docker rm -f rnr-image-warm >/dev/null 2>&1 || true
+  docker create --name rnr-image-warm "$1" /bin/true >/dev/null
+  docker rm -f rnr-image-warm >/dev/null
+  echo "warmed $1"
+}
+
 for cell in github forgejo; do
   base="$(cat "BASE_${cell}" 2>/dev/null || true)"
   [ -n "$base" ] || continue
   docker build -q -f images/linux/unit/Dockerfile."$cell"     --build-arg BASE="$base"     --label "org.opencontainers.image.revision=${VERSION}"     -t "nomercy/runner-unit-${cell}:${VERSION}" images/linux/unit >/dev/null
   echo "unit image nomercy/runner-unit-${cell}:${VERSION}"
+  warm "nomercy/runner-unit-${cell}:${VERSION}"
 done
 
 systemctl daemon-reload
