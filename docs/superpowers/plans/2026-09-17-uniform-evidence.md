@@ -371,3 +371,40 @@ actually done" has one answer (ACC-19).
   removed only after the new one is serving.
 - **Fleet now:** runners 1 to 6 on their own volumes with `overlay2`; 7 to 10
   still to do, held at the operator's word while a CI run is in flight.
+
+## 2026-09-19 - the Windows runner taken over by the platform (MIG-5 for this cell)
+
+- **Decided by:** the operator, who confirmed nothing was using it.
+- **Before:** the service `forgejo-runner`, started by NSSM from
+  `C:\forgejo-runner`, running a binary that reports `dev`. Forgejo knew it as
+  `beaststack-windows-runner` (id 2) with `windows-2022, windows-latest`.
+- **Steps:**
+  1. The controller was given the production labels for the Windows cell
+     (`Initialize-RunnerPlatform.ps1 -ControlPlaneOnly -WindowsLabels
+     'windows-2022:host,windows-latest:host'`).
+  2. The operator ran `Retire-LegacyWindowsRunner.ps1`, elevated. It asked
+     Forgejo first - `idle` - then stopped the service and set it to Manual.
+     Nothing was deleted: `C:\forgejo-runner` and its registration stayed.
+  3. `capacity forgejo-windows-x64 1`: the controller made the unit, which
+     reached `idle` in 100 s as the service
+     `rnr-249c8d01-45b0-4479-a385-b582355a2bfa`, under its own virtual
+     account.
+  4. Forgejo then listed `rnr-249c8d01` idle with `windows-2022,
+     windows-latest`, and `beaststack-windows-runner` offline.
+  5. Only then was the old record deleted (HTTP 204).
+- **After:** Forgejo has five runners, one of them the managed Windows one.
+  The old service is `Stopped`, `Manual`.
+- **Rollback, one command:** `Retire-LegacyWindowsRunner.ps1 -Restore` starts
+  the old service, which registers itself afresh. The managed runner can be
+  removed with `capacity forgejo-windows-x64 0`.
+- **What differs for a job:** the managed runner runs under a virtual account
+  with its own tree, its TEMP inside it, and a Job Object ceiling of 8 GB.
+  Tools installed system-wide are still there; anything installed only in the
+  old runner account's profile is not.
+
+## 2026-09-19 - github-runner-7 converted, the fast way
+
+- Drained at GitHub, converted through the dashboard's own `create()` - it is
+  not a compose service - and back listening as `nomercy-sbirg` with
+  `beast-unit`, on its own volume. About a minute out of service, against
+  github-runner-6's 45 minutes through compose.
