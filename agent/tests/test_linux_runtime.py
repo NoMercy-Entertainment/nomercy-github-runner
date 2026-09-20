@@ -203,6 +203,29 @@ class TestCreatingIsSafeToRepeat:
         LinuxContainerRuntime(run=run).create(RID, SPEC)
         assert seen["timeout"] == CREATE_TIMEOUT == 240
 
+    def test_a_unit_still_being_removed_is_waited_out(self, docker,
+                                                     monkeypatch):
+        """Docker's removal is asynchronous: the client returns while the
+        daemon is still taking the unit apart, and anything said to it
+        meanwhile is refused with "container is marked for removal". A
+        recreate that reached the create while the old unit was still
+        going therefore failed, and the one it was replacing was already
+        gone (2026-09-20)."""
+        import agent.runtimes.linux_container as lc
+        monkeypatch.setattr(lc, "sleep", lambda seconds: None)
+        runtime = LinuxContainerRuntime(run=docker)
+        answers = iter([{"exists": True, "running": False,
+                         "state": "removing"},
+                        {"exists": True, "running": False,
+                         "state": "removing"},
+                        {"exists": False, "running": False,
+                         "state": "absent"}])
+        monkeypatch.setattr(runtime, "status",
+                            lambda rid: next(answers))
+        assert runtime.create(RID, SPEC) == naming.unit_name(RID)
+        verbs = [c[0] for c in docker.calls]
+        assert "run" in verbs and "update" not in verbs
+
     def test_losing_a_race_to_another_create_adopts_too(self, docker):
         runtime = LinuxContainerRuntime(run=docker)
         docker.fail_once["run"] = ('Conflict. The container name "/x" is '
@@ -238,6 +261,37 @@ class TestRemoving:
         for area in naming.AREAS:
             assert (names[area] in docker.volumes) == \
                 (area in KEPT_ON_RECREATE), area
+
+    def test_storage_goes_only_once_the_unit_has(self, docker,
+                                                monkeypatch):
+        """`docker rm` returns while the daemon is still taking the unit
+        apart, and a volume the unit still holds cannot be removed:
+        "volume is in use" is exactly what the undo of a failed create
+        reported, leaving five volumes behind (2026-09-20)."""
+        import agent.runtimes.linux_container as lc
+        monkeypatch.setattr(lc, "sleep", lambda seconds: None)
+        seen = []
+
+        def run(args, **kw):
+            seen.append("/".join(args[:2]) if args[0] == "volume"
+                        else args[0])
+            return docker(args, **kw)
+
+        runtime = LinuxContainerRuntime(run=run)
+        runtime.create(RID, SPEC)
+        answers = iter([{"exists": True, "running": False,
+                         "state": "removing"},
+                        {"exists": False, "running": False,
+                         "state": "absent"}])
+        gone = {"exists": False, "running": False, "state": "absent"}
+
+        def status(rid):
+            seen.append("status")
+            return next(answers, gone)
+
+        monkeypatch.setattr(runtime, "status", status)
+        runtime.remove(RID, keep_data=False)
+        assert seen.index("status") < seen.index("volume/rm")
 
     def test_it_is_safe_when_nothing_is_there(self, runtime):
         runtime.remove(RID, keep_data=False)

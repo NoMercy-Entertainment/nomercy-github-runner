@@ -44,6 +44,7 @@ import os
 import re
 import subprocess
 import tempfile
+import time
 
 from .. import naming
 from .adopted import Adopted
@@ -76,6 +77,17 @@ STOP_TIMEOUT = 60
 #: a slow verb, and `setup-worker.sh` warms each image it builds so this is
 #: the margin rather than the rule.
 CREATE_TIMEOUT = 240
+
+#: How long a unit that the engine is still taking apart is waited for.
+#: Docker's removal is asynchronous - the client returns while the daemon
+#: works - and everything said to a container meanwhile is refused with
+#: "container is marked for removal". Tearing down a nested engine has been
+#: measured at 110 seconds, so a recreate that reached its create first
+#: failed with the runner it was replacing already gone (2026-09-20).
+REMOVAL_WAIT = 240
+
+#: Replaced in tests, so waiting does not make the suite wait.
+sleep = time.sleep
 
 #: Which of this runner's own storage each clearable scope lives in (T-1601):
 #: an area of design 15.1, or "unit" for the unit's own writable layer -
@@ -189,13 +201,16 @@ class LinuxContainerRuntime:
         if not image:
             raise ValueError("a unit needs an image")
 
-        if self.status(rid)["exists"]:
+        existing = self.status(rid)
+        if existing["exists"] and existing.get("state") != "removing":
             # Adopt: see the module docstring. A unit left made but not
             # started - a create whose client gave up while the engine was
             # still unpacking the image - is finished here, because the
             # registration that follows has to exec into it.
             self.start(rid)
             return name
+        if existing["exists"]:
+            self._await_removal(rid)
 
         volumes = naming.names(rid, "linux")
         for area in naming.AREAS:
@@ -240,6 +255,22 @@ class LinuxContainerRuntime:
                 return name                 # another create won; adopt
             raise RuntimeError(err or out or "docker run failed")
         return name
+
+    def _await_removal(self, rid, wait=REMOVAL_WAIT):
+        """Wait out a removal the engine is still doing, so this create
+        builds the unit again rather than talking to the one on its way
+        out. Raises when it is still there: a unit that will not go is not
+        a unit to build over."""
+        deadline = time.monotonic() + wait
+        while True:
+            state = self.status(rid)
+            if not state["exists"] or state.get("state") != "removing":
+                return
+            if time.monotonic() >= deadline:
+                raise RuntimeError(
+                    f"the unit of {rid} has been marked for removal for "
+                    f"{wait}s and is still there")
+            sleep(2)
 
     def _adopt(self, rid, adopt):
         """Take over a container that is already a runner.
@@ -315,6 +346,12 @@ class LinuxContainerRuntime:
                                timeout=180)
         if not ok and not _absent(err, "container"):
             raise RuntimeError(err)
+        # The client returns while the daemon is still taking the unit
+        # apart, and a volume it still holds cannot be removed. Waited out
+        # here rather than reported as storage left behind, which is what
+        # the undo of a failed create said while the engine was still
+        # working (2026-09-20).
+        self._await_removal(rid)
         # The unit is gone, so the note of which one it was means nothing.
         # Forgotten after the removal, so a removal that failed leaves the
         # runner still pointing at its container.
