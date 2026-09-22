@@ -123,7 +123,7 @@ case "$RUNNER_KIND" in
     # Makes run.sh pass TERM on to the listener instead of dying and leaving
     # the listener to be killed with the unit.
     export RUNNER_MANUALLY_TRAP_SIG=1
-    export ACTIONS_RUNNER_HOOK_JOB_COMPLETED=/runner/cleanup
+    export ACTIONS_RUNNER_HOOK_JOB_COMPLETED=/runner/cleanup.sh
     mkdir -p "$RUNNER_LOG_DIR/diagnostics"
     if [ ! -L "$RUNNER_HOME/_diag" ]; then
       if [ -d "$RUNNER_HOME/_diag" ]; then

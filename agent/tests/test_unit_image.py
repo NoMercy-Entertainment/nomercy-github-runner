@@ -75,6 +75,20 @@ class TestTheDrain:
         assert "RUNNER_MANUALLY_TRAP_SIG=1" in branch(read("runner", "run"),
                                                      "github")
 
+    def test_the_job_completed_hook_is_a_script_the_runner_accepts(self):
+        """The GitHub runner runs a hook only when its path ends in .sh,
+        .ps1 or .js; anything else fails the job's last step, "Complete
+        runner", and with it the job. /runner/cleanup did exactly that to
+        every GitHub job from 2026-09-21 to 2026-09-22 - 83 of 83."""
+        hook = re.search(r"ACTIONS_RUNNER_HOOK_JOB_COMPLETED=(\S+)",
+                         branch(read("runner", "run"), "github"))
+        assert hook, "the github branch sets no completion hook"
+        path = hook.group(1)
+        assert path.endswith((".sh", ".ps1", ".js")), path
+        assert os.path.exists(os.path.join(UNIT, "runner",
+                                           os.path.basename(path)))
+        assert os.path.basename(path) in read("Dockerfile.github")
+
 
 class TestTheToken:
     def test_github_takes_it_from_the_environment_not_the_command_line(
@@ -159,7 +173,8 @@ class TestTheRunnerGitHubWillTalkTo:
 
 @pytest.mark.skipif(shutil.which("bash") is None, reason="no bash here")
 @pytest.mark.parametrize("script", ["run", "register", "deregister",
-                                    "lib.sh", "cleanup", "maintenance"])
+                                    "lib.sh", "cleanup", "cleanup.sh",
+                                    "maintenance"])
 def test_every_script_parses(script):
     subprocess.run(["bash", "-n", os.path.join(UNIT, "runner", script)],
                    check=True)

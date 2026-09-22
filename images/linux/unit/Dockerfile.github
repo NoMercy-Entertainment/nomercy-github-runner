@@ -41,7 +41,7 @@ RUN set -eu; \
 
 COPY runner/ /runner/
 RUN chmod 0755 /runner/run /runner/register /runner/deregister \
-    /runner/cleanup /runner/maintenance \
+    /runner/cleanup /runner/cleanup.sh /runner/maintenance \
     && chmod 0644 /runner/lib.sh \
     && command -v jq >/dev/null
 
