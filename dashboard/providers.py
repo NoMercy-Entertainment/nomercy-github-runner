@@ -300,6 +300,39 @@ class Provider:
         """This runner's own record in the forge's list, or None."""
         raise NotImplementedError
 
+    def record_labels(self, record):
+        """The label names this record carries, as `runs-on:` takes them, or
+        None when the record says nothing about labels - unknown, which is not
+        the same as none."""
+        if not isinstance(record, dict) or not isinstance(record.get("labels"), list):
+            return None
+        names = []
+        for label in record["labels"]:
+            name = label.get("name") if isinstance(label, dict) else label
+            name = self._label_name(str(name or ""))
+            if name and name not in names:
+                names.append(name)
+        return names
+
+    def _label_name(self, text):
+        return text.strip()
+
+    def workflow_labels(self, spec, env=None):
+        """What a workflow can name in `runs-on:` for a runner registered from
+        this spec or fleet."""
+        text = _labels(spec, self.default_labels(
+            (spec or {}).get("platform") or LINUX,
+            (spec or {}).get("architecture") or X64, env))
+        names = []
+        for part in self._automatic(spec) + text.split(","):
+            name = self._label_name(part)
+            if name and name not in names:
+                names.append(name)
+        return names
+
+    def _automatic(self, spec):
+        return []
+
     def registration_drift(self, expected, record):
         """How the forge's record differs from what the runner was registered
         with - labels and runner group - as one line, or None when they agree
@@ -463,6 +496,16 @@ class _GitHub(Provider):
         return next((r for r in forge_records
                      if isinstance(r, dict) and str(r.get("id")) == rid),
                     None)
+
+    #: What GitHub gives every self-hosted runner, in its own spelling.
+    _OS_LABEL = {LINUX: "Linux", WINDOWS: "Windows", MACOS: "macOS"}
+    _ARCH_LABEL = {X64: "X64", ARM64: "ARM64"}
+
+    def _automatic(self, spec):
+        spec = spec or {}
+        return ["self-hosted",
+                self._OS_LABEL.get(spec.get("platform") or LINUX, ""),
+                self._ARCH_LABEL.get(spec.get("architecture") or X64, "")]
 
     #: Labels GitHub adds to every self-hosted runner by itself. Their being
     #: there is not drift.
@@ -735,6 +778,11 @@ class _Forgejo(Provider):
         configured = ((env or {}).get(self._LABELS_ENV.get(platform, ""))
                       or "").strip()
         return configured or self._DEFAULT_LABELS.get(platform, "")
+
+    def _label_name(self, text):
+        """A Forgejo label is `name`, `name:host` or `name:docker://image`;
+        a workflow names only `name`."""
+        return text.strip().partition(":")[0].strip()
 
     def label_problem(self, platform, labels):
         """Why these labels cannot be registered on this platform, or None.
