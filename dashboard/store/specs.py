@@ -59,7 +59,7 @@ WRITABLE = (
 
 #: Stored as JSON text, decoded on the way out so callers never parse.
 JSON_FIELDS = ("labels", "cache_policy", "capabilities", "telemetry",
-               "adopt_unit")
+               "adopt_unit", "forge_labels")
 
 REQUIRED = ("provider", "platform")
 

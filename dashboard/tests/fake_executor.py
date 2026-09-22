@@ -23,6 +23,11 @@ class FakeExecutor:
         #: runner_id -> the state `observe` should report. Tests set this to
         #: simulate a job starting or finishing.
         self.world = {}
+        #: runner_id -> the labels `observe` should report the forge saw.
+        #: Tests set this; `observe` copies it into `forge_labels`, mirroring
+        #: how the real flow reports `forge_words`.
+        self.forge_labels = {}
+        self.labels_seen = {}
 
     def _record(self, name, spec, **extra):
         self.calls.append((name, spec["runner_id"], extra))
@@ -36,6 +41,9 @@ class FakeExecutor:
 
     def observe(self, spec):
         self.calls.append(("observe", spec["runner_id"], {}))
+        if self.labels_seen:
+            self.forge_labels[spec["runner_id"]] = self.labels_seen.get(
+                spec["runner_id"])
         return self.world.get(spec["runner_id"])
 
     def provision(self, spec, on_placed=None):

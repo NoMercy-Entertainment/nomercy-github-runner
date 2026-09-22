@@ -121,6 +121,8 @@ CREATE TABLE IF NOT EXISTS runner_specs (
   telemetry        TEXT,
   forge_state      TEXT,
   forge_seen_at    TEXT,
+  forge_labels     TEXT,
+  forge_labels_at  TEXT,
   -- Something true and worth saying that is not a failure: a runner that
   -- registered with labels other than its fleet's still works, it just
   -- takes different jobs. It was written into last_error before, where the
@@ -273,7 +275,8 @@ def _migrate(c):
         # T-0802. Null for a runner the controller made itself; JSON naming
         # the unit that was already there for one it adopted.
         c.execute("ALTER TABLE runner_specs ADD COLUMN adopt_unit TEXT")
-    for column in ("telemetry", "forge_state", "forge_seen_at"):
+    for column in ("telemetry", "forge_state", "forge_seen_at", "forge_labels",
+                   "forge_labels_at"):
         # T-1803. Observations, like unit_state: what the unit last used,
         # what the forge last said of the runner, and when it last said
         # anything. Null until observed, which is not any value.

@@ -172,6 +172,9 @@ class ProvisioningFlow:
         self.trail = []
         #: runner_id -> what the forge last said of it in `observe`.
         self.forge_words = {}
+        #: runner_id -> the label names the forge's own record lists for it,
+        #: or None when the last read said nothing about labels (T-1803).
+        self.forge_labels = {}
         #: One reading of each forge's runner list, for the runners of one
         #: pass. See `_records` for why.
         self._forge_records = {}
@@ -744,10 +747,14 @@ class ProvisioningFlow:
                           "registering"):
             return None
         provider = self._provider(spec)
-        seen = provider.job_state(spec, self._records(provider, fresh=fresh))
+        records = self._records(provider, fresh=fresh)
+        seen = provider.job_state(spec, records)
         # What the forge said, kept for the reconciler to record as an
         # observation: readiness needs it, not only the machine (T-1803).
         self.forge_words[spec["runner_id"]] = seen
+        if records is not None:
+            self.forge_labels[spec["runner_id"]] = provider.record_labels(
+                provider.record_for(spec, records))
         if actual == "registering":
             # A registration interrupted during the wait to come online. If
             # the forge now shows the runner and the agent says it is up, the

@@ -976,21 +976,37 @@ class Reconciler:
         said anything - an observation, written outside spec_version like
         unit_state, so it never collides with a change a person is making.
         Readiness is read from it: process up is not ready while the forge
-        cannot confirm the runner (T-1803)."""
+        cannot confirm the runner (T-1803).
+
+        The labels the forge's own record lists for the runner ride along on
+        the same read (T-1803/W2b): both are consumed here, before either
+        early return, so a reading with words but no labels - or the reverse
+        - still gets written.
+        """
         words = getattr(self.executor, "forge_words", None)
-        if not isinstance(words, dict) or spec["runner_id"] not in words:
+        has_word = isinstance(words, dict) and spec["runner_id"] in words
+        labels = getattr(self.executor, "forge_labels", None)
+        has_labels = isinstance(labels, dict) and spec["runner_id"] in labels
+        if not has_word and not has_labels:
             return
-        word = words.pop(spec["runner_id"])
+        word = words.pop(spec["runner_id"]) if has_word else None
+        names = labels.pop(spec["runner_id"]) if has_labels else None
         from store import schema
         with schema.connect(self.service.specs.path) as c:
-            if word in self.FORGE_ANSWERS:
-                c.execute("UPDATE runner_specs SET forge_state = ?,"
-                          " forge_seen_at = ? WHERE runner_id = ?",
-                          (word, _iso(_now()), spec["runner_id"]))
-            else:
-                c.execute("UPDATE runner_specs SET forge_state = ?"
+            if has_word:
+                if word in self.FORGE_ANSWERS:
+                    c.execute("UPDATE runner_specs SET forge_state = ?,"
+                              " forge_seen_at = ? WHERE runner_id = ?",
+                              (word, _iso(_now()), spec["runner_id"]))
+                else:
+                    c.execute("UPDATE runner_specs SET forge_state = ?"
+                              " WHERE runner_id = ?",
+                              ("unknown", spec["runner_id"]))
+            if has_labels and names is not None:
+                import json
+                c.execute("UPDATE runner_specs SET forge_labels = ?, forge_labels_at = ?"
                           " WHERE runner_id = ?",
-                          ("unknown", spec["runner_id"]))
+                          (json.dumps(names), _iso(_now()), spec["runner_id"]))
 
     # ---- operations --------------------------------------------------------
 

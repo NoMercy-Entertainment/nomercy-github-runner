@@ -219,6 +219,9 @@ class TestTheSchemaMatchesTheDesign:
         # Something true that is not a failure, which used to live in the
         # error's column and painted every healthy card red.
         "last_note": "TEXT",
+        # Added in W2b, and to the design's table with them: what the forge's
+        # own record lists as the runner's labels, and when it last said so.
+        "forge_labels": "TEXT", "forge_labels_at": "TEXT",
     }
 
     def columns(self, store, table="runner_specs"):
