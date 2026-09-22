@@ -1,0 +1,4 @@
+#!/bin/sh
+# Removal credentials remain on the controller, which deletes the forge ID.
+echo 'This instance cannot delete its forge registration; use the controller API fallback.' >&2
+exit 3

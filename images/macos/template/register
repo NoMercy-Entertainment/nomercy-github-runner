@@ -1,0 +1,63 @@
+#!/usr/bin/env python3
+"""Register a macOS instance; the plan arrives only on stdin."""
+import json
+import os
+from pathlib import Path
+import subprocess
+import sys
+
+
+def register(plan, root):
+    provider = (root / "provider").read_text().strip()
+    home = root / "agent" if provider == "github" else root
+    record = home / ".runner"
+    if record.exists() and not plan.get("replace"):
+        data = json.loads(record.read_text())
+        return {"registration_id": str(data.get("agentId") if provider == "github"
+                                       else data.get("id")),
+                "registration_uuid": data.get("uuid")}
+    if not plan.get("url") or not plan.get("token"):
+        raise ValueError("registration requires a forge URL and token")
+    if plan.get("replace"):
+        # The controller has already removed the prior forge registration.
+        for name in (".runner", ".credentials", ".credentials_rsaparams"):
+            (home / name).unlink(missing_ok=True)
+    env = dict(os.environ)
+    if provider == "github":
+        for field, key in (("url", "URL"), ("token", "TOKEN"), ("name", "NAME"),
+                           ("labels", "LABELS"), ("runner_group", "RUNNERGROUP")):
+            if plan.get(field):
+                env["ACTIONS_RUNNER_INPUT_" + key] = str(plan[field])
+        env["ACTIONS_RUNNER_INPUT_WORK"] = str(root.parent / "work")
+        command = [str(home / "config.sh"), "--unattended", "--replace", "--disableupdate"]
+    elif provider == "forgejo":
+        command = [str(home / "forgejo-runner"), "register", "--no-interactive",
+                   "--instance", plan["url"], "--token", plan["token"],
+                   "--name", plan.get("name", ""), "--labels", plan.get("labels", "")]
+    else:
+        raise ValueError("unknown template provider")
+    # A separate session lets timeout cleanup stop config.sh and its child.
+    process = subprocess.Popen(command, cwd=home, env=env, text=True,
+                               stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                               start_new_session=True)
+    try:
+        output, _ = process.communicate(timeout=90)
+    except subprocess.TimeoutExpired:
+        import signal
+        os.killpg(process.pid, signal.SIGKILL)
+        process.communicate()
+        raise RuntimeError("registration timed out after 90 seconds") from None
+    if process.returncode:
+        raise RuntimeError("registration failed: " + output[-4000:].replace(
+            plan["token"], "[redacted]"))
+    if not record.exists():
+        raise RuntimeError("registration returned success without a registration file")
+    return register({}, root)
+
+
+if __name__ == "__main__":
+    try:
+        print(json.dumps(register(json.load(sys.stdin), Path(__file__).resolve().parent)))
+    except Exception as error:
+        print(str(error), file=sys.stderr)
+        sys.exit(1)

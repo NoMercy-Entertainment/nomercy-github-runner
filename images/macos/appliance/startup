@@ -1,0 +1,15 @@
+#!/bin/bash
+set -euo pipefail
+if [ ! -f /.dockerenv ]; then
+  echo 'appliance boot cleanup may only run inside its execution unit' >&2
+  exit 64
+fi
+if [ "$#" -eq 0 ]; then
+  echo 'missing original QEMU startup command' >&2
+  exit 64
+fi
+# Fixed parent and filename pattern. find does not follow links; rm unlinks
+# a matching symlink instead of following it. No other boot data is touched.
+find /var/tmp -mindepth 1 -maxdepth 1 -name 'opencore-image-ng.sh-*' \
+  -exec rm -rf -- {} +
+exec "$@"

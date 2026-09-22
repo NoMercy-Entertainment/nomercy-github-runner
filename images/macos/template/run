@@ -1,0 +1,43 @@
+#!/usr/bin/env python3
+"""Wait for registration, then run the provider under the same launchd job."""
+import json
+import os
+from pathlib import Path
+import signal
+import sys
+import time
+
+root = Path(__file__).resolve().parent
+provider = (root / "provider").read_text().strip()
+home = root / "agent" if provider == "github" else root
+stopping = False
+
+
+def stop(signum, frame):
+    global stopping
+    stopping = True
+
+
+signal.signal(signal.SIGTERM, stop)
+signal.signal(signal.SIGINT, stop)
+while not (home / ".runner").exists():
+    if stopping:
+        sys.exit(0)
+    time.sleep(1)
+if stopping:
+    sys.exit(0)
+os.chdir(home)
+if provider == "github":
+    os.environ["RUNNER_MANUALLY_TRAP_SIG"] = "1"
+    os.execv(str(home / "run.sh"), [str(home / "run.sh")])
+elif provider == "forgejo":
+    # JSON is valid YAML and safely quotes paths containing special characters.
+    config = {"runner": {"file": str(root / ".runner"), "capacity": 1,
+                          "timeout": "3h", "shutdown_timeout": "3h"},
+              "cache": {"dir": str(root.parent / "cache" / "actcache")},
+              "host": {"workdir_parent": str(root.parent / "work")}}
+    (root / "config.yaml").write_text(json.dumps(config))
+    os.execv(str(root / "forgejo-runner"), [str(root / "forgejo-runner"),
+                                           "daemon", "--config", str(root / "config.yaml")])
+else:
+    sys.exit("unknown template provider")
