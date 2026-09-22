@@ -761,3 +761,32 @@ only on the deep probe (every thirtieth beat) and stays fresh.
 - [ ] **Step 4: Run the Windows tests, then the whole agent suite.**
 - [ ] **Step 5: Commit** `git commit -m "fix(agent): a Windows beat does not wait for a disk check"`
 - [ ] **Step 6 (controller session):** deploy the agent (the operator runs the elevated installer), then confirm on the page: both Windows cards show CPU, memory and storage, say "reachable", and the header counts 16.
+
+---
+
+### Task 19: W9b - reading a job name does not wait for a disk check either
+
+**Files:**
+- Modify: `agent/runtimes/windows_process.py` (`jobs` line ~494, `logs` line ~497)
+- Test: `agent/tests/test_windows_storage.py`
+
+**Why (measured 2026-09-22, after Task 18):** the Windows telemetry age still
+crossed the page's 30 s freshness window (10-34 s cycles). What remains is
+`jobs()`, which runs on every light beat and calls `logs()`, and `logs()`
+verifies the runner's volume through the storage helper - the same PowerShell
+process with the host-wide lock that Task 18 took out of `telemetry()`. With
+two runners that is two more helper runs per beat.
+
+**Interfaces:** `logs(runner_id, since_seconds, max_bytes)` keeps verifying -
+it is what an operator's log request goes through. `jobs(runner_ids)` reads
+the same file without the verify.
+
+- [ ] **Step 1: Write the failing test.** With a storage backend configured:
+  `jobs([rid])` records no call on the fake storage backend (assert on its
+  events list) and still returns the job name parsed from the log; `logs(rid, ...)`
+  still calls `verify` exactly once. Follow the fakes already in that file.
+- [ ] **Step 2: Run it and see it fail.**
+- [ ] **Step 3: Implement**: give the class a private reader (say `_tail_log(runner_id, since_seconds, max_bytes)`) holding what `logs` does after the verify, have `logs` verify and then call it, and have `jobs` call it directly. Nothing else changes.
+- [ ] **Step 4: Run the Windows tests, then the whole agent suite.**
+- [ ] **Step 5: Commit** `git commit -m "fix(agent): reading a job name does not wait for a disk check"`
+- [ ] **Step 6 (controller session):** deploy and confirm the telemetry age stays under 30 s and both Windows cards read reachable.
