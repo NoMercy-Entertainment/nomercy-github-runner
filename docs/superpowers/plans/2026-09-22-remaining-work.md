@@ -674,3 +674,32 @@ jobs:
 
 - Spec coverage: W1 -> Task 1; W2 -> Tasks 2-4; W3 -> Tasks 9-12; W4 -> Task 13; W5 -> Task 5; W6 -> Tasks 6-8 (the distro itself deliberately excluded, per the spec); W7 -> Tasks 14-15. Order follows the spec: 1, 2-4, 5, 6-8, 9-12, 13, 14-15.
 - Names used across tasks: `record_labels`, `workflow_labels` (Task 2) are the ones Tasks 3 and 4 consume; `forge_labels`/`forge_labels_at` (Task 3) are what Task 4 reads; `Inventory.retire` (Task 7) is what the CLI calls.
+
+---
+
+### Task 16: W8 - the Linux unit's root filesystem is writable again
+
+**Files:**
+- Modify: `agent/config.py` (the `storage` block's allowed keys and defaults, around lines 260-272)
+- Modify: `agent/runtimes/linux_container.py` (create around line 312, `_storage_container` around line 481, `_readonly_image` around line 500, the maintenance helper around line 832)
+- Test: `agent/tests/test_linux_storage.py` (add), `agent/tests/test_config.py` (add)
+
+**Interfaces:**
+- Produces: agent config `storage.readonly_root` (bool, default True). `LinuxContainerRuntime` passes `--read-only --tmpfs <READONLY_TMPFS>` and enforces the image label and the existing container's read-only root ONLY when it is true.
+
+- [ ] **Step 1: Write the failing tests.** In `agent/tests/test_config.py`, following the file's existing style: `storage` accepts `readonly_root` and defaults it to True; a non-boolean value is a `ConfigError`; `storage may name only root, default_bytes and readonly_root` is the refusal for an unknown key. In `agent/tests/test_linux_storage.py` (read it first for its fake-docker harness): with `readonly_root` false, `create` builds an argv WITHOUT `--read-only` and without the `/run` tmpfs, and an image with no `nomercy.readonly_root` label is accepted; with it true (the default), the argv has `--read-only` and the label is still required; and with it false, `clear_cache`'s maintenance helper argv also has no `--read-only`.
+
+- [ ] **Step 2: Run them and see them fail.** `export PATH="/c/Program Files/Git/bin:$PATH" PYTHONDONTWRITEBYTECODE=1; cd agent && python -m pytest -q -p no:cacheprovider tests/test_config.py tests/test_linux_storage.py`
+
+- [ ] **Step 3: Implement.** `config.py`: allow the key, validate `type(...) is bool`, default True, and carry it in the returned storage mapping. `linux_container.py`: read it once into the runtime (e.g. `self._readonly_root = bool((storage or {}).get("readonly_root", True))` where the storage backend is set up), and guard the four places named above with it. Keep every other check (owned volumes, their identity, the filesystem) unchanged.
+
+- [ ] **Step 4: Run the new tests, then the whole agent suite** (`python -m pytest -q -p no:cacheprovider`, was 771 passed / 6 skipped).
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add agent/config.py agent/runtimes/linux_container.py agent/tests/test_config.py agent/tests/test_linux_storage.py
+git commit -m "feat(agent): a worker can run its Linux units with a writable root"
+```
+
+- [ ] **Step 6 (controller session): deploy and recreate.** Set `"readonly_root": false` in the Linux worker's `/etc/runner-agent/agent.json` storage block, deploy the agent to `/opt/runner-agent/agent`, restart `runner-agent` (runners keep running), then recreate all thirteen Linux runners through the controller, one at a time. Verify `ReadonlyRootfs: false` with cpuset, memory, swap and volumes unchanged, and re-run the `nomercy-docs` workflow that failed.

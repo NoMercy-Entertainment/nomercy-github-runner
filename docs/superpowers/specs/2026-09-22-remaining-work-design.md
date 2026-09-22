@@ -289,6 +289,38 @@ run with the reason.
 parent design's section 23 checks (conformance suite on all runtimes,
 import isolation, no platform conditional in templates) pass.
 
+## W8. The Linux unit's root filesystem is writable again
+
+**Added 2026-09-22, after W1's roll-out, from a live failure.** The managed
+storage mode runs each Linux unit with `--read-only` and a tmpfs `/run`. Two
+jobs of `nomercy-docs` then fail where they succeeded before the move:
+`android-actions/setup-android` ("Read-only file system", repeatedly) and
+`npx playwright install --with-deps` ("E: List directory
+/var/lib/apt/lists/partial is missing. - Acquire (30: Read-only file
+system)"). Both install system software into the runner's own filesystem,
+which every GitHub-hosted runner allows and the WSL fleet allowed.
+
+**Decided by the operator:** the root filesystem is writable again. The rest
+of the isolation stays exactly as it is - one container per runner, its own
+100 GiB filesystem for `/runner`, its own cpuset, memory and swap ceilings,
+its own registration and caches. What is given up is that a job can dirty
+the image layer of its own runner, which a recreate discards anyway.
+
+**Design.** The agent's `storage` configuration gains `readonly_root`
+(boolean, default true, so nothing else changes by omission). When it is
+false the runtime does not pass `--read-only`, does not require the image's
+`nomercy.readonly_root` label, and does not demand a read-only root when it
+checks an existing container or runs the maintenance helper. Everything else
+about managed storage - the owned volumes, their identity checks, the
+per-runner filesystem - is unchanged. The Linux worker sets it false.
+
+**Acceptance.** `readonly_root: false` on the Linux worker; the thirteen
+units recreated; `docker inspect` shows `ReadonlyRootfs: false` and the same
+cpuset, memory, swap and volumes as before; the `nomercy-docs` run that
+failed on this succeeds; a Forgejo job still succeeds.
+
+**Rollback.** Remove the key (default true) and recreate.
+
 ## Order and dependencies
 
 W1 first (it is the fault with the widest effect), then W2 (small, and it
