@@ -980,3 +980,27 @@ one whose fleet names no template yet had a hole where the name should be.
   `nomercy-status` (Uptime CI) and `nomercy-whisper-gguf-models` (Delete old
   workflow runs) completed **success** - the same workflows that had failed
   on the hook - and the four longer ones were still running.
+
+## 2026-09-22 - the Linux unit's root filesystem is writable again (W8)
+
+- **The fault:** managed storage ran each unit with `--read-only`. Two jobs of
+  `nomercy-docs` failed on it where they had succeeded on the WSL fleet:
+  `android-actions/setup-android` ("Read-only file system", repeatedly) and
+  `npx playwright install --with-deps` ("E: List directory
+  /var/lib/apt/lists/partial is missing. - Acquire (30: Read-only file
+  system)"). Both install system software into the runner's own filesystem.
+- **Decided by the operator:** writable root; the rest of the isolation stays.
+- **The change:** agent configuration `storage.readonly_root` (default true,
+  so no other worker changes), honoured in the create argv, the existing-unit
+  check, the image-label requirement and the maintenance helper (commit
+  11b11e5). The Linux worker sets it false.
+- **Rolled out:** agent replaced and restarted (runners kept running), then
+  all thirteen units recreated through the controller, one at a time. After:
+  `ReadonlyRootfs: false` on all thirteen, with the same cpusets (0-15 ...
+  51-55,0-10), the same memory (32 GiB GitHub, 6 GiB Forgejo), the same swap
+  ceilings and the same five or six volumes each.
+- **Proven by a real job:** the `nomercy-docs` run that had failed on this
+  was re-run. `native-snippets` (setup-android) now **succeeds**, and
+  `playwright install --with-deps` passes; the run still fails, but in the
+  repository's own "Build" step - the same step that failed on 2026-09-19 on
+  the WSL fleet, before any of this. The runner-side fault is gone.
