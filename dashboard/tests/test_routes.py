@@ -35,6 +35,9 @@ class TestWhatTheNavigationOffers:
         assert 'href="/v2" class="on">Fleet<' in page
 
     def test_no_page_still_offers_the_removed_v1_grid(self, client):
+        import history
+
+        history.init()          # /history reads it to fill its filters
         for path in ("/v2", "/history", "/settings"):
             page = client.get(path).get_data(as_text=True)
             assert 'href="/"' not in page, path
