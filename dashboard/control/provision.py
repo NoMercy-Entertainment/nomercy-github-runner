@@ -573,6 +573,9 @@ class ProvisioningFlow:
         if not registered and state.get("registration_attempted"):
             if not self._proven_unregistered(target, state):
                 raise RollbackHeld("rollback", "registration reply is unknown; unit and storage are preserved")
+            # Never registered, so it has never had a job to finish: the
+            # removal may stop it, as removing a unit always does first.
+            return
         if registered:
             provider = self._provider(target)
             records = self._records(provider, fresh=True)

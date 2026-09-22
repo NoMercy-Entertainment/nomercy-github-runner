@@ -144,6 +144,17 @@ def test_a_lost_reply_is_rolled_back_once_the_forge_shows_nothing_by_that_name(w
 
 
 @pytest.mark.parametrize("fleet", [GH, FJ])
+def test_a_proven_unregistered_unit_is_removed_while_still_running(world, fleet, monkeypatch):
+    """It never had a registration, so it never had a job: waiting for it to
+    stop by itself would hold it for good, as it did on 2026-09-22."""
+    service, flow, agent, forges, reconciler = world
+    spec = _lost_reply(world, fleet, monkeypatch, attempted_ago=600, registered=False)
+    UnitRuntime.units[storage.unit_name(spec["runner_id"])]["stopped"] = False
+    assert flow.abandon(service.specs.get(spec["runner_id"])) == ("deregister", "remove_unit")
+    assert not UnitRuntime.units
+
+
+@pytest.mark.parametrize("fleet", [GH, FJ])
 def test_a_lost_reply_is_held_while_the_registration_may_still_be_in_flight(world, fleet, monkeypatch):
     service, flow, agent, forges, reconciler = world
     spec = _lost_reply(world, fleet, monkeypatch, attempted_ago=30, registered=False)
