@@ -279,8 +279,12 @@ class BoundDocker(FakeDocker):
         self.readonly_compatible = True
 
     def _image(self, args, input):
+        # None models an image that never declared the label at all - the
+        # legacy images a writable-root worker is allowed to keep using.
+        labels = ({} if self.readonly_compatible is None else
+                 {"nomercy.readonly_root": str(self.readonly_compatible).lower()})
         return True, json.dumps({"Id": "sha256:" + "a" * 64,
-                                "Config": {"Labels": {"nomercy.readonly_root": str(self.readonly_compatible).lower()}}}), ""
+                                "Config": {"Labels": labels}}), ""
 
     def _run(self, args, input):
         args = list(args)
@@ -401,6 +405,52 @@ def test_managed_unit_and_stopped_maintenance_have_readonly_roots(disk):
     helper = [call for call in docker.calls if call[0] == "run" and "--entrypoint" in call]
     assert helper and "--read-only" in helper[0] and "--tmpfs" in helper[0]
     assert docker.containers[name]["state"] == "exited"
+
+
+def test_readonly_root_defaults_true_and_is_read_from_a_storage_config_dict(tmp_path):
+    """Production wires a config dict (agent/config.py's `storage` mapping)
+    straight into the runtime, which must pop `readonly_root` out of it
+    before handing the rest to LinuxStorage - LinuxStorage takes no such
+    keyword, so leaving it in would blow up every writable-root worker."""
+    root = str(tmp_path / "owned")
+    default = LinuxContainerRuntime(run=FakeDocker(),
+                                    storage={"root": root, "default_bytes": MIN_BYTES})
+    assert default._readonly_root is True
+    assert default._storage.root == Path(root)
+
+    writable = LinuxContainerRuntime(run=FakeDocker(), storage={
+        "root": root, "default_bytes": MIN_BYTES, "readonly_root": False})
+    assert writable._readonly_root is False
+    assert writable._storage.root == Path(root)
+
+
+def test_writable_root_create_has_no_readonly_argv_and_accepts_an_undeclared_image(disk):
+    store, commands = disk
+    docker = BoundDocker()
+    docker.readonly_compatible = None  # the image never declared the label
+    runtime = LinuxContainerRuntime(run=docker, storage=store, readonly_root=False)
+    runtime.create(RID, {"image": "unit:v1", "disk_limit": MIN_BYTES})
+    name = naming.unit_name(RID)
+    run_call = next(call for call in docker.calls
+                    if call[0] == "run" and "--name" in call)
+    assert "--read-only" not in run_call
+    assert "--tmpfs" not in run_call
+    assert docker.containers[name]["hostconfig"]["ReadonlyRootfs"] is False
+    assert docker.containers[name]["hostconfig"]["Tmpfs"] == {}
+    # The existing-container check (start/restart/maintenance) accepts it too.
+    runtime.start(RID)
+
+
+def test_writable_root_maintenance_helper_has_no_readonly_argv(disk):
+    store, commands = disk
+    docker = BoundDocker()
+    docker.readonly_compatible = None
+    runtime = LinuxContainerRuntime(run=docker, storage=store, readonly_root=False)
+    runtime.create(RID, {"image": "unit:v1", "disk_limit": MIN_BYTES})
+    runtime.stop(RID)
+    runtime.clear_cache(RID, {"scopes": ["temp"]})
+    helper = [call for call in docker.calls if call[0] == "run" and "--entrypoint" in call]
+    assert helper and "--read-only" not in helper[0] and "--tmpfs" not in helper[0]
 
 
 @pytest.mark.skipif(sys.platform != "linux" or os.environ.get("RUNNER_LOOP_TEST") != "1",

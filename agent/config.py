@@ -258,8 +258,8 @@ def parse(data, exists=os.path.isfile):
         capacity = dict({"max_runners": 2, "memory_bytes": 24 * 1024 ** 3}, **capacity)
 
     storage = data.get("storage") or {}
-    if not isinstance(storage, dict) or set(storage) - {"root", "default_bytes"}:
-        raise ConfigError("storage may name only root and default_bytes")
+    if not isinstance(storage, dict) or set(storage) - {"root", "default_bytes", "readonly_root"}:
+        raise ConfigError("storage may name only root, default_bytes and readonly_root")
     if storage:
         if data["runtime"] != "linux-container":
             raise ConfigError("storage is supported only by linux-container")
@@ -269,7 +269,10 @@ def parse(data, exists=os.path.isfile):
         size = storage.get("default_bytes", 100 * 1024 ** 3)
         if type(size) is not int or not 64 * 1024 ** 2 <= size <= 2 ** 63 - 1:
             raise ConfigError("storage.default_bytes must be at least 64 MiB and fit a signed 64-bit size")
-        storage = dict(storage, default_bytes=size)
+        readonly_root = storage.get("readonly_root", True)
+        if type(readonly_root) is not bool:
+            raise ConfigError("storage.readonly_root must explicitly be true or false")
+        storage = dict(storage, default_bytes=size, readonly_root=readonly_root)
 
     windows_storage = data.get("windows_storage") or {}
     if not isinstance(windows_storage, dict) or set(windows_storage) - {"enabled", "root", "default_limit", "reserve_bytes"}:

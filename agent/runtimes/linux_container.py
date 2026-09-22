@@ -223,9 +223,21 @@ def memory_bytes(value):
 class LinuxContainerRuntime:
     kind = "linux-container"
 
-    def __init__(self, run=None, adopted=None, storage=None):
+    def __init__(self, run=None, adopted=None, storage=None, readonly_root=None):
         self._run = run or _docker
         from .linux_storage import LinuxStorage
+        # `storage` doubles as a config.py mapping (production, via
+        # __main__.runtime_for) and as an already-built LinuxStorage (every
+        # test). `readonly_root` (W8) lives in that mapping, not in
+        # LinuxStorage's own constructor, so it is read here and popped
+        # before the rest of the mapping is handed to LinuxStorage - passed
+        # through, it would be an unexpected keyword argument there.
+        if isinstance(storage, dict):
+            storage = dict(storage)
+            found = storage.pop("readonly_root", True)
+            if readonly_root is None:
+                readonly_root = found
+        self._readonly_root = True if readonly_root is None else bool(readonly_root)
         self._storage = (storage if isinstance(storage, LinuxStorage) else
                          LinuxStorage(**storage) if storage else None)
         # Which container on this engine a runner already is, for the few
@@ -308,7 +320,7 @@ class LinuxContainerRuntime:
                 "--log-opt", "max-file=3",
                 "--stop-timeout", str(spec.get("stop_timeout", STOP_TIMEOUT)),
                 "--label", f"{RUNNER_LABEL}={rid}"]
-        if managed:
+        if managed and self._readonly_root:
             args += ["--read-only", "--tmpfs", READONLY_TMPFS]
         for key, value in sorted((spec.get("labels") or {}).items()):
             args += ["--label", f"{key}={value}"]
@@ -478,7 +490,8 @@ class LinuxContainerRuntime:
             info = json.loads(out)
             mounts = info["Mounts"]
             host = info["HostConfig"]
-            if host.get("ReadonlyRootfs") is not True or (host.get("Tmpfs") or {}).get("/run") != READONLY_TMPFS.split(":", 1)[1]:
+            if self._readonly_root and (host.get("ReadonlyRootfs") is not True
+                    or (host.get("Tmpfs") or {}).get("/run") != READONLY_TMPFS.split(":", 1)[1]):
                 raise ValueError("container root is not read-only with a bounded /run")
             expected = {MOUNTS[area]: volume for area, volume in naming.names(rid).items()}
             actual = {item["Destination"]: item.get("Name") for item in mounts if item.get("Type") == "volume"}
@@ -497,7 +510,7 @@ class LinuxContainerRuntime:
             if not ok:
                 raise ValueError(err)
             info = json.loads(out)
-            if (info.get("Config", {}).get("Labels") or {}).get("nomercy.readonly_root") != "true":
+            if self._readonly_root and (info.get("Config", {}).get("Labels") or {}).get("nomercy.readonly_root") != "true":
                 raise ValueError("image has not declared read-only root compatibility")
             identity = info["Id"]
             if not re.fullmatch(r"sha256:[0-9a-f]{64}", identity):
@@ -829,7 +842,8 @@ class LinuxContainerRuntime:
             if self._storage.existing(runner_id) is None:
                 raise RuntimeError("managed maintenance requires the owned filesystem")
             image = self._readonly_image(image)
-            extra = ["--read-only", "--tmpfs", READONLY_TMPFS]
+            if self._readonly_root:
+                extra = ["--read-only", "--tmpfs", READONLY_TMPFS]
         helper = f"{name}-maintenance-{uuid.uuid4().hex[:8]}"
         try:
             self._check(["run", "-d", "--name", helper, "--privileged",

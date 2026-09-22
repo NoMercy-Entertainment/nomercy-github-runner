@@ -230,16 +230,28 @@ class TestDiskStorageConfig:
     def test_linux_storage_is_explicit_and_default_bounded(self):
         assert ok().storage == {}
         assert ok(storage={"root": "/var/lib/runner-storage"}).storage == {
-            "root": "/var/lib/runner-storage", "default_bytes": 100 * 1024 ** 3}
+            "root": "/var/lib/runner-storage", "default_bytes": 100 * 1024 ** 3,
+            "readonly_root": True}
+
+    def test_readonly_root_is_explicit_and_defaults_true(self):
+        assert ok(storage={"root": "/safe"}).storage["readonly_root"] is True
+        assert ok(storage={"root": "/safe", "readonly_root": False}).storage == {
+            "root": "/safe", "default_bytes": 100 * 1024 ** 3, "readonly_root": False}
 
     @pytest.mark.parametrize("storage", [{"root": "/"}, {"root": "relative"},
                                           {"root": "/safe", "default_bytes": True},
                                           {"root": "/safe", "default_bytes": 1},
                                           {"root": "/safe", "default_bytes": 2 ** 63},
+                                          {"root": "/safe", "readonly_root": "yes"},
+                                          {"root": "/safe", "readonly_root": 1},
                                           {"root": "/safe", "command": "evil"}])
     def test_linux_bad_config_rejected(self, storage):
         with pytest.raises(ConfigError, match="storage"):
             ok(storage=storage)
+
+    def test_unknown_storage_key_is_refused_by_name(self):
+        refused("storage may name only root, default_bytes and readonly_root",
+                storage={"root": "/safe", "bogus": 1})
 
     def test_wrong_runtime_rejected(self):
         with pytest.raises(ConfigError, match="only by linux-container"):
