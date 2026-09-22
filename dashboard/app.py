@@ -640,13 +640,12 @@ def api_users(action):
 
 @app.route("/")
 def index():
-    """The fleet page, at the address people type.
+    """The fleet page: six fleets from data, one card for every runner.
 
-    A redirect rather than a second render of the same template: /v2 is where
-    the fleet page lives and where every link in it points, so one address
-    owns it and a bookmark of either lands on the same page.
+    Served here, at the address people type, rather than behind a redirect:
+    `/v2` is the old address and now points here instead.
     """
-    return redirect("/v2")
+    return render_template("fleet_v2.html")
 
 
 @app.route("/history")
@@ -812,9 +811,9 @@ api_v2.init(app, _status_snapshot)
 
 @app.route("/v2")
 def fleet_v2_page():
-    """The fleet page: six fleets from data, one card for every runner.
-    `/` redirects here."""
-    return render_template("fleet_v2.html")
+    """The old address for the fleet page. Kept working for old links and
+    bookmarks; `/` is where the page actually lives now."""
+    return redirect("/")
 
 
 @app.route("/runners/<runner_id>")

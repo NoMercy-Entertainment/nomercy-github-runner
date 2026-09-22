@@ -7,7 +7,7 @@ select{width:100%;background:var(--bg-inset);color:var(--text);border:1px solid 
 {% endblock %}
 {% block body %}
 <header><div class="brand"><h1>Runner settings</h1><div class="sub">Defaults for every fleet</div></div>
-<nav><a href="/v2">Fleet</a><a href="/history">History</a><a class="on" href="/settings">Settings</a></nav></header>
+<nav><a href="/">Fleet</a><a href="/history">History</a><a class="on" href="/settings">Settings</a></nav></header>
 <p class="notice">Changes apply to newly created runners and subsequent recreations. Existing runners keep their current limits until recreated.</p>
 <div id="message" role="status" aria-live="polite"></div>
 {% if role == 'admin' %}

@@ -362,7 +362,7 @@ class TestThePagesData:
         assert not (no_control_plane / "control.db").exists()
 
     def test_the_page_is_served(self, client, no_control_plane):
-        r = client.get("/v2")
+        r = client.get("/")
         assert r.status_code == 200
         assert b"cardHTML" in r.data and b"/api/v2/fleet" in r.data
 
