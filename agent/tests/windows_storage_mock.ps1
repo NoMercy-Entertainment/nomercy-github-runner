@@ -9,6 +9,14 @@ function Save-Model([string]$Step) {
 }
 function Set-Acl {
     param($LiteralPath, $AclObject)
+    # What each path was given, so a test can read the access rules back.
+    $key = $LiteralPath.TrimEnd('\')
+    if (-not $script:model.PSObject.Properties['acls']) {
+        $script:model | Add-Member -NotePropertyName acls -NotePropertyValue ([pscustomobject]@{})
+    }
+    $script:model.acls | Add-Member -Force -NotePropertyName $key `
+        -NotePropertyValue $AclObject.GetSecurityDescriptorSddlForm('Access')
+    $script:model | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $script:modelPath
     if ($LiteralPath.EndsWith($script:rid + '\')) { Save-Model 'protect-volume' }
 }
 function Get-Item {
@@ -102,5 +110,8 @@ function Dismount-VHD {
     Save-Model 'detach'
 }
 $global:LASTEXITCODE = 0
+# Not the agent's Global lock: on a live worker the agent holds that one, and
+# an unprivileged test cannot even open it.
+$script:StorageMutexName = 'Local\NoMercyRunnerStorageTest'
 . $env:RNR_STORAGE_HELPER
 exit $global:LASTEXITCODE

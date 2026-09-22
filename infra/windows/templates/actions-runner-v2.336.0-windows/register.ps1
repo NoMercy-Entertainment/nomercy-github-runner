@@ -46,6 +46,9 @@ try {
         -NoNewWindow -PassThru -RedirectStandardOutput `
         (Join-Path $env:TEMP 'rnr-config.out') -RedirectStandardError `
         (Join-Path $env:TEMP 'rnr-config.err')
+    # Without the handle Windows PowerShell loses the exit code, and a failed
+    # config.cmd read as $null - which `exit` turns into 0 (2026-09-22).
+    $null = $run.Handle
     if (-not $run.WaitForExit(90000)) {
         $run.Kill()
         [Console]::Error.WriteLine('config.cmd did not finish within 90s')
@@ -60,9 +63,11 @@ try {
             Remove-Item -LiteralPath $path -Force
         }
     }
-    if ($run.ExitCode -ne 0) {
-        [Console]::Error.WriteLine("config.cmd exited $($run.ExitCode)")
-        exit $run.ExitCode
+    $code = $run.ExitCode
+    if ($null -eq $code) { $code = 1 }
+    if ($code -ne 0) {
+        [Console]::Error.WriteLine("config.cmd exited $code")
+        exit $code
     }
 } finally {
     Remove-Item Env:ACTIONS_RUNNER_INPUT_TOKEN -ErrorAction SilentlyContinue

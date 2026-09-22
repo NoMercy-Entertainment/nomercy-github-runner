@@ -387,3 +387,22 @@ def test_actual_helper_removal_resumes_and_is_idempotent(helper, failure):
     assert retry.returncode == 0, retry.stderr
     assert not (Path(request["root"]) / (RID + ".vhdx")).exists()
     assert not (Path(request["root"]) / (RID + ".json")).exists()
+
+
+def test_actual_helper_lets_runner_accounts_list_the_mount_parent_only(helper):
+    """The GitHub runner refuses to start unless it can list every directory
+    above its own (IOUtil.ValidateExecutePermission). With D:\runners open
+    to SYSTEM and Administrators only, its config.cmd failed with "Access to
+    the path 'D:\runners' is denied" (2026-09-22). Service accounts may list
+    and traverse that one directory - not inherited, so no runner reaches
+    into another's volume, which keeps an ACL of its own."""
+    invoke, request, model = helper
+    assert invoke().returncode == 0
+    acls = _model(model)["acls"]
+    parent = acls[str(Path(request["runner_root"]))]
+    mount = acls[str(Path(request["runner_root"]) / RID)]
+    service_aces = [a for a in parent.split("(") if "S-1-5-80-0" in a]
+    assert len(service_aces) == 1, parent
+    ace = service_aces[0]
+    assert ace.startswith("A;;"), ace          # allow, and no inheritance flags
+    assert "S-1-5-80-0" not in mount, mount

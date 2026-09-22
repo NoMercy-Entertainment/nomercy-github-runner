@@ -38,6 +38,28 @@ function Protect-Directory([string]$Path) {
     Set-PrivateAcl $Path
 }
 
+function Protect-RunnerParent([string]$Path) {
+    # The directory every runner's volume is mounted under. The GitHub runner
+    # refuses to start unless it can list each directory above its own, so
+    # service accounts (S-1-5-80-0) may list and traverse this one - with no
+    # inheritance: each mounted volume keeps an ACL of its own, and a runner
+    # sees another's directory name, never its contents.
+    Assert-PlainAncestors $Path
+    [IO.Directory]::CreateDirectory($Path) | Out-Null
+    $acl = New-Object Security.AccessControl.DirectorySecurity
+    $acl.SetAccessRuleProtection($true, $false)
+    $acl.SetOwner((New-Object Security.Principal.SecurityIdentifier('S-1-5-32-544')))
+    foreach ($sid in @('S-1-5-18', 'S-1-5-32-544')) {
+        $identity = New-Object Security.Principal.SecurityIdentifier($sid)
+        $acl.AddAccessRule((New-Object Security.AccessControl.FileSystemAccessRule(
+            $identity, 'FullControl', 'ContainerInherit,ObjectInherit', 'None', 'Allow')))
+    }
+    $services = New-Object Security.Principal.SecurityIdentifier('S-1-5-80-0')
+    $acl.AddAccessRule((New-Object Security.AccessControl.FileSystemAccessRule(
+        $services, 'ListDirectory,ReadAttributes,Traverse,Synchronize', 'None', 'None', 'Allow')))
+    Set-Acl -LiteralPath $Path -AclObject $acl
+}
+
 function Save-State {
     $json = $script:state | ConvertTo-Json -Compress
     [IO.File]::WriteAllText($script:manifest + '.tmp', $json,
@@ -115,7 +137,12 @@ try {
     $script:image = Join-Path $root ($rid + '.vhdx')
     $script:manifest = Join-Path $root ($rid + '.json')
     $script:mount = (Join-Path $runnerRoot $rid) + '\'
-    $mutex = New-Object Threading.Mutex($false, 'Global\NoMercyRunnerStorage')
+    # One lock for every storage mutation on this host. A caller that loads
+    # this file into its own scope may name another - the test harness does,
+    # so a suite run on a live worker never contends with its agent.
+    $mutexName = 'Global\NoMercyRunnerStorage'
+    if (Test-Path variable:script:StorageMutexName) { $mutexName = $script:StorageMutexName }
+    $mutex = New-Object Threading.Mutex($false, $mutexName)
     $waitMilliseconds = if ($request.action -eq 'verify') { 1000 } else { 3600000 }
     try { $acquired = $mutex.WaitOne($waitMilliseconds) } catch [Threading.AbandonedMutexException] { $acquired = $true }
     if (-not $acquired) { throw 'Storage is locked by another operation' }
@@ -143,14 +170,14 @@ try {
             throw 'Invalid disk size/reserve'
         }
         Protect-Directory $root
-        Protect-Directory $runnerRoot
+        Protect-RunnerParent $runnerRoot
         $script:state = [pscustomobject]@{version=1; runner_id=$rid; image=$image; mount=$mount;
             limit=[int64]$request.limit; stage='planned'; vhd_id=''; disk_id=''; partition_id=''; volume_guid=''; volume_acl=$false}
         Save-State
     }
     if ($request.action -in @('ensure', 'mount')) {
         Protect-Directory $root
-        Protect-Directory $runnerRoot
+        Protect-RunnerParent $runnerRoot
         if (-not (Test-Path -LiteralPath $image)) {
             if ($state.stage -ne 'planned' -or $request.action -ne 'ensure') { throw 'Owned disk is missing; refusing replacement' }
             $hostVolume = Get-Volume -FilePath ($root + '\')

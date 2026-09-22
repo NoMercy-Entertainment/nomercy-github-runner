@@ -15,8 +15,10 @@ cd /d "%~dp0agent"
 
 :wait
 if exist ".runner" goto run
-rem No `timeout` here: a service has no console for it to read.
-powershell -NoProfile -NonInteractive -Command "Start-Sleep -Seconds 5"
+rem No `timeout` here: a service has no console for it to read. The path is
+rem absolute: the job host gives the runner no PATH to find it by, and a
+rem wait that cannot sleep spins at full CPU (2026-09-22).
+"%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive -Command "Start-Sleep -Seconds 5"
 goto wait
 
 :run

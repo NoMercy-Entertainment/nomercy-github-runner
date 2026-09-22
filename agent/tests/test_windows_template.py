@@ -63,3 +63,38 @@ def test_register_is_bounded_and_leaves_nothing_running():
     no process left, the token nowhere in what it said."""
     reg = read("register.ps1")
     assert "WaitForExit(90000)" in reg and "$p.Kill()" in reg
+
+
+TEMPLATES = os.path.dirname(TEMPLATE)
+
+
+def _every(name):
+    for template in sorted(os.listdir(TEMPLATES)):
+        path = os.path.join(TEMPLATES, template, name)
+        if os.path.exists(path):
+            with open(path, encoding="utf-8") as fh:
+                yield template, fh.read()
+
+
+def test_the_wait_names_powershell_by_its_absolute_path():
+    """The job host gives the runner no PATH. `powershell` alone was not
+    found, so the wait for the registration never slept and spun one core
+    at full load while it waited (2026-09-22)."""
+    for template, run in _every("run.cmd"):
+        waits = [line for line in run.splitlines()
+                 if "Start-Sleep" in line and not line.lower().startswith("rem")]
+        assert waits, template
+        for line in waits:
+            assert line.strip().startswith(
+                r'"%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe"'), (template, line)
+
+
+def test_register_keeps_the_exit_code_of_what_it_started():
+    """Windows PowerShell loses a Start-Process -PassThru exit code unless
+    the handle is taken first; the lost code read as $null and `exit $null`
+    is 0, so a failed GitHub config.cmd answered success with no
+    registration (2026-09-22)."""
+    for template, reg in _every("register.ps1"):
+        if "Start-Process" not in reg:
+            continue
+        assert re.search(r"\$null = \$\w+\.Handle", reg), template
