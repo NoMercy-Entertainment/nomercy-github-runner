@@ -385,9 +385,11 @@ class ProvisioningFlow:
 
     def _step_register(self, spec, state):
         state["registration_attempted"] = True
+        state["registration_attempted_at"] = at = time.time()
         if spec.get("current_operation"):
             self.service.operations.merge_progress(spec["current_operation"],
-                lambda progress: dict(progress, registration_attempted=True))
+                lambda progress: dict(progress, registration_attempted=True,
+                                      registration_attempted_at=at))
         result = retry.call(AGENT_SLOW, self.agent.register,
                             state["host_id"], state["ref"],
                             state["plan"]) or {}
@@ -569,7 +571,8 @@ class ProvisioningFlow:
         target.update(state.get("registration") or {})
         registered = target.get("registration_id") or target.get("registration_uuid")
         if not registered and state.get("registration_attempted"):
-            raise RollbackHeld("rollback", "registration reply is unknown; unit and storage are preserved")
+            if not self._proven_unregistered(target, state):
+                raise RollbackHeld("rollback", "registration reply is unknown; unit and storage are preserved")
         if registered:
             provider = self._provider(target)
             records = self._records(provider, fresh=True)
@@ -583,6 +586,30 @@ class ProvisioningFlow:
                     raise RollbackHeld("rollback", "runner has not safely drained; registration and storage are preserved")
         if not self.quiescent(target):
             raise RollbackHeld("rollback", "worker has not proven the unit stopped; unit and storage are preserved")
+
+    #: How long a registration whose reply was lost may still be completing:
+    #: well past the agent's own bound on a registration (140 s) and the
+    #: template's on its forge call.
+    REGISTRATION_SETTLE = 300
+
+    def _proven_unregistered(self, target, state):
+        """Whether a registration whose reply was lost provably never reached
+        the forge. Only once it cannot still be in flight, and only by the
+        forge listing no runner of this runner's name: a registration would
+        carry that name. A forge that cannot be read, or that lists the name,
+        proves nothing - the name is never used to pick a record, only to
+        show there is none (2026-09-22)."""
+        at = state.get("registration_attempted_at")
+        if not isinstance(at, (int, float)) or time.time() - at < self.REGISTRATION_SETTLE:
+            return False
+        name = str(target.get("display_name") or "")
+        if not name:
+            return False
+        records = self._records(self._provider(target), fresh=True)
+        if records is None:
+            return False
+        return not any(isinstance(r, dict) and str(r.get("name") or "") == name
+                       for r in records)
 
     def _undo_remove_unit(self, spec, state):
         """Safe if there is no unit: that is the case 12.5 designs for.
@@ -681,6 +708,7 @@ class ProvisioningFlow:
         state = {"ref": None,
                  "registration_attempted": progress.get("registration_attempted",
                      spec.get("actual_state") == "registering"),
+                 "registration_attempted_at": progress.get("registration_attempted_at"),
                  "registration": {
                      "registration_id": spec.get("registration_id"),
                      "registration_uuid": spec.get("registration_uuid")}}

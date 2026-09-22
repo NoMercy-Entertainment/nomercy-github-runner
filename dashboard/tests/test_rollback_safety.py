@@ -110,6 +110,71 @@ def test_registration_with_lost_reply_cannot_discard_its_storage(world):
     assert_preserved(world, spec)
 
 
+def _lost_reply(world, fleet, monkeypatch, attempted_ago, registered):
+    """A registration whose reply was lost, `attempted_ago` seconds back."""
+    import control.provision as provision
+    service, flow, agent, forges, reconciler = world
+    service.scale_up(fleet)
+    reconciler.pass_once()
+    if registered:
+        agent.fail_on = {"register"}
+    else:
+        agent.fail_before_register = True
+    reconciler.pass_once()
+    spec = the_runner(service, fleet)
+    assert spec["actual_state"] == "registering"
+    assert "reply is unknown" in (spec["last_error"] or "")
+    now = provision.time.time()
+    monkeypatch.setattr(provision.time, "time", lambda: now + attempted_ago)
+    return spec
+
+
+@pytest.mark.parametrize("fleet", [GH, FJ])
+def test_a_lost_reply_is_rolled_back_once_the_forge_shows_nothing_by_that_name(world, fleet, monkeypatch):
+    """GitHub's config.cmd refused before registering and the template said
+    nothing, so the controller held the runner for good, though GitHub had
+    no record of it (2026-09-22). Once the registration could no longer be
+    in flight, a forge that lists no runner of that name proves there is
+    nothing to deregister."""
+    service, flow, agent, forges, reconciler = world
+    spec = _lost_reply(world, fleet, monkeypatch, attempted_ago=600, registered=False)
+    UnitRuntime.units[storage.unit_name(spec["runner_id"])]["stopped"] = True
+    assert flow.abandon(service.specs.get(spec["runner_id"])) == ("deregister", "remove_unit")
+    assert not UnitRuntime.units
+
+
+@pytest.mark.parametrize("fleet", [GH, FJ])
+def test_a_lost_reply_is_held_while_the_registration_may_still_be_in_flight(world, fleet, monkeypatch):
+    service, flow, agent, forges, reconciler = world
+    spec = _lost_reply(world, fleet, monkeypatch, attempted_ago=30, registered=False)
+    UnitRuntime.units[storage.unit_name(spec["runner_id"])]["stopped"] = True
+    with pytest.raises(RollbackHeld, match="reply is unknown"):
+        flow.abandon(service.specs.get(spec["runner_id"]))
+    assert UnitRuntime.units
+
+
+@pytest.mark.parametrize("fleet", [GH, FJ])
+def test_a_lost_reply_is_held_when_the_forge_lists_that_name(world, fleet, monkeypatch):
+    """The name is only ever used to prove absence. A record by that name
+    may be this runner's, so its storage and unit stay."""
+    service, flow, agent, forges, reconciler = world
+    spec = _lost_reply(world, fleet, monkeypatch, attempted_ago=600, registered=True)
+    UnitRuntime.units[storage.unit_name(spec["runner_id"])]["stopped"] = True
+    with pytest.raises(RollbackHeld, match="reply is unknown"):
+        flow.abandon(service.specs.get(spec["runner_id"]))
+    assert UnitRuntime.units
+
+
+@pytest.mark.parametrize("fleet", [GH, FJ])
+def test_a_lost_reply_is_held_when_the_forge_cannot_be_read(world, fleet, monkeypatch):
+    service, flow, agent, forges, reconciler = world
+    spec = _lost_reply(world, fleet, monkeypatch, attempted_ago=600, registered=False)
+    UnitRuntime.units[storage.unit_name(spec["runner_id"])]["stopped"] = True
+    monkeypatch.setattr(forges, "records", lambda provider: None)
+    with pytest.raises(RollbackHeld, match="reply is unknown"):
+        flow.abandon(service.specs.get(spec["runner_id"]))
+
+
 @pytest.mark.parametrize("fleet", [GH, FJ])
 @pytest.mark.parametrize("failure", ["create", "verify"])
 def test_failed_replacement_preserves_previous_data_and_halts_siblings(world, fleet, failure, monkeypatch):

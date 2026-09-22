@@ -37,8 +37,15 @@ class FakeAgent:
     def register(self, host_id, ref, plan):
         # The plan is inspected here only to prove it arrived; its token is
         # never stored, only compared.
+        if getattr(self, "fail_before_register", False):
+            # The registration never reached the forge, and its reply is
+            # lost all the same - GitHub's config.cmd refused before
+            # registering, and the template reported nothing (2026-09-22).
+            raise RuntimeError("the unit did not say how it was registered")
         self.calls.append(("register", host_id, ref.handle,
                            bool(plan and plan.token)))
+        self.names = getattr(self, "names", {})
+        self.names[ref.handle] = getattr(plan, "name", None)
         self._maybe_fail("register")
         from tests.fake_runtime import UnitRuntime
         if ref.handle in UnitRuntime.units:
@@ -166,6 +173,7 @@ class FakeForges:
             status = "online" if up else "offline"
             out.append({"id": rid, "status": status, "busy": rid in self.busy,
                         "uuid": f"uuid-{handle}",
+                        "name": getattr(self.agent, "names", {}).get(handle),
                         # Forgejo's words
                         **({"status": ("active" if rid in self.busy
                                        else "idle" if up
