@@ -952,3 +952,31 @@ by hand, which is what the fixed code writes from now on -
 **Two sentences on empty fleets** were fixed with it: a cell nobody can
 build printed a Python list ("the ones that could hold it have []"), and
 one whose fleet names no template yet had a hole where the name should be.
+
+## 2026-09-22 - the GitHub Linux fleet on the fixed job-completed hook (W1)
+
+- **The fault:** the unit set `ACTIONS_RUNNER_HOOK_JOB_COMPLETED=/runner/cleanup`.
+  The GitHub runner runs a hook only when its path ends in `.sh`, `.ps1` or
+  `.js`, so every job's last step, "Complete runner", failed with "is not a
+  valid path to a script" - and the job with it. Measured in the dashboard's
+  history: **86 GitHub runs since the move to the Hyper-V worker on
+  2026-09-21 10:40 UTC, all failed**; 40 of them on 2026-09-22 alone. One
+  inspected job (nomercy-status, run 35742585675) had every step green and
+  only "Complete runner" red.
+- **The fix:** `/runner/cleanup.sh`, which runs `/runner/cleanup`, in image
+  `nomercy/runner-unit-github:e6b7a117356a` (id `sha256:fd6589ed09e0...`),
+  with a test pinning the extension and the file's presence in the image.
+- **Rolled out** through the controller, one runner at a time, only while
+  idle: `github-linux-x64-1` at 12:59 UTC, the other nine between 18:28 and
+  18:44 UTC. No operation failed; no job was interrupted.
+- **After the roll-out**, every unit carries its own cpuset unchanged
+  (0-15, 4-19, 8-23, 12-27, 17-32, 24-39, 25-40, 30-45, 34-49, 38-53),
+  `Memory` 34359738368, `MemorySwap` 68719476736, read-only root, and the
+  image id above. GitHub lists all ten online with `self-hosted, Linux, X64,
+  beast-unit` (ids 2033-2043).
+- **Proven by real jobs:** the last failed run of each of the seven
+  repositories that had failed today was re-run at the operator's request.
+  Within a minute, `nomercy-packages` (Update Package Repository),
+  `nomercy-status` (Uptime CI) and `nomercy-whisper-gguf-models` (Delete old
+  workflow runs) completed **success** - the same workflows that had failed
+  on the hook - and the four longer ones were still running.
