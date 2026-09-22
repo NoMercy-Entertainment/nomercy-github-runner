@@ -228,6 +228,35 @@ def test_missing_volume_keeps_stopped_state_but_blocks_start_and_cache_deletion(
     assert runtime.telemetry(RID)["disk_used_bytes"] is None
 
 
+def test_light_telemetry_never_waits_on_the_storage_lock_but_the_deep_probe_does(managed):
+    """A light beat calls telemetry() every ten seconds; the deep probe that
+    `heartbeat._depth` drives calls `probe(..., "disk_usage")` about once
+    every thirty beats. The storage helper is a PowerShell process that can
+    wait up to 8s for the host-wide storage lock - with two runners that
+    pushed a beat's measurement to 26-39s, well past the dashboard's 30s
+    freshness window (2026-09-22). So `telemetry()` must never call the
+    storage backend at all, and a runner whose disk it does not check reads
+    as unknown - None - never as zero. The deep probe still verifies and
+    still reports the real figures."""
+    runtime, host, disks = managed
+    runtime.create(RID, {"image": TEMPLATE})
+    disks.events.clear()
+
+    t = runtime.telemetry(RID)
+
+    assert disks.events == []
+    assert t["disk_limit_enforced"] is None
+    assert t["disk_limit_bytes"] is None
+    assert t["disk_virtual_bytes"] is None
+    assert t["disk_free_bytes"] is None
+    assert t["disk_used_bytes"] is None
+
+    probed = runtime.probe(RID, "disk_usage")
+
+    assert disks.events == ["verify"]
+    assert probed == {"ok": True, "value": 800}
+
+
 def test_keep_data_retains_volume_workspace_cache_and_logs(managed):
     runtime, host, disks = managed
     runtime.create(RID, {"image": TEMPLATE})

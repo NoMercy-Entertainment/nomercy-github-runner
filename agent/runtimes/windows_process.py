@@ -453,23 +453,25 @@ class WindowsProcessRuntime:
 
     def telemetry(self, runner_id):
         """What the job host last measured, if it is recent. A stale or
-        missing report is unknown, not zero."""
+        missing report is unknown, not zero.
+
+        Disk figures are not measured here. This is called every light beat
+        (agent/heartbeat.py's `_telemetry`, every ten seconds), and verifying
+        the owned filesystem means the storage helper - a PowerShell process
+        that can wait up to 8s for the host-wide storage lock. With two
+        runners that pushed a beat's measurement to 26-39s, past the
+        dashboard's 30s freshness window (2026-09-22). A runner's disk is
+        measured instead by `probe`, which only the deep probe calls, about
+        once every thirty beats - a runner whose disk is not checked here
+        reads as unknown, never as zero."""
         result = {"cpu_percent": None, "mem_used_bytes": None,
                   "mem_limit_bytes": None, "cpu_cores": None,
                   "host_cores": os.cpu_count()}
         p = self.paths(runner_id)
         if self._storage:
-            try:
-                disk = self._storage.verify(runner_id)
-                result.update(disk_limit_enforced=True,
-                              disk_limit_bytes=disk["capacity_bytes"],
-                              disk_virtual_bytes=disk["virtual_bytes"],
-                              disk_free_bytes=disk["free_bytes"],
-                              disk_used_bytes=disk["capacity_bytes"] - disk["free_bytes"])
-            except (OSError, RuntimeError, ValueError):
-                result.update(disk_limit_enforced=False, disk_used_bytes=None,
-                              disk_limit_bytes=None, disk_free_bytes=None)
-                return result
+            result.update(disk_limit_enforced=None, disk_limit_bytes=None,
+                          disk_virtual_bytes=None, disk_free_bytes=None,
+                          disk_used_bytes=None)
         try:
             unit = json.loads(self._fs.read_text(
                 ntpath.join(p["reg"], "unit.json")))
