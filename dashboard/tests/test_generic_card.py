@@ -95,6 +95,16 @@ def every_card():
             + spec_cards())
 
 
+def fleet_row(**over):
+    """A bare fleet dict - just enough of design 14.4's shape for
+    fleetHeadHTML, which reads title, runners, desired, available, reason
+    and actions besides labels."""
+    f = {"title": "GitHub · Linux · x64", "runners": [], "desired": None,
+         "available": True, "reason": None, "actions": [], "labels": []}
+    f.update(over)
+    return f
+
+
 # ---------------------------------------------------------------------------
 # the payload
 # ---------------------------------------------------------------------------
@@ -209,6 +219,55 @@ class TestTheRenderer:
         c = dict(spec_cards()[0], display_name="<img src=x onerror=1>")
         html = render("cardHTML", [c])[0]
         assert "<img" not in html and "&lt;img" in html
+
+    def test_labels_not_yet_seen_are_drawn_as_unknown(self):
+        """The distinction this feature exists for: a runner whose labels
+        have never been observed says so, rather than reading as a runner
+        registered with none."""
+        c = dict(spec_cards()[0], labels=None)
+        html = render("cardHTML", [c])[0]
+        assert "unknown" in html
+        assert 'class="chip"' not in html
+
+    def test_a_cards_labels_are_drawn_one_chip_each(self):
+        c = dict(spec_cards()[0],
+                 labels=["self-hosted", "Linux", "X64", "beast-unit"])
+        html = render("cardHTML", [c])[0]
+        assert html.count('class="chip"') == 4
+        for label in c["labels"]:
+            assert f'<span class="chip">{label}</span>' in html
+
+    def test_a_labels_html_is_escaped(self):
+        """A label comes from the forge's registration record, not from
+        anything this page controls, so it is escaped exactly like any
+        other forge-supplied text."""
+        c = dict(spec_cards()[0], labels=["<img src=x onerror=1>"])
+        html = render("cardHTML", [c])[0]
+        assert "<img" not in html and "&lt;img" in html
+
+    def test_label_drift_is_drawn_only_when_set(self):
+        drifted = dict(spec_cards()[0],
+                       label_drift="registered with other labels than the "
+                                   "fleet's: unexpected labels macos-13")
+        clean = dict(spec_cards()[1], label_drift=None)
+        html_drift, html_clean = render("cardHTML", [drifted, clean])
+        assert 'class="cwarn"' in html_drift
+        assert "registered with other labels" in html_drift
+        assert 'class="cwarn"' not in html_clean
+
+    def test_a_fleet_head_lists_a_chip_per_label(self):
+        f = fleet_row(labels=["self-hosted", "Linux", "X64", "beast-unit"])
+        html = render("fleetHeadHTML", [f])[0]
+        assert "runs-on:" in html
+        assert html.count('class="chip"') == 4
+        for label in f["labels"]:
+            assert f'<span class="chip">{label}</span>' in html
+
+    def test_a_fleet_head_with_no_labels_says_nothing(self):
+        f = fleet_row(labels=[])
+        html = render("fleetHeadHTML", [f])[0]
+        assert "runs-on:" not in html
+        assert 'class="flabels"' not in html
 
     def test_the_fields_list_is_the_designs(self):
         p = subprocess.run([NODE, "-e", "process.stdout.write(JSON.stringify("
