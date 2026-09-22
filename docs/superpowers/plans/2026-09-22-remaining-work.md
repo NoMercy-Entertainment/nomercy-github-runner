@@ -703,3 +703,24 @@ git commit -m "feat(agent): a worker can run its Linux units with a writable roo
 ```
 
 - [ ] **Step 6 (controller session): deploy and recreate.** Set `"readonly_root": false` in the Linux worker's `/etc/runner-agent/agent.json` storage block, deploy the agent to `/opt/runner-agent/agent`, restart `runner-agent` (runners keep running), then recreate all thirteen Linux runners through the controller, one at a time. Verify `ReadonlyRootfs: false` with cpuset, memory, swap and volumes unchanged, and re-run the `nomercy-docs` workflow that failed.
+
+---
+
+### Task 17: W2d - a drift warning is shown once, not twice
+
+**Files:**
+- Modify: `dashboard/templates/_card.js` (`cardHTML`, the `note` line around line 123)
+- Test: `dashboard/tests/test_generic_card.py` (`TestTheRenderer`)
+
+**Why:** the registration-drift sentence lives in `last_note`, and Task 4 added
+`label_drift` derived from it. A card with drift now shows the same sentence
+twice - once as the amber warning, once as the grey note (seen live on
+`beaststack-macos-sequoia`, 2026-09-22).
+
+**Interfaces:** consumes the card keys `last_note` and `label_drift` from Task 4.
+
+- [ ] **Step 1: Write the failing test** in `TestTheRenderer`, in the file's style: a card whose `last_note` contains the drift sentence and whose `label_drift` is set renders the sentence exactly once, in the `.cwarn` line, and no `.cnote` line; a card with a `last_note` that is not drift (and `label_drift` null) still renders the `.cnote` line as before.
+- [ ] **Step 2: Run it and see it fail.**
+- [ ] **Step 3: Implement**: render the note only when there is no `label_drift` - `const note = (c.last_note && !c.label_drift) ? ... : '';`
+- [ ] **Step 4: Run the renderer tests, then the full dashboard suite.**
+- [ ] **Step 5: Commit** `git commit -m "fix(page): a label-drift warning is shown once, not twice"`
