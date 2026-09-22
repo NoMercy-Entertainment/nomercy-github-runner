@@ -359,6 +359,27 @@ def adopt(fleet, name, host_id, label, template=None, db=None, env=None,
         requested_by=requested_by)
 
 
+def retire_worker(host_id, db=None, who="cli"):
+    """Remove a worker's row, once nothing still places a runner there.
+
+    Audited either way (design 18.4): a refused destroy is exactly what an
+    operator needs to find later, as carefully as an accepted one.
+    """
+    from . import audit
+    from .service import RunnerService
+    db = _store(db)
+    service = RunnerService(db)
+    try:
+        service.inventory.retire(host_id, service.specs)
+    except ValueError as e:
+        audit.record(db, "retire_worker", "refused", actor=who,
+                     parameters={"host_id": host_id}, outcome=str(e))
+        raise
+    audit.record(db, "retire_worker", "accepted", actor=who,
+                 parameters={"host_id": host_id})
+    return host_id
+
+
 def status(db=None):
     """Workers, fleets and runners as lines of text. Reads the store only."""
     from .inventory import Inventory
@@ -429,6 +450,9 @@ def main(argv=None):
     c = sub.add_parser("capacity")
     c.add_argument("fleet", help="e.g. forgejo-linux-x64")
     c.add_argument("count", type=int)
+    r = sub.add_parser("retire-worker",
+                       help="remove a worker no runner names")
+    r.add_argument("host_id")
     a = sub.add_parser("adopt", help="take over a runner that already serves")
     a.add_argument("fleet", help="e.g. forgejo-macos-x64")
     a.add_argument("name", help="the name the forge knows it by")
@@ -489,6 +513,14 @@ def main(argv=None):
         return 0
     if args.command == "capacity":
         print(f"operation {capacity(args.fleet, args.count)}")
+        return 0
+    if args.command == "retire-worker":
+        try:
+            retire_worker(args.host_id)
+        except ValueError as e:
+            print(f"refused: {e}")
+            return 2
+        print(f"retired {args.host_id}")
         return 0
     if args.command == "adopt":
         try:

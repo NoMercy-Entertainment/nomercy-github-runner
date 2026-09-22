@@ -466,3 +466,31 @@ class Inventory:
         a runner on that evidence deletes capacity that was only out of touch.
         """
         return self.health(host_id, now) == HEALTHY
+
+    def retire(self, host_id, specs):
+        """Remove a worker's row - once nothing still places a runner there.
+
+        "No runner names it" means no spec with this `host_id` that is
+        neither soft-deleted nor already at the terminal `absent` state: a
+        worker going away does not remove its runners (module docstring), so
+        one still claiming this worker keeps it until that claim itself
+        resolves. Refuses with how many still do, so an operator is not left
+        guessing which ones.
+
+        A spec that already reached `absent`, or was soft-deleted, is exempt
+        from that count, but its `host_id` may still be this worker's -
+        `runner_specs.host_id` is `REFERENCES workers(host_id)`, enforced
+        (schema.connect's `PRAGMA foreign_keys=ON`), and that lingering value
+        would refuse the delete below with a bare IntegrityError instead of
+        the clean refusal this call exists to give. It is released here: the
+        spec stays, readable for ever, but the worker it names is done
+        naming anything.
+        """
+        names = [s for s in specs.list(host_id=host_id)
+                if s["actual_state"] != "absent"]
+        if names:
+            raise ValueError(f"{len(names)} runner(s) names this worker")
+        with self._conn() as c:
+            c.execute("UPDATE runner_specs SET host_id = NULL"
+                      " WHERE host_id = ?", (host_id,))
+            c.execute("DELETE FROM workers WHERE host_id = ?", (host_id,))
