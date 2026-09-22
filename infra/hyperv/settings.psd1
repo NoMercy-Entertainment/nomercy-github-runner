@@ -123,6 +123,9 @@
         RunnerSha256  = '82ea01bc63c3ba60526576f3d8ac491a1e77db0f8d3d55cc37bd39666a5f04c8'
         MaxRunners    = 2
         RunnerMemGB   = 8
-        PilotLabel    = 'rnr-pilot-windows:host'
+        # What the Windows Forgejo runners register with: the labels the
+        # retired NSSM runner carried (C:\forgejo-runner\.runner), which the
+        # workflows ask for. The pilot label is gone with the pilot.
+        Labels        = 'windows-2022:host,windows-latest:host'
     }
 }

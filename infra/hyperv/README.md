@@ -59,12 +59,13 @@ sudo docker exec rnr-controller python -m control status
   30 GB, the part of the `.wslconfig` margin set aside for them.
 - **No External switch.** Creating one would briefly take the host's network
   down, and every running job's network with it.
-- **The pilot takes no production job.** The controller registers Forgejo
-  runners with the label `rnr-pilot:docker://node:20`. Forgejo matches jobs by
-  label name, and no workflow asks for that one. The GitHub cell is not set up.
-  A GitHub runner always carries `self-hosted`, `Linux` and `X64`, and a
-  production job could ask for exactly those. It waits for a runner group that
-  no repository may use (`GITHUB_DRAIN_GROUP`, spec 13.1).
+- **Forgejo runners carry the production labels.** During the pilot the
+  controller registered them with `rnr-pilot:docker://node:20`, a label no
+  workflow asks for. Since 2026-09-20 the controller's runners are the fleet,
+  so `FORGEJO_RUNNER_LABELS` comes from `.env` and the Windows cell takes
+  `Windows.Labels` from `settings.psd1`. A fleet's own labels, set on the
+  Settings page, win over both. (On 2026-09-22 the pilot labels were found
+  still in place: every Forgejo runner showed idle and no job matched it.)
 - **Each unit is held to 6 GB.** A runaway job cannot take the worker down, and
   the agent with it.
 - **Only two secrets leave the host.** `FORGEJO_INSTANCE_URL` and

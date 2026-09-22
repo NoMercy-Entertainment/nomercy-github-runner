@@ -20,12 +20,13 @@
     mint registration tokens and delete records. OIDC, GH_TOKEN and the rest
     stay. The file is written 0600 on the guest and deleted here afterwards.
 
-    **The pilot takes no production job.** FORGEJO_RUNNER_LABELS for the
-    controller is `-PilotLabel`: Forgejo matches a job to a runner by label
-    name, and no workflow asks for that one. The GitHub cell is not set up:
-    a GitHub runner always carries self-hosted, Linux and X64, which a
-    production job could ask for (spec 13.1) - that waits for a runner group
-    no repository may use.
+    **The Forgejo runners carry the production labels.** The pilot used a
+    label no workflow asked for; since 2026-09-20 the controller's runners
+    are the fleet, so FORGEJO_RUNNER_LABELS comes from .env - the labels the
+    WSL runners always registered with - and the Windows cell takes
+    `Windows.Labels` from settings.psd1. A fleet's own labels, set on the
+    Settings page, still win over both (2026-09-22: the pilot labels had
+    stayed in place and no Forgejo job matched any runner).
 
     Nothing is scaled. `docker exec rnr-controller python -m control capacity
     forgejo-linux-x64 1` on the control plane is the first runner.
@@ -36,11 +37,8 @@ param(
     # rewritten, its controller restarted. The workers keep the certificates
     # they were enrolled with, and their agents are left alone.
     [switch] $ControlPlaneOnly,
-    [string] $PilotLabel = 'rnr-pilot:docker://node:20',
-    # What the Windows cell's runners register with. The pilot label by
-    # default, which no workflow asks for; give it the production labels
-    # (windows-2022:host,windows-latest:host) only when the managed runner is
-    # meant to take over from the one running outside the platform.
+    # What the Windows cell's runners register with, when not
+    # Windows.Labels from settings.psd1.
     [string] $WindowsLabels,
     [string] $EnvFile = (Join-Path (Resolve-Path "$PSScriptRoot\..\..").Path '.env')
 )
@@ -71,7 +69,7 @@ try {
     # runners it manages are registered at the same two forges (T-0802 puts
     # the WSL fleet under it).
     $wanted = 'FORGEJO_INSTANCE_URL', 'FORGEJO_API_TOKEN', 'GH_TOKEN',
-              'GITHUB_ORG', 'RUNNER_LABELS'
+              'GITHUB_ORG', 'RUNNER_LABELS', 'FORGEJO_RUNNER_LABELS'
     $values = @{}
     foreach ($line in Get-Content -LiteralPath $EnvFile) {
         if ($line -match '^\s*([A-Z_][A-Z0-9_]*)\s*=(.*)$' -and $wanted -contains $Matches[1]) {
@@ -84,13 +82,12 @@ try {
     $unitMemGB = ($workers | ForEach-Object { $s.VMs[$_].RunnerMemGB } | Measure-Object -Minimum).Minimum
     $win = $s.Windows
     $controllerEnv = ($wanted | ForEach-Object { "$_=$($values[$_])" }) + @(
-        "FORGEJO_RUNNER_LABELS=$PilotLabel",
         "RUNNER_UNIT_IMAGE_FORGEJO_LINUX=nomercy/runner-unit-forgejo:$version",
         "RUNNER_UNIT_MEMORY_FORGEJO_LINUX=${unitMemGB}g",
         # The Windows cell (Install-WindowsWorker.ps1): available once its
         # self-built artefact is named, units made from its template.
         "FORGEJO_RUNNER_ARTIFACT_WINDOWS=$($win.Template) sha256:$($win.RunnerSha256)",
-        "FORGEJO_RUNNER_LABELS_WINDOWS=$(if ($WindowsLabels) { $WindowsLabels } else { $win.PilotLabel })",
+        "FORGEJO_RUNNER_LABELS_WINDOWS=$(if ($WindowsLabels) { $WindowsLabels } else { $win.Labels })",
         "RUNNER_UNIT_IMAGE_FORGEJO_WINDOWS=$($win.Template)",
         "RUNNER_UNIT_MEMORY_FORGEJO_WINDOWS=$($win.RunnerMemGB)g",
         # The GitHub Linux cell: what the fleet on the WSL worker is already
