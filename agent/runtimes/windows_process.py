@@ -492,14 +492,26 @@ class WindowsProcessRuntime:
         return result
 
     def jobs(self, runner_ids):
-        return {rid: current_job(self.logs(rid, 86400)) for rid in runner_ids}
+        """Which job each running unit says it has, from the log directly -
+        never through `logs()`, which verifies the runner's volume through
+        the storage helper. This runs on every light beat
+        (agent/heartbeat.py's `_jobs`); with two runners that verify pushed a
+        beat's measurement well past the dashboard's 30s freshness window,
+        the same failure Task 18 fixed for `telemetry()` (2026-09-22)."""
+        return {rid: current_job(self._tail_log(rid, 86400)) for rid in runner_ids}
 
     def logs(self, runner_id, since_seconds, max_bytes=256 * 1024):
+        """The tail of the runner's own output, for an operator's log
+        request - this keeps verifying the runner's volume through the
+        storage helper."""
+        if self._storage:
+            self._storage.verify(runner_id)
+        return self._tail_log(runner_id, since_seconds, max_bytes)
+
+    def _tail_log(self, runner_id, since_seconds, max_bytes=256 * 1024):
         """The tail of the runner's own output. The file carries no
         timestamps, so `since_seconds` decides only whether it has been
         written to at all in that window."""
-        if self._storage:
-            self._storage.verify(runner_id)
         path = ntpath.join(self.paths(runner_id)["logs"], "runner.log")
         try:
             if time.time() - self._fs.mtime(path) > since_seconds:

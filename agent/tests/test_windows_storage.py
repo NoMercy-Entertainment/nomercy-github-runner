@@ -257,6 +257,29 @@ def test_light_telemetry_never_waits_on_the_storage_lock_but_the_deep_probe_does
     assert probed == {"ok": True, "value": 800}
 
 
+def test_reading_the_job_name_never_waits_on_the_storage_lock_but_logs_does(managed):
+    """`jobs()` runs on every light beat (agent/heartbeat.py's `_jobs`) and
+    used to read the log through `logs()`, which verifies the runner's
+    volume through the same storage helper `telemetry()` was fixed (Task 18)
+    to skip. `logs(...)` is also what an operator's log request goes
+    through, so it must keep verifying; only the job-name read skips it."""
+    runtime, host, disks = managed
+    runtime.create(RID, {"image": TEMPLATE})
+    host.write_text(runtime.paths(RID)["logs"] + r"\runner.log",
+                    "2026-09-20 15:17:50Z: Running job: test / coverage\n")
+    disks.events.clear()
+
+    jobs = runtime.jobs([RID])
+
+    assert disks.events == []
+    assert jobs == {RID: "test / coverage"}
+
+    logs = runtime.logs(RID, 300)
+
+    assert disks.events == ["verify"]
+    assert "Running job" in logs
+
+
 def test_keep_data_retains_volume_workspace_cache_and_logs(managed):
     runtime, host, disks = managed
     runtime.create(RID, {"image": TEMPLATE})
