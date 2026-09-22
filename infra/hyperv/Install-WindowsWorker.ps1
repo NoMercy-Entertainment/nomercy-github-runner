@@ -23,10 +23,20 @@
     controller asks it to, and the controller builds nothing until an
     operator raises a fleet's capacity.
 
-    Every step is idempotent; run it again to deploy a newer HEAD.
+    Every step is idempotent; run it again to deploy a newer HEAD. The code
+    it replaces is kept beside it as app.previous, so going back is moving
+    that directory back and starting the service.
+
+    -WindowsStorage gives each runner created from then on its own fixed
+    VHDX (docs/windows-runner-storage.md). A runner that already exists
+    keeps its plain directory - the agent never adopts one - until it is
+    recreated.
 #>
 [CmdletBinding(SupportsShouldProcess)]
-param()
+param(
+    [switch] $WindowsStorage,
+    [string] $StorageRoot = 'D:\runner-disks'
+)
 . "$PSScriptRoot\lib.ps1"
 $s = Get-RunnerPlatformSettings
 $w = $s.Windows
@@ -137,6 +147,9 @@ $config = [ordered]@{
     capacity   = @{ max_runners = $w.MaxRunners; memory_bytes = [int64]$w.RunnerMemGB * $w.MaxRunners * 1GB }
     version    = $version
 }
+if ($WindowsStorage) {
+    $config['windows_storage'] = [ordered]@{ enabled = $true; root = $StorageRoot }
+}
 $configPath = Join-Path $agentDir 'agent.json'
 Write-LfFile $configPath ($config | ConvertTo-Json -Depth 4)
 & icacls.exe $configPath /inheritance:r /grant:r '*S-1-5-18:F' '*S-1-5-32-544:F' /Q | Out-Null
@@ -153,7 +166,11 @@ $existing = Get-Service -Name $service -ErrorAction SilentlyContinue
 if ($existing -and $existing.Status -eq 'Running') { & $nssm stop $service | Out-Null }
 # Swap in the new code only while the agent is stopped. Runners keep running:
 # they are services of their own, each with its own job host.
-if (Test-Path $appDir) { Remove-Item -Recurse -Force $appDir }
+$previous = Join-Path $agentDir 'app.previous'
+if (Test-Path $appDir) {
+    if (Test-Path $previous) { Remove-Item -Recurse -Force $previous }
+    Move-Item -LiteralPath $appDir -Destination $previous
+}
 Move-Item -LiteralPath $fresh -Destination $appDir
 if (-not $existing) {
     & $nssm install $service $python '-m' 'agent' '--config' $configPath | Out-Null
