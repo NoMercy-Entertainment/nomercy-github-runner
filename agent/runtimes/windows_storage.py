@@ -51,7 +51,8 @@ class WindowsStorage:
         ok, out, err = self._run([
             self._powershell, "-NoProfile", "-NonInteractive", "-ExecutionPolicy",
             "Bypass", "-File", script], input=json.dumps(request),
-            timeout=15 if action == "verify" else 3600)
+            # A verify may wait up to 8 s for the host's storage lock first.
+            timeout=30 if action == "verify" else 3600)
         if not ok:
             raise RuntimeError("runner storage: " + (err or out or "helper failed"))
         try:

@@ -143,7 +143,11 @@ try {
     $mutexName = 'Global\NoMercyRunnerStorage'
     if (Test-Path variable:script:StorageMutexName) { $mutexName = $script:StorageMutexName }
     $mutex = New-Object Threading.Mutex($false, $mutexName)
-    $waitMilliseconds = if ($request.action -eq 'verify') { 1000 } else { 3600000 }
+    # A verify waits a few seconds for another short check - the heartbeat
+    # verifies every runner's disk, and with two runners one second lost the
+    # race often enough to fail a registration (2026-09-22) - but still gives
+    # up well before a disk being created, which holds the lock for minutes.
+    $waitMilliseconds = if ($request.action -eq 'verify') { 8000 } else { 3600000 }
     try { $acquired = $mutex.WaitOne($waitMilliseconds) } catch [Threading.AbandonedMutexException] { $acquired = $true }
     if (-not $acquired) { throw 'Storage is locked by another operation' }
     Assert-PlainAncestors $root

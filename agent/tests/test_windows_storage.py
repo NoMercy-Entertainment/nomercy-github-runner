@@ -6,6 +6,7 @@ IO happens only in pytest's temporary directory. No VHD is attached/formatted.
 import json
 import ntpath
 import os
+import re
 from pathlib import Path
 import subprocess
 import sys
@@ -406,3 +407,16 @@ def test_actual_helper_lets_runner_accounts_list_the_mount_parent_only(helper):
     ace = service_aces[0]
     assert ace.startswith("A;;"), ace          # allow, and no inheritance flags
     assert "S-1-5-80-0" not in mount, mount
+
+
+def test_a_verify_waits_long_enough_for_another_short_check():
+    """The heartbeat verifies every runner's disk; with a one-second wait a
+    registration's own verify lost that race and failed (2026-09-22). It
+    must still give up well before a disk creation, which holds the lock
+    for minutes, and within the caller's own deadline."""
+    text = (ROOT / "agent/runtimes/windows_storage.ps1").read_text(encoding="utf-8")
+    wait = re.search(r"-eq 'verify'\) \{ (\d+) \}", text)
+    assert wait and 5000 <= int(wait.group(1)) <= 15000, wait
+    source = (ROOT / "agent/runtimes/windows_storage.py").read_text(encoding="utf-8")
+    deadline = re.search(r'timeout=(\d+) if action == "verify"', source)
+    assert deadline and int(deadline.group(1)) * 1000 >= int(wait.group(1)) + 10000
