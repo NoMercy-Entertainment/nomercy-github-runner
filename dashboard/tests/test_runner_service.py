@@ -27,12 +27,20 @@ GH_LINUX = fleet_id("github", "linux", "x64")
 FJ_WINDOWS = fleet_id("forgejo", "windows", "x64")
 
 
+#: The two cells this build can execute, named the way the controller and the
+#: dashboard name them. Passed explicitly because `RUNTIMES` defaults to empty
+#: (T-8): nothing runs a runner in this process, so every caller says which
+#: runtime reaches the worker.
+LINUX_CELLS = {("github", providers.LINUX): "control.agent_runtime:AgentRuntime",
+               ("forgejo", providers.LINUX): "control.agent_runtime:AgentRuntime"}
+
+
 @pytest.fixture
 def service(tmp_path):
     path = str(tmp_path / "control.db")
     schema.init(path)
     FleetStore(path).seed()
-    return RunnerService(path)
+    return RunnerService(path, runtimes=dict(LINUX_CELLS))
 
 
 class TestEveryCallReturnsAnOperation:
@@ -98,8 +106,8 @@ class TestNoCallPerformsTheWork:
 
 class TestRuntimeSelectionIsATable:
     def test_a_registered_cell_resolves(self, service):
-        from runtime.docker_adapter import DockerRuntimeAdapter
-        assert service.runtime_for("github", "linux") is DockerRuntimeAdapter
+        from control.agent_runtime import AgentRuntime
+        assert service.runtime_for("github", "linux") is AgentRuntime
 
     def test_selection_is_data_not_a_conditional(self, tmp_path):
         """Replacing the table replaces the answer. The moment this becomes an

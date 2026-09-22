@@ -29,6 +29,7 @@ from control.service import RunnerService
 from store import schema
 from store.fleets import FleetStore, fleet_id
 from tests.fake_executor import FakeExecutor
+from tests.fake_runtime import ALL_CELLS
 
 GH = fleet_id("github", "linux", "x64")
 FJ = fleet_id("forgejo", "linux", "x64")
@@ -40,7 +41,7 @@ def world(tmp_path):
     path = str(tmp_path / "control.db")
     schema.init(path)
     FleetStore(path).seed()
-    service = RunnerService(path)
+    service = RunnerService(path, runtimes=dict(ALL_CELLS))
     service.inventory.register_worker(WORKER, inv.HYPERV_LINUX)
     service.inventory.heartbeat(WORKER)
     executor = FakeExecutor(host_id=WORKER)

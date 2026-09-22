@@ -12,6 +12,7 @@ import providers as P
 from control.service import RunnerService
 from store import schema
 from store.fleets import FleetStore
+from tests.fake_runtime import ALL_CELLS
 
 BUILT = {"FORGEJO_RUNNER_ARTIFACT_WINDOWS": "forgejo-runner.exe",
          "FORGEJO_RUNNER_ARTIFACT_MACOS": "forgejo-runner-darwin-amd64"}
@@ -25,7 +26,7 @@ def plane(tmp_path, monkeypatch):
     FleetStore(path).seed(BUILT)
     monkeypatch.setattr(api_v2, "_db_path", lambda: path)
     monkeypatch.setitem(api_v2._status, "fn", lambda: {})
-    service = RunnerService(path)
+    service = RunnerService(path, runtimes=dict(ALL_CELLS))
     caps = {"kind": "linux-container", "builds_from": "image", "max_instances": 20}
     service.inventory.register_worker("test-linux", "hyperv-linux", capabilities=caps)
     service.inventory.heartbeat("test-linux", capabilities=caps)

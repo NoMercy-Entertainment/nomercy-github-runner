@@ -166,3 +166,19 @@ class CacheUnitRuntime(UnitRuntime):
         return Freed(per_scope=per_scope, errors=errors,
                      total_bytes=sum(per_scope.values()), before=before,
                      after=after, measured=True)
+
+
+#: Every provider x platform cell, all reached through `Placeholder`.
+#:
+#: `control.service.RUNTIMES` is empty by default: nothing executes a runner
+#: in the dashboard's process any more, so both real callers - the controller
+#: and the v2 API - pass `control.agent_runtime.TABLE`. A test that plans a
+#: runner says which runtime its cell has for the same reason, rather than
+#: leaning on a default that would be a second way to execute one.
+#:
+#: Resolvable and never instantiated: the service looks a runtime up to
+#: validate a plan, and tests that need one to answer reads pass their own
+#: recording class instead.
+ALL_CELLS = {(provider, platform): "tests.fake_runtime:Placeholder"
+             for provider in ("github", "forgejo")
+             for platform in ("linux", "windows", "macos")}

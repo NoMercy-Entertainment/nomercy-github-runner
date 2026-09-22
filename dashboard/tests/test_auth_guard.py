@@ -5,6 +5,11 @@ every mutating route here is a POST and every read is a GET. Two reads are not
 covered by that and are named explicitly: GET /settings and GET /users. Those
 two have their own tests, because they are exactly the cases the general rule
 would miss.
+
+The POSTs below are v2 runner actions and the reads are the v2 fleet: since
+T-8 those are the only routes there are. `start` deliberately, because it is
+not in the destroy group - what a viewer may not do must be tested on a verb
+every operator may.
 """
 import pytest
 
@@ -27,8 +32,6 @@ def as_role(store, monkeypatch):
     import app as dash
 
     dash.app.config["TESTING"] = True
-    # Keep the fleet endpoints off docker in these tests.
-    monkeypatch.setattr(dash.ops, "list_runner_names", lambda: [])
 
     def make(role, sub="sub-user"):
         if role:
@@ -43,20 +46,23 @@ def as_role(store, monkeypatch):
 
 # ------------------------------------------------------------- the POST rule
 
+POST_PATH = "/api/v2/runners/rnr-00000000/actions/start"
+
+
 def test_a_viewer_may_not_post(as_role):
-    assert as_role("viewer").post("/api/prune-all").status_code == 403
+    assert as_role("viewer").post(POST_PATH).status_code == 403
 
 
 def test_an_operator_may_post(as_role):
-    assert as_role("operator").post("/api/prune-all").status_code != 403
+    assert as_role("operator").post(POST_PATH).status_code != 403
 
 
 def test_an_admin_may_post(as_role):
-    assert as_role("admin").post("/api/prune-all").status_code != 403
+    assert as_role("admin").post(POST_PATH).status_code != 403
 
 
 def test_a_viewer_may_read_the_fleet(as_role):
-    assert as_role("viewer").get("/api/status").status_code == 200
+    assert as_role("viewer").get("/api/v2/fleet").status_code == 200
 
 
 # ------------------------------------------- the two reads the rule misses
@@ -94,24 +100,24 @@ def test_an_admin_may_grant_access_including_admin(as_role):
 def test_a_revoked_session_is_refused_on_its_next_request(as_role, store):
     """Not at next sign-in: the cookie is valid for fourteen days."""
     c = as_role("operator")
-    assert c.get("/api/status").status_code == 200
+    assert c.get("/api/v2/fleet").status_code == 200
 
     store.revoke("sub-user")
 
-    assert c.get("/api/status").status_code == 401
+    assert c.get("/api/v2/fleet").status_code == 401
 
 
 def test_a_role_downgrade_takes_effect_immediately(as_role, store):
     c = as_role("operator")
-    assert c.post("/api/prune-all").status_code != 403
+    assert c.post(POST_PATH).status_code != 403
 
     store.approve("sub-user", "viewer")
 
-    assert c.post("/api/prune-all").status_code == 403
+    assert c.post(POST_PATH).status_code == 403
 
 
 def test_a_session_for_an_identity_that_was_never_approved_is_refused(as_role):
-    assert as_role(None, sub="sub-ghost").get("/api/status").status_code == 401
+    assert as_role(None, sub="sub-ghost").get("/api/v2/fleet").status_code == 401
 
 
 # --------------------------------------------------------------- the callback
@@ -283,4 +289,4 @@ def test_a_legacy_password_session_is_worth_nothing(anon_client):
     """Cookies from before the cutover carried ok=True and no sub."""
     with anon_client.session_transaction() as s:
         s["ok"] = True
-    assert anon_client.get("/api/status").status_code == 401
+    assert anon_client.get("/api/v2/fleet").status_code == 401

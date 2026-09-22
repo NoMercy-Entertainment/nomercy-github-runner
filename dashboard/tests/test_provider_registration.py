@@ -170,10 +170,12 @@ class TestTheTokenIsRedacted:
         for field in holding:
             assert field in P.REDACTED_FIELDS, field
 
-    def test_the_runner_detail_page_masks_it_too(self):
-        """The list is the single source for runner_detail's masking."""
-        import runner_detail
-        assert "token" in runner_detail.SECRET_KEYS
+    def test_the_central_redaction_masks_it_by_name(self):
+        """The list is the single source: one set, read by the helper every
+        response and every log line goes through."""
+        from control import redact
+        assert redact.redact_payload({"token": SENTINEL},
+                                     [])["token"] == redact.MASK
 
     def test_no_error_message_contains_the_token(self, monkeypatch):
         for provider, env in ((P.GITHUB, {}), (P.FORGEJO, FORGEJO_ENV)):

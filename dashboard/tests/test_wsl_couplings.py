@@ -104,13 +104,15 @@ def test_external_telemetry_is_not_reached_through_the_wsl_nat_gateway():
         "that survives the distro")
 
 
-@wsl
 def test_fleet_disk_is_not_measured_through_the_dashboards_own_volume():
     """Row 3. One statvfs of /data stands in for the whole fleet's disk.
 
     True only while a single VHDX backs every runner. Once workers are separate
     VMs each has its own disk, and one number measured inside the dashboard is
     not a fleet figure - it is one worker's, reported as everyone's.
+
+    Unmarked: T-8 (2026-09-22) deleted docker_ops.py, the only place that
+    measured it; disk now comes from each worker's own telemetry.
     """
     ops = read("dashboard", "docker_ops.py")
     assert "statvfs" not in ops, (
@@ -118,12 +120,14 @@ def test_fleet_disk_is_not_measured_through_the_dashboards_own_volume():
         "worker's telemetry")
 
 
-@wsl
 def test_the_ui_does_not_name_a_windows_path():
     """Row 4. The disk card renders a literal VHDX path.
 
     Hard-coded, not measured, so it keeps looking authoritative after it stops
     being true - and a Hyper-V worker's disk is not a VHDX at that path.
+
+    Unmarked: T-8 (2026-09-22) deleted templates/index.html, the page that
+    named it.
     """
     page = read("dashboard", "templates", "index.html")
     assert "ext4.vhdx" not in page, (

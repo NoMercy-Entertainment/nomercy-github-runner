@@ -71,9 +71,7 @@ button[disabled]{opacity:.45;cursor:not-allowed}
   <div class="stat"><div class="n ok" id="s-online">&mdash;</div><div class="k">Running</div></div>
   <div class="stat"><div class="n work" id="s-busy">&mdash;</div><div class="k">Busy</div></div>
   <nav>
-    {% if has_engine %}<a href="/">Fleet</a>
-    <a href="/v2" class="on">Fleet v2</a>
-    {% else %}<a href="/" class="on">Fleet</a>{% endif %}
+    <a href="/v2" class="on">Fleet</a>
     <a href="/history">History</a>
     <a href="/settings">Settings</a>
     <a href="/logout">Sign out</a>

@@ -34,8 +34,6 @@ def test_reads_reach_the_runner_worker_on_every_platform(client, plane, monkeypa
                 "exec_unit.status": {"exists": True, "running": True},
                 "exec_unit.telemetry": {"cpu_percent": 27, "mem_used_bytes": 1234}}[verb]
     monkeypatch.setattr(api_v2._LazyAgentClient, "call_and_wait", call)
-    import docker_ops
-    monkeypatch.setattr(docker_ops, "logs_since", lambda *a: pytest.fail("local engine called"))
     service, note = api_v2.control_plane()
     service.inventory.register_worker('worker-one', 'hyperv-linux')
     rid = service.specs.create(provider="github", platform=platform,
@@ -100,13 +98,14 @@ def test_agent_logs_store_identity_and_do_not_close_a_newer_job_on_replay(plane)
     assert len(history.get_run(runs[0]['id'])['samples_data']) == 1
 
 
-def test_controller_settings_page_has_six_fleets_and_never_env_editor(client, plane, monkeypatch):
-    import app
-    monkeypatch.setattr(app.ops, 'engine_reachable', lambda: False)
+def test_controller_settings_page_has_six_fleets_and_never_env_editor(client, plane):
     assert b'Defaults for every fleet' in client.get('/settings').data
     assert len(client.get('/api/v2/settings').json['fleets']) == 6
-    assert client.post('/api/settings', json={'GH_TOKEN': 'secret'}).status_code == 409
-    assert client.post('/api/runner/start', json={'name': 'old-runner'}).status_code == 409
+    # The .env editor and the by-name runner controls are gone (T-8), not
+    # merely refused: a route that no longer exists cannot be reached by an
+    # old bookmark or a stale tab.
+    assert client.post('/api/settings', json={'GH_TOKEN': 'secret'}).status_code == 404
+    assert client.post('/api/runner/start', json={'name': 'old-runner'}).status_code == 404
 
 
 def test_replayed_completion_does_not_close_an_older_job_with_a_missing_end(plane):

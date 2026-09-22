@@ -6,25 +6,13 @@ that line, so its row keeps ended_at NULL and the UI renders it as running for
 good. Two such rows survived a month in production. The rule that resolves
 them: a run that began before its container's current start cannot still be
 running.
+
+The caller that noticed - the local-engine collector - is gone (T-8). The
+rule itself is not: it is history's, it is keyed on timestamps rather than
+on anything Docker-shaped, and the rows it resolves are still in the
+database.
 """
-import docker_ops
 import history
-
-# Verbatim from `docker inspect -f '{{.State.StartedAt}}' github-runner-7`.
-REAL_STARTED_AT = "2026-08-20T14:23:37.714612450Z\n"
-
-
-def test_started_at_normalises_dockers_stamp_to_whole_seconds(monkeypatch):
-    """history stores '...:33Z'; a nanosecond stamp must compare against it."""
-    monkeypatch.setattr(docker_ops, "_docker",
-                        lambda *a, **k: (True, REAL_STARTED_AT, ""))
-    assert docker_ops.started_at("github-runner-7") == "2026-08-20T14:23:37Z"
-
-
-def test_started_at_is_empty_when_the_container_is_gone(monkeypatch):
-    monkeypatch.setattr(docker_ops, "_docker",
-                        lambda *a, **k: (False, "", "No such object"))
-    assert docker_ops.started_at("github-runner-9") == ""
 
 
 def _run(runner):
@@ -68,36 +56,3 @@ def test_an_already_closed_run_is_not_rewritten():
     row = _run(name)
     assert row["result"] == "Succeeded"
     assert row["ended_at"] == "2026-08-20T13:05:00Z"
-
-
-def test_the_collector_closes_a_run_its_runner_outlived(monkeypatch):
-    """The wiring: a poll is what actually notices, without an operator."""
-    import app as dash
-
-    history.init()
-    name = "orphan-test-4"
-    history.open_run(name, None, "build-base / docker-build",
-                     "2026-08-20T13:27:33Z")
-
-    monkeypatch.setattr(dash.ops, "logs_since", lambda *a, **k: "")
-    monkeypatch.setattr(dash.ops, "started_at",
-                        lambda n: "2026-08-20T14:23:37Z")
-
-    dash._record_history({"runners": [{"name": name, "state": "idle"}]})
-
-    assert _run(name)["result"] == "Interrupted"
-
-
-def test_a_poll_costs_no_extra_docker_call_when_nothing_is_open(monkeypatch):
-    """Guard the 5s poll: inspect only runs when there is a row to resolve."""
-    import app as dash
-
-    history.init()
-    calls = []
-    monkeypatch.setattr(dash.ops, "logs_since", lambda *a, **k: "")
-    monkeypatch.setattr(dash.ops, "started_at", lambda n: calls.append(n) or "")
-
-    dash._record_history({"runners": [{"name": "orphan-test-5",
-                                       "state": "idle"}]})
-
-    assert calls == []

@@ -20,7 +20,6 @@ def test_controller_pages_use_the_same_state_and_show_remote_history(client, tmp
     monkeypatch.setattr(schema, 'DB_PATH', path)
     monkeypatch.setattr(api_v2, '_db_path', lambda: path)
     monkeypatch.setattr(history, 'DB_PATH', str(tmp_path / 'history.db'))
-    monkeypatch.setattr(app.ops, 'engine_reachable', lambda: False)
     monkeypatch.setattr(api_v2._LazyAgentClient, 'call_and_wait',
                         lambda *args, **kwargs: {'text': 'Verified remote worker log'})
     history.init()

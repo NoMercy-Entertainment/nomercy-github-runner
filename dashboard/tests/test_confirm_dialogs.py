@@ -31,7 +31,7 @@ def test_no_template_calls_window_confirm():
 
 
 def test_base_defines_the_dialog_element_and_helper():
-    """One dialog in the shared layout, so all four pages get the same one."""
+    """One dialog in the shared layout, so every page gets the same one."""
     with open(os.path.join(TEMPLATES, "base.html"), encoding="utf-8") as fh:
         src = fh.read()
     assert "<dialog" in src, "base.html must own the dialog element"
@@ -40,7 +40,7 @@ def test_base_defines_the_dialog_element_and_helper():
 
 def test_every_page_that_confirms_uses_the_shared_helper():
     """The pages with destructive buttons must actually call it."""
-    for name in ("index.html", "runner.html", "settings.html"):
+    for name in ("fleet_v2.html", "runner_v2.html", "settings_v2.html"):
         with open(os.path.join(TEMPLATES, name), encoding="utf-8") as fh:
             assert "confirmDialog(" in fh.read(), f"{name} does not confirm anything"
 

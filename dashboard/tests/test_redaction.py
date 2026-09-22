@@ -52,31 +52,32 @@ def leaky(tmp_path, monkeypatch):
 
 
 class TestApiResponses:
-    @pytest.mark.parametrize("path", ["/api/status", "/api/v1/status",
-                                      "/api/v2/fleet", "/api/v2/runners",
+    @pytest.mark.parametrize("path", ["/api/v2/fleet", "/api/v2/runners",
                                       "/api/v2/fleets"])
     def test_no_route_lets_a_token_out(self, client, leaky, path):
         body = client.get(path).get_data(as_text=True)
         assert SENTINEL not in body and FORGE_SENTINEL not in body
-        if path.endswith("status"):
-            assert redact.MASK in body
 
     def test_a_field_named_as_a_secret_is_masked_by_name(self, client,
                                                          leaky):
-        runner = client.get("/api/status").get_json()["runners"][0]
-        assert runner["token"] == redact.MASK
+        """By name, not by value: a route returning a token it was never
+        asked for still returns it masked."""
+        body = client.get("/api/v2/fleet").get_json()
+        payload = dict(body, leaked={"token": SENTINEL})
+        assert redact.redact_payload(
+            payload, [SENTINEL])["leaked"]["token"] == redact.MASK
 
     def test_a_non_secret_is_left_readable(self, client, leaky):
-        runner = client.get("/api/status").get_json()["runners"][0]
-        assert runner["registration"] == "nomercy-x"
+        payload = {"registration": "nomercy-x"}
+        assert redact.redact_payload(payload,
+                                     [SENTINEL]) == {"registration":
+                                                     "nomercy-x"}
 
 
 class TestWebsocketFrames:
     def test_a_frame_goes_out_redacted(self, leaky):
         dash = leaky
-        frame = next(dash.fleet_frames(lambda: True, lambda: None,
-                                       lambda: dash._status))
-        text = dash.encode_frame(frame)
+        text = dash.encode_frame({"type": "snapshot", "data": dash._status})
         assert SENTINEL not in text and FORGE_SENTINEL not in text
         assert redact.MASK in text
 
@@ -84,11 +85,12 @@ class TestWebsocketFrames:
         with open(os.path.join(HERE, "app.py"), encoding="utf-8") as fh:
             tree = ast.parse(fh.read())
         view = next(n for n in tree.body if isinstance(n, ast.FunctionDef)
-                    and n.name == "ws_fleet")
+                    and n.name == "ws_fleet_v2")
         sends = [ast.unparse(n) for n in ast.walk(view)
                  if isinstance(n, ast.Call)
                  and ast.unparse(n.func) == "ws.send"]
-        assert sends == ["ws.send(encode_frame(frame))"]
+        assert sends == [
+            "ws.send(encode_frame({'type': 'snapshot', 'data': snapshot}))"]
 
 
 class TestLogLines:
@@ -159,12 +161,10 @@ class TestAuditRows:
 SECRETISH = re.compile(r"(?i)(token|secret|password|passwd|credential|"
                        r"api[_-]?key|private[_-]?key)")
 
-#: Fields whose names look secret and are not: each says why.
-NOT_SECRETS = {
-    "token_mask": "the last four characters, for recognition; masked by "
-                  "runner_detail.mask",
-    "forgejo_token_mask": "as token_mask",
-}
+#: Fields whose names look secret and are not: each says why. Empty since
+#: T-8 removed the settings page that rendered a masked token; a field added
+#: here needs a reason beside it, not just a name.
+NOT_SECRETS = {}
 
 
 def secretish_names(value, found=None):
@@ -190,7 +190,7 @@ class TestNewSecretFields:
     def test_every_secret_looking_field_the_api_returns_is_declared(
             self, client, leaky):
         names = set()
-        for path in ("/api/status", "/api/v2/fleet", "/api/v2/runners",
+        for path in ("/api/v2/fleet", "/api/v2/runners",
                      "/api/v2/fleets", "/api/version",
                      "/api/control/workers"):
             names |= secretish_names(client.get(path).get_json())

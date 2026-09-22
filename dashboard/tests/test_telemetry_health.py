@@ -15,6 +15,7 @@ from control import inventory as inv
 from store import schema
 from tests.test_partial_failure import GH, passes, the_runner  # noqa: F401
 from tests.test_partial_failure import world  # noqa: F401
+from tests.fake_runtime import ALL_CELLS
 
 NOW = datetime(2026, 9, 18, 6, 0, 0, tzinfo=timezone.utc)
 
@@ -83,7 +84,7 @@ class TestTheCardShowsWhatTheUnitUses:
         path = str(tmp_path / "control.db")
         schema.init(path)
         FleetStore(path).seed({})
-        service = RunnerService(path)
+        service = RunnerService(path, runtimes=dict(ALL_CELLS))
         service.inventory.register_worker("linux-1", inv.HYPERV_LINUX)
         rid = service.planned_ids(service.plan(GH, 1))[0]
         s = service.specs.get(rid)

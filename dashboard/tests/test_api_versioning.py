@@ -26,7 +26,7 @@ class TestPolicyPath:
 
     def test_a_v1_alias_is_judged_as_the_unprefixed_path(self):
         assert dash.policy_path("/api/v1/users/approve") == "/api/users/approve"
-        assert dash.policy_path("/api/v1/status") == "/api/status"
+        assert dash.policy_path("/api/v1/history") == "/api/history"
 
     def test_an_unversioned_path_is_unchanged(self):
         assert dash.policy_path("/api/users/approve") == "/api/users/approve"
@@ -68,8 +68,8 @@ class TestTheAliasesExist:
     def test_the_alias_reuses_the_same_view_function(self):
         """Two handlers would drift; one cannot."""
         by_rule = {r.rule: r.endpoint for r in dash.app.url_map.iter_rules()}
-        endpoint = by_rule["/api/status"]
-        alias_endpoint = by_rule["/api/v1/status"]
+        endpoint = by_rule["/api/history"]
+        alias_endpoint = by_rule["/api/v1/history"]
         assert (dash.app.view_functions[endpoint]
                 is dash.app.view_functions[alias_endpoint])
 
@@ -82,7 +82,7 @@ class TestTheAliasesExist:
 
     def test_the_alias_keeps_the_original_methods(self):
         by_rule = {r.rule: r for r in dash.app.url_map.iter_rules()}
-        for rule in ("/api/recreate", "/api/runner/add"):
+        for rule in ("/api/users/<action>",):
             original = by_rule[rule].methods - {"HEAD", "OPTIONS"}
             alias = by_rule["/api/v1" + rule[len("/api"):]].methods - {
                 "HEAD", "OPTIONS"}
@@ -117,7 +117,7 @@ class TestTheAliasInheritsAuthorisation:
     """The hole that aliasing would have opened, kept closed."""
 
     def test_an_unauthenticated_call_is_refused_on_both(self, anon_client):
-        for path in ("/api/status", "/api/v1/status"):
+        for path in ("/api/history", "/api/v1/history"):
             r = anon_client.get(path)
             assert r.status_code == 401, path
             assert r.get_json()["error"] == "not authenticated"
@@ -144,7 +144,8 @@ class TestTheAliasInheritsAuthorisation:
         users.approve("sub-viewer2", "viewer")
         with client.session_transaction() as s:
             s["sub"] = "sub-viewer2"
-        r = client.post("/api/v1/recreate", json={"provider": "github"})
+        r = client.post("/api/v1/users/approve",
+                        json={"sub": "sub-other", "role": "viewer"})
         assert r.status_code == 403
 
 
@@ -155,9 +156,9 @@ class TestTheWebsocketFrameCarriesItsSchema:
     the new code. Without a number in the frame its only way to notice a
     changed payload is to misread it.
 
-    The number is stamped by the transport rather than by `fleet_frames`,
-    because what changed and how it is framed are two decisions. That also
-    leaves the diff generator's tests speaking only about diffs.
+    The number is stamped by the transport (`wire_frame`) rather than by
+    whatever produced the frame, because what changed and how it is framed
+    are two decisions.
     """
 
     def test_a_snapshot_frame_says_which_schema_it_is(self):
@@ -172,7 +173,7 @@ class TestTheWebsocketFrameCarriesItsSchema:
         assert framed["schema"] == dash.FLEET_SCHEMA
 
     def test_the_original_frame_is_not_mutated(self):
-        """fleet_frames yields dicts it may still hold; stamping must copy."""
+        """A sender may still hold the dict it passed; stamping must copy."""
         original = {"type": "snapshot", "data": {}}
         dash.wire_frame(original)
         assert "schema" not in original
@@ -181,11 +182,3 @@ class TestTheWebsocketFrameCarriesItsSchema:
         """Two places naming the schema would drift; they must agree."""
         reported = client.get("/api/version").get_json()["schema"]
         assert dash.wire_frame({"type": "update"})["schema"] == reported
-
-    def test_the_diff_generator_still_yields_bare_frames(self):
-        """The separation itself. If the generator started stamping, the
-        envelope and the diff would be one decision again."""
-        gen = dash.fleet_frames(lambda: True, lambda: None,
-                                lambda: {"runners": []})
-        first = next(gen)
-        assert set(first) == {"type", "data"}

@@ -24,6 +24,7 @@ from control.service import Refused, RunnerService
 from store import schema
 from store.fleets import FleetStore, fleet_id
 from tests.fake_runtime import RecordingRuntime
+from tests.fake_runtime import ALL_CELLS
 
 GH_LINUX = fleet_id("github", "linux", "x64")
 
@@ -37,7 +38,7 @@ def service(tmp_path):
     path = str(tmp_path / "control.db")
     schema.init(path)
     FleetStore(path).seed()
-    service = RunnerService(path)
+    service = RunnerService(path, runtimes=dict(ALL_CELLS))
     service.inventory.register_worker("linux-1", "hyperv-linux")
     service.inventory.heartbeat("linux-1")
     return service

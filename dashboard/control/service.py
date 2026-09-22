@@ -52,12 +52,13 @@ PINNED_CPU_PLATFORMS = frozenset({providers.LINUX})
 #: data: nothing here is loaded until a cell is actually used, and a test can
 #: replace the whole table to prove the lookup is not a hidden conditional.
 #:
-#: Two cells today. Windows arrives in phase 6 and macOS in phase 7; each is a
-#: line here and nothing else.
-RUNTIMES = {
-    ("github", providers.LINUX): "runtime.docker_adapter:DockerRuntimeAdapter",
-    ("forgejo", providers.LINUX): "runtime.docker_adapter:DockerRuntimeAdapter",
-}
+#: Empty by default. Nothing executes a runner in this process any more: every
+#: cell's units live on a worker and are reached through its agent, so both
+#: callers that plan anything - the controller (control/main.py) and the
+#: dashboard's v2 API (api_v2.py) - pass `control.agent_runtime.TABLE`. A
+#: default naming a local runtime would be a second way to execute a runner
+#: that only ever fires where someone forgot to pass one.
+RUNTIMES = {}
 
 #: What a verb means for a runner's desired state. Absent from this table means
 #: the verb is an operation that does not change what the runner should be -
