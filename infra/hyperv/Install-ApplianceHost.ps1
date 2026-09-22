@@ -38,9 +38,20 @@ param(
     # What the guest can hold. Its QEMU is given 12 GB and the appliance runs
     # one runner today; the second (T-0804) is the GitHub one.
     [int]    $MaxRunners = 2,
-    [int64]  $GuestMemoryBytes = 12GB
+    [int64]  $GuestMemoryBytes = 12GB,
+    # T-0805 (W3a, design 10.5): one owned QEMU guest per runner instead of
+    # one shared appliance (agent.runtimes.macos_pool). Off by default: a
+    # worker installed without -AppliancePool gets today's single-appliance
+    # configuration, unchanged.
+    [switch] $AppliancePool,
+    [string] $PoolImage,
+    [string] $PoolBaseDisk,
+    [string] $PoolBaseSystem
 )
 $ErrorActionPreference = 'Stop'
+if ($AppliancePool -and $PoolImage -notmatch '^sha256:[0-9a-f]{64}$') {
+    throw "-AppliancePool requires -PoolImage to be a real sha256:<64 hex> image id, not '$PoolImage'"
+}
 . (Join-Path $PSScriptRoot 'lib.ps1')
 $s = Get-RunnerPlatformSettings
 $repo = Split-Path (Split-Path $PSScriptRoot -Parent) -Parent
@@ -113,6 +124,16 @@ $agentConfig = [ordered]@{
     }
     capacity   = @{ max_runners = $MaxRunners; memory_bytes = $GuestMemoryBytes }
     version    = $version
+}
+if ($AppliancePool) {
+    # infra/hyperv/appliance_pool_config.py is the single source of these
+    # fields (images/macos/pool/README.md); this only merges its JSON in.
+    $poolJson = & python (Join-Path $PSScriptRoot 'appliance_pool_config.py') `
+        --image $PoolImage --base-disk $PoolBaseDisk --base-system $PoolBaseSystem
+    if ($LASTEXITCODE -ne 0) { throw 'appliance_pool_config.py failed to render the pool configuration' }
+    $pool = $poolJson | ConvertFrom-Json
+    $agentConfig['appliance_pool'] = $pool.appliance_pool
+    $agentConfig['capacity'] = $pool.capacity
 }
 Write-LfFile (Join-Path $stage 'agent.json') ($agentConfig | ConvertTo-Json -Depth 4)
 Write-LfFile (Join-Path $stage 'guest.pass') "$GuestPassword`n"
