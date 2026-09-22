@@ -790,3 +790,22 @@ the same file without the verify.
 - [ ] **Step 4: Run the Windows tests, then the whole agent suite.**
 - [ ] **Step 5: Commit** `git commit -m "fix(agent): reading a job name does not wait for a disk check"`
 - [ ] **Step 6 (controller session):** deploy and confirm the telemetry age stays under 30 s and both Windows cards read reachable.
+
+---
+
+### Task 20: the fleet page is the root page
+
+**Files:**
+- Modify: `dashboard/app.py` (`/` around line 641, `/v2` around line 813)
+- Modify: `dashboard/templates/fleet_v2.html`, `history.html`, `runner_v2.html`, `settings_v2.html`, `users.html` (the nav links that point at `/v2`)
+- Test: the tests that assert the redirect (grep `"/v2"` under `dashboard/tests/`)
+
+**Why:** the operator asked for the fleet page at `/` itself, not a redirect to `/v2`.
+
+- [ ] **Step 1: Find every place that depends on the current behaviour.** `git grep -n '"/v2"' dashboard | cat` and the tests that assert a 302 from `/`.
+- [ ] **Step 2: Write the failing tests:** `GET /` returns 200 and renders the fleet page (assert on a marker of that template, not just the status), and `GET /v2` still answers for an old link - a 302 to `/` is the required behaviour, so assert that.
+- [ ] **Step 3: Run them and see them fail.**
+- [ ] **Step 4: Implement:** `/` renders what `/v2` rendered; `/v2` redirects to `/`. Keep the same auth guard and role handling on both. Update the nav links in the five templates to `/`.
+- [ ] **Step 5: Run the full dashboard suite** (baseline 1718 passed / 3 skipped / 3 xfailed).
+- [ ] **Step 6: Commit** `git commit -m "feat(page): the fleet page is the root page"`
+- [ ] **Step 7 (controller session):** deploy and confirm `/` renders the fleet for a signed-in browser and `/v2` still lands somewhere sensible.
