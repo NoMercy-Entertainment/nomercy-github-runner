@@ -1015,6 +1015,8 @@ stateDiagram-v2
   registering --> failed: error
   idle --> busy: job accepted
   busy --> idle: job finished
+  idle --> stopped: worker stopped and forge offline
+  busy --> stopped: worker stopped and forge offline
   idle --> draining: drain
   busy --> draining: drain
   draining --> drained: job finished
@@ -1043,6 +1045,15 @@ keeping storage, then create), `remove`, `deregister`; `scale up` and
 `inspect resources` are reads; `clear cache` is an operation that requires
 `idle` or `drained`; `repair`/`reconcile` is the `failed -> provisioning`
 edge.
+
+**Host restart recovery, 2026-09-21.** The observed `idle/busy -> stopped`
+edges require a fresh offline forge registration and an existing execution
+unit explicitly reported stopped by a healthy worker. Missing units, unknown
+status, active jobs and stale workers do not qualify. This lets manual-start
+Windows services and per-runner macOS guests recover after a host reboot via
+the normal `stopped -> starting -> idle` path when desired state is running.
+Maintenance and desired-stopped runners remain stopped. No new registration
+or replacement is made by this recovery.
 
 **Two edges added during implementation (T-0302), 2026-09-18.** Both close a
 path the verbs above promised and the first version of this diagram did not
