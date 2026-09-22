@@ -724,3 +724,40 @@ twice - once as the amber warning, once as the grey note (seen live on
 - [ ] **Step 3: Implement**: render the note only when there is no `label_drift` - `const note = (c.last_note && !c.label_drift) ? ... : '';`
 - [ ] **Step 4: Run the renderer tests, then the full dashboard suite.**
 - [ ] **Step 5: Commit** `git commit -m "fix(page): a label-drift warning is shown once, not twice"`
+
+---
+
+### Task 18: W9 - the Windows heartbeat keeps up with the page
+
+**Files:**
+- Modify: `agent/runtimes/windows_process.py` (`telemetry`, around lines 454-480; and the deep/storage path the heartbeat calls)
+- Test: `agent/tests/test_windows_storage.py` or `agent/tests/test_windows_runtime.py` (whichever holds the telemetry tests - read both)
+
+**Why (measured 2026-09-22):** the page reads a unit's telemetry as unknown
+when it is older than 30 s (`cards.HEARTBEAT_FRESH`), and counts a runner as
+running only when it is reachable, which needs the same freshness. Windows
+telemetry arrived every 26-39 s, so both Windows cards flapped between their
+values and "unknown / not reachable", and the header counted 14 of 16.
+The agent sends every 10 s, but measures on its own loop, and on Windows
+each unit's light telemetry calls the storage helper - a PowerShell process
+that waits up to 8 s for the host-wide storage lock. Two runners put the
+measurement past the page's freshness window. Linux measures its storage
+only on the deep probe (every thirtieth beat) and stays fresh.
+
+**Interfaces:** `WindowsProcessRuntime.telemetry(runner_id)` keeps its shape
+(the same keys); what moves is where the disk figures come from.
+
+- [ ] **Step 1: Write the failing test.** With a storage backend configured,
+  `telemetry(rid)` does NOT call the storage helper (assert on the fake's
+  recorded calls) and returns `disk_*` keys as None/absent, while the deep
+  probe the heartbeat uses (`storage_bytes`/`disk_*` - read `agent/heartbeat.py`'s
+  `_depth` to see exactly which method it calls) still reports them from the
+  storage backend. Follow the fakes already in the Windows tests.
+- [ ] **Step 2: Run it and see it fail.**
+- [ ] **Step 3: Implement:** move the `self._storage.verify(...)` block out of
+  `telemetry` into the method the deep probe calls (add one if the deep probe
+  goes through a different entry point), so a light beat costs no PowerShell.
+  Keep the values and their names identical where they are reported.
+- [ ] **Step 4: Run the Windows tests, then the whole agent suite.**
+- [ ] **Step 5: Commit** `git commit -m "fix(agent): a Windows beat does not wait for a disk check"`
+- [ ] **Step 6 (controller session):** deploy the agent (the operator runs the elevated installer), then confirm on the page: both Windows cards show CPU, memory and storage, say "reachable", and the header counts 16.
