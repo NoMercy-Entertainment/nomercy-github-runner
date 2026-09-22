@@ -107,6 +107,7 @@ $agentConfig = [ordered]@{
         # guest, so nothing here has to smuggle a command inside a path.
         launchctl     = '/usr/local/bin/rnr-launchctl'
         domain        = 'system'
+        runner_user   = $GuestUser
         templates     = '/Users/runner/templates' 
         launch_agents = '/Library/LaunchDaemons'
     }
