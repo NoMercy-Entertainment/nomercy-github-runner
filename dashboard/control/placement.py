@@ -48,9 +48,29 @@ RUNTIME_KIND = {
 
 def declared(worker, key):
     caps = worker.get("capabilities") or {}
+    if not isinstance(caps, Mapping):
+        return None
     if key in caps:
         return caps[key]
-    return (caps.get("runtime") or {}).get(key)
+    runtime = caps.get("runtime") or {}
+    return runtime.get(key) if isinstance(runtime, Mapping) else None
+
+
+def enforces_disk_quota(worker):
+    """Whether a worker holds each runner to its own disk limit. Windows
+    declares `disk_quota`; the Linux runtime declares `disk_limit_enforced`
+    for its per-runner filesystems. An explicit `disk_quota` wins either
+    way, so an appliance that says False is never taken at its word for
+    something else."""
+    quota = declared(worker, "disk_quota")
+    if quota is not None:
+        return quota is True
+    return declared(worker, "disk_limit_enforced") is True
+
+
+def enforces_appliance_limits(worker):
+    return all(declared(worker, key) is True for key in
+               ("appliance_per_runner", "cpu_enforcement", "memory_enforcement"))
 
 
 def _load(host_id, placed):
@@ -74,6 +94,16 @@ def choose(spec: Mapping, workers: Iterable[Mapping],
     want_runtime = RUNTIME_KIND.get(spec.get("platform"))
     for w in workers:
         host = w["host_id"]
+        if declared(w, "capacity_valid") is False:
+            why_not.append(f"{host}: declared capacity is not backed by measured RAM and swap")
+            continue
+        if spec.get("disk_limit") and not enforces_disk_quota(w):
+            why_not.append(f"{host}: per-runner disk quota is not supported")
+            continue
+        if spec.get("platform") == providers.MACOS and (spec.get("cpu_limit") or spec.get("memory_limit")):
+            if not enforces_appliance_limits(w):
+                why_not.append(f"{host}: per-runner macOS CPU/RAM enforcement is not supported")
+                continue
         drives = declared(w, "kind")
         # A worker that has declared nothing is taken at its worker kind,
         # which says what it is for every platform but macOS: an appliance
@@ -88,15 +118,63 @@ def choose(spec: Mapping, workers: Iterable[Mapping],
         if arch != want_arch:
             why_not.append(f"{host}: {arch}, the runner needs {want_arch}")
             continue
+        if declared(w, "builds_from") == "template":
+            template = str(spec.get("runtime_template") or "").split(" ")[0]
+            if not template or template not in (declared(w, "templates") or []):
+                why_not.append(f"{host}: replacement template {template or '(unset)'} is not installed")
+                continue
         count, memory = _load(host, placed)
         slots = declared(w, "max_runners")
         if slots is not None and count >= int(slots):
             why_not.append(f"{host}: full ({count} of {slots} runners)")
             continue
         total = declared(w, "memory_bytes")
+        commit = declared(w, "memory_commit_bytes")
+        if commit is not None:
+            # Explicit oversubscription, not a physical reservation guarantee.
+            # Aggregate backing alone cannot guarantee every cgroup can reach
+            # its combined ceiling: each also has its own swap maximum.
+            physical = int(total or 0)
+            swap = int(declared(w, "swap_bytes") or 0)
+            if declared(w, "memory_admission") != "bounded-overcommit" \
+                    or drives != "linux-container" or physical <= 0 or swap <= 0 \
+                    or int(commit) <= 0 or int(commit) > physical + swap:
+                why_not.append(f"{host}: invalid backed memory commitment budget")
+                continue
+            if want_memory > physical:
+                why_not.append(f"{host}: runner RAM ceiling exceeds physical worker budget")
+                continue
+            occupants = [s for s in placed if s.get("host_id") == host]
+            want_swap = int(spec.get("memory_swap_limit") or want_memory)
+            if want_swap < want_memory:
+                why_not.append(f"{host}: combined memory limit is below RAM limit")
+                continue
+            # Do not overbook units that cannot swap at all even in this mode.
+            unswappable = sum(int(s.get("memory_limit") or 0) for s in occupants
+                if int(s.get("memory_swap_limit") or 0) <= int(s.get("memory_limit") or 0))
+            if want_swap == want_memory:
+                unswappable += want_memory
+            if unswappable > physical:
+                why_not.append(f"{host}: insufficient RAM for units without a swap allowance")
+                continue
+            total = int(commit)
+            memory = sum(max(int(s.get("memory_limit") or 0),
+                             int(s.get("memory_swap_limit") or 0)) for s in occupants)
+            demand = want_swap
+        else:
+            overhead = int(declared(w, "per_runner_memory_overhead_bytes") or 0)
+            if overhead < 0:
+                why_not.append(f"{host}: invalid per-runner memory overhead")
+                continue
+            memory += count * overhead
+            demand = want_memory + overhead
+        if total is not None and (not want_memory or any(
+                not s.get("memory_limit") for s in placed if s.get("host_id") == host)):
+            why_not.append(f"{host}: memory requirements are unknown; refusing to overcommit")
+            continue
         if total is not None and want_memory and \
-                memory + want_memory > int(total):
-            why_not.append(f"{host}: not enough memory ({memory + want_memory}"
+                memory + demand > int(total):
+            why_not.append(f"{host}: not enough memory ({memory + demand}"
                            f" bytes asked of {total})")
             continue
         fits.append((count, host))

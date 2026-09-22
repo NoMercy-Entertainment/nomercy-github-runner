@@ -186,6 +186,41 @@ class GitHub:
                    f"/runners/{rid}")
         return status == 204
 
+    def drain_group_closed(self, group_name, runner_id=None):
+        """Prove that the named group cannot receive repository jobs.
+
+        Unknown responses fail closed. Membership is checked after moving;
+        the runner list is paginated rather than assuming fewer than 100.
+        """
+        gid = self.runner_group_id(group_name)
+        if gid is None:
+            return False
+        base = f"/orgs/{self.org}/actions/runner-groups/{gid}"
+        group = self._get(base)
+        if not isinstance(group, dict) or group.get("visibility") != "selected" \
+                or group.get("inherited") is not False:
+            return False
+        repos = self._get(base + "/repositories", params={"per_page": 1})
+        if not isinstance(repos, dict) or repos.get("total_count") != 0 \
+                or repos.get("repositories") != []:
+            return False
+        if runner_id is None:
+            return True
+        page = 1
+        while True:
+            data = self._get(base + "/runners",
+                             params={"per_page": 100, "page": page})
+            if not isinstance(data, dict) or not isinstance(data.get("runners"), list):
+                return False
+            runners = data["runners"]
+            if any(str(r.get("id")) == str(runner_id) for r in runners):
+                return True
+            if len(runners) < 100:
+                return False
+            page += 1
+            if page > 1000:
+                return False
+
     def delete_runner(self, runner_id):
         """Remove one self-hosted runner's record from the org, by its id.
 

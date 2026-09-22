@@ -177,7 +177,7 @@ class Controller:
         from store import schema
         from store.fleets import FleetStore
 
-        from . import agent_runtime, receiver as rcv
+        from . import agent_runtime, receiver as rcv, certificates
         from .agent_client import AgentClient
         from .forges import LiveForges
         from .inventory import Inventory
@@ -188,12 +188,14 @@ class Controller:
         tls_dir = tls_dir or TLS_DIR
         self.db = db or schema.DB_PATH
         self.interval = interval
+        self.base_env = dict(env)
+        self._last_error = None
         schema.init(self.db)
         FleetStore(self.db).seed(env)
         inventory = Inventory(self.db)
-        client = AgentClient(inventory, _path("controller", tls_dir),
-                             _path("controller_key", tls_dir),
-                             _path("ca", tls_dir), audit_path=self.db)
+        client = AgentClient(inventory,
+                             *certificates.resolve_paths(tls_dir, "controller"),
+                             audit_path=self.db)
         self.service = RunnerService(self.db, runtimes=agent_runtime.TABLE,
                                      env=env)
         self.service.agents = agent_runtime.AgentWiring(
@@ -209,19 +211,60 @@ class Controller:
             holder=f"controller-{socket.gethostname()}-{os.getpid()}")
         self.receiver = rcv.Receiver(
             inventory,
-            rcv.server_context(_path("receiver", tls_dir),
-                               _path("receiver_key", tls_dir),
-                               _path("ca", tls_dir)),
+            rcv.server_context(*certificates.resolve_paths(tls_dir, "receiver")),
             address=_address(receiver),
             on_event=self.service.operations.apply_event,
             audit_path=self.db)
         self._stop = threading.Event()
 
     def pass_once(self):
+        from .secrets import SecretStore
+        from . import redact
+        from .reconciler import Report
+        env = SecretStore(self.db).overlay(self.base_env)
+        redact.remember(*redact.secret_values(env))
+        self.service.env = env
+        self.flow.env = env
+        self.flow.forges.env = env
+        if self.maintenance():
+            return Report(held=[("platform", "maintenance")])
         return self.reconciler.pass_once()
+
+    def maintenance(self):
+        from store import schema
+        with schema.connect(self.db) as c:
+            row = c.execute("SELECT value FROM platform_settings WHERE key = ?",
+                            ("maintenance",)).fetchone()
+        return bool(row and str(row[0]).lower() in ("true", "1"))
+
+    def _heartbeat(self, state=None):
+        from datetime import datetime, timezone
+        from store import schema
+        from . import redact
+        state = state or ("maintenance" if self.maintenance() else "running")
+        now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        error = redact.redact(self._last_error, *redact.known())
+        with schema.connect(self.db) as c:
+            c.execute("INSERT INTO controller_status VALUES (1,?,?,?) "
+                      "ON CONFLICT(id) DO UPDATE SET "
+                      "last_seen_at=excluded.last_seen_at, state=excluded.state, "
+                      "last_error=excluded.last_error", (now, state, error))
+
+    def _heartbeat_loop(self):
+        while not self._stop.is_set():
+            try:
+                self._heartbeat()
+            except Exception:
+                # A failed write leaves the timestamp stale, which the UI
+                # reports as unhealthy; it must never stop the receiver.
+                pass
+            self._stop.wait(10)
 
     def run(self, log=print):
         self.receiver.start()
+        heartbeat = threading.Thread(target=self._heartbeat_loop,
+                                     name="controller-heartbeat", daemon=True)
+        heartbeat.start()
         host, port = self.receiver.server_address[:2]
         log(f"controller: receiving on {host}:{port}, a pass every "
             f"{self.interval:g}s")
@@ -231,15 +274,22 @@ class Controller:
                 try:
                     report = self.pass_once()
                 except Exception as e:          # noqa: BLE001
+                    self._last_error = f"{type(e).__name__}: {e}"
                     log(f"controller: pass failed: {type(e).__name__}: {e}")
                 else:
+                    self._last_error = str(report.errors) if report.errors else None
                     if report.actions or report.errors:
                         log(f"controller: did {report.actions}; errors "
                             f"{report.errors}; held {report.held}")
                 self._stop.wait(max(0.0, self.interval
                                     - (time.monotonic() - started)))
         finally:
-            self.receiver.stop()
+            self._stop.set()
+            heartbeat.join(timeout=15)
+            try:
+                self._heartbeat("stopped")
+            finally:
+                self.receiver.stop()
             log("controller: stopped")
 
     def stop(self):
@@ -386,7 +436,53 @@ def main(argv=None):
     a.add_argument("label", help="what the unit is called on that worker")
     a.add_argument("--template", help="what it was built from, for the "
                                       "record")
+    cert = sub.add_parser("certificates", help="inspect and renew existing TLS leaves")
+    cert.add_argument("--tls-dir", default=TLS_DIR)
+    cert.add_argument("--db", default=None)
+    commands = cert.add_subparsers(dest="certificate_command", required=True)
+    commands.add_parser("status")
+    prepare = commands.add_parser("prepare")
+    prepare.add_argument("role", choices=("agent", "controller", "receiver"))
+    prepare.add_argument("--subject")
+    prepare.add_argument("--days", type=int, default=365)
+    activate = commands.add_parser("activate")
+    activate.add_argument("role", choices=("agent", "controller", "receiver"))
+    activate.add_argument("bundle")
+    activate.add_argument("--subject")
+    activate.add_argument("--agent-stopped", action="store_true")
+    activate.add_argument("--bundle-installed", action="store_true")
+    activate.add_argument("--services-stopped", action="store_true")
+    rollback = commands.add_parser("rollback")
+    rollback.add_argument("role", choices=("controller", "receiver"))
+    rollback.add_argument("--services-stopped", action="store_true")
     args = parser.parse_args(argv)
+
+    if args.command == "certificates":
+        import json
+        from . import certificates
+        try:
+            if args.certificate_command == "status":
+                from store import schema
+                result = certificates.status(args.tls_dir, args.db or schema.DB_PATH)
+            elif args.certificate_command == "prepare":
+                result = certificates.prepare(args.tls_dir, args.role, args.subject,
+                                              args.db, days=args.days)
+            elif args.certificate_command == "rollback":
+                result = certificates.rollback_local(args.tls_dir, args.role, args.db,
+                                                     services_stopped=args.services_stopped)
+            elif args.role == "agent":
+                result = certificates.activate_worker(
+                    args.tls_dir, args.bundle, args.subject, args.db,
+                    agent_stopped=args.agent_stopped, bundle_installed=args.bundle_installed)
+            else:
+                result = certificates.activate_local(
+                    args.tls_dir, args.bundle, args.role, args.db,
+                    services_stopped=args.services_stopped)
+        except certificates.CertificateRefused as error:
+            print(f"refused: {error}")
+            return 2
+        print(json.dumps(result, indent=2))
+        return 0
 
     if args.command == "status":
         print(status())
@@ -415,7 +511,8 @@ def main(argv=None):
 
     from . import redact
     env = _env()
-    redact.install_log_redaction(redact.secret_values(env))
+    redact.remember(*redact.secret_values(env))
+    redact.install_log_redaction(redact.known)
     controller = Controller(env)
     for sig in (signal.SIGTERM, signal.SIGINT):
         signal.signal(sig, lambda signum, frame: controller.stop())

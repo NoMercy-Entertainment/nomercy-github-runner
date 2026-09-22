@@ -139,9 +139,9 @@ class AgentRuntime:
             # An adoption names what is already on the worker; there is no
             # image to make it from, and nothing to size (T-0802).
             return {"adopt": dict(spec["adopt_unit"])}
-        image = (self.wiring.images.get((spec.get("provider"),
-                                         spec.get("platform")))
-                 or spec.get("runtime_template"))
+        image = (spec.get("runtime_template")
+                 or self.wiring.images.get((spec.get("provider"),
+                                             spec.get("platform"))))
         if not image:
             raise NotBound(f"nothing names what {spec.get('provider')}/"
                            f"{spec.get('platform')} units are made from")
@@ -163,6 +163,21 @@ class AgentRuntime:
                                               spec.get("platform")))
             if default:
                 unit["memory"] = str(default)
+        if spec.get("platform") == "linux" and spec.get("memory_swap_limit"):
+            unit["memory_swap"] = str(int(spec["memory_swap_limit"]))
+        if spec.get("disk_limit"):
+            unit["disk_limit"] = int(spec["disk_limit"])
+        policy = spec.get("cache_policy") or {}
+        if spec.get("platform") == "linux" and isinstance(policy, dict):
+            env = {}
+            if isinstance(policy.get("max_bytes"), int) and policy["max_bytes"] > 0:
+                env["RUNNER_BUILD_CACHE_GC"] = f"{policy['max_bytes']}B"
+            if isinstance(policy.get("scopes"), list):
+                env["RUNNER_CLEANUP_SCOPES"] = ",".join(policy["scopes"])
+            if policy.get("enabled") is False:
+                env["RUNNER_CLEANUP_ENABLED"] = "0"
+            if env:
+                unit["env"] = env
         return unit
 
     def create(self, spec: Mapping[str, Any]):
@@ -190,12 +205,16 @@ class AgentRuntime:
     def status(self, ref):
         from runtime.base import ExecUnitStatus
         got = self._call("exec_unit.status", ref)
-        if got.get("exists") is None:
+        if not isinstance(got.get("exists"), bool):
             # Unknown is not absent: the flow would create a second unit.
             raise RuntimeError("the worker could not say whether the unit "
                                "exists")
-        return ExecUnitStatus(exists=bool(got["exists"]),
-                              running=bool(got.get("running")),
+        if got["exists"] and (not isinstance(got.get("running"), bool) or
+                (got["running"] is False and got.get("state") not in
+                 (None, "", "exited", "stopped", "absent"))):
+            raise RuntimeError("the worker could not say whether the unit is running")
+        return ExecUnitStatus(exists=got["exists"],
+                              running=got.get("running") if got["exists"] else False,
                               exit_code=got.get("exit_code"),
                               started_at=got.get("started_at"),
                               restart_count=int(got.get("restart_count")
@@ -313,6 +332,9 @@ class FlowAgent:
         if got.get("running") is None:
             raise RuntimeError("the worker could not say whether the unit "
                                "runs")
+        if got.get("running") is False and got.get("state") not in (
+                "exited", "stopped", "absent"):
+            raise RuntimeError("the worker did not confirm a stopped execution unit")
         return bool(got["running"])
 
     def ready(self, host_id, ref):

@@ -85,7 +85,7 @@ class UnitRuntime:
         if handle in UnitRuntime.units:
             # What a real engine does with a second unit of the same name.
             raise RuntimeError(f"a unit named {handle} already exists")
-        UnitRuntime.units[handle] = {"storage": spec.get("storage")}
+        UnitRuntime.units[handle] = {"storage": spec.get("storage"), "stopped": True}
         if UnitRuntime.crash_after_create:
             UnitRuntime.crash_after_create = False
             from tests.fake_platform import Crash
@@ -96,7 +96,8 @@ class UnitRuntime:
     def status(self, ref):
         from runtime.base import ExecUnitStatus
         return ExecUnitStatus(exists=ref.handle in UnitRuntime.units,
-                              running=ref.handle in UnitRuntime.units)
+                              running=ref.handle in UnitRuntime.units and
+                              not UnitRuntime.units[ref.handle].get("stopped"))
 
     def remove(self, ref, keep_data=False):
         UnitRuntime.log.append(("remove", ref.handle, keep_data))
@@ -105,9 +106,15 @@ class UnitRuntime:
 
     def start(self, ref):
         UnitRuntime.log.append(("start", ref.handle))
+        self._maybe_fail("start")
+        if ref.handle in UnitRuntime.units:
+            UnitRuntime.units[ref.handle]["stopped"] = False
 
     def stop(self, ref):
         UnitRuntime.log.append(("stop", ref.handle))
+        self._maybe_fail("stop")
+        if ref.handle in UnitRuntime.units:
+            UnitRuntime.units[ref.handle]["stopped"] = True
 
     def clear_cache(self, ref, policy):
         from runtime.base import Freed

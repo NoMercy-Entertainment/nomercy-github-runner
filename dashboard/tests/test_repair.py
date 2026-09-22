@@ -11,7 +11,7 @@ import pytest
 
 from control.service import Refused
 from tests.fake_runtime import UnitRuntime
-from tests.test_partial_failure import FJ, passes, the_runner  # noqa: F401
+from tests.test_partial_failure import FJ, passes, the_runner, expire_deadlines  # noqa: F401
 from tests.test_partial_failure import world  # noqa: F401
 
 
@@ -31,6 +31,11 @@ def half_made(world):
     forges.delete_ok = False
     service.scale_up(FJ)
     passes(service, reconciler, 3)
+    spec = the_runner(service, FJ)
+    assert spec["actual_state"] == "registering", "offline is not proof of stopped"
+    UnitRuntime.units[spec["exec_unit_ref"]]["stopped"] = True
+    expire_deadlines(service)
+    passes(service, reconciler, 1)
     spec = the_runner(service, FJ)
     assert spec["actual_state"] == "failed"
     assert spec["registration_id"] and spec["exec_unit_ref"], \
@@ -56,6 +61,7 @@ class TestRepair:
         assert len(registers(agent)) == registered, \
             "the record that was there is kept, not doubled"
         assert len(forges.live_handles()) == 1
+        assert not UnitRuntime.units[spec["exec_unit_ref"]]["stopped"], "repair restarts the existing stopped unit"
 
     def test_a_record_the_forge_no_longer_has_is_made_again(self, world):
         service, flow, agent, forges, reconciler = world

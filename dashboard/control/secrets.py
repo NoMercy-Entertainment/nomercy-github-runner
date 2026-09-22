@@ -18,6 +18,7 @@ which is NEVER-AUTO, and rotating them afterwards is a human decision.
 """
 import hashlib
 import os
+import tempfile
 from datetime import datetime, timezone
 
 from store import schema
@@ -51,10 +52,19 @@ class SecretStore:
             if not create:
                 return None
             key = Fernet.generate_key()
-            fd = os.open(self.key_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL,
-                         0o600)
-            with os.fdopen(fd, "wb") as fh:
-                fh.write(key)
+            fd, pending = tempfile.mkstemp(prefix=".secrets-key-", dir=os.path.dirname(self.key_path) or ".")
+            try:
+                with os.fdopen(fd, "wb") as fh:
+                    fh.write(key)
+                    fh.flush()
+                    os.fsync(fh.fileno())
+                try:
+                    # Publish a complete key without replacing another writer's.
+                    os.link(pending, self.key_path)
+                except FileExistsError:
+                    pass
+            finally:
+                os.unlink(pending)
         with open(self.key_path, "rb") as fh:
             return Fernet(fh.read().strip())
 

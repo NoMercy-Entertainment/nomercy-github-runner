@@ -18,9 +18,12 @@ key is refused - the one safe move a caller has only exists if the first call
 carried a key.
 """
 import os
+import json
+import sqlite3
 import time
+from datetime import datetime, timezone
 
-from flask import Blueprint, jsonify, request, session
+from flask import Blueprint, g, has_request_context, jsonify, request, session
 
 import cards
 import providers
@@ -47,6 +50,20 @@ def _db_path():
     return schema.DB_PATH
 
 
+class _LazyAgentClient:
+    """Database reads stay available while TLS credentials are being repaired."""
+
+    def __init__(self, inventory, tls_dir, path):
+        self.inventory, self.tls_dir, self.path = inventory, tls_dir, path
+
+    def call_and_wait(self, *args, **kwargs):
+        from control.agent_client import AgentClient
+        from control.certificates import resolve_paths
+        client = AgentClient(self.inventory, *resolve_paths(self.tls_dir, "controller"),
+                             audit_path=self.path)
+        return client.call_and_wait(*args, **kwargs)
+
+
 def control_plane():
     """(service, note). The service is None when the control plane has not
     run: nothing here creates its database."""
@@ -58,9 +75,64 @@ def control_plane():
         # With the deployment's settings: what a unit of a cell is made from
         # is one of them, and a service without them reads every cell as
         # unbuildable (2026-09-20).
-        return RunnerService(path, env=dict(os.environ)), None
+        from control import agent_runtime
+        from control.main import TLS_DIR, unit_images, unit_memory
+        from control.secrets import SecretStore
+        env = SecretStore(path).overlay(os.environ)
+        service = RunnerService(path, runtimes=agent_runtime.TABLE, env=env)
+        service.agents = agent_runtime.AgentWiring(
+            _LazyAgentClient(service.inventory, TLS_DIR, path), operations=service.operations,
+            images=unit_images(env), memory=unit_memory(env))
+        return service, None
     except Exception:   # noqa: BLE001 - a half-made database is "not ready"
         return None, "the control database is not ready"
+
+
+def controller_health(path=None):
+    from store import schema
+    state = {"running": False, "note": "controller heartbeat unavailable",
+             "maintenance": False}
+    path = path or _db_path()
+    if not os.path.exists(path):
+        return state
+    try:
+        with schema.connect(path) as c:
+            row = c.execute("SELECT * FROM controller_status WHERE id=1").fetchone()
+            maintenance = c.execute("SELECT value FROM platform_settings WHERE key='maintenance'").fetchone()
+        state["maintenance"] = bool(maintenance and maintenance[0] in ("true", "1"))
+        if row:
+            at = datetime.fromisoformat(row["last_seen_at"].replace("Z", "+00:00"))
+            age = (datetime.now(timezone.utc) - at).total_seconds()
+            state.update(last_seen_at=row["last_seen_at"], state=row["state"],
+                         last_error=row["last_error"])
+            state["running"] = -5 <= age <= 45 and row["state"] not in ("stopped", "failed")
+            state["note"] = ("maintenance: reconciliation paused" if state["maintenance"]
+                             else row["last_error"] or row["state"] if state["running"]
+                             else "controller heartbeat expired")
+    except (sqlite3.Error, ValueError, TypeError):
+        pass
+    return state
+
+
+def _action_policy(items, health=None):
+    health = health or controller_health()
+    role = getattr(g, "role", None) if has_request_context() else "admin"
+    for item in items:
+        for action in item.get("actions", []):
+            if action.get("method") == "LINK":
+                continue
+            why = None
+            if role == "viewer":
+                why = "read-only access"
+            elif role != "admin" and action.get("verb") in ("remove", "recreate", "deregister"):
+                why = "requires admin"
+            elif health.get("maintenance"):
+                why = "maintenance is enabled"
+            elif not health.get("running"):
+                why = health.get("note") or "controller is not running"
+            if why and (action.get("url") or "").startswith("/api/v2/"):
+                action.update(enabled=False, reason=why)
+    return items
 
 
 def _controller_cards(service):
@@ -75,9 +147,43 @@ def _controller_cards(service):
         healthy = {w["host_id"] for w in service.inventory.healthy()}
     except Exception:   # noqa: BLE001
         pass
-    return [cards.from_spec(s, worker_reachable=(s.get("host_id") in healthy)
-                            if s.get("host_id") else None)
+    return [_runner_card(service, s, s.get("host_id") in healthy
+                         if s.get("host_id") else None)
             for s in specs if s.get("actual_state") != "absent"]
+
+
+def _runner_card(service, spec, reachable):
+    card = cards.from_spec(spec, worker_reachable=reachable)
+    from control import states
+    if spec.get("actual_state") == "failed":
+        card["actions"].append({"verb": "repair", "label": "Repair", "tone": "primary",
+            "visible": True, "enabled": True, "method": "POST", "body": {},
+            "url": f"/api/v2/runners/{spec['runner_id']}/actions/repair", "idempotent": True})
+    for action in card["actions"]:
+        verb = action["verb"]
+        if verb == "logs":
+            continue
+        reason = None
+        if spec.get("current_operation"):
+            reason = "an operation is already in progress"
+        elif verb in ("recreate", "repair"):
+            buildable, reason = service.buildable(spec["fleet_id"])
+            if buildable:
+                reason = None
+            if verb == "recreate" and not reason:
+                from control.service import Refused
+                try:
+                    service.validate_replacement(spec)
+                except Refused as e:
+                    reason = str(e)
+        elif verb != "remove":
+            if service._drains_first(spec, verb, spec["actual_state"]) and action.get("url"):
+                action.update(enabled=True, visible=True, reason=None)
+            elif not states.allows(verb, spec["actual_state"]):
+                reason = f"{verb} is unavailable while {spec['actual_state']}"
+        if reason:
+            action.update(enabled=False, reason=reason)
+    return card
 
 
 # ---------------------------------------------------------------------------
@@ -93,7 +199,7 @@ def all_cards(service=None):
     out += [cards.from_unmanaged(e, generated)
             for e in snap.get("elsewhere") or []]
     out += _controller_cards(service)
-    return out
+    return _action_policy(out)
 
 
 def fleet_list(service, note, all_runner_cards):
@@ -135,7 +241,7 @@ def fleet_list(service, note, all_runner_cards):
                 try:
                     can, why = service.buildable(fid)
                 except Exception:       # noqa: BLE001
-                    can, why = True, None
+                    can, why = False, "buildability could not be verified"
                 if not can:
                     available, reason = False, why
                 elif why and not reason:
@@ -157,7 +263,11 @@ def fleet_list(service, note, all_runner_cards):
                                      env_configured.get(provider_key),
                                      members),
         })
-    return out
+        if service and fid in rows:
+            support = service.fleets.resource_support(fid)
+            out[-1]["resource_support"] = support
+            out[-1]["resource_notice"] = _resource_notice(rows[fid], support)
+    return _action_policy(out)
 
 
 FORGE_NAMES = {"github": "GitHub", "forgejo": "Forgejo"}
@@ -168,16 +278,11 @@ PLATFORM_NAMES = {providers.LINUX: "Linux", providers.WINDOWS: "Windows",
 #: still go to v1 until T-1407. Data, looked up - not a branch in the page.
 V1_FLEETS = {("github", providers.LINUX), ("forgejo", providers.LINUX)}
 
-#: What the page offers per fleet, and every fleet is offered exactly these.
-#: A number is not among them: a fleet has the runners you add and keeps them
-#: until you remove one, and typing a count was a second way of saying the
-#: same thing (2026-09-20). Its button outlived its input by a day and then
-#: posted no number at all, so both lists below are built from this one
-#: (2026-09-21). The route stays - `POST /api/v2/fleets/<id>/capacity` is how
-#: a script or the CLI sets a whole fleet at once.
-FLEET_ACTIONS = ("add", "recreate", "clear_cache")
+#: The controller exposes desired capacity explicitly. The UI validates and
+#: submits the entered count; reducing capacity requires an administrator.
+FLEET_ACTIONS = ("add", "capacity", "recreate", "clear_cache")
 FLEET_LABELS = {"add": "+ Add runner", "recreate": "Recreate fleet",
-                "clear_cache": "Clear all cache"}
+                "clear_cache": "Clear all cache", "capacity": "Set capacity"}
 FLEET_TONES = {"add": "primary", "recreate": "warn", "clear_cache": "warn"}
 
 
@@ -220,6 +325,7 @@ def fleet_actions(fid, provider_key, platform, available, reason,
     base = f"/api/v2/fleets/{fid}"
     return [
         _fleet_action("add", f"{base}/runners", {}, idempotent=True),
+        _fleet_action("capacity", f"{base}/capacity", {}, idempotent=True),
         _fleet_action("recreate", f"{base}/recreate", {}, idempotent=True,
                       confirm=recreate_confirm, visible=has_runners),
         _fleet_action("clear_cache", f"{base}/clear-cache", {},
@@ -235,13 +341,18 @@ def fleet_actions(fid, provider_key, platform, available, reason,
 @bp.route("/api/v2/fleet")
 def fleet_page_data():
     """Everything the v2 page renders, in one read."""
+    return jsonify(fleet_snapshot())
+
+
+def fleet_snapshot():
     service, note = control_plane()
     runner_cards = all_cards(service)
     snap = _status["fn"]() or {}
-    return jsonify(
+    return dict(
         generated=snap.get("generated") or time.strftime(
             "%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-        control_plane={"running": service is not None, "note": note},
+        control_plane=controller_health(),
+        workers=service.inventory.summary() if service else [],
         fleets=fleet_list(service, note, runner_cards),
         runners=runner_cards,
         disk=snap.get("disk"))
@@ -317,6 +428,9 @@ def _need_plane():
     service, note = control_plane()
     if service is None:
         return None, _refuse(503, note)
+    if request.method == "POST" and controller_health().get("maintenance"):
+        if not request.path.startswith(("/api/v2/maintenance", "/api/v2/secrets", "/api/v2/settings")):
+            return None, _refuse(409, "maintenance is enabled; runner changes are paused")
     return service, None
 
 
@@ -381,9 +495,26 @@ def runner_detail(runner_id):
         return _refuse(404, f"no runner {runner_id}")
     from control.redact import redact_mapping
     operations = service.operations.list(runner_id=runner_id, limit=20)
-    return jsonify(card=cards.from_spec(spec), spec=redact_mapping(spec),
+    reachable = spec.get("host_id") in {w["host_id"] for w in service.inventory.healthy()} if spec.get("host_id") else None
+    card = _runner_card(service, spec, reachable)
+    _action_policy([card])
+    fleet = service.fleets.get(spec.get("fleet_id"))
+    resource_notice = None
+    if fleet and fleet["platform"] == "macos":
+        from control.inventory import current_resource_enforcement
+        support = service.fleets.resource_support(fleet["fleet_id"], host_id=spec.get("host_id") or "")
+        proof = current_resource_enforcement(spec) if support["appliance_per_runner"] else None
+        verified_support = dict(support,
+            per_runner_memory_overhead_bytes=proof["memory_overhead_bytes"] if proof else None,
+            guest_disk_virtual_bytes=None)  # Worker defaults do not prove this disk's size.
+        resource_notice = (_resource_notice(fleet, verified_support, current=True) if proof else
+                           "This runner's current CPU/RAM enforcement is unverified. Saved limits alone do not confirm enforcement.")
+        if proof:
+            resource_notice += (f" Observed limits: {proof['cpu_cores']} CPUs and "
+                                f"{proof['memory_limit_bytes'] / 1024**3:g} GiB guest RAM.")
+    return jsonify(card=card, spec=redact_mapping(spec),
                    operations=redact_mapping(operations),
-                   audit=_audit_tail(runner_id))
+                   audit=_audit_tail(runner_id), resource_notice=resource_notice)
 
 
 def _audit_tail(runner_id, limit=20):
@@ -580,7 +711,8 @@ def fleet_clear_cache(fleet_id):
     allowed = states.GUARDED["clear_cache"]
 
     def skip(spec):
-        if spec["actual_state"] not in allowed:
+        if spec["actual_state"] not in allowed and not service._drains_first(
+                spec, "clear_cache", spec["actual_state"]):
             return f"{spec['actual_state']}: only idle or drained runners "                    f"are cleared"
         if (spec.get("capabilities") or {}).get("clear_cache") is False:
             return cards.ANNOTATIONS["clear_cache"]
@@ -663,3 +795,104 @@ def secret_clear(name):
     audit.record(_db_path(), "clear_secret", "accepted",
                  actor=requested_by(), parameters={"name": name})
     return jsonify(ok=True, note=f"{name} is cleared")
+
+
+@bp.route("/api/v2/settings")
+def settings_data():
+    service, err = _need_plane()
+    if err:
+        return err
+    fleets = service.fleets.list()
+    for fleet in fleets:
+        fleet["effective_template"] = service.unit_image(fleet)
+        support = service.fleets.resource_support(fleet["fleet_id"])
+        fleet.update(support)
+        fleet["resource_notice"] = _resource_notice(fleet, support)
+    return jsonify(fleets=fleets, control_plane=controller_health())
+
+
+def _resource_notice(fleet, support, current=False):
+    if fleet["platform"] == "linux":
+        return ("CPU cores: a whole number pins each runner to its own window of that "
+                "many cores, which is what nproc reports inside it; windows are spread "
+                "so they overlap as little as possible. A fraction is a CPU quota and "
+                "leaves nproc at the host's count. Existing runners keep their window "
+                "on recreate unless the width changes.")
+    if fleet["platform"] != "macos":
+        return None
+    if not support["appliance_per_runner"]:
+        return ("CPU/RAM settings are locked: no healthy matching worker currently confirms a separate "
+                "appliance with enforced CPU and RAM limits per runner. Legacy shared guests provide no such guarantee.")
+    text = ("This runner uses a separate appliance with enforced CPU and guest RAM limits." if current else
+            "New runners can use a separate appliance with enforced CPU and guest RAM limits. Existing runners require recreation to apply defaults.")
+    overhead = support.get("per_runner_memory_overhead_bytes")
+    if overhead is not None:
+        text += f" Placement also reserves {overhead / 1024**3:g} GiB of appliance overhead per runner."
+    else:
+        text += " Appliance memory overhead depends on the selected worker; no common value is currently reported."
+    disk = support.get("guest_disk_virtual_bytes")
+    if disk and not support["disk_quota_supported"]:
+        text += f" Guest disk size is fixed at {disk / 1024**3:g} GiB; configurable disk limits are unavailable."
+    return text
+
+
+@bp.route("/api/v2/settings/<fleet_id>", methods=["POST"])
+def settings_save(fleet_id):
+    service, err = _need_plane()
+    if err:
+        return err
+    from store.fleets import UnknownFleet
+    from control import audit
+    try:
+        fleet = service.fleets.set_defaults(fleet_id, request.get_json(silent=True))
+    except UnknownFleet as e:
+        return _refuse(404, str(e))
+    except ValueError as e:
+        return _refuse(400, str(e))
+    audit.record(_db_path(), "set_defaults", "accepted", actor=requested_by(),
+                 fleet_id=fleet_id, parameters=request.get_json())
+    return jsonify(ok=True, fleet=fleet,
+                   note="Saved. Defaults apply to new runners and recreations.")
+
+
+@bp.route("/api/v2/maintenance", methods=["POST"])
+def maintenance_set():
+    if getattr(g, "role", None) != "admin":
+        return _refuse(403, "Maintenance requires admin")
+    service, err = _need_plane()
+    if err:
+        return err
+    enabled = (request.get_json(silent=True) or {}).get("enabled")
+    if not isinstance(enabled, bool):
+        return _refuse(400, "enabled must be boolean")
+    from store import schema
+    from control import audit
+    with schema.connect(_db_path()) as c:
+        c.execute("INSERT INTO platform_settings(key,value) VALUES('maintenance',?) "
+                  "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                  ("true" if enabled else "false",))
+    audit.record(_db_path(), "maintenance", "accepted", actor=requested_by(),
+                 parameters={"enabled": enabled})
+    return jsonify(ok=True, enabled=enabled,
+                   note="Reconciliation paused; already running jobs are unaffected."
+                   if enabled else "Reconciliation resumed.")
+
+
+@bp.route(f"{RUNNER}/history")
+def runner_history(runner_id):
+    service, err = _need_plane()
+    if err:
+        return err
+    if service.specs.get(runner_id) is None:
+        return _refuse(404, f"no runner {runner_id}")
+    import history
+    return jsonify(runs=history.list_runs(runner_id=runner_id, limit=30))
+
+
+@bp.route(f"{RUNNER}/history/<int:run_id>")
+def runner_history_run(runner_id, run_id):
+    import history
+    run = history.get_run(run_id)
+    if not run or run.get("runner_id") != runner_id:
+        return _refuse(404, "run not found for this runner")
+    return jsonify(run)

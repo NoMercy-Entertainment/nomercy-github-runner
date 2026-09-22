@@ -55,6 +55,8 @@ button[disabled]{opacity:.45;cursor:not-allowed}
   font-size:11.5px;display:none;z-index:9}
 #toast.show{display:block}
 #toast.bad{border-left-color:var(--alert);color:var(--alert)}
+#operation-results{max-height:300px;overflow:auto;margin-bottom:18px;white-space:pre-wrap;font-size:11px}
+#operation-results .failed{color:var(--alert)}
 {% endblock %}
 
 {% block body %}
@@ -76,6 +78,7 @@ button[disabled]{opacity:.45;cursor:not-allowed}
 </header>
 
 <div class="plane" id="plane">&mdash;</div>
+<section id="operation-results" aria-live="polite" hidden></section>
 <div id="fleets"><div class="skel">Awaiting telemetry</div></div>
 
 <footer><span id="f-gen">Updated &mdash;</span></footer>
@@ -83,6 +86,7 @@ button[disabled]{opacity:.45;cursor:not-allowed}
 
 <script>
 {% include "_card.js" %}
+{% include "_v2_push.js" %}
 
 const $ = id => document.getElementById(id);
 let state = {fleets: [], runners: []};
@@ -109,9 +113,8 @@ function render(d) {
   $('s-busy').textContent = (d.runners || []).filter(c => c.state === 'busy').length;
   $('f-gen').textContent = 'Updated ' + String(d.generated || '').replace('T', ' ').replace('Z', ' UTC');
   const plane = d.control_plane || {};
-  $('plane').textContent = plane.running ? 'Control plane running'
-    : 'Control plane: ' + (plane.note || 'not running') +
-      ' - showing the runners the v1 collector sees';
+  $('plane').textContent = plane.maintenance ? 'Maintenance · reconciliation paused'
+    : plane.running ? 'Control plane running' : 'Control plane: ' + (plane.note || 'not running');
 
   const root = $('fleets');
   const skel = root.querySelector('.skel');
@@ -166,21 +169,42 @@ function newKey() {
   return Date.now().toString(36) + '-' + Math.random().toString(36).slice(2);
 }
 
+function operationProgress(id, text, failed) {
+  const root=$('operation-results');root.hidden=false;
+  let row=document.getElementById('operation-'+id);
+  if(!row){row=document.createElement('p');row.id='operation-'+id;root.prepend(row);}
+  row.textContent=text;row.className=failed?'failed':'';
+  while(root.children.length>100)root.lastElementChild.remove();
+}
+
 // Runs one action exactly as its data describes it: where it goes, with what
 // body, whether it needs confirming and whether it carries an idempotency key.
 async function run(a, btn) {
   if (!a.enabled) { toast(a.reason || 'not available', true); return; }
   if (a.method === 'LINK') { location.href = a.url; return; }
+  let body = a.body || {};
+  if(a.verb === 'capacity') {
+    const f=state.fleets.find(f=>f.actions.includes(a));
+    const value=window.prompt('Desired number of runners for '+f.title, String(f.desired||0));
+    if(value===null)return;
+    if(!/^\d+$/.test(value)||!Number.isSafeInteger(Number(value))){toast('Capacity must be a non-negative whole number',true);return;}
+    body={desired:Number(value)};
+    if(body.desired<f.desired && !(await confirmDialog({title:'Reduce capacity?',body:'Surplus runners will be drained and removed.',confirm:'Reduce'})))return;
+  }
   if (a.confirm && !(await confirmDialog(a.confirm))) return;
   if (btn) btn.disabled = true;
   try {
     const headers = {'Content-Type': 'application/json'};
     if (a.idempotent) headers['Idempotency-Key'] = newKey();
     const res = await fetch(a.url, {method: 'POST', headers,
-      body: JSON.stringify(a.body || {})});
+      body: JSON.stringify(body)});
     const d = await res.json().catch(() => ({}));
-    if (!res.ok || d.ok === false) throw new Error(d.error || ('HTTP ' + res.status));
-    toast(a.label + ': ' + (d.note || d.operation_id || 'ok'));
+    if (!res.ok) throw new Error(d.error || ('HTTP ' + res.status));
+    if(d.results)d.results.forEach(r=>operationProgress(r.operation_id||r.runner_id,r.runner_id+': '+(r.error||r.skipped||'queued'),!!r.error));
+    else if(d.ok===false)throw new Error(d.error||'Action refused');
+    if(!d.results)toast(a.label + ': ' + (d.note || d.operation_id || 'ok'));
+    const ids=d.operation_id?[d.operation_id]:(d.results||[]).filter(r=>r.operation_id).map(r=>r.operation_id);
+    ids.forEach(id=>watchOperation(id,(text,bad)=>operationProgress(id,text,bad)).catch(e=>operationProgress(id,e.message,true)));
     tick();
   } catch (e) {
     toast(a.label + ' failed - ' + e.message, true);
@@ -216,6 +240,6 @@ async function tick() {
 }
 
 tick();
-setInterval(tick, 5000);
+subscribeFleet(render, tick);
 </script>
 {% endblock %}

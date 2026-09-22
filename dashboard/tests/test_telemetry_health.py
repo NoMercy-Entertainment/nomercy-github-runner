@@ -126,6 +126,36 @@ class TestTheCardShowsWhatTheUnitUses:
         card = cards.from_spec(service.specs.get(rid))
         assert card["cpu"]["percent"] is None
 
+    def test_the_cores_a_unit_may_use_reach_the_card(self, placed):
+        """ "70%" means nothing without what it is 70% of. The card says
+        "11.8 / 16 cores" when it knows the sixteen, and the heartbeat had
+        stopped saying it (2026-09-21)."""
+        service, rid = placed
+        self.beat(service, rid, {"cpu_percent": 1180.0, "cpu_cores": 16,
+                                 "host_cores": 64})
+        card = cards.from_spec(service.specs.get(rid), worker_reachable=True)
+        assert card["cpu"] == {"percent": 1180.0, "cores": 16,
+                               "host_cores": 64}
+
+    def test_the_job_a_unit_names_is_kept_and_then_let_go(self, placed):
+        """Reported every beat, so a job that is no longer named is no
+        longer shown: a finished build must not stay on the card."""
+        service, rid = placed
+        self.beat(service, rid, {"cpu_percent": 9.0,
+                                 "job": "test / coverage"})
+        assert service.specs.get(rid)["telemetry"]["job"] ==             "test / coverage"
+        self.beat(service, rid, {"cpu_percent": 9.0})
+        assert service.specs.get(rid)["telemetry"].get("job") is None
+
+    def test_a_job_is_a_short_piece_of_text_or_nothing(self, placed):
+        """It is data from a worker and it ends up on a page."""
+        service, rid = placed
+        for bad in (["a", "list"], 7, "x" * 5000, "two\nlines"):
+            self.beat(service, rid, {"cpu_percent": 1.0, "job": bad})
+            got = service.specs.get(rid)["telemetry"].get("job")
+            assert got is None or (isinstance(got, str) and len(got) <= 200
+                                   and "\n" not in got), bad
+
     def test_a_beat_carries_only_numbers_the_card_can_show(self, placed):
         service, rid = placed
         self.beat(service, rid, {"cpu_percent": "lots", "evil": "<script>",
@@ -169,3 +199,11 @@ class TestTheJobField:
 
     def test_an_idle_runner_has_none(self):
         assert cards.from_spec(spec(), now=NOW)["job"] is None
+
+    def test_a_name_left_over_is_not_shown_on_a_runner_that_is_idle(self):
+        """The forge says whether a runner is busy; the name only says with
+        what. A Forgejo runner's log never says a task ended, so its last
+        task would otherwise sit on an idle card for ever."""
+        card = cards.from_spec(spec(), telemetry={"job": "task 412 - a/b"},
+                               now=NOW)
+        assert card["job"] is None

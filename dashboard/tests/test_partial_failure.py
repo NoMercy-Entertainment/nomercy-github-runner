@@ -169,11 +169,9 @@ class TestCrashAfterRecordBeforeRegister:
 
         assert healthy(service, forges, the_runner(service))
 
-    def test_crashed_inside_registering_it_is_swept_to_nothing(self, world):
-        """Moved to registering, then died before any forge was contacted. It
-        is not re-driven, because from here it cannot be told apart from a
-        registration whose reply was lost - and registering twice would leave
-        a record nobody owns. Past its deadline it is swept."""
+    def test_crash_before_registration_intent_is_safely_swept(self, world):
+        """The stored intent proves registration never started, so the
+        deadline can safely clean up the stopped, unregistered unit."""
         service, flow, agent, forges, reconciler = world
         service.scale_up(GH)
         reconciler.pass_once()
@@ -233,6 +231,7 @@ class TestCrashAfterRegisterBeforeConfirm:
         service, flow, agent, forges, reconciler = world
         forges.online = False
         spec = self.crash(world)
+        UnitRuntime.units[storage.unit_name(spec["runner_id"])]["stopped"] = True
         passes(service, reconciler, 2)
         expire_deadlines(service)
 
@@ -249,6 +248,7 @@ class TestCrashAfterRegisterBeforeConfirm:
         service, flow, agent, forges, reconciler = world
         forges.online = False
         spec = self.crash(world, FJ)
+        UnitRuntime.units[storage.unit_name(spec["runner_id"])]["stopped"] = True
         expire_deadlines(service)
 
         reconciler.pass_once()
@@ -545,7 +545,7 @@ class TestNoUnitIsRemovedBeforeItsRecord:
 
     def test_a_compensation(self, world, events):
         service, flow, agent, forges, reconciler = world
-        forges.online = False
+        agent._ready = False  # forge idle: rollback can safely drain first
         service.scale_up(GH)
         passes(service, reconciler, 2)
         assert self.record_first(events), events
@@ -567,7 +567,7 @@ class TestNoUnitIsRemovedBeforeItsRecord:
         """Forgejo's record cannot be deleted, so the unit it belongs to is
         not removed either - and the error says both."""
         service, flow, agent, forges, reconciler = world
-        forges.online = False
+        agent._ready = False
         forges.delete_ok = False
         spec = service.specs.get(service.planned_ids(
             service.plan(FJ, 1, env=ENV))[0])
@@ -609,5 +609,5 @@ class TestNoUnitIsRemovedBeforeItsRecord:
         passes(service, reconciler)
         assert ("record", "api") not in events
         assert not any(e[0] == "unit" for e in events)
-        assert "running a job" in service.specs.get(
-            spec["runner_id"])["last_error"]
+        report = reconciler.pass_once()
+        assert any("running a job" in reason for _, reason in report.held)

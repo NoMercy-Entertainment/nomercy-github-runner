@@ -368,6 +368,11 @@ class TestACpuWindowSurvivesARebuild:
         store = SpecStore(db)
         flow = ProvisioningFlow(service, agent=None, forges=None, env=ENV)
         flow._runtime = lambda spec, host: Runtime()
+        # The old forge record is also confirmed absent. An unavailable
+        # forge must now preserve the identity instead of rebuilding blind.
+        from types import SimpleNamespace
+        flow.forges = SimpleNamespace(records=lambda provider: [],
+                                      delete=lambda provider, rid: True)
         stale = store.get(runner_id)
         # Written to since this step read it, as a busy pass does.
         store.update(runner_id, stale["spec_version"], last_note="a note")

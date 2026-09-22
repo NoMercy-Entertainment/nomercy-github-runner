@@ -201,7 +201,7 @@ class TestTheSchemaMatchesTheDesign:
         "platform": "TEXT", "architecture": "TEXT",
         "runtime_template": "TEXT", "host_id": "TEXT", "labels": "TEXT",
         "runner_group": "TEXT", "cpu_limit": "TEXT",
-        "memory_limit": "INTEGER", "disk_limit": "INTEGER",
+        "memory_limit": "INTEGER", "memory_swap_limit": "INTEGER", "disk_limit": "INTEGER",
         "cache_policy": "TEXT", "desired_state": "TEXT",
         "actual_state": "TEXT", "registration_id": "TEXT",
         "registration_uuid": "TEXT", "created_at": "TEXT",

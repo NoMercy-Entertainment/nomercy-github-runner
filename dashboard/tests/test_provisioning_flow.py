@@ -157,7 +157,7 @@ class TestEveryFailureRunsExactlyItsCompensations:
         if step == "register":
             agent.fail_on = {"register"}
         if step == "verify_online":
-            forges.online = False
+            agent._ready = False
         with pytest.raises(StepFailed) as caught:
             flow.register(spec)
         return flow, caught.value
@@ -170,27 +170,30 @@ class TestEveryFailureRunsExactlyItsCompensations:
         undone = [t[len("undo:"):] for t in flow.trail
                   if t.startswith("undo:")]
         assert failure.step == step
-        assert tuple(undone) == COMPENSATIONS[step]
+        assert tuple(undone) == (() if step == "register" else COMPENSATIONS[step])
+        if step == "register":
+            assert failure.rollback_held
 
     def test_every_step_has_a_compensation_entry(self):
         """A step added without one would have no answer to "and if it
         fails?"."""
         assert set(COMPENSATIONS) == set(STEPS)
 
-    def test_a_failed_register_leaves_no_unit_behind(self, platform):
+    def test_a_failed_register_preserves_unit_until_registration_is_known(self, platform):
         service, flow, agent, forges = platform
         spec = provisioned(service, flow, a_planned(service))
         agent.fail_on = {"register"}
         with pytest.raises(StepFailed) as caught:
             flow.register(spec)
-        assert UnitRuntime.units == {}
-        assert caught.value.removed_unit
+        assert UnitRuntime.units
+        assert caught.value.rollback_held
+        assert not caught.value.removed_unit
 
     def test_a_failed_verify_deregisters_before_removing(self, platform):
         """The forge record first: removing the unit first would leave a
         registration pointing at nothing."""
         service, flow, agent, forges = platform
-        forges.online = False
+        agent._ready = False
         spec = provisioned(service, flow, a_planned(service))
         with pytest.raises(StepFailed):
             flow.register(spec)
@@ -202,7 +205,7 @@ class TestEveryFailureRunsExactlyItsCompensations:
         """forgejo-runner has no unregister subcommand; only the API can
         delete the record."""
         service, flow, agent, forges = platform
-        forges.online = False
+        agent._ready = False
         spec = provisioned(service, flow, a_planned(service, "forgejo"))
         with pytest.raises(StepFailed):
             flow.register(spec)
@@ -214,7 +217,7 @@ class TestEveryFailureRunsExactlyItsCompensations:
         """It is exactly where something was left behind."""
         service, flow, agent, forges = platform
         spec = provisioned(service, flow, a_planned(service))
-        agent.fail_on = {"register"}
+        agent._ready = False
         UnitRuntime.fail_on = {"remove"}
         with pytest.raises(StepFailed) as caught:
             flow.register(spec)
@@ -403,11 +406,8 @@ class TestDrivenByTheReconciler:
         assert all(r["actual_state"] == "idle" for r in runners)
         assert all(r["registration_id"] for r in runners)
 
-    def test_a_failed_registration_leaves_a_clean_failed_runner(self,
-                                                               platform):
-        """Failed, with the references to what the compensations removed
-        cleared - so a later remove does not go looking for a unit that is
-        gone."""
+    def test_an_unknown_registration_retains_its_unit_for_recovery(self, platform):
+        """A lost response cannot prove registration never happened."""
         service, flow, agent, forges = platform
         agent.fail_on = {"register"}
         reconciler = Reconciler(service, flow)
@@ -415,9 +415,10 @@ class TestDrivenByTheReconciler:
         reconciler.pass_once()
         reconciler.pass_once()
         spec = service.specs.list()[0]
-        assert spec["actual_state"] == "failed"
-        assert spec["exec_unit_ref"] is None
-        assert UnitRuntime.units == {}
+        assert spec["actual_state"] == "registering"
+        assert spec["exec_unit_ref"]
+        assert UnitRuntime.units
+        assert "reply is unknown" in spec["last_error"]
 
     def test_a_job_seen_at_the_forge_is_recorded(self, platform):
         service, flow, agent, forges = platform
@@ -500,17 +501,17 @@ class TestAUnitJustMadeHasNoRegistrationYet:
 
     def test_a_record_the_forge_shows_at_work_is_left_where_it_is(self,
                                                                   platform):
-        """MIG-9: whatever is answering under that record is running a job,
-        and deleting it would abort it. The new unit still gets a
-        registration of its own; what was left behind is said in the note."""
+        """MIG-9: keep the busy identity and hold replacement."""
         service, flow, _, forges = platform
         spec, registration = self.replaced(service, flow)
         forges.busy.add(registration["registration_id"])
-        flow.provision(spec)
+        from control.provision import RollbackHeld
+        with pytest.raises(RollbackHeld):
+            flow.provision(spec)
         after = service.specs.get(spec["runner_id"])
-        assert after["registration_id"] is None
+        assert after["registration_id"] == registration["registration_id"]
         assert forges.deleted == []
-        assert registration["registration_id"] in (after["last_note"] or "")
+        assert UnitRuntime.log == []
 
 
 class TestRemovingWhatAFailedCreateLeft:

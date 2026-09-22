@@ -34,6 +34,7 @@ GH = fleet_id("github", "linux", "x64")
 HOST = "linux-worker-1"
 TOKEN = "tok-sentinel-5f1e0c9a7b3d"
 ENV = {"GH_TOKEN": "gh-deployment-token-0000", "GITHUB_ORG": "NoMercy",
+       "GITHUB_DRAIN_GROUP": "drain",
        "RUNNER_UNIT_IMAGE_GITHUB_LINUX": "ghcr.io/nomercy/runner-unit:1",
        "RUNNER_LABELS": "self-hosted,Linux,X64,beast-unit"}
 
@@ -182,6 +183,16 @@ def plant(tmp_path, monkeypatch):
         set_custom_labels = staticmethod(github.set_custom_labels)
         delete_runner = staticmethod(github.delete_runner)
 
+        @staticmethod
+        def drain_group_closed(group, rid=None):
+            return group == "drain" and (rid is None or
+                github.runners[str(rid)]["runner_group"] == group)
+
+        @staticmethod
+        def move_runner_to_group(group, rid):
+            github.runners[str(rid)]["runner_group"] = group
+            return True
+
     monkeypatch.setattr(P.GITHUB, "forge_client", lambda env: Client())
     tls_dir, db = str(tmp_path / "tls"), str(tmp_path / "control.db")
     main.init_pki(tls_dir)
@@ -302,8 +313,8 @@ class TestDrainedAndGone:
 
         controller.service.drain(runner)
         converge(controller, runner, "drained")
-        assert [n for n, kind in github.runners[rid]["labels"]
-                if kind == "custom"] == []
+        assert github.runners[rid]["runner_group"] == "drain"
+        assert units.units[runner]["running"] is False
         assert not [c for c in units.calls if c[0] == "drain"], \
             "a GitHub runner is never signalled on its worker"
 

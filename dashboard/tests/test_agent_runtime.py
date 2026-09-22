@@ -48,7 +48,7 @@ class TestTheUnitSpec:
         assert verb == "exec_unit.create"
         assert set(body) == {"runner_id", "spec"}
         assert body["spec"] == {
-            "image": "ghcr.io/x/u:1", "cpus": "8",
+            "image": "actions/runner@v2", "cpus": "8",
             "memory": str(32 * 2 ** 30),
             "labels": {"nomercy.provider": "github",
                        "nomercy.fleet": "github-linux-x64"}}
@@ -58,6 +58,15 @@ class TestTheUnitSpec:
         rt, client = runtime({"exec_unit.create": {"handle": f"rnr-{RID}"}})
         rt.create(self.SPEC)
         assert client.calls[0][2]["spec"]["image"] == "actions/runner@v2"
+
+    def test_linux_cache_policy_reaches_the_unit_entrypoint(self):
+        rt, _ = runtime()
+        spec = dict(self.SPEC, cache_policy={"max_bytes": 20 * 2**30,
+                    "scopes": ["workspace", "temp"], "enabled": False})
+        assert rt.unit_spec(spec)["env"] == {
+            "RUNNER_BUILD_CACHE_GC": f"{20 * 2**30}B",
+            "RUNNER_CLEANUP_SCOPES": "workspace,temp",
+            "RUNNER_CLEANUP_ENABLED": "0"}
 
     def test_a_unit_gets_its_cells_memory_limit_when_it_names_none(self):
         client = Client({"exec_unit.create": {"handle": f"rnr-{RID}"}})
@@ -109,6 +118,12 @@ class TestWhereAUnitIs:
 
 
 class TestReads:
+    @pytest.mark.parametrize("running,state", [(None, "unknown"), (False, "stopping"), ("false", "stopped")])
+    def test_unknown_or_transitional_process_is_not_proven_stopped(self, running, state):
+        rt, _ = runtime({"exec_unit.status": {"exists": True, "running": running, "state": state}})
+        with pytest.raises(RuntimeError, match="could not say"):
+            rt.status(REF)
+
     def test_unknown_is_not_absent(self):
         """The flow would build a second unit on an "absent" it misread."""
         rt, _ = runtime({"exec_unit.status": {"exists": None,

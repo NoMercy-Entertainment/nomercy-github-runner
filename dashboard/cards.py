@@ -318,6 +318,7 @@ _SPEC_STATES = {"drained": "draining", "stopped": "stopped", "failed": "failed"}
 #: the forge on every pass.
 HEARTBEAT_FRESH = 30
 FORGE_FRESH = 120
+STORAGE_FRESH = 600
 
 #: Lifecycle states in which the runner should be taking or doing work, and
 #: so in which "ready" is the question.
@@ -348,13 +349,13 @@ def readiness(spec, now=None):
     from datetime import datetime, timezone
     now = now or datetime.now(timezone.utc)
     unit, seen = spec.get("unit_state"), _age(spec.get("last_seen_at"), now)
-    fresh = seen is not None and seen <= HEARTBEAT_FRESH
+    fresh = seen is not None and 0 <= seen <= HEARTBEAT_FRESH
     process = ("up" if unit == "running" and fresh else
                "down" if unit in ("stopped", "absent") and fresh else
                "unknown")
     word = spec.get("forge_state")
     heard = _age(spec.get("forge_seen_at"), now)
-    recent = heard is not None and heard <= FORGE_FRESH
+    recent = heard is not None and 0 <= heard <= FORGE_FRESH
     forge = ("online" if word in ("idle", "busy") and recent else
              "offline" if word == "offline" and recent else "unknown")
     return {"process": process, "forge": forge,
@@ -382,25 +383,39 @@ def _measured(spec, override, now):
     t.update(override or {})
     age = _age(t.get("at"), now)
     live = override is not None or (age is not None and
-                                    age <= HEARTBEAT_FRESH)
+                                    0 <= age <= HEARTBEAT_FRESH)
     cpu = {"percent": t.get("cpu_percent") if live else None,
-           "cores": None, "host_cores": None}
+           "cores": t.get("cpu_cores"), "host_cores": t.get("host_cores")}
     memory = {"used_bytes": t.get("mem_used_bytes") if live else None,
               "limit_bytes": t.get("mem_limit_bytes")}
-    if t.get("root_disk_total_bytes"):
+    storage_age = _age(t.get("storage_at") or t.get("deep_at"), now)
+    cache_age = _age(t.get("cache_at") or t.get("deep_at"), now)
+    if t.get("root_disk_total_bytes") and live:
         # The appliance's own root disk: the recorded "offline, but the
         # hypervisor side looks fine" failure is this filling up.
         storage = {"used_bytes": t.get("root_disk_used_bytes"),
                    "total_bytes": t.get("root_disk_total_bytes")}
-    elif t.get("storage_bytes") is not None:
+    elif t.get("storage_bytes") is not None and (override is not None or
+            storage_age is not None and 0 <= storage_age <= STORAGE_FRESH):
         storage = {"used_bytes": t.get("storage_bytes"), "total_bytes": None}
     else:
         storage = None
     policy = spec.get("cache_policy") or {}
     cache = ({"used_bytes": t.get("cache_bytes"),
-              "cap_bytes": policy.get("max_bytes") or CACHE_CAP_BYTES}
-             if t.get("cache_bytes") is not None else None)
+              "cap_bytes": t.get("cache_cap_bytes") or policy.get("max_bytes")}
+             if t.get("cache_bytes") is not None and (override is not None or
+                 cache_age is not None and 0 <= cache_age <= STORAGE_FRESH)
+             else None)
     return cpu, memory, storage, cache
+
+
+def _job_telemetry(spec, override, now):
+    from datetime import datetime, timezone
+    if override is not None:
+        return override
+    t = spec.get("telemetry") or {}
+    age = _age(t.get("at"), now or datetime.now(timezone.utc))
+    return t if age is not None and 0 <= age <= HEARTBEAT_FRESH else None
 
 
 def _job(lifecycle, telemetry):
@@ -408,8 +423,10 @@ def _job(lifecycle, telemetry):
     whose job nobody named says it is running one - "no active job" on a
     busy card would be false (T-1803). Naming the job needs the forge's job
     API, which is still to be added."""
+    if lifecycle not in ("busy", "draining"):
+        return None
     named = (telemetry or {}).get("job")
-    if named:
+    if isinstance(named, str) and named:
         return named
     if lifecycle in ("busy", "draining"):
         return "running a job - the forge does not say which"
@@ -457,7 +474,7 @@ def from_spec(spec, telemetry=None, worker_reachable=None, now=None):
         worker=spec.get("host_id"),
         runtime=caps.get("kind"),
         state=_shown_state(state, ready),
-        job=_job(state, telemetry),
+        job=_job(state, _job_telemetry(spec, telemetry, now)),
         cpu=cpu,
         memory=memory,
         storage=storage,

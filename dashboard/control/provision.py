@@ -139,6 +139,15 @@ class NoWorker(Exception):
     pass
 
 
+class RollbackHeld(StepFailed):
+    """Rollback could end a job or discard unconfirmed registration state."""
+    rollback_held = True
+
+    def __init__(self, *args, retry_preflight=False, **kwargs):
+        self.retry_preflight = retry_preflight
+        super().__init__(*args, **kwargs)
+
+
 class ProvisioningFlow:
     """The real executor behind the reconciler.
 
@@ -212,8 +221,10 @@ class ProvisioningFlow:
         with nowhere to go waits there instead of failing (T-1502)."""
         kind = WORKER_KIND[spec["platform"]]
         workers = self.service.inventory.healthy(kind=kind)
-        placed = [s for s in self.service.specs.list() if s.get("host_id")]
-        return placement.choose(spec, workers, placed)
+        hosts = {w["host_id"] for w in workers}
+        placed = [self.service.reserved_spec(s) for s in self.service.specs.list()
+                  if s.get("host_id") in hosts and s["actual_state"] != "absent"]
+        return placement.choose(self.service.effective_spec(spec), workers, placed)
 
     def _step_place(self, spec, state):
         """Scheduler.place(): a healthy worker of the right kind and
@@ -241,11 +252,14 @@ class ProvisioningFlow:
         ref = self._ref(spec, handle=name)
         try:
             existing = retry.call(AGENT_FAST, runtime.status, ref)
-        except Exception:               # noqa: BLE001 - unknown is "create"
-            existing = None
-        if existing is not None and getattr(existing, "exists", False):
+        except Exception as error:
+            raise RollbackHeld("create_unit", f"worker status is unknown; preserving registration and storage: {error}", retry_preflight=True) from None
+        exists = getattr(existing, "exists", None)
+        if exists is True:
             state["ref"] = ref
             return
+        if exists is not False:
+            raise RollbackHeld("create_unit", "worker has not proven the previous unit absent; preserving registration and storage", retry_preflight=True)
         if spec.get("adopt_unit"):
             # An adoption drives the unit that was already there. The worker
             # has just said there is no unit, so there is nothing left to
@@ -259,7 +273,7 @@ class ProvisioningFlow:
             spec = self.service.specs.get(spec["runner_id"])
         self._void_registration(spec)
         spec = self.service.specs.get(spec["runner_id"])
-        unit = dict(spec)
+        unit = self.service.effective_spec(spec)
         unit["name"] = name
         unit["storage"] = storage.names(spec["runner_id"], spec["platform"])
         unit["host_id"] = state["host_id"]
@@ -279,6 +293,9 @@ class ProvisioningFlow:
         """
         state = {"host_id": spec.get("host_id"), "ref": self._ref(spec),
                  "plan": None, "registration": {}}
+        if spec.get("current_operation"):
+            self.service.operations.merge_progress(spec["current_operation"],
+                lambda progress: {"registration_attempted": False, **progress})
         hooks = {"register": (lambda: on_registered(
             dict(state["registration"]))) if on_registered else None}
         steps = ("mint_token", "register", "verify_online")
@@ -297,6 +314,12 @@ class ProvisioningFlow:
             state["registration"] = {
                 "registration_id": str(spec.get("registration_id") or ""),
                 "registration_uuid": spec.get("registration_uuid")}
+            existing = retry.call(AGENT_FAST, self._runtime(spec).status, self._ref(spec))
+            if getattr(existing, "exists", None) is True and getattr(existing, "running", None) is False:
+                # A failed registration can retain a deliberately stopped
+                # unit. Repair must resume that unit before waiting for its
+                # existing forge identity, without registering it twice.
+                self.start(spec)
             steps = ("verify_online",)
         return self._run(spec, steps, state,
                          lambda: dict(state["registration"]), hooks)
@@ -320,33 +343,23 @@ class ProvisioningFlow:
         in place, the register step finds it still at the forge, takes it for
         this runner and waits for a container that is gone to come online -
         which is a wait that can only end at the deadline (2026-09-20). So
-        the record is deleted, and the spec stops naming it either way: the
-        unit being built needs a registration of its own.
-
-        A record the forge shows at work is left exactly where it is (MIG-9)
-        and said in the note, because whatever is answering under it is
-        running somebody's job.
+        the record is deleted before the spec stops naming it. A busy or
+        unreadable record, or a failed deletion, holds replacement while
+        preserving the identity needed to recover it.
         """
         if not (spec.get("registration_id") or spec.get("registration_uuid")):
             return
         provider = self._provider(spec)
-        note = None
         try:
             self._delete_record_instead(
                 provider, spec, provider.deregistration(spec),
                 RuntimeError("the unit it belonged to is being replaced"))
-        except Exception as e:                  # noqa: BLE001 - a record
-            # left behind is said, not raised: the runner still needs one.
-            named = (spec.get("registration_id")
-                     or spec.get("registration_uuid"))
-            note = (f"{time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())} "
-                    f"forge record {named}, of the unit this runner "
-                    f"replaces, was left behind: {e}")[:500]
+        except Exception as error:
+            raise RollbackHeld("create_unit", f"previous registration could not be safely removed; preserving identity and storage: {error}", retry_preflight=True) from None
         fresh = self.service.specs.get(spec["runner_id"])
         self.service.specs.update(fresh["runner_id"], fresh["spec_version"],
                                   registration_id=None,
-                                  registration_uuid=None,
-                                  **({"last_note": note} if note else {}))
+                                  registration_uuid=None)
 
     def _step_mint_token(self, spec, state):
         provider = self._provider(spec)
@@ -371,6 +384,10 @@ class ProvisioningFlow:
         remember(plan.token)
 
     def _step_register(self, spec, state):
+        state["registration_attempted"] = True
+        if spec.get("current_operation"):
+            self.service.operations.merge_progress(spec["current_operation"],
+                lambda progress: dict(progress, registration_attempted=True))
         result = retry.call(AGENT_SLOW, self.agent.register,
                             state["host_id"], state["ref"],
                             state["plan"]) or {}
@@ -480,9 +497,14 @@ class ProvisioningFlow:
                     # treated as failed and undone: something made that
                     # nothing has recorded is the thing to avoid.
                     hooks[step]()
+            except RollbackHeld:
+                raise
             except Exception as error:          # noqa: BLE001
                 token = state.get("secret")
-                compensated, errors = self._compensate(spec, step, state)
+                try:
+                    compensated, errors = self._compensate(spec, step, state)
+                except RollbackHeld as held:
+                    raise RollbackHeld(step, redact(f"{error}; {held}", token)) from None
                 raise StepFailed(step, redact(str(error), token),
                                  compensated,
                                  [redact(e, token) for e in errors]) \
@@ -513,6 +535,13 @@ class ProvisioningFlow:
         is what strands a registration for good. Both are left, and the error
         says so - a half instance that can still be cleaned up, rather than
         an orphan that cannot."""
+        if actions:
+            try:
+                self._rollback_preflight(spec, state)
+            except RollbackHeld:
+                raise
+            except Exception as error:
+                raise RollbackHeld("rollback", f"safety preflight could not complete: {error}") from None
         done, errors = [], []
         for action in actions:
             if action == "remove_unit" and any(
@@ -530,6 +559,31 @@ class ProvisioningFlow:
                 errors.append(f"{action}: {e}")
         return done, errors
 
+    def _rollback_preflight(self, spec, state):
+        """Prove rollback safe before the first deregistration or removal."""
+        from store import storage
+        ref = state.get("ref")
+        target = dict(spec, host_id=state.get("host_id") or spec.get("host_id"),
+                      exec_unit_ref=(ref.handle if ref else spec.get("exec_unit_ref"))
+                      or storage.unit_name(spec["runner_id"]))
+        target.update(state.get("registration") or {})
+        registered = target.get("registration_id") or target.get("registration_uuid")
+        if not registered and state.get("registration_attempted"):
+            raise RollbackHeld("rollback", "registration reply is unknown; unit and storage are preserved")
+        if registered:
+            provider = self._provider(target)
+            records = self._records(provider, fresh=True)
+            seen = provider.job_state(target, records)
+            if records is not None and provider.record_for(target, records) is None:
+                seen = providers.OFFLINE  # confirmed absent differs from an unreadable forge
+            if records is None or seen not in (providers.IDLE, providers.OFFLINE):
+                raise RollbackHeld("rollback", "runner is busy or forge status is unknown; registration and storage are preserved")
+            if not self.quiescent(target):
+                if seen != providers.IDLE or self.drain(target) is not True:
+                    raise RollbackHeld("rollback", "runner has not safely drained; registration and storage are preserved")
+        if not self.quiescent(target):
+            raise RollbackHeld("rollback", "worker has not proven the unit stopped; unit and storage are preserved")
+
     def _undo_remove_unit(self, spec, state):
         """Safe if there is no unit: that is the case 12.5 designs for.
 
@@ -543,8 +597,13 @@ class ProvisioningFlow:
             ref = self._ref(spec)
         if ref is None:
             ref = self._ref(spec, handle=storage.unit_name(spec["runner_id"]))
+        operation = (self.service.operations.get(spec["current_operation"])
+                     if spec.get("current_operation") else None)
+        # A replacement reuses the previous runner's work and cache. Undoing
+        # this attempt must not destroy the data the earlier removal kept.
+        keep_data = bool(operation and operation["verb"] in ("recreate", "repair"))
         retry.call(AGENT_SLOW, self._runtime(spec, state.get("host_id")).remove,
-                   ref, keep_data=False)
+                   ref, keep_data=keep_data)
 
     def _undo_deregister(self, spec, state):
         """Safe if nothing was registered. A registration whose reply was lost
@@ -590,12 +649,15 @@ class ProvisioningFlow:
         # Asked fresh: this is the check that keeps a deletion off a
         # running job, and a list read seconds ago can already be out of
         # date.
-        if provider.job_state(spec, self._records(provider, fresh=True)) == \
-                providers.BUSY:
+        records = self._records(provider, fresh=True)
+        seen = provider.job_state(spec, records)
+        if records is not None and provider.record_for(spec, records) is None:
+            seen = providers.OFFLINE
+        if records is None or seen not in (providers.IDLE, providers.OFFLINE):
             raise RuntimeError(
                 f"the runner could not deregister itself ({cause}) and the "
-                f"forge shows it running a job; its record is not deleted "
-                f"from under it")
+                f"forge shows it running a job or its status is unknown; "
+                f"its record is not deleted")
         if not retry.call(FORGE_DELETE, self.forges.delete, provider,
                           plan.registration_id):
             raise RuntimeError(
@@ -615,7 +677,10 @@ class ProvisioningFlow:
         any of it could not be, because a compensation that failed is where
         something was left behind.
         """
+        progress = self.service.operations.progress(spec["current_operation"]) if spec.get("current_operation") else {}
         state = {"ref": None,
+                 "registration_attempted": progress.get("registration_attempted",
+                     spec.get("actual_state") == "registering"),
                  "registration": {
                      "registration_id": spec.get("registration_id"),
                      "registration_uuid": spec.get("registration_uuid")}}
@@ -629,7 +694,7 @@ class ProvisioningFlow:
                              errors)
         return tuple(done)
 
-    def observe(self, spec):
+    def observe(self, spec, fresh=False):
         """What the forge says, translated into the machine's words.
 
         Only for runners that are serving, draining or drained; everything
@@ -639,14 +704,16 @@ class ProvisioningFlow:
         asks only for labels a drain cannot take off - and goes back to
         draining, so nothing ends it under that job. Unknown and offline are
         not observations of a serving runner: they say nothing new about the
-        machine and must not be read as idle.
+        machine and must not be read as idle. An offline registration plus a
+        fresh, healthy worker's explicit stopped-unit report can confirm an
+        unexpected host shutdown, allowing desired-running units to recover.
         """
         actual = spec["actual_state"]
         if actual not in ("idle", "busy", "draining", "drained",
                           "registering"):
             return None
         provider = self._provider(spec)
-        seen = provider.job_state(spec, self._records(provider))
+        seen = provider.job_state(spec, self._records(provider, fresh=fresh))
         # What the forge said, kept for the reconciler to record as an
         # observation: readiness needs it, not only the machine (T-1803).
         self.forge_words[spec["runner_id"]] = seen
@@ -665,11 +732,34 @@ class ProvisioningFlow:
             return "drained" if self._drained(spec, provider, seen) else None
         if actual == "drained":
             return "draining" if seen == providers.BUSY else None
+        if (actual in ("idle", "busy") and spec.get("desired_state") == "running"
+                and not spec.get("current_operation") and seen == providers.OFFLINE
+                and self._observed_shutdown(spec, provider)):
+            return "stopped"
         if seen == providers.BUSY:
             return "busy"
         if seen == providers.IDLE:
             return "idle"
         return None
+
+    def _observed_shutdown(self, spec, provider):
+        """A host reboot is down only with fresh agreement from both sides."""
+        if not self.service.inventory.accepts_destructive_verbs(spec.get("host_id")):
+            return False
+        records = self._records(provider, fresh=True)
+        seen = provider.job_state(spec, records)
+        self.forge_words[spec["runner_id"]] = seen
+        if (records is None or provider.record_for(spec, records) is None
+                or seen != providers.OFFLINE):
+            return False
+        try:
+            unit = retry.call(AGENT_FAST, self._runtime(spec).status, self._ref(spec))
+        except Exception:
+            return False
+        return unit.exists is True and unit.running is False
+
+    def observe_fresh(self, spec):
+        return self.observe(spec, fresh=True)
 
     def start(self, spec):
         """Started, and in service. The runtime undoes on the worker what a
@@ -683,6 +773,19 @@ class ProvisioningFlow:
 
     def stop(self, spec):
         retry.call(AGENT_SLOW, self._runtime(spec).stop, self._ref(spec))
+
+    def quiescent(self, spec):
+        """A fresh worker answer fences every destructive controller step."""
+        if not spec.get("host_id"):
+            return True
+        from store import storage
+        ref = self._ref(spec, handle=spec.get("exec_unit_ref") or
+                        storage.unit_name(spec["runner_id"]))
+        try:
+            return retry.call(AGENT_FAST, self.agent.running,
+                              spec["host_id"], ref) is False
+        except Exception:
+            return False
 
     # ---- drain (OPEN-7) -----------------------------------------------------
 
@@ -703,7 +806,12 @@ class ProvisioningFlow:
         else:
             retry.call(AGENT_FAST, self.agent.drain, spec.get("host_id"),
                        self._ref(spec))
-        return self._drained(spec, provider)
+        seen = provider.job_state(spec, self._records(provider, fresh=True))
+        if provider.drain_plan(spec).via_forge and seen == providers.IDLE:
+            # The forge gate is confirmed before idle is sampled. Only then
+            # can stopping the listener avoid cancelling a running job.
+            retry.call(AGENT_SLOW, self._runtime(spec).stop, self._ref(spec))
+        return self._drained(spec, provider, seen)
 
     def _drained(self, spec, provider, seen=None):
         """Whether the runner has no job and will take none - proven, never
@@ -717,8 +825,6 @@ class ProvisioningFlow:
             seen = provider.job_state(spec, self._records(provider))
         if seen not in (providers.IDLE, providers.OFFLINE):
             return False
-        if provider.drain_plan(spec).via_forge:
-            return True
         try:
             running = retry.call(AGENT_FAST, self.agent.running,
                                  spec.get("host_id"), self._ref(spec))
@@ -731,6 +837,7 @@ class ProvisioningFlow:
         the forge gives it jobs again, or its unit is started again."""
         provider = self._provider(spec)
         if provider.drain_plan(spec).via_forge:
+            retry.call(AGENT_SLOW, self._runtime(spec).start, self._ref(spec))
             retry.call(FORGE_DRAIN, self.forges.cancel_drain, provider, spec)
         else:
             retry.call(AGENT_SLOW, self.agent.cancel_drain,

@@ -40,6 +40,9 @@ class FakeAgent:
         self.calls.append(("register", host_id, ref.handle,
                            bool(plan and plan.token)))
         self._maybe_fail("register")
+        from tests.fake_runtime import UnitRuntime
+        if ref.handle in UnitRuntime.units:
+            UnitRuntime.units[ref.handle]["stopped"] = False
         return {"registration_id": f"77{ref.handle[-4:]}",
                 "registration_uuid": f"uuid-{ref.handle}"}
 
@@ -62,6 +65,11 @@ class FakeAgent:
     def exited(self, handle):
         """A unit drained on its worker whose runner has finished its job,
         and so exited."""
+        from tests.fake_runtime import UnitRuntime
+        if handle not in UnitRuntime.units:
+            return True
+        if UnitRuntime.units.get(handle, {}).get("stopped"):
+            return True
         return handle in self.drained and not (
             self.forges and self.forges.working(handle))
 

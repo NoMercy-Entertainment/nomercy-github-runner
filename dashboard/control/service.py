@@ -19,12 +19,14 @@ is data-driven by replacing the table. The moment this becomes an `if platform
 == "windows"` the design has lost the property it exists for.
 """
 import importlib
+import re
+from decimal import Decimal
 
 import providers
 from store.fleets import FleetStore
 from store.specs import SpecStore
 
-from . import placement, retry, states
+from . import cpusets, placement, retry, states
 from .inventory import Inventory
 from .operations import OperationStore
 
@@ -37,6 +39,13 @@ EXEC_KINDS = {
     providers.WINDOWS: "windows-process",
     providers.MACOS: "macos-appliance",
 }
+
+COMBINED_MEMORY_PLATFORMS = frozenset({providers.LINUX})
+
+#: Where a whole-number CPU limit pins each runner to its own window of cores.
+#: Linux only: there a quota leaves `nproc` at the host's count, and builds
+#: size themselves by it (control/cpusets.py).
+PINNED_CPU_PLATFORMS = frozenset({providers.LINUX})
 
 #: (provider, platform) -> the runtime that executes that cell, as
 #: "module:attribute". Strings rather than imports so this stays a table of
@@ -166,7 +175,142 @@ class RunnerService:
         from .main import unit_images
         named = unit_images(self.env or {}).get(
             (fleet["provider"], fleet["platform"]))
-        return str(named or fleet.get("template") or "").split(" ")[0]
+        return str(fleet.get("unit_template") or named or fleet.get("template") or "").split(" ")[0]
+
+    def effective_spec(self, spec, env=None):
+        """Resolve deployment defaults before either scheduling or creation."""
+        result = dict(spec)
+        fleet = self.fleets.get(spec.get("fleet_id")) or {}
+        cell = (spec.get("provider"), spec.get("platform"))
+        for field in ("cpu_limit", "memory_limit", "memory_swap_limit", "disk_limit"):
+            if result.get(field) is None and fleet.get(field) is not None:
+                if field == "cpu_limit" and self._pinned_width(fleet) is not None:
+                    # A pinned fleet's number is a window width, which only
+                    # planning or a recreate turns into cores; read as a quota
+                    # it would bound nothing `nproc` reports.
+                    continue
+                result[field] = fleet[field]
+        if result.get("memory_limit") is None:
+            from .main import unit_memory
+            defaults = getattr(self.agents, "memory", {}) or unit_memory(self.env if env is None else env)
+            value = defaults.get(cell)
+            if value:
+                match = re.fullmatch(r"([0-9]+(?:\.[0-9]+)?)\s*([kmgtpe]?)(?:i?b)?",
+                                     str(value).strip(), re.IGNORECASE)
+                if not match:
+                    raise Refused(f"invalid memory limit {value!r} for {cell}")
+                result["memory_limit"] = int(Decimal(match[1]) *
+                    (1024 ** ("kmgtpe".index(match[2].lower()) + 1)
+                     if match[2] else 1))
+                if result["memory_limit"] <= 0:
+                    raise Refused("memory limit must be positive")
+        if not result.get("runtime_template") or result.get("runtime_template") == fleet.get("template"):
+            result["runtime_template"] = self.unit_image(fleet or result)
+        for field in ("memory_limit", "memory_swap_limit", "disk_limit"):
+            if result.get(field) is not None and int(result[field]) <= 0:
+                raise Refused(f"{field} must be positive when configured")
+        if result.get("memory_swap_limit") is not None:
+            if result.get("platform") not in COMBINED_MEMORY_PLATFORMS:
+                raise Refused("combined RAM and swap limits are Linux-only")
+            if not result.get("memory_limit") or int(result["memory_swap_limit"]) < int(result["memory_limit"]):
+                raise Refused("combined RAM and swap limit must be at least the RAM limit")
+        return result
+
+    def replacement_spec(self, spec):
+        """A replacement takes current fleet defaults, preserving its identity."""
+        fleet = self.fleets.get(spec.get("fleet_id"))
+        if not fleet:
+            raise Refused("recreate requires an existing fleet")
+        result = dict(spec, runtime_template=self.unit_image(fleet),
+                      labels=fleet.get("labels") or [],
+                      cache_policy=fleet.get("cache_policy"),
+                      runner_group=fleet.get("runner_group"))
+        for field in ("cpu_limit", "memory_limit", "memory_swap_limit", "disk_limit"):
+            result[field] = fleet.get(field) if fleet.get(field) is not None else spec.get(field)
+        width = self._pinned_width(fleet)
+        if width is not None:
+            own = spec.get("cpu_limit")
+            if cpusets.is_cpuset(own) and len(cpusets.parse(own)) == width:
+                # Its window is still the right size: moving it would change
+                # nothing but which cores it shares, and churn the others.
+                result["cpu_limit"] = own
+            else:
+                result["cpu_limit"] = self._cpu_window(
+                    width, exclude={spec["runner_id"]})
+        return self.effective_spec(result)
+
+    # ---- pinned CPU windows (Linux) ----------------------------------------
+
+    def _pinned_width(self, fleet):
+        """How many cores each runner of this fleet is pinned to, or None when
+        the fleet asks for no pinning. Only Linux pins: there a quota leaves
+        `nproc` at the host's count, and builds size themselves by it."""
+        if (fleet or {}).get("platform") not in PINNED_CPU_PLATFORMS:
+            return None
+        return cpusets.whole_cores(fleet.get("cpu_limit"))
+
+    def _host_cores(self):
+        """The core count windows are cut from: what the workers of pinned
+        platforms declare, else what their runners last measured."""
+        counts = []
+        kinds = {placement.WORKER_KIND[p] for p in PINNED_CPU_PLATFORMS}
+        for worker in (w for kind in sorted(kinds) for w in self.inventory.healthy(kind=kind)):
+            value = placement.declared(worker, "host_cores")
+            if isinstance(value, int) and value > 0:
+                counts.append(value)
+        if not counts:
+            for spec in self.specs.list():
+                value = (spec.get("telemetry") or {}).get("host_cores")
+                if spec.get("platform") in PINNED_CPU_PLATFORMS and isinstance(value, int) and value > 0:
+                    counts.append(value)
+        if not counts:
+            raise Refused("cannot pin a CPU window: no Linux worker has said how "
+                          "many cores it has yet")
+        return min(counts)
+
+    def _cpu_window(self, width, exclude=(), also=()):
+        """A window of `width` cores that overlaps the ones in use least."""
+        taken = [set(s) for s in also]
+        for spec in self.specs.list():
+            if (spec.get("platform") not in PINNED_CPU_PLATFORMS
+                    or spec["runner_id"] in exclude
+                    or spec.get("actual_state") == states.TERMINAL
+                    or spec.get("deleted_at")):
+                continue
+            if cpusets.is_cpuset(spec.get("cpu_limit")):
+                taken.append(cpusets.parse(spec["cpu_limit"]))
+        return cpusets.allocate(width, self._host_cores(), taken)
+
+    def reserved_spec(self, spec):
+        """An existing unit reserves at least its last measured memory cap."""
+        result = self.effective_spec(spec)
+        measured = (spec.get("telemetry") or {}).get("mem_limit_bytes")
+        if measured and int(measured) > int(result.get("memory_limit") or 0):
+            result["memory_limit"] = int(measured)
+        measured_swap = (spec.get("telemetry") or {}).get("mem_swap_limit_bytes")
+        if measured_swap and int(measured_swap) > int(result.get("memory_swap_limit") or 0):
+            result["memory_swap_limit"] = int(measured_swap)
+        return result
+
+    def validate_replacement(self, spec):
+        replacement = self.replacement_spec(spec)
+        fleet = self.fleets.get(spec["fleet_id"])
+        if not fleet["available"]:
+            raise Refused(f"recreate cannot build a replacement: {fleet.get('unavailable_reason') or 'fleet is unavailable'}")
+        self.runtime_for(spec["provider"], spec["platform"])
+        can, why = self.buildable(spec["fleet_id"])
+        if not can:
+            raise Refused(f"recreate cannot build a replacement: {why}")
+        workers = self.inventory.healthy(kind=placement.WORKER_KIND[spec["platform"]])
+        if spec.get("host_id"):
+            workers = [w for w in workers if w["host_id"] == spec["host_id"]]
+        hosts = {w["host_id"] for w in workers}
+        placed = [self.reserved_spec(s) for s in self.specs.list()
+                  if s.get("host_id") in hosts and s["actual_state"] != "absent"]
+        host, why = placement.choose(replacement, workers, placed)
+        if host is None:
+            raise Refused(f"recreate cannot build a replacement: {why}")
+        return replacement
 
     def buildable(self, fid):
         """Whether some healthy worker could actually build a runner of this
@@ -260,6 +404,7 @@ class RunnerService:
         if not can:
             raise Refused(f"{fid} cannot be built: {why}")
 
+        defaults = self.effective_spec(dict(fleet, runtime_template=self.unit_image(fleet)), env=env)
         operation, created = self.operations.open(
             "plan", fleet_id=fid, requested_by=requested_by,
             idempotency_key=idempotency_key,
@@ -267,14 +412,27 @@ class RunnerService:
         if not created:
             return operation["operation_id"]
 
+        width = self._pinned_width(fleet)
+        windows = []
+        if width is not None:
+            # Chosen before the operation opens, so a host that has not said
+            # how many cores it has refuses the plan instead of half-making it.
+            for _ in range(count):
+                windows.append(self._cpu_window(
+                    width, also=[cpusets.parse(w) for w in windows]))
+
         runner_ids = []
-        for _ in range(count):
+        for n in range(count):
             runner_ids.append(self.specs.create(
                 display_name=self.next_name(fid),
                 provider=fleet["provider"],
                 platform=fleet["platform"],
                 architecture=fleet["architecture"],
-                runtime_template=fleet["template"],
+                runtime_template=defaults.get("runtime_template"),
+                cpu_limit=windows[n] if windows else defaults.get("cpu_limit"),
+                memory_limit=defaults.get("memory_limit"),
+                memory_swap_limit=defaults.get("memory_swap_limit"),
+                disk_limit=defaults.get("disk_limit"),
                 labels=fleet.get("labels") or [],
                 runner_group=fleet.get("runner_group"),
                 cache_policy=fleet.get("cache_policy"),
@@ -423,6 +581,9 @@ class RunnerService:
                     f"{in_flight['verb']} is already in flight on this "
                     f"runner ({in_flight['operation_id']}); wait for it or "
                     f"cancel it")
+
+        if verb == "recreate":
+            self.validate_replacement(spec)
 
         operation, created = self.operations.open(
             verb, runner_id=runner_id, requested_by=requested_by,

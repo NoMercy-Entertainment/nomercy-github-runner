@@ -64,6 +64,22 @@ def live(service, fid=GH):
 
 
 class TestConvergesUp:
+    def test_maintenance_enabled_during_a_pass_holds_the_next_runner(self, world):
+        service, executor, reconciler = world
+        service.scale_up(GH, by=2)
+        reconciler.pass_once()
+        register = executor.register
+        def enter_maintenance(*args, **kwargs):
+            result = register(*args, **kwargs)
+            with schema.connect(service.specs.path) as c:
+                c.execute("INSERT INTO platform_settings VALUES ('maintenance','true')")
+            return result
+        executor.register = enter_maintenance
+        report = reconciler.pass_once()
+        assert sum(c[0] == "register" for c in executor.mutations()) == 1
+        assert ("platform", "maintenance") in report.held
+        assert sorted(s["actual_state"] for s in live(service)) == ["idle", "provisioned"]
+
     def test_a_fleet_reaches_its_capacity(self, world):
         service, executor, reconciler = world
         service.scale_up(GH, by=3)
@@ -527,7 +543,7 @@ class TestOperationsAreCarriedOut:
         operation_id = service.restart(runner_id)
         converge(service, reconciler)
 
-        assert [c[0] for c in executor.mutations()] == ["stop", "start"]
+        assert [c[0] for c in executor.mutations()] == ["drain", "stop", "start"]
         assert service.operations.get(operation_id)["state"] == "succeeded"
         assert service.specs.get(runner_id)["actual_state"] == "idle"
 
@@ -573,7 +589,9 @@ class TestOperationsAreCarriedOut:
     def test_clear_cache_runs_on_an_idle_runner(self, world):
         service, executor, reconciler = world
         runner_id = self.a_serving_runner(world)
+        executor.world[runner_id] = "idle"
         operation_id = service.clear_cache(runner_id)
+        reconciler.pass_once()
         reconciler.pass_once()
         operation = service.operations.get(operation_id)
         assert operation["state"] == "succeeded"
@@ -600,6 +618,7 @@ class TestOperationsAreCarriedOut:
         executor.fail_on = {"stop"}
         operation_id = service.stop(runner_id)
 
+        reconciler.pass_once()  # quiesce before the stop that fails
         reconciler.pass_once()
 
         operation = service.operations.get(operation_id)

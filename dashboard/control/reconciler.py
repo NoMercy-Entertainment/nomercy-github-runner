@@ -37,6 +37,8 @@ The work itself is done by an executor passed in (T-0305 provides the real one,
 the tests a fake). This module decides; the executor acts.
 """
 import uuid
+import os
+import threading
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any, Mapping, Optional, Protocol
@@ -50,6 +52,7 @@ from .service import RunnerService, forget_adoption
 
 LEASE_NAME = "reconciler"
 LEASE_SECONDS = 120
+LEASE_RENEW_SECONDS = 30
 
 #: When scaling down, which runners go first. Cheapest to lose first: a
 #: planned runner exists only on paper, a failed one is not serving anyway.
@@ -79,7 +82,7 @@ DESTRUCTIVE = states.ENDS_WORK
 #: removal there by the back door - which the design forbids (17.3) and which a
 #: mutation test of T-0308 turned up. Plus clear_cache, which deletes data.
 #: A runner not yet placed is exempt: placement only ever picks a healthy one.
-NEEDS_HEALTHY_WORKER = DESTRUCTIVE | {"provision", "register", "clear_cache"}
+NEEDS_HEALTHY_WORKER = DESTRUCTIVE | {"provision", "register", "clear_cache", "start", "cancel_drain"}
 
 
 class Executor(Protocol):
@@ -129,6 +132,8 @@ class Reconciler:
         self.executor = executor
         self.holder = holder or f"reconciler-{uuid.uuid4()}"
         self.path = service.specs.path
+        self._pass_lock = threading.Lock()
+        self._lease_lost = threading.Event()
 
     # ---- the lease ---------------------------------------------------------
 
@@ -158,14 +163,70 @@ class Reconciler:
             c.execute("DELETE FROM leases WHERE name = ? AND holder = ?",
                       (LEASE_NAME, self.holder))
 
+    def _renew(self):
+        with schema.connect(self.path) as c:
+            cursor = c.execute("UPDATE leases SET expires_at = ? WHERE name = ? AND holder = ?",
+                               (_iso(_now() + timedelta(seconds=LEASE_SECONDS)),
+                                LEASE_NAME, self.holder))
+        return cursor.rowcount == 1
+
+    def _keep_lease(self, stopped):
+        while not stopped.wait(LEASE_RENEW_SECONDS):
+            try:
+                if self._renew():
+                    continue
+            except Exception:
+                pass
+            self._lease_lost.set()
+            return
+
+    def _lock_file(self):
+        """OS lock fences live processes even when a paused lease expires."""
+        stream = open(os.fspath(self.path) + ".reconciler.lock", "a+b")
+        try:
+            if os.name == "nt":
+                import msvcrt
+                if stream.seek(0, 2) == 0:
+                    stream.write(b"\0")
+                    stream.flush()
+                stream.seek(0)
+                msvcrt.locking(stream.fileno(), msvcrt.LK_NBLCK, 1)
+            else:
+                import fcntl
+                fcntl.flock(stream, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            stream.close()
+            return None
+        return stream
+
     # ---- a pass ------------------------------------------------------------
+
+    def _maintenance_holds(self, report):
+        with schema.connect(self.path) as c:
+            row = c.execute("SELECT value FROM platform_settings WHERE key='maintenance'").fetchone()
+        held = bool(row and str(row[0]).lower() in ("true", "1"))
+        if held and ("platform", "maintenance") not in report.held:
+            report.held.append(("platform", "maintenance"))
+        return held
 
     def pass_once(self):
         report = Report()
-        if not self._acquire():
+        if self._maintenance_holds(report):
+            return report
+        if not self._pass_lock.acquire(blocking=False):
             report.skipped = True
             return report
+        lock_file = None
+        heartbeat = None
+        stopped = threading.Event()
         try:
+            lock_file = self._lock_file()
+            if lock_file is None or not self._acquire():
+                report.skipped = True
+                return report
+            self._lease_lost.clear()
+            heartbeat = threading.Thread(target=self._keep_lease, args=(stopped,), daemon=True)
+            heartbeat.start()
             # One reading of each forge serves every runner this pass looks
             # at; asking per runner spent a token's hourly budget in minutes
             # and left every card reading `unknown`.
@@ -174,8 +235,18 @@ class Reconciler:
                 begin()
             self._sweep(report)
             for fleet in self.service.fleets.list():
-                self._converge_capacity(fleet, report)
+                if self._lease_lost.is_set() or self._maintenance_holds(report):
+                    break
+                try:
+                    self._converge_capacity(fleet, report)
+                except Exception as error:
+                    report.errors.append((fleet["fleet_id"], str(error)))
             for spec in self.service.specs.list():
+                if self._maintenance_holds(report):
+                    break
+                if self._lease_lost.is_set():
+                    report.errors.append((LEASE_NAME, "lease renewal failed; pass stopped"))
+                    break
                 try:
                     self._step(spec, report)
                 except StaleSpec:
@@ -183,9 +254,19 @@ class Reconciler:
                     # looking at it. Nothing is lost: the next pass reads the
                     # new intent. Optimistic concurrency paying for itself.
                     report.held.append((spec["runner_id"], "changed mid-pass"))
+                except Exception as error:
+                    report.errors.append((spec["runner_id"], str(error)))
             return report
         finally:
-            self._release()
+            stopped.set()
+            try:
+                if heartbeat:
+                    heartbeat.join()
+                    self._release()
+            finally:
+                if lock_file:
+                    lock_file.close()
+                self._pass_lock.release()
 
     # ---- the sweep ---------------------------------------------------------
 
@@ -199,17 +280,18 @@ class Reconciler:
         """Undo creations that were interrupted and not finished in time.
 
         Design 12.5: the reconciler sweeps for specs stuck in a transitional
-        state past their deadline and runs the same compensations. The runner
-        ends `failed` with nothing left outside - no unit, no forge record - and
-        is counted against its fleet like any failed runner, so the sweep
-        never causes an overshoot by freeing a slot while something still
-        exists.
+        state past their deadline and runs the same guarded compensations.
+        A registration that became healthy is recovered; busy or uncertain
+        work is held with its identity and storage intact. Safe cleanup ends
+        `failed` and still counts against capacity, preventing overshoot.
 
         Only creation is swept. A runner that is draining may be waiting on a
         job for hours and is never touched here; the others re-drive
         themselves on every pass.
         """
         for operation in self.service.operations.overdue():
+            if self._maintenance_holds(report):
+                break
             runner_id = operation["runner_id"]
             if not runner_id:
                 continue
@@ -219,10 +301,20 @@ class Reconciler:
                 continue
             if spec["actual_state"] not in self.CREATING:
                 continue
+            if (spec["actual_state"] == "provisioning" and
+                    self.service.operations.progress(operation["operation_id"]).get("rollback_retry_preflight")):
+                # Nothing was changed: re-observe through normal provisioning
+                # rather than turning a temporary read failure into removal.
+                continue
             if not self._worker_accepts(spec):
                 report.held.append((runner_id, "sweep held: worker "
                                     f"{spec['host_id']} is not healthy"))
                 continue
+            if spec["actual_state"] == "registering":
+                self._do_observe(spec, None, report, fresh=True)
+                spec = self.service.specs.get(runner_id)
+                if spec["actual_state"] not in self.CREATING:
+                    continue
             was = spec["actual_state"]
             try:
                 undone = self.executor.abandon(spec)
@@ -299,6 +391,27 @@ class Reconciler:
 
     def _step(self, spec, report):
         operation = self._operation(spec)
+        if operation is None and spec.get("current_operation"):
+            # Completing an operation and clearing its spec pointer are two
+            # writes. Resume safely after a crash between those writes.
+            finished = self.service.operations.get(spec["current_operation"])
+            if finished and finished["state"] not in OPEN:
+                self._clear_operation(spec)
+                spec = self.service.specs.get(spec["runner_id"])
+        if operation is None and spec["actual_state"] in ("removing", "deregistering") and spec["desired_state"] != "absent":
+            if spec.get("last_error"):
+                report.held.append((spec["runner_id"], "failed recreate held: explicitly retry after resolving its error"))
+                return
+            # Interrupted work without an error resumes through the same
+            # replacement preflight and rolling gate as an explicit request.
+            self.service.recreate(spec["runner_id"], requested_by="reconciler")
+            spec = self.service.specs.get(spec["runner_id"])
+            operation = self._operation(spec)
+
+        if operation and operation["verb"] == "recreate" and not self._recreate_turn(spec, operation, report):
+            return
+        if operation and operation["verb"] == "clear_cache" and not self._cache_turn(spec, operation, report):
+            return
 
         # Close a finished operation before deciding anything. A runner that
         # has reached what its operation asked for is usually still observed
@@ -310,9 +423,33 @@ class Reconciler:
 
         progress = (self.service.operations.progress(operation["operation_id"])
                     if operation else {})
+        if (progress.get("rollback_held") and not progress.get("rollback_retry_preflight")
+                and spec["actual_state"] == "provisioning"):
+            report.held.append((spec["runner_id"], progress["rollback_held"]))
+            return
+        if operation and operation["verb"] == "clear_cache" and spec["actual_state"] in SERVING:
+            observe = getattr(self.executor, "observe_fresh", self.executor.observe)
+            try:
+                seen = observe(spec)
+            except Exception:
+                seen = None
+            if seen in SERVING and seen != spec["actual_state"]:
+                spec = self._move(spec, seen)
+            if seen != "idle" and (spec.get("cache_policy") or {}).get("on_clear") != "drain-first":
+                self.service.operations.fail(operation["operation_id"],
+                    "cache clear skipped: runner is busy or idle could not be confirmed")
+                self._clear_operation(spec)
+                report.held.append((spec["runner_id"], "cache clear skipped: not confirmed idle"))
+                return
         action = decide(spec, operation, progress)
         if action is None:
             return
+        if operation and operation["verb"] == "recreate" and action in {"deregister", "remove"}:
+            try:
+                self.service.validate_replacement(spec)
+            except Exception as error:
+                self._fail(spec, operation, error, report, "replacement preflight")
+                return
 
         # The last lock. `decide` never asks for one of these on a busy
         # runner; this makes sure nothing ever can, whatever it decides.
@@ -342,7 +479,100 @@ class Reconciler:
                                 f"{spec['host_id']} is not healthy"))
             return
 
+        quiescent = getattr(self.executor, "quiescent", None)
+        if action in DESTRUCTIVE | {"clear_cache"} and quiescent and not quiescent(spec):
+            # A restarted controller can inherit stopping/failed while the
+            # process still runs. Repeat the safe drain protocol rather than
+            # assuming the interrupted step had already quiesced it.
+            try:
+                self._attempt(operation, "confirming quiescence before " + action)
+                self.executor.drain(spec)
+            except Exception as error:
+                self._fail(spec, operation, error, report, "quiesce before " + action)
+                return
+            report.held.append((spec["runner_id"],
+                                f"{action} held: unit may still be running a job; confirming it stopped"))
+            report.did("quiesce", spec["runner_id"])
+            return
+
         getattr(self, f"_do_{action}")(spec, operation, report)
+
+    def _recreate_turn(self, spec, operation, report):
+        """Only one replacement per fleet; preserve capacity after a failure."""
+        siblings = [s for s in self._fleet_specs(spec["fleet_id"])
+                    if s["runner_id"] != spec["runner_id"]]
+        active = []
+        for sibling in siblings:
+            other = self._operation(sibling)
+            if sibling["actual_state"] not in SERVING and not (
+                    other and other["verb"] == "recreate" and other["state"] == "pending"):
+                if operation["state"] == "pending":
+                    report.held.append((spec["runner_id"], "recreate held: another fleet runner is unavailable"))
+                    return False
+            if other and other["verb"] == "recreate":
+                active.append(other)
+        if operation["state"] == "pending" and any(o["state"] == "running" for o in active):
+            report.held.append((spec["runner_id"], "recreate held: replacement in progress"))
+            return False
+        if operation["state"] == "pending":
+            first = min([operation] + active, key=lambda o: (o["requested_at"], o["operation_id"]))
+            if first["operation_id"] != operation["operation_id"]:
+                report.held.append((spec["runner_id"], "recreate queued"))
+                return False
+            try:
+                self.service.validate_replacement(spec)
+            except Exception as error:
+                self.service.operations.fail(operation["operation_id"], str(error))
+                self._clear_operation(spec)
+                self._halt_recreates(spec, str(error), report)
+                report.errors.append((spec["runner_id"], str(error)))
+                return False
+        return True
+
+    def _cache_turn(self, spec, operation, report):
+        """One cache clear per fleet at a time. A clear drains its runner
+        first, and a fleet-wide "clear all cache" asks every idle runner at
+        once; without turns the whole fleet was out of service together.
+        The oldest request goes first. A runner of the fleet that is meant to
+        serve but is not - still clearing, or on its way back - holds the
+        rest; one stopped on purpose does not."""
+        if operation["state"] != "pending" or spec["actual_state"] not in SERVING:
+            return True
+        queued = [operation]
+        for sibling in self._fleet_specs(spec["fleet_id"]):
+            if sibling["runner_id"] == spec["runner_id"]:
+                continue
+            if sibling["actual_state"] not in SERVING and sibling["desired_state"] == "running":
+                # Meant to serve and not serving yet - clearing, or back from
+                # a clear whose operation has already closed. Taking another
+                # one out now is exactly what turns exist to prevent.
+                report.held.append((spec["runner_id"], "cache clear queued: another runner of the fleet is out of service"))
+                return False
+            other = self._operation(sibling)
+            if not other or other["verb"] != "clear_cache":
+                continue
+            if other["state"] == "running":
+                report.held.append((spec["runner_id"], "cache clear queued: another runner of the fleet is clearing"))
+                return False
+            if other["state"] == "pending":
+                queued.append(other)
+        first = min(queued, key=lambda o: (o["requested_at"], o["operation_id"]))
+        if first["operation_id"] != operation["operation_id"]:
+            report.held.append((spec["runner_id"], "cache clear queued"))
+            return False
+        return True
+
+    def _halt_recreates(self, failed_spec, reason, report):
+        for sibling in self._fleet_specs(failed_spec["fleet_id"]):
+            if sibling["runner_id"] == failed_spec["runner_id"]:
+                continue
+            operation = self._operation(sibling)
+            if not operation or operation["verb"] != "recreate" or operation["state"] != "pending":
+                continue
+            error = f"fleet rebuild halted after {failed_spec['runner_id']} failed: {reason}"
+            self.service.operations.fail(operation["operation_id"], error)
+            self._clear_operation(sibling)
+            report.errors.append((sibling["runner_id"], error))
 
     def _worker_accepts(self, spec):
         """Whether a destructive step may go to this runner's worker.
@@ -390,6 +620,15 @@ class Reconciler:
         """
         text = f"{step}: {error}" if step else str(error)
         message = f"{_iso(_now())} {text[:500]}"
+        if getattr(error, "rollback_held", False):
+            current = self.service.specs.get(spec["runner_id"])
+            self.service.specs.update(current["runner_id"], current["spec_version"], last_error=message)
+            if operation:
+                self.service.operations.merge_progress(operation["operation_id"],
+                    lambda progress: dict(progress, rollback_held=text,
+                        rollback_retry_preflight=bool(getattr(error, "retry_preflight", False))))
+            report.held.append((spec["runner_id"], text))
+            return
         spec = self.service.specs.get(spec["runner_id"])
         extra = {"last_error": message}
         if operation:
@@ -409,6 +648,8 @@ class Reconciler:
                                       **extra)
         if operation:
             self.service.operations.fail(operation["operation_id"], text)
+            if operation["verb"] == "recreate":
+                self._halt_recreates(spec, text, report)
         report.errors.append((spec["runner_id"], text))
 
     def _attempt(self, operation, note):
@@ -426,6 +667,13 @@ class Reconciler:
         # rather than failing: it is not broken, the fleet is full, and a
         # failed runner would hold its place in the fleet until someone
         # repaired it (T-1502).
+        effective = self.service.effective_spec(spec)
+        changes = {key: effective.get(key) for key in
+                   ("cpu_limit", "memory_limit", "memory_swap_limit", "disk_limit", "runtime_template")
+                   if effective.get(key) != spec.get(key)}
+        if changes:
+            self.service.specs.update(spec["runner_id"], spec["spec_version"], **changes)
+            spec = self.service.specs.get(spec["runner_id"])
         placement = getattr(self.executor, "placement", None)
         if spec["actual_state"] == "planned" and not spec["host_id"] and                 placement is not None:
             host_id, why = placement(spec)
@@ -456,6 +704,9 @@ class Reconciler:
         except Exception as e:                  # noqa: BLE001
             self._fail(spec, operation, e, report, "provision")
             return
+        self.service.operations.merge_progress(operation["operation_id"],
+            lambda progress: {key: value for key, value in progress.items()
+                              if key not in ("rollback_held", "rollback_retry_preflight")})
         spec = self.service.specs.get(spec["runner_id"])
         self._move(spec, "provisioned",
                    exec_unit_ref=result.get("exec_unit_ref"),
@@ -530,9 +781,10 @@ class Reconciler:
         except Exception as e:                  # noqa: BLE001
             self._fail(spec, operation, e, report, "stop")
             return
-        self._move(spec, "stopped")
+        spec = self._move(spec, "stopped")
         self._advance(operation, "stopped")
         report.did("stop", spec["runner_id"])
+        self._close_if_fulfilled(spec, operation, report)
 
     def _do_drain(self, spec, operation, report):
         """Asked for on every pass while the runner is draining, the way an
@@ -645,6 +897,12 @@ class Reconciler:
             # other, and under the fleet's own name (T-0802, 2026-09-20).
             forget_adoption(self.service.specs, spec)
             spec = self.service.specs.get(spec["runner_id"])
+            replacement = self.service.replacement_spec(spec)
+            fields = {key: replacement.get(key) for key in
+                      ("runtime_template", "cpu_limit", "memory_limit", "memory_swap_limit", "disk_limit",
+                       "labels", "cache_policy", "runner_group")}
+            self.service.specs.update(spec["runner_id"], spec["spec_version"], **fields)
+            spec = self.service.specs.get(spec["runner_id"])
             self._move(spec, "provisioning", exec_unit_ref=None,
                        registration_id=None, registration_uuid=None)
             self._advance(operation, "rebuilding")
@@ -668,6 +926,7 @@ class Reconciler:
                 operation["operation_id"],
                 f"the runner became {spec['actual_state']} before its cache "
                 f"could be cleared")
+            self._clear_operation(spec)
             report.errors.append((spec["runner_id"], "busy at clear time"))
             return
         self._attempt(operation, "clearing cache")
@@ -676,13 +935,14 @@ class Reconciler:
         except Exception as e:                  # noqa: BLE001
             self.service.operations.fail(operation["operation_id"],
                                          f"clear cache: {e}")
+            self._clear_operation(spec)
             report.errors.append((spec["runner_id"], str(e)))
             return
         self.service.operations.succeed(operation["operation_id"], freed)
         self._clear_operation(spec)
         report.did("clear_cache", spec["runner_id"])
 
-    def _do_observe(self, spec, operation, report):
+    def _do_observe(self, spec, operation, report, fresh=False):
         """Ask what the world looks like, and record it if it is news.
 
         Only observed edges are taken here. An executor reporting something the
@@ -691,7 +951,8 @@ class Reconciler:
         through to get there.
         """
         try:
-            seen = self.executor.observe(spec)
+            observe = getattr(self.executor, "observe_fresh", self.executor.observe) if fresh else self.executor.observe
+            seen = observe(spec)
         except Exception:                       # noqa: BLE001
             return
         finally:
@@ -830,8 +1091,12 @@ def decide(spec, operation=None, progress=None):
     # gone left a runner that had been deregistered still running and
     # unmanaged, when the removal had been refused for a degraded worker
     # (2026-09-20).
-    if actual == "removing" and verb is None:
-        return "remove"
+    if actual in ("removing", "deregistering") and verb is None:
+        # Failed rebuilding needs an explicit retry; a crash without a
+        # reported failure is recovered through _step's normal preflight.
+        if desired == "absent" or not spec.get("last_error"):
+            return "remove" if actual == "removing" else "deregister"
+        return None
 
     # -- operations that are more than a desired state ----------------------
     if verb == "clear_cache":
@@ -839,15 +1104,15 @@ def decide(spec, operation=None, progress=None):
         # once its job is done - never under it. Under the default it is
         # skipped: the clear step refuses a runner that took a job meanwhile.
         policy = spec.get("cache_policy") or {}
-        if policy.get("on_clear") == "drain-first":
-            if actual in ("busy", "draining"):
-                return "drain"
+        if actual in ("idle", "draining") or (
+                actual == "busy" and policy.get("on_clear") == "drain-first"):
+            return "drain"
         return "clear_cache"
 
     if verb == "restart" and "started" not in done:
-        if actual == "busy":
+        if actual in ("idle", "busy"):
             return "drain"                  # never abort the job
-        if actual in ("idle", "drained") and "stopped" not in done:
+        if actual == "drained" and "stopped" not in done:
             return "stop"
         if actual == "stopped":
             return "start"
@@ -903,9 +1168,9 @@ def decide(spec, operation=None, progress=None):
         return "observe"
 
     if desired == "stopped":
-        if actual == "busy":
+        if actual in ("idle", "busy"):
             return "drain"
-        if actual in ("idle", "drained"):
+        if actual == "drained":
             return "stop"
         if actual in ("stopped", "planned", "failed"):
             return None

@@ -52,7 +52,22 @@ class LiveForges:
         """Stop the forge giving this runner jobs (OPEN-7). The provider
         raises when the forge did not confirm it; that reaches `last_error`
         as it is, and the drain is asked again on the next pass."""
+        client = None
+        group = None
+        if provider.key == "github":
+            group = (self.env.get("GITHUB_DRAIN_GROUP") or "").strip()
+            client = provider.forge_client(self.env)
+            if not group or client is None or not client.drain_group_closed(group):
+                raise ForgeUnreachable(
+                    "GitHub drain requires GITHUB_DRAIN_GROUP with verified "
+                    "selected visibility and zero repositories; removing "
+                    "custom labels does not prevent self-hosted jobs")
         provider.drain_at_forge(self.env, spec)
+        if client is not None and not client.drain_group_closed(
+                group, spec.get("registration_id")):
+            raise ForgeUnreachable(
+                "GitHub did not confirm runner membership in the closed "
+                "drain group; destructive actions remain blocked")
 
     def cancel_drain(self, provider, spec) -> None:
         """Let the forge give this runner jobs again."""

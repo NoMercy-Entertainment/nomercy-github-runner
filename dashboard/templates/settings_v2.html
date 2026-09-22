@@ -1,0 +1,91 @@
+{% extends "base.html" %}
+{% block title %}Runner settings{% endblock %}
+{% block style %}
+.fields{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:16px}
+#message{white-space:pre-wrap;margin:14px 0}button:disabled{opacity:.5}
+select{width:100%;background:var(--bg-inset);color:var(--text);border:1px solid var(--rule);padding:8px}input:disabled{opacity:.5}
+{% endblock %}
+{% block body %}
+<header><div class="brand"><h1>Runner settings</h1><div class="sub">Defaults for every fleet</div></div>
+<nav><a href="/">Fleet</a><a href="/history">History</a><a class="on" href="/settings">Settings</a></nav></header>
+<p class="notice">Changes apply to newly created runners and subsequent recreations. Existing runners keep their current limits until recreated.</p>
+<div id="message" role="status" aria-live="polite"></div>
+{% if role == 'admin' %}
+<section class="panel"><h2>Maintenance</h2><p id="maintenance-state"></p>
+<p class="hint">Pausing reconciliation does not stop runners or prevent already running listeners from accepting jobs.</p>
+<button id="maintenance-toggle">Loading</button></section>
+<section class="panel"><h2>Forge credentials</h2><p class="hint">Tokens are encrypted and never displayed. A saved token is used by the next controller operation.</p>
+<div id="secrets"></div></section>
+{% endif %}
+<div id="fleets">Loading settings</div>
+<script>
+{% include "_card.js" %}
+const admin = {{ (role == 'admin')|tojson }};
+let maintenance = false;
+function message(text, bad=false) {const e=document.getElementById('message');e.textContent=text;e.className=bad?'notice err':'notice ok-msg';}
+async function api(url, body) {
+  const res=await fetch(url,body===undefined?{}:{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+  const data=await res.json();if(!res.ok)throw new Error(data.error||('HTTP '+res.status));return data;
+}
+function field(fid,key,label,value,type='text',disabled=false,bounds={}) {
+  return `<div class="field"><label for="${esc(fid+'-'+key)}">${esc(label)}</label><input id="${esc(fid+'-'+key)}" name="${esc(key)}" type="${type}" value="${esc(value??'')}" ${type==='number'?`min="${bounds.min??0.01}" step="${bounds.step??'any'}" ${bounds.max?`max="${bounds.max}"`:''}`:''} ${disabled?'disabled':''}></div>`;
+}
+function cacheFields(f) {
+  const policy=f.cache_policy||{}, fid=f.fleet_id;
+  const linux=f.platform==='linux', scopes=linux?['engine-build-cache','engine-images-unused','workspace','toolcache','temp']:['workspace','toolcache','temp'];
+  return field(fid,'cache_max_bytes','Cache budget (GiB)',policy.max_bytes?policy.max_bytes/1073741824:null,'number',!linux)+
+    `<div class="field"><label for="${esc(fid)}-cache-enabled">Automatic cache cleanup${linux?'':' (unavailable)'}</label><input id="${esc(fid)}-cache-enabled" name="cache_enabled" type="checkbox" ${linux&&policy.enabled!==false?'checked':''} ${linux?'':'disabled'}></div>`+
+    `<div class="field"><label for="${esc(fid)}-cache-scopes">Clear scopes (empty uses runtime defaults)</label><select id="${esc(fid)}-cache-scopes" name="cache_scopes" multiple>${scopes.map(scope=>`<option value="${scope}" ${(policy.scopes||[]).includes(scope)?'selected':''}>${scope}</option>`).join('')}</select></div>`+
+    `<div class="field"><label for="${esc(fid)}-cache-on-clear">When a job is running</label><select id="${esc(fid)}-cache-on-clear" name="cache_on_clear"><option value="skip-if-busy" ${policy.on_clear==='drain-first'?'':'selected'}>Skip busy runners</option><option value="drain-first" ${policy.on_clear==='drain-first'?'selected':''}>Drain, finish the job, then clear</option></select></div>`;
+}
+function fleetDefaults(form) {
+  const fields=new FormData(form), data=Object.fromEntries(fields);
+  data.labels=data.labels.split(',').map(s=>s.trim()).filter(Boolean);
+  for(const key of ['cpu_limit','memory_limit','memory_swap_limit','disk_limit']) {
+    if(!(key in data))continue;
+    data[key]=data[key]===''?null:(key==='cpu_limit'?data[key]:Math.round(Number(data[key])*1073741824));
+  }
+  data.unit_template=data.unit_template||null;
+  data.runner_group=data.runner_group||null;
+  data.cache_policy={enabled:fields.has('cache_enabled'),on_clear:data.cache_on_clear};
+  if(data.cache_max_bytes!==undefined&&data.cache_max_bytes!=='')data.cache_policy.max_bytes=Math.round(Number(data.cache_max_bytes)*1073741824);
+  const scopes=fields.getAll('cache_scopes');if(scopes.length)data.cache_policy.scopes=scopes;
+  for(const key of ['cache_enabled','cache_max_bytes','cache_scopes','cache_on_clear'])delete data[key];
+  return data;
+}
+function fleetForm(f) {
+  const mac=f.platform==='macos', fixedDisk=!f.disk_quota_supported&&f.guest_disk_virtual_bytes;
+  return `<form class="panel" data-fleet="${esc(f.fleet_id)}"><h2>${esc(f.fleet_id)}</h2><div class="fields">`+
+    field(f.fleet_id,'unit_template','Unit image or template override',f.unit_template)+
+    field(f.fleet_id,'labels','Runner labels, separated by commas',(f.labels||[]).join(', '))+
+    field(f.fleet_id,'runner_group','Runner group (GitHub)',f.runner_group)+
+    field(f.fleet_id,'cpu_limit',mac&&!f.cpu_limit_supported?'CPU cores (enforcement unverified)':'CPU cores',f.cpu_limit,'number',!f.cpu_limit_supported,mac?{min:1,max:64,step:1}:{})+
+    field(f.fleet_id,'memory_limit',mac?(f.memory_limit_supported?'Guest RAM limit (GiB)':'Memory setting (GiB, enforcement unverified)'):'Memory limit (GiB)',f.memory_limit?f.memory_limit/1073741824:null,'number',!f.memory_limit_supported,mac?{min:4,max:128,step:1}:{})+
+    (f.platform==='linux'?field(f.fleet_id,'memory_swap_limit','RAM + swap ceiling (GiB)',f.memory_swap_limit?f.memory_swap_limit/1073741824:null,'number'):'')+
+    field(f.fleet_id,'disk_limit',fixedDisk?'Guest disk size (GiB, fixed)':'Disk limit (GiB)',fixedDisk?f.guest_disk_virtual_bytes/1073741824:(f.disk_limit?f.disk_limit/1073741824:null),'number',!f.disk_quota_supported)+
+    cacheFields(f)+
+    `</div>${f.resource_notice?`<p class="hint">${esc(f.resource_notice)}</p>`:''}${f.disk_quota_supported||fixedDisk?'':'<p class="hint">Per-runner disk quotas are unavailable. Storage usage and cache budgets do not enforce a disk quota.</p>'}<p class="hint">Current image or template: ${esc(f.effective_template||'not configured')}. Empty limits inherit deployment defaults. Automatic file cleanup runs at startup; GitHub also runs it after a completed job. Explicit clear actions use the selected scopes.</p><button type="submit">Save defaults</button></form>`;
+}
+async function load() {
+  const d=await api('/api/v2/settings');
+  maintenance=d.control_plane.maintenance;
+  if(admin){document.getElementById('maintenance-state').textContent=maintenance?'Reconciliation paused':'Reconciliation enabled';document.getElementById('maintenance-toggle').textContent=maintenance?'Resume reconciliation':'Pause reconciliation';}
+  document.getElementById('fleets').innerHTML=d.fleets.map(fleetForm).join('');
+  if(admin){const s=await api('/api/v2/secrets');document.getElementById('secrets').innerHTML=s.secrets.map(t=>`<form data-secret="${esc(t.name)}"><label for="${esc(t.name)}">${esc(t.name)} · ${t.set?'set '+esc(t.fingerprint):'not set'}</label><input id="${esc(t.name)}" type="password" autocomplete="new-password" required><button type="submit">Replace token</button></form>`).join('');}
+}
+document.addEventListener('submit',async ev=>{
+  const form=ev.target;if(!form.dataset.fleet&&!form.dataset.secret)return;ev.preventDefault();
+  const button=form.querySelector('button');button.disabled=true;
+  try{
+    if(form.dataset.secret){const input=form.querySelector('input');await api('/api/v2/secrets/'+encodeURIComponent(form.dataset.secret),{value:input.value});input.value='';message('Token saved.');}
+    else {const d=await api('/api/v2/settings/'+encodeURIComponent(form.dataset.fleet),fleetDefaults(form));message(d.note);}
+  }catch(e){message(e.message,true);}finally{button.disabled=false;}
+});
+if(admin)document.getElementById('maintenance-toggle').addEventListener('click',async()=>{
+  if(!maintenance && !(await confirmDialog({title:'Pause reconciliation?',body:'Runners that are already running can still accept jobs.',confirm:'Pause'})))return;
+  if(maintenance && !(await confirmDialog({title:'Resume reconciliation?',body:'Desired runner capacity and queued operations will be applied. Runners may start accepting jobs.',confirm:'Resume'})))return;
+  try{const d=await api('/api/v2/maintenance',{enabled:!maintenance});message(d.note);await load();}catch(e){message(e.message,true);}
+});
+load().catch(e=>message(e.message,true));
+</script>
+{% endblock %}

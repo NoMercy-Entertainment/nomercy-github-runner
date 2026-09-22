@@ -31,6 +31,7 @@ concurrency, soft delete - and none of the three apply here. A `FleetStore`
 inside a module called `specs` would be a name that lies.
 """
 import json
+import math
 
 import providers
 
@@ -128,6 +129,126 @@ class FleetStore:
 
     # ---- capacity ----------------------------------------------------------
 
+    def _resource_workers(self, fleet, host_id=None):
+        from control import placement
+        from control.inventory import Inventory
+        return [worker for worker in Inventory(self.path).healthy(kind=placement.WORKER_KIND[fleet["platform"]])
+                if (host_id is None or worker["host_id"] == host_id)
+                and placement.declared(worker, "kind") == placement.RUNTIME_KIND[fleet["platform"]]
+                and (placement.declared(worker, "architecture") or "x64") == fleet["architecture"]
+                and placement.declared(worker, "capacity_valid") is not False]
+
+    def resource_support(self, fid, host_id=None):
+        """Fresh evidence for editable limits, shared by API and validation.
+
+        One worker must advertise the whole appliance guarantee; flags from
+        different workers must never be combined into an invented capability.
+        """
+        from control import placement
+        fleet = self.get(fid)
+        if fleet is None:
+            raise UnknownFleet(f"no fleet {fid}")
+        workers = self._resource_workers(fleet, host_id)
+        mac = fleet["platform"] == "macos"
+        enforced = [worker for worker in workers if placement.enforces_appliance_limits(worker)]
+
+        def common_positive(key):
+            values = [placement.declared(worker, key) for worker in enforced]
+            if values and all(type(value) is int and value > 0 for value in values) and len(set(values)) == 1:
+                return values[0]
+            return None
+
+        return {"cpu_limit_supported": bool(enforced) if mac else True,
+                "memory_limit_supported": bool(enforced) if mac else True,
+                "disk_quota_supported": any(placement.enforces_disk_quota(worker) for worker in workers),
+                "appliance_per_runner": mac and bool(enforced),
+                "per_runner_memory_overhead_bytes": common_positive("per_runner_memory_overhead_bytes") if mac else None,
+                "guest_disk_virtual_bytes": common_positive("guest_disk_virtual_bytes") if mac else None}
+
+    def supports_disk_quota(self, fid):
+        return bool(self.get(fid)) and self.resource_support(fid)["disk_quota_supported"]
+
+    def set_defaults(self, fid, values):
+        allowed = {"labels", "runner_group", "unit_template", "cpu_limit", "memory_limit", "memory_swap_limit", "disk_limit", "cache_policy"}
+        if not isinstance(values, dict) or set(values) - allowed:
+            raise ValueError("unknown fleet setting")
+        fleet = self.get(fid)
+        if fleet is None:
+            raise UnknownFleet(f"no fleet {fid}")
+        values = dict(values)
+        if values.get("memory_swap_limit") is not None and fleet["platform"] != "linux":
+            raise ValueError("RAM + swap limits are supported only on Linux")
+        if fleet["platform"] == "macos" and any(key in values for key in ("cpu_limit", "memory_limit")):
+            support = self.resource_support(fid)
+            if any(not support[key + "_supported"] for key in ("cpu_limit", "memory_limit") if key in values):
+                raise ValueError("CPU/RAM changes require a healthy macOS worker confirming per-runner appliance enforcement")
+        if values.get("disk_limit") is not None and not self.supports_disk_quota(fid):
+            raise ValueError("Per-runner disk quotas are unavailable on this fleet's workers")
+        for key, value in values.items():
+            if key == "labels":
+                if not isinstance(value, list) or len(value) > 100 or any(
+                        not isinstance(v, str) or not v.strip() or len(v) > 256
+                        or any(ch in v for ch in "\r\n\x00") for v in value):
+                    raise ValueError("labels must be a list of nonempty single-line labels")
+                values[key] = json.dumps(list(dict.fromkeys(v.strip() for v in value)))
+            elif key in ("unit_template", "runner_group"):
+                if value is not None and (not isinstance(value, str) or len(value) > 1024
+                        or any(ch in value for ch in "\r\n\x00")):
+                    raise ValueError(f"{key} must be single-line text")
+                values[key] = value.strip() or None if value else None
+            elif key == "cache_policy":
+                if value is not None:
+                    if not isinstance(value, dict) or set(value) - {"max_bytes", "scopes", "on_clear", "enabled"}:
+                        raise ValueError("cache_policy accepts max_bytes, scopes, on_clear and enabled")
+                    maximum = value.get("max_bytes")
+                    if maximum is not None and (isinstance(maximum, bool) or not isinstance(maximum, int) or maximum <= 0):
+                        raise ValueError("cache max_bytes must be positive bytes")
+                    scopes = value.get("scopes")
+                    if scopes is not None and (not isinstance(scopes, list) or any(
+                            scope not in ("engine-build-cache", "engine-images-unused", "workspace", "toolcache", "temp") for scope in scopes)):
+                        raise ValueError("unknown cache scope")
+                    if "on_clear" in value and value["on_clear"] not in ("skip-if-busy", "drain-first"):
+                        raise ValueError("cache on_clear must be skip-if-busy or drain-first")
+                    if "enabled" in value and not isinstance(value["enabled"], bool):
+                        raise ValueError("cache enabled must be boolean")
+                    if fleet["platform"] != "linux":
+                        if maximum is not None or value.get("enabled") is True:
+                            raise ValueError("automatic cache budgets are supported only on Linux")
+                        if any(scope.startswith("engine-") for scope in (scopes or [])):
+                            raise ValueError("engine cache scopes are supported only on Linux")
+                    values[key] = json.dumps(value)
+            elif key == "cpu_limit":
+                if value is not None:
+                    try:
+                        number = float(value)
+                    except (TypeError, ValueError):
+                        raise ValueError("cpu_limit must be positive") from None
+                    if isinstance(value, bool) or not math.isfinite(number) or number <= 0:
+                        raise ValueError("cpu_limit must be positive")
+                    if fleet["platform"] == "macos":
+                        if not number.is_integer() or not 1 <= number <= 64:
+                            raise ValueError("macOS appliance CPU limit must be a whole count from 1 to 64")
+                        values[key] = str(int(number))
+                    else:
+                        values[key] = str(number)
+            elif value is not None and (isinstance(value, bool) or not isinstance(value, int)
+                                        or value <= 0 or value > 2**63 - 1):
+                raise ValueError(f"{key} must be positive bytes or null")
+            elif key == "memory_limit" and value is not None and fleet["platform"] == "macos":
+                if value % (1024**3) or not 4 * 1024**3 <= value <= 128 * 1024**3:
+                    raise ValueError("macOS appliance memory must be whole GiB from 4 to 128")
+        if values:
+            with self._conn() as c:
+                c.execute("BEGIN IMMEDIATE")
+                current = dict(c.execute("SELECT * FROM fleets WHERE fleet_id=?", (fid,)).fetchone())
+                current.update(values)
+                memory, swap = current.get("memory_limit"), current.get("memory_swap_limit")
+                if memory is not None and swap is not None and swap < memory:
+                    raise ValueError("RAM + swap ceiling must be at least the memory limit")
+                c.execute("UPDATE fleets SET " + ", ".join(f"{k}=?" for k in values)
+                          + " WHERE fleet_id=?", (*values.values(), fid))
+        return self.get(fid)
+
     def set_capacity(self, fid, count, requested_by=None,
                      idempotency_key=None):
         """Record that a fleet should have `count` runners; return an
@@ -196,9 +317,10 @@ def _decode(row):
         return None
     fleet = dict(row)
     fleet["available"] = bool(fleet["available"])
-    if fleet.get("labels"):
-        try:
-            fleet["labels"] = json.loads(fleet["labels"])
-        except (ValueError, TypeError):
-            pass
+    for key in ("labels", "cache_policy", "resource_defaults"):
+        if fleet.get(key):
+            try:
+                fleet[key] = json.loads(fleet[key])
+            except (ValueError, TypeError):
+                pass
     return fleet

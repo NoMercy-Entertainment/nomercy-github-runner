@@ -37,7 +37,10 @@ def service(tmp_path):
     path = str(tmp_path / "control.db")
     schema.init(path)
     FleetStore(path).seed()
-    return RunnerService(path)
+    service = RunnerService(path)
+    service.inventory.register_worker("linux-1", "hyperv-linux")
+    service.inventory.heartbeat("linux-1")
+    return service
 
 
 def runner_in(service, state):

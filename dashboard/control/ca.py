@@ -85,6 +85,16 @@ def issue(ca_cert_pem, ca_key_pem, subject, role, days=365):
         raise ValueError(f"unknown role {role!r}")
     ca_cert = x509.load_pem_x509_certificate(ca_cert_pem)
     ca_key = serialization.load_pem_private_key(ca_key_pem, password=None)
+    if isinstance(days, bool) or not isinstance(days, int) or days <= 0:
+        raise ValueError("certificate lifetime must be a positive number of days")
+    if not ca_cert.extensions.get_extension_for_class(x509.BasicConstraints).value.ca:
+        raise ValueError("the issuer is not a certificate authority")
+    encoding, form = serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo
+    if ca_cert.public_key().public_bytes(encoding, form) != ca_key.public_key().public_bytes(encoding, form):
+        raise ValueError("the authority certificate and key do not match")
+    now = _now()
+    if not ca_cert.not_valid_before_utc <= now < ca_cert.not_valid_after_utc:
+        raise ValueError("the certificate authority is not currently valid")
     key = _key()
     # An agent is a server to the controller's calls and a client when it
     # sends heartbeats, so it needs both; OpenSSL checks the purpose of a
@@ -101,8 +111,8 @@ def issue(ca_cert_pem, ca_key_pem, subject, role, days=365):
             .issuer_name(ca_cert.subject)
             .public_key(key.public_key())
             .serial_number(x509.random_serial_number())
-            .not_valid_before(_now() - datetime.timedelta(minutes=5))
-            .not_valid_after(_now() + datetime.timedelta(days=days))
+            .not_valid_before(max(now - datetime.timedelta(minutes=5), ca_cert.not_valid_before_utc))
+            .not_valid_after(min(now + datetime.timedelta(days=days), ca_cert.not_valid_after_utc))
             .add_extension(x509.BasicConstraints(ca=False, path_length=None),
                            critical=True)
             .add_extension(x509.ExtendedKeyUsage(usage), critical=False)

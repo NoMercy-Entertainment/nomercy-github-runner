@@ -51,7 +51,7 @@ class UnknownSpec(Exception):
 WRITABLE = (
     "display_name", "provider", "platform", "architecture",
     "runtime_template", "host_id", "labels", "runner_group",
-    "cpu_limit", "memory_limit", "disk_limit", "cache_policy",
+    "cpu_limit", "memory_limit", "memory_swap_limit", "disk_limit", "cache_policy",
     "desired_state", "actual_state", "registration_id", "registration_uuid",
     "last_seen_at", "current_operation", "last_error", "capabilities",
     "exec_unit_ref", "fleet_id", "adopt_unit", "last_note",

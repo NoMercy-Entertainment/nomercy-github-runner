@@ -25,7 +25,15 @@ def plane(tmp_path, monkeypatch):
     FleetStore(path).seed(BUILT)
     monkeypatch.setattr(api_v2, "_db_path", lambda: path)
     monkeypatch.setitem(api_v2._status, "fn", lambda: {})
-    return RunnerService(path), path
+    service = RunnerService(path)
+    caps = {"kind": "linux-container", "builds_from": "image", "max_instances": 20}
+    service.inventory.register_worker("test-linux", "hyperv-linux", capabilities=caps)
+    service.inventory.heartbeat("test-linux", capabilities=caps)
+    from datetime import datetime, timezone
+    with schema.connect(path) as c:
+        c.execute("INSERT INTO controller_status VALUES(1,?,'running',NULL)",
+                  (datetime.now(timezone.utc).isoformat(),))
+    return service, path
 
 
 def post(client, url, key="k-1", body=None):
@@ -195,12 +203,8 @@ class TestTheFleetsAreRows:
         assert fj["enabled"] is False, "Forgejo is not configured in v1"
 
 
-class TestThePageOffersNoCapacity:
-    """A fleet has the runners you add and keeps them until you remove one.
-    The number went from the page on 2026-09-20; its button did not, and
-    pressing it posted no number at all: "Capacity failed - desired must be
-    a whole number, 0 or more" (2026-09-21). The route stays for scripts.
-    """
+class TestThePageOffersCapacity:
+    """Desired capacity is an explicit controller action with a numeric body."""
 
     def verbs(self, client):
         return {f["fleet_id"]: [a["verb"] for a in f["actions"]]
@@ -208,7 +212,7 @@ class TestThePageOffersNoCapacity:
 
     def test_with_the_control_plane(self, client, plane):
         for fid, verbs in self.verbs(client).items():
-            assert "capacity" not in verbs, fid
+            assert "capacity" in verbs, fid
 
     def test_and_on_the_fleets_v1_still_serves(self, client, tmp_path,
                                                monkeypatch):
@@ -217,18 +221,20 @@ class TestThePageOffersNoCapacity:
         monkeypatch.setitem(api_v2._status, "fn", lambda: {
             "providers_configured": {"github": True, "forgejo": True}})
         for fid, verbs in self.verbs(client).items():
-            assert "capacity" not in verbs, fid
+            if fid in ("github-linux-x64", "forgejo-linux-x64"):
+                assert "capacity" not in verbs, fid
 
-    def test_every_fleet_offers_the_same_three(self, client, plane):
+    def test_every_fleet_offers_the_same_actions(self, client, plane):
         for fid, verbs in self.verbs(client).items():
             assert verbs == list(api_v2.FLEET_ACTIONS), fid
 
-    def test_the_page_has_nothing_left_that_asks_for_a_number(self):
+    def test_the_page_submits_the_entered_capacity(self):
         import os
         page = os.path.join(os.path.dirname(os.path.dirname(
             os.path.abspath(__file__))), "templates", "fleet_v2.html")
         with open(page, encoding="utf-8") as fh:
-            assert "capacity" not in fh.read().lower()
+            page = fh.read()
+        assert 'body={desired:Number(value)}' in page
 
 
 class TestACellSaysWhatItsWorkersCanBuild:

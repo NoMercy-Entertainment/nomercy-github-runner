@@ -1,7 +1,7 @@
 """NoMercy Runners - control dashboard.
 
-Serves the status page, the settings page, and the control endpoints for the
-runners on this engine.
+Serves controller fleets, settings, history and authenticated worker reads.
+The local-engine interface remains available on legacy engine deployments.
 
 Auth: single sign-on against Keycloak (oidc.py) proves who someone is; the
 allowlist in users.py decides what they may do. There is no password here.
@@ -244,6 +244,8 @@ def _secret_values():
         if os.environ.get(key):
             env.setdefault(key, os.environ[key])
     values = redact.secret_values(env)
+    # An overridden deployment token can still occur in a worker's old logs.
+    values += redact.secret_values(dict(os.environ))
     # And the tokens the control plane's own store holds (T-1901), so a
     # value set there is masked everywhere too.
     try:
@@ -345,6 +347,11 @@ def guard():
         return _forbid("Your access is read-only.")
     elif destroys(request.method, path) and role != "admin":
         return _refuse_destroy(role, path)
+    if request.method == "POST" and not path.startswith("/api/v2/"):
+        from store import schema
+        legacy_control = path.startswith(("/api/runner/", "/api/recreate", "/api/prune"))
+        if legacy_control and os.path.exists(schema.DB_PATH) and not ops.engine_reachable():
+            return jsonify(error="This host uses controller API v2; local runner controls are disabled"), 409
     return None
 
 
@@ -363,6 +370,14 @@ def read_env():
             env[k.strip()] = v.strip()
     except FileNotFoundError:
         pass
+    # Controller deployments have no /repo mount. Deployment configuration
+    # remains the base; persisted tokens override it without a restart.
+    if not os.path.exists(ENV_PATH):
+        env = dict(os.environ)
+    from store import schema
+    if os.path.exists(schema.DB_PATH):
+        from control.secrets import SecretStore
+        env = SecretStore(schema.DB_PATH).overlay(env)
     return env
 
 
@@ -472,6 +487,49 @@ def _collector():
         except Exception as e:  # noqa: BLE001
             print(f"[collector] {e}")
         time.sleep(5)
+
+
+def _controller_collector():
+    """Collect history through authenticated worker agents, independently of the UI."""
+    from concurrent.futures import ThreadPoolExecutor
+    last_read = {}
+    mapped = False
+    global _status_gen
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        while True:
+            try:
+                service, _ = api_v2.control_plane()
+                if service is not None:
+                    specs = [s for s in service.specs.list() if s.get("exec_unit_ref")
+                             and s.get("actual_state") != "absent"]
+                    if not mapped:
+                        for spec in specs:
+                            history.record_controller_logs(spec, "")
+                    now = time.time()
+                    stamp = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now))
+                    def collect(spec):
+                        rid = spec["runner_id"]
+                        since = min(86400, max(60, int(now - last_read.get(rid, now - 86400)) + 30))
+                        text = service.fetch_logs(rid, since_seconds=since)
+                        history.record_controller_logs(spec, text, stamp)
+                        return rid
+                    futures = [pool.submit(collect, spec) for spec in specs]
+                    for future in futures:
+                        try:
+                            last_read[future.result()] = now
+                        except Exception as e:  # one unavailable worker must not stop others
+                            print(f"[controller-history] {type(e).__name__}: {e}")
+                    if not mapped:
+                        # Current names have been linked first. Only genuinely
+                        # legacy names receive historical, deleted identities.
+                        history.backfill_runner_ids(service.specs)
+                        mapped = True
+                with _status_lock:
+                    _status_gen += 1
+                    _status_lock.notify_all()
+            except Exception as e:
+                print(f"[controller-collector] {type(e).__name__}: {e}")
+            time.sleep(5)
 
 
 def _record_history(status):
@@ -862,6 +920,9 @@ def api_history_run(run_id):
 
 @app.route("/settings")
 def settings():
+    from store import schema
+    if not ops.engine_reachable() and os.path.exists(schema.DB_PATH):
+        return render_template("settings_v2.html", role=g.role)
     env = read_env()
     # A "Save & recreate" button for a fleet with nothing in it has nothing
     # safe to do - same reasoning as the Fleet page hiding an empty section,
@@ -1011,6 +1072,27 @@ def ws_fleet(ws):
         for frame in fleet_frames(authorised, wait_for_change, current):
             ws.send(encode_frame(frame))
     except Exception:      # noqa: BLE001 - a closed browser tab is not an error
+        pass
+
+
+@sock.route("/ws/v2/fleet")
+def ws_fleet_v2(ws):
+    sub = session.get("sub")
+    previous = None
+    try:
+        while True:
+            role = users.role_of(sub)
+            if role is None:
+                return
+            g.role = role
+            snapshot = api_v2.fleet_snapshot()
+            comparable = {k: v for k, v in snapshot.items() if k != "generated"}
+            if comparable != previous:
+                ws.send(encode_frame({"type": "snapshot", "data": snapshot}))
+                previous = comparable
+            with _status_lock:
+                _status_lock.wait(timeout=5)
+    except Exception:
         pass
 
 
@@ -1263,7 +1345,12 @@ def api_add():
 
 @app.route("/api/settings", methods=["POST"])
 def api_settings():
+    from store import schema
+    if not ops.engine_reachable() and os.path.exists(schema.DB_PATH):
+        return jsonify(ok=False, error="Use /api/v2/settings/<fleet_id> for controller defaults"), 409
     data = request.json or {}
+    if g.role != "admin" and any(data.get(key) for key in SECRET_KEYS):
+        return jsonify(ok=False, error="Only an admin may change credentials"), 403
     updates = {}
     for k, v in data.items():
         if k not in EDITABLE:
@@ -1447,9 +1534,12 @@ if __name__ == "__main__":
     from control import redact as _redact
     _redact.install_log_redaction(_secret_values)
     history.init()
-    threading.Thread(target=_backfill, daemon=True).start()
-    threading.Thread(target=_collector, daemon=True).start()
+    if ops.engine_reachable():
+        threading.Thread(target=_backfill, daemon=True).start()
+        threading.Thread(target=_collector, daemon=True).start()
+        threading.Thread(target=_drain_watcher, daemon=True).start()
+    else:
+        threading.Thread(target=_controller_collector, daemon=True).start()
     threading.Thread(target=_enricher, daemon=True).start()
-    threading.Thread(target=_drain_watcher, daemon=True).start()
     app.permanent_session_lifetime = 60 * 60 * 24 * 14
     app.run(host="0.0.0.0", port=PORT, threaded=True)

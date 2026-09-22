@@ -20,6 +20,7 @@ import os
 import re
 import sqlite3
 import threading
+from datetime import datetime
 
 DB_PATH = os.path.join(os.environ.get("DASH_DATA", "/data"), "history.db")
 
@@ -159,47 +160,53 @@ def parse_forgejo_events(text):
 # --------------------------------------------------------------------------
 
 def open_run(runner, registration, job_name, started_at,
-             provider="github", forge_task_id=None):
+             provider="github", forge_task_id=None, runner_id=None):
     # provider and forge_task_id are keyword arguments with defaults, not new
     # positional ones: existing callers and tests pass four arguments.
     with _lock, _conn() as c:
+        if runner_id:
+            if c.execute("SELECT 1 FROM runs WHERE runner_id=? AND job_name=? AND started_at=?",
+                         (runner_id, job_name, started_at)).fetchone():
+                return
+            collision = c.execute("SELECT runner_id FROM runs WHERE runner=? AND job_name=? AND started_at=?",
+                                  (runner, job_name, started_at)).fetchone()
+            if collision and collision[0] not in (None, runner_id):
+                runner = runner_id
         c.execute(
             "INSERT OR IGNORE INTO runs"
             " (runner, registration, job_name, started_at, provider,"
-            "  forge_task_id) VALUES (?,?,?,?,?,?)",
+            "  forge_task_id, runner_id) VALUES (?,?,?,?,?,?,?)",
             (runner, registration, job_name, started_at, provider,
-             forge_task_id))
+             forge_task_id, runner_id))
+        if runner_id:
+            c.execute("UPDATE runs SET runner_id=? WHERE runner=? AND job_name=?"
+                      " AND started_at=? AND runner_id IS NULL",
+                      (runner_id, runner, job_name, started_at))
 
 
-def close_run(runner, job_name, ended_at, result):
+def close_run(runner, job_name, ended_at, result, *, runner_id=None, provider="github"):
     """Close the most recent still-open run matching this runner and job."""
     with _lock, _conn() as c:
+        identity, value = ("runner_id", runner_id) if runner_id else ("runner", runner)
+        # A replay must be recognised before looking for another open run:
+        # an older job may still be open because its completion was lost.
+        already = c.execute(
+            f"SELECT 1 FROM runs WHERE {identity}=? AND job_name=? AND ended_at=?",
+            (value, job_name, ended_at)).fetchone()
+        if already:
+            return
         row = c.execute(
             "SELECT id, started_at FROM runs"
-            " WHERE runner=? AND job_name=? AND ended_at IS NULL"
+            f" WHERE {identity}=? AND job_name=? AND ended_at IS NULL AND started_at<=?"
             " ORDER BY started_at DESC LIMIT 1",
-            (runner, job_name)).fetchone()
+            (value, job_name, ended_at)).fetchone()
         if not row:
-            # No OPEN run for this completion. Two very different reasons:
-            #
-            #  1. We already recorded and closed this exact run, and are seeing
-            #     the same log line again - every restart re-reads the logs.
-            #     Must be a no-op, or each restart injects a duplicate
-            #     zero-second row. (Observed: one restart turned 78 real runs
-            #     into 156 rows, half of them bogus.)
-            #  2. The start genuinely never reached us - it scrolled out of the
-            #     log window, or the dashboard was down when the job began.
-            #     Worth recording, with start == end so it is visibly partial.
-            already = c.execute(
-                "SELECT 1 FROM runs WHERE runner=? AND job_name=? AND ended_at=?",
-                (runner, job_name, ended_at)).fetchone()
-            if already:
-                return
+            # Missing start: retain the completion as an explicitly partial run.
             c.execute(
                 "INSERT OR IGNORE INTO runs"
-                " (runner, job_name, started_at, ended_at, duration_s, result)"
-                " VALUES (?,?,?,?,0,?)",
-                (runner, job_name, ended_at, ended_at, result))
+                " (runner, job_name, started_at, ended_at, duration_s, result, runner_id, provider)"
+                " VALUES (?,?,?,?,0,?,?,?)",
+                (runner_id or runner, job_name, ended_at, ended_at, result, runner_id, provider))
             return
 
         dur = _seconds_between(row["started_at"], ended_at)
@@ -275,16 +282,18 @@ def close_interrupted(runner, container_started_at):
         return cur.rowcount
 
 
-def add_sample(runner, cpu, mem, when):
+def add_sample(runner, cpu, mem, when, *, runner_id=None):
     """Attach a resource sample to whatever run is open on this runner."""
     with _lock, _conn() as c:
+        identity, value = ("runner_id", runner_id) if runner_id else ("runner", runner)
         row = c.execute(
-            "SELECT id FROM runs WHERE runner=? AND ended_at IS NULL"
-            " ORDER BY started_at DESC LIMIT 1", (runner,)).fetchone()
+            f"SELECT id FROM runs WHERE {identity}=? AND ended_at IS NULL AND started_at<=?"
+            " ORDER BY started_at DESC LIMIT 1", (value, when)).fetchone()
         if not row:
             return
-        c.execute("INSERT INTO samples (run_id,t,cpu,mem) VALUES (?,?,?,?)",
-                  (row["id"], when, cpu, mem))
+        c.execute("INSERT INTO samples (run_id,t,cpu,mem) SELECT ?,?,?,?"
+                  " WHERE NOT EXISTS (SELECT 1 FROM samples WHERE run_id=? AND t=?)",
+                  (row["id"], when, cpu, mem, row["id"], when))
 
 
 def _seconds_between(a, b):
@@ -339,9 +348,11 @@ def mark_unmatched(run_id):
 # reads
 # --------------------------------------------------------------------------
 
-def list_runs(runner=None, job=None, result=None, limit=100, offset=0):
+def list_runs(runner=None, job=None, result=None, limit=100, offset=0, runner_id=None):
     q = "SELECT * FROM runs WHERE 1=1"
     args = []
+    if runner_id:
+        q += " AND runner_id=?"; args.append(runner_id)
     if runner:
         q += " AND runner=?"; args.append(runner)
     if job:
@@ -494,3 +505,31 @@ def unresolved_runs():
     with _conn() as c:
         return c.execute(
             "SELECT count(*) FROM runs WHERE runner_id IS NULL").fetchone()[0]
+
+
+def record_controller_logs(spec, text, when=None):
+    """Agent log timestamps are authoritative; re-reading a window is harmless."""
+    name = spec.get("display_name") or spec["runner_id"]
+    provider = spec["provider"]
+    with _lock, _conn() as c:
+        c.execute("UPDATE runs SET runner_id=? WHERE runner=? AND provider=?"
+                  " AND runner_id IS NULL", (spec["runner_id"], name, provider))
+    events = parse_forgejo_events(text) if provider == "forgejo" else parse_events(text)
+    for kind, at, job, result in events:
+        if kind == "start":
+            open_run(name, spec.get("display_name"), job, at, provider=provider,
+                     forge_task_id=result if provider == "forgejo" else None,
+                     runner_id=spec["runner_id"])
+        else:
+            close_run(name, job, at, result, runner_id=spec["runner_id"], provider=provider)
+    telemetry = spec.get("telemetry") or {}
+    if when and spec.get("actual_state") in ("busy", "draining"):
+        sample_at = telemetry.get("at")
+        try:
+            age = (datetime.fromisoformat(when.replace("Z", "+00:00"))
+                   - datetime.fromisoformat(sample_at.replace("Z", "+00:00"))).total_seconds()
+        except (AttributeError, ValueError, TypeError):
+            return
+        cpu, mem = telemetry.get("cpu_percent"), telemetry.get("mem_used_bytes")
+        if 0 <= age <= 30 and cpu is not None and mem is not None:
+            add_sample(name, cpu, mem, sample_at, runner_id=spec["runner_id"])

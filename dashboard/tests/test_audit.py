@@ -126,7 +126,7 @@ class TestAcceptedAndHowItEnded:
             raise RuntimeError("the unit would not stop")
         monkeypatch.setattr(flow, "stop", stuck)
         op = service.stop(spec["runner_id"])
-        passes(service, reconciler, 1)
+        passes(service, reconciler, 2)  # confirmed drain, then the failed stop
         closed = [r for r in rows(service, decision="closed")
                   if r["operation_id"] == op]
         assert closed and closed[0]["outcome"].startswith("failed")

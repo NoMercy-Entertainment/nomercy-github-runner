@@ -46,6 +46,7 @@ pre.logs{background:var(--bg-inset);border:1px solid var(--rule);padding:10px;fo
 </header>
 <div class="wrap">
   <article class="card" id="card"><div class="creg">Loading</div></article>
+  <p class="hint" id="resource-notice"></p>
 
   <h2 class="sec">Capabilities</h2>
   <table class="kv" id="caps"></table>
@@ -59,6 +60,10 @@ pre.logs{background:var(--bg-inset);border:1px solid var(--rule);padding:10px;fo
   <h2 class="sec">Audit</h2>
   <table class="kv" id="audit"></table>
 
+  <h2 class="sec">Job history</h2>
+  <div id="history" class="creg">Loading</div>
+  <div id="graphs"></div>
+
   <h2 class="sec">Logs</h2>
   <button id="load-logs">Load the last 5 minutes</button>
   <pre class="logs" id="logs" hidden></pre>
@@ -67,6 +72,7 @@ pre.logs{background:var(--bg-inset);border:1px solid var(--rule);padding:10px;fo
 
 <script>
 {% include "_card.js" %}
+{% include "_v2_push.js" %}
 
 const RID = {{ runner_id|tojson }};
 const $ = id => document.getElementById(id);
@@ -107,15 +113,37 @@ async function load() {
   const c = d.card;
   $('card').className = 'card ' + c.state;
   $('card').innerHTML = cardHTML(c);
+  $('resource-notice').textContent = d.resource_notice || '';
   $('caps').innerHTML = capsHTML(c.capabilities);
   $('current').textContent = c.current_operation || 'none';
-  $('ops').innerHTML = rows(d.operations, ['operation_id', 'verb', 'state', 'attempts', 'error']);
+  $('ops').innerHTML = rows(d.operations, ['operation_id', 'verb', 'state', 'attempts', 'result', 'error']);
   $('audit').innerHTML = rows(d.audit, ['at', 'actor', 'verb', 'decision', 'operation_id']);
+  await loadHistory();
+}
+
+async function loadHistory() {
+  const res=await fetch('/api/v2/runners/'+encodeURIComponent(RID)+'/history');
+  if(!res.ok)return;
+  const d=await res.json();
+  $('history').innerHTML=(d.runs||[]).map(r=>`<p><button data-run="${r.id}">${esc(r.job_name)}</button> ${esc(r.started_at)} · ${esc(r.result||'running')} · ${r.samples||0} samples</p>`).join('')||'No recorded jobs';
+}
+
+function plot(samples,key,title,format) {
+  const points=samples.filter(s=>Number.isFinite(s[key]));
+  if(!points.length)return `<p>${esc(title)}: no samples</p>`;
+  const max=Math.max(1,...points.map(s=>s[key]));
+  const first=Date.parse(points[0].t), span=Math.max(1,Date.parse(points[points.length-1].t)-first);
+  const path=points.map((s,i)=>(i?'L':'M')+(10+(Date.parse(s.t)-first)/span*580).toFixed(1)+','+(125-s[key]/max*105).toFixed(1)).join(' ');
+  return `<p>${esc(title)} · peak ${esc(format(max))}</p><svg role="img" aria-label="${esc(title)} over job duration" viewBox="0 0 600 140" style="width:100%;max-width:700px"><path d="${path}" fill="none" stroke="var(--signal)" stroke-width="2"/></svg>`;
 }
 
 document.addEventListener('click', async ev => {
   const b = ev.target.closest('button');
   if (!b) return;
+  if(b.dataset.run){
+    try {const res=await fetch('/api/v2/runners/'+encodeURIComponent(RID)+'/history/'+b.dataset.run);const d=await res.json();if(!res.ok)throw new Error(d.error);$('graphs').innerHTML=plot(d.samples_data||[],'cpu','CPU',v=>v.toFixed(1)+'%')+plot(d.samples_data||[],'mem','Memory',fmtBytes);}
+    catch(e){toast(e.message,true);}return;
+  }
   if (b.id === 'load-logs') {
     const res = await fetch('/api/v2/runners/' + encodeURIComponent(RID) + '/logs?since=300');
     const d = await res.json().catch(() => ({}));
@@ -130,16 +158,20 @@ document.addEventListener('click', async ev => {
   if (a.confirm && !(await confirmDialog(a.confirm))) return;
   const key = (window.crypto && crypto.randomUUID) ? crypto.randomUUID()
             : Date.now().toString(36) + Math.random().toString(36).slice(2);
+  b.disabled=true;
+  try {
   const res = await fetch(a.url, {method: 'POST', headers: {
       'Content-Type': 'application/json', 'Idempotency-Key': key},
     body: JSON.stringify(a.body || {})});
   const d = await res.json().catch(() => ({}));
   if (!res.ok) toast(a.label + ' failed - ' + (d.error || res.status), true);
   else toast(a.label + ': ' + (d.operation_id || 'ok'));
+  if(d.operation_id)watchOperation(d.operation_id,toast).catch(e=>toast(e.message,true));
   load();
+  }catch(e){toast(e.message,true);}finally{b.disabled=!a.enabled;}
 });
 
-load();
-setInterval(load, 5000);
+load().catch(e=>toast(e.message,true));
+subscribeFleet(()=>load().catch(e=>toast(e.message,true)),()=>load().catch(e=>toast(e.message,true)));
 </script>
 {% endblock %}

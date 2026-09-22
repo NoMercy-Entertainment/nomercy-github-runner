@@ -59,6 +59,8 @@ TRANSITIONS = {
     ("registering", "failed"): "error",
     ("idle", "busy"): "job accepted",
     ("busy", "idle"): "job finished",
+    ("idle", "stopped"): "worker stopped and forge offline",
+    ("busy", "stopped"): "worker stopped and forge offline",
     ("idle", "draining"): "drain",
     ("busy", "draining"): "drain",
     ("draining", "drained"): "job finished",
@@ -117,6 +119,8 @@ OBSERVED = frozenset({
     ("registering", "failed"),
     ("idle", "busy"),
     ("busy", "idle"),
+    ("idle", "stopped"),
+    ("busy", "stopped"),
     ("draining", "drained"),
     ("drained", "draining"),
     ("stopping", "stopped"),
@@ -195,7 +199,7 @@ COMPOSITE = {
 #: (2026-09-20). Written here rather than in the service, so the machine and
 #: the reconciler agree and the generated matrix checks it.
 WALKS_FROM = {
-    "recreate": frozenset({"idle", "busy"}),
+    "recreate": frozenset({"idle", "busy", "deregistering", "removing"}),
     "restart": frozenset({"busy"}),
 }
 

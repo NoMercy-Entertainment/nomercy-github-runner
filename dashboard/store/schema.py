@@ -63,6 +63,11 @@ CREATE TABLE IF NOT EXISTS fleets (
   labels            TEXT,
   runner_group      TEXT,
   template          TEXT,
+  unit_template     TEXT,
+  cpu_limit         TEXT,
+  memory_limit      INTEGER,
+  memory_swap_limit INTEGER,
+  disk_limit        INTEGER,
   resource_defaults TEXT,
   cache_policy      TEXT,
   -- Whether the cell exists at all, answered from provider.supports(). A
@@ -89,6 +94,7 @@ CREATE TABLE IF NOT EXISTS runner_specs (
   -- TEXT because those are not the same unit and must not be flattened.
   cpu_limit        TEXT,
   memory_limit     INTEGER,
+  memory_swap_limit INTEGER,
   disk_limit       INTEGER,
   cache_policy     TEXT,
   desired_state    TEXT NOT NULL DEFAULT 'running',
@@ -165,6 +171,17 @@ CREATE TABLE IF NOT EXISTS leases (
   expires_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS controller_status (
+  id           INTEGER PRIMARY KEY CHECK (id = 1),
+  last_seen_at TEXT NOT NULL,
+  state        TEXT NOT NULL,
+  last_error   TEXT
+);
+CREATE TABLE IF NOT EXISTS platform_settings (
+  key   TEXT PRIMARY KEY,
+  value TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS audit (
   id           INTEGER PRIMARY KEY AUTOINCREMENT,
   at           TEXT NOT NULL,
@@ -225,6 +242,12 @@ def _migrate(c):
     nothing to a table that already exists, so a deployed database only ever
     gains a column through this.
     """
+    fleets = {r[1] for r in c.execute("PRAGMA table_info(fleets)")}
+    for column, kind in (("unit_template", "TEXT"), ("cpu_limit", "TEXT"),
+                         ("memory_limit", "INTEGER"), ("memory_swap_limit", "INTEGER"),
+                         ("disk_limit", "INTEGER")):
+        if column not in fleets:
+            c.execute(f"ALTER TABLE fleets ADD COLUMN {column} {kind}")
     workers = {r[1] for r in c.execute("PRAGMA table_info(workers)")}
     if "state_reason" not in workers:
         # T-0406. Nullable: a worker nobody has marked has no reason.
@@ -237,6 +260,8 @@ def _migrate(c):
             c.execute(f"ALTER TABLE audit ADD COLUMN {column} TEXT")
 
     have = {r[1] for r in c.execute("PRAGMA table_info(runner_specs)")}
+    if "memory_swap_limit" not in have:
+        c.execute("ALTER TABLE runner_specs ADD COLUMN memory_swap_limit INTEGER")
     if "unit_state" not in have:
         # T-0404. Nullable: a runner no heartbeat has mentioned yet has no
         # observed unit state, which is not the same as any value.

@@ -17,6 +17,7 @@ removing a runner on that evidence deletes capacity that was only unreachable.
 left alone. They come back.
 """
 import json
+import math
 from datetime import datetime, timedelta, timezone
 
 from store import schema
@@ -90,8 +91,33 @@ def _parse(text):
     try:
         return datetime.strptime(text, "%Y-%m-%dT%H:%M:%SZ").replace(
             tzinfo=timezone.utc)
-    except ValueError:
+    except (ValueError, TypeError):
         return None
+
+
+def _resource_enforcement(value):
+    """Closed observation of one inspected appliance; never fleet intent."""
+    if not isinstance(value, dict) or value.get("kind") != "macos-appliance":
+        return None
+    flags = ("appliance_per_runner", "cpu_enforcement", "memory_enforcement")
+    numbers = ("cpu_cores", "memory_limit_bytes", "memory_overhead_bytes")
+    if any(value.get(key) is not True for key in flags):
+        return None
+    if any(type(value.get(key)) is not int or not 0 < value[key] <= 2 ** 63 - 1 for key in numbers):
+        return None
+    return {key: value[key] for key in ("kind", *flags, *numbers)}
+
+
+def current_resource_enforcement(spec, at=None):
+    """Evidence expires independently of worker liveness/minimal beats."""
+    telemetry = spec.get("telemetry") or {}
+    if not isinstance(telemetry, dict):
+        return None
+    measured = _parse(telemetry.get("resource_enforcement_at"))
+    age = ((at or _now()) - measured).total_seconds() if measured else None
+    if age is None or not 0 <= age < HEARTBEAT_SECONDS * MISSED_BEATS_BEFORE_DEGRADED:
+        return None
+    return _resource_enforcement(telemetry.get("resource_enforcement"))
 
 
 def _decode(row):
@@ -107,9 +133,10 @@ def _decode(row):
 
 
 #: What a heartbeat may say a unit uses, and nothing else: numbers, or null.
-TELEMETRY_KEYS = ("cpu_percent", "mem_used_bytes", "mem_limit_bytes",
+TELEMETRY_KEYS = ("cpu_percent", "cpu_cores", "host_cores", "mem_used_bytes", "mem_limit_bytes",
+                  "mem_swap_limit_bytes",
                   "root_disk_used_bytes", "root_disk_total_bytes",
-                  "storage_bytes", "cache_bytes")
+                  "storage_bytes", "cache_bytes", "cache_cap_bytes")
 
 
 def _telemetry(value):
@@ -117,10 +144,19 @@ def _telemetry(value):
     beat is data from a worker, and only what the card can show is taken."""
     if not isinstance(value, dict):
         return {}
-    return {k: value[k] for k in TELEMETRY_KEYS
+    result = {k: value[k] for k in TELEMETRY_KEYS
             if k in value and (value[k] is None or (
                 isinstance(value[k], (int, float))
-                and not isinstance(value[k], bool)))}
+                and not isinstance(value[k], bool)
+                and 0 <= value[k] <= 2 ** 63 - 1
+                and math.isfinite(value[k])))}
+    job = value.get("job")
+    if isinstance(job, str):
+        result["job"] = " ".join(job.split())[:200] or None
+    for key in ("at", "storage_at", "cache_at"):
+        if isinstance(value.get(key), str) and _parse(value[key]):
+            result[key] = value[key]
+    return result
 
 
 class Inventory:
@@ -251,13 +287,15 @@ class Inventory:
                 f"heartbeat names {claimed!r} but arrived from {host_id!r}")
 
         moment = at or _now()
+        measured = _parse(payload.get("measured_at")) or moment
+        observed_at = _iso(min(measured, moment))
         declared = payload.get("capabilities")
         self.heartbeat(host_id,
                        agent_version=payload.get("agent_version"),
                        capabilities=declared if isinstance(declared, dict)
                        else None, at=moment)
 
-        seen, used = {}, {}
+        seen, used, enforced = {}, {}, {}
         for unit in payload.get("instances") or []:
             if not isinstance(unit, dict):
                 continue
@@ -266,6 +304,8 @@ class Inventory:
             if not isinstance(runner_id, str):
                 continue
             seen[runner_id] = state if state in UNIT_STATES else "unknown"
+            enforced[runner_id] = (_resource_enforcement(unit.get("resource_enforcement"))
+                                   if state != "absent" else None)
             t = _telemetry(unit.get("telemetry"))
             if t:
                 used[runner_id] = t
@@ -279,16 +319,15 @@ class Inventory:
                 cur = c.execute(
                     "UPDATE runner_specs SET last_seen_at = ?,"
                     " unit_state = ? WHERE runner_id = ? AND host_id = ?",
-                    (_iso(moment), state, runner_id, host_id))
+                    (observed_at, state, runner_id, host_id))
                 if not cur.rowcount:
                     continue
                 recorded[runner_id] = state
-                if runner_id in used:
-                    self._merge_telemetry(c, runner_id, used[runner_id],
-                                          _iso(moment))
+                self._merge_telemetry(c, runner_id, used.get(runner_id, {}),
+                                      _iso(moment), enforced.get(runner_id), observed_at)
         return recorded
 
-    def _merge_telemetry(self, c, runner_id, fresh, at):
+    def _merge_telemetry(self, c, runner_id, fresh, at, enforcement=None, observed_at=None):
         """What a unit uses, as last reported (T-1803). CPU and memory are
         replaced every beat; storage and cache only arrive on a deep beat and
         are kept, with their own time, until the next one."""
@@ -298,14 +337,22 @@ class Inventory:
             current = json.loads(row["telemetry"]) if row and                 row["telemetry"] else {}
         except ValueError:
             current = {}
-        for key in ("cpu_percent", "mem_used_bytes", "mem_limit_bytes",
+        current["resource_enforcement"] = enforcement
+        current["resource_enforcement_at"] = observed_at if enforcement else None
+        for key in ("cpu_percent", "cpu_cores", "host_cores", "job",
+                    "mem_used_bytes", "mem_limit_bytes",
+                    "mem_swap_limit_bytes",
                     "root_disk_used_bytes", "root_disk_total_bytes"):
             current[key] = fresh.get(key)
-        current["at"] = at
-        if "storage_bytes" in fresh or "cache_bytes" in fresh:
-            current["storage_bytes"] = fresh.get("storage_bytes")
-            current["cache_bytes"] = fresh.get("cache_bytes")
-            current["deep_at"] = at
+        current["at"] = min(fresh.get("at", at), at)
+        for key, stamp in (("storage_bytes", "storage_at"),
+                           ("cache_bytes", "cache_at")):
+            if key in fresh:
+                current[key] = fresh[key]
+                current[stamp] = min(fresh.get(stamp, at), at)
+                current["deep_at"] = current[stamp]
+        if "cache_cap_bytes" in fresh:
+            current["cache_cap_bytes"] = fresh["cache_cap_bytes"]
         c.execute("UPDATE runner_specs SET telemetry = ? WHERE runner_id = ?",
                   (json.dumps(current), runner_id))
 
@@ -376,6 +423,10 @@ class Inventory:
                 "last_seen_at": worker.get("last_seen_at"),
                 "health": self._health_of(worker, now),
                 "reason": self.health_reason(worker["host_id"], now),
+                "resources": {key: (worker.get("capabilities") or {}).get(key)
+                              for key in ("memory_bytes", "memory_total_bytes", "swap_bytes",
+                                          "swap_total_bytes", "memory_commit_bytes",
+                                          "memory_admission", "capacity_valid", "max_runners")},
             })
         return out
 
