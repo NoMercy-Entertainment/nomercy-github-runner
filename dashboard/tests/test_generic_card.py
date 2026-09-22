@@ -255,6 +255,29 @@ class TestTheRenderer:
         assert "registered with other labels" in html_drift
         assert 'class="cwarn"' not in html_clean
 
+    def test_a_drift_warning_is_drawn_once_not_twice(self):
+        """T-17: last_note holds the same sentence as label_drift, with a
+        timestamp in front - seen live on beaststack-macos-sequoia,
+        2026-09-22, as the sentence twice: once amber, once grey."""
+        sentence = ("registered with other labels than the fleet wants: "
+                    "unexpected labels macos-13")
+        c = dict(spec_cards()[0],
+                 last_note=f"2026-09-22T05:00:00Z {sentence}",
+                 label_drift=sentence)
+        html = render("cardHTML", [c])[0]
+        assert html.count(sentence) == 1
+        assert 'class="cwarn"' in html
+        assert 'class="cnote"' not in html
+
+    def test_a_non_drift_note_is_still_drawn(self):
+        c = dict(spec_cards()[0],
+                 last_note="2026-09-22T05:00:00Z registered with labels of "
+                           "its own",
+                 label_drift=None)
+        html = render("cardHTML", [c])[0]
+        assert 'class="cnote"' in html
+        assert "registered with labels of its own" in html
+
     def test_a_fleet_head_lists_a_chip_per_label(self):
         f = fleet_row(labels=["self-hosted", "Linux", "X64", "beast-unit"])
         html = render("fleetHeadHTML", [f])[0]

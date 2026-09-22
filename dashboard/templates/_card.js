@@ -119,8 +119,9 @@ function cardHTML(c) {
   const error = c.last_error ? `<div class="cerr">${esc(c.last_error)}</div>` : '';
   // A note is something true that is not a failure - a runner registered
   // with labels of its own still works. It reads as a note, not in the
-  // colour that means something is broken.
-  const note = c.last_note ? `<div class="cnote">${esc(c.last_note)}</div>` : '';
+  // colour that means something is broken. When the note is registration
+  // drift, the warning above already says it - the note does not repeat it.
+  const note = (c.last_note && !c.label_drift) ? `<div class="cnote">${esc(c.last_note)}</div>` : '';
   const buttons = (c.actions || []).map(actionButton).join('');
   return `<div class="chead">${name}<span class="badge ${esc(c.state)}">` +
     `${esc(c.state)}</span></div>` +
