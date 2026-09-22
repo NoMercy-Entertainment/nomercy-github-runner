@@ -809,3 +809,30 @@ the same file without the verify.
 - [ ] **Step 5: Run the full dashboard suite** (baseline 1718 passed / 3 skipped / 3 xfailed).
 - [ ] **Step 6: Commit** `git commit -m "feat(page): the fleet page is the root page"`
 - [ ] **Step 7 (controller session):** deploy and confirm `/` renders the fleet for a signed-in browser and `/v2` still lands somewhere sensible.
+
+---
+
+### Task 21: W10a - a Windows runner gets its own window of cores
+
+**Files:**
+- Modify: `dashboard/control/service.py` (`PINNED_CPU_PLATFORMS`, `_host_cores`)
+- Test: `dashboard/tests/test_cpu_windows.py`
+
+**Why:** the Windows runners are held to a memory ceiling and their own Job
+Object, but nothing bounds their CPU: the card reads "0.0 / 56 cores" and a
+build can take the whole machine, which is what the Linux cpusets exist to
+prevent. The Windows agent already supports both a CPU rate cap (`cpus`) and
+an affinity mask (`cpuset`) through the Job Object
+(`agent/jobhost.py:cpu_rate`, `affinity_mask`), and `agent_runtime.unit_spec`
+already sends a window as `cpuset` - only the controller refuses to allocate
+one for a Windows fleet.
+
+**Interfaces:** unchanged - a whole-number fleet `cpu_limit` becomes a
+staggered cores window on the platforms that pin.
+
+- [ ] **Step 1: Write the failing tests** in `dashboard/tests/test_cpu_windows.py`, in its style: a whole-number `cpu_limit` on a WINDOWS fleet gives each planned runner its own window of that width, windows on the same worker overlap as little as possible, a recreate keeps a window of the right width, and a fraction is still a quota. Note the affinity limit the agent has: a window may not name a processor at or beyond 64 (`agent/jobhost.py:affinity_mask` refuses it), so with a host of 56 the wrap-around form ("47-55,0-6") must still be produced, which the existing `cpusets.window` already does.
+- [ ] **Step 2: Run them and see them fail.**
+- [ ] **Step 3: Implement**: add `providers.WINDOWS` to `PINNED_CPU_PLATFORMS`, and make `_host_cores` read the core count for the platforms that pin (the Linux worker declares `host_cores` in its capabilities; the Windows worker does not yet, so the telemetry fallback must cover it - check what `WindowsProcessRuntime.telemetry` reports as `host_cores`).
+- [ ] **Step 4: Run the new tests, then the full dashboard suite** (baseline 1720 passed / 3 skipped / 3 xfailed).
+- [ ] **Step 5: Commit** `git commit -m "feat(control): a Windows runner gets its own window of cores"`
+- [ ] **Step 6 (controller session):** deploy, set `cpu_limit` 16 on both Windows fleets, recreate both Windows runners, and check the card reads 16 cores and the Job Object carries the affinity.
