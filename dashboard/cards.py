@@ -29,7 +29,7 @@ import providers
 
 #: Design 14.1, in its order. Every card carries every one of these keys.
 FIELDS = ("runner_id", "display_name", "provider", "platform",
-          "architecture", "worker", "runtime", "state", "job", "cpu",
+          "architecture", "labels", "worker", "runtime", "state", "job", "cpu",
           "memory", "storage", "cache", "reachable", "last_seen_at",
           "current_operation", "last_error", "last_note",
           "capabilities")
@@ -108,6 +108,16 @@ def annotations(capabilities):
     caps = capabilities or {}
     return [text for key, text in ANNOTATIONS.items()
             if caps.get(key) is False]
+
+
+def _drift(note):
+    """The registration-drift sentence of a note, without its timestamp, or
+    None. A runner registered with other labels than its fleet asks for
+    still works - it takes the wrong jobs - so it is a warning, not an
+    error."""
+    text = str(note or "")
+    at = text.find("registered with other labels")
+    return text[at:] if at >= 0 else None
 
 
 def fleet_of(provider, platform, architecture):
@@ -218,6 +228,8 @@ def from_legacy(runner, host=None, generated=None):
         provider=provider,
         platform=providers.LINUX,
         architecture=providers.X64,
+        labels=None,
+        label_drift=None,
         worker="wsl:github-runners",
         runtime="linux-container",
         state=state,
@@ -297,7 +309,8 @@ def from_unmanaged(entry, generated=None):
         key=f"forge:{entry.get('uuid')}",
         source="forge",
         registration=entry.get("version") and f"v{entry['version']}",
-        labels=entry.get("labels"),
+        labels=None,
+        label_drift=None,
         href=None,
         actions=[_action(verb, enabled=False, reason=UNMANAGED_REASON,
                          visible=_visible(state)[verb])
@@ -471,6 +484,8 @@ def from_spec(spec, telemetry=None, worker_reachable=None, now=None):
         provider=spec.get("provider"),
         platform=spec.get("platform"),
         architecture=spec.get("architecture"),
+        labels=spec.get("forge_labels"),
+        label_drift=_drift(spec.get("last_note")),
         worker=spec.get("host_id"),
         runtime=caps.get("kind"),
         state=_shown_state(state, ready),

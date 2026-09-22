@@ -203,6 +203,19 @@ class TestTheFleetsAreRows:
         assert fj["enabled"] is False, "Forgejo is not configured in v1"
 
 
+class TestAFleetListsItsLabels:
+    """A workflow's `runs-on:` names the labels a fleet registers with -
+    the deployment's default plus whatever it is told, never a guess."""
+
+    def test_a_fleet_lists_the_labels_a_workflow_can_name(self, client, plane,
+                                                          monkeypatch):
+        monkeypatch.setenv("RUNNER_LABELS", "beast-unit")
+        fleets = {f["fleet_id"]: f
+                  for f in client.get("/api/v2/fleets").get_json()["fleets"]}
+        assert fleets[GH]["labels"] == ["self-hosted", "Linux", "X64",
+                                       "beast-unit"]
+
+
 class TestThePageOffersCapacity:
     """Desired capacity is an explicit controller action with a numeric body."""
 

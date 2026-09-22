@@ -251,9 +251,12 @@ def fleet_list(service, note, all_runner_cards):
             available, reason, desired = bool(support), support.reason, None
         members = [c["key"] for c in all_runner_cards
                    if c.get("fleet_id") == fid]
+        labels = provider.workflow_labels(
+            row, service.env if service is not None else {}) \
+            if provider else []
         out.append({
             "fleet_id": fid, "provider": provider_key, "platform": platform,
-            "architecture": arch,
+            "architecture": arch, "labels": labels,
             "title": f"{FORGE_NAMES.get(provider_key, provider_key)} · "
                      f"{PLATFORM_NAMES.get(platform, platform)} · {arch}",
             "available": available, "reason": reason or None,

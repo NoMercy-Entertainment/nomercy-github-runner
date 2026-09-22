@@ -12,7 +12,7 @@
 // alone - rebuilding every card every poll replays its entrance animation.
 
 const CARD_FIELDS = ['runner_id', 'display_name', 'provider', 'platform',
-  'architecture', 'worker', 'runtime', 'state', 'job', 'cpu', 'memory',
+  'architecture', 'labels', 'worker', 'runtime', 'state', 'job', 'cpu', 'memory',
   'storage', 'cache', 'reachable', 'last_seen_at', 'current_operation',
   'last_error', 'last_note', 'capabilities'];
 
@@ -98,9 +98,14 @@ function cardHTML(c) {
   const name = c.href
     ? `<a class="cname" href="${esc(c.href)}">${esc(c.display_name)}</a>`
     : `<span class="cname">${esc(c.display_name)}</span>`;
-  const where = [c.worker, c.runtime,
+  const where = ['worker ' + (c.worker || '?'), c.runtime,
                  [c.platform, c.architecture].filter(Boolean).join('/'),
                  c.registration, c.uptime].filter(Boolean).join(' · ');
+  const labels = c.labels == null
+    ? `<div class="clabels"><span class="lhead">labels</span> unknown</div>`
+    : `<div class="clabels"><span class="lhead">labels</span> ` +
+      c.labels.map(l => `<span class="chip">${esc(l)}</span>`).join('') + `</div>`;
+  const drift = c.label_drift ? `<div class="cwarn">${esc(c.label_drift)}</div>` : '';
   const notes = (c.annotations || []).map(
     t => `<span class="annot">${esc(t)}</span>`).join('');
   const job = c.state === 'draining' && !c.job ? 'draining - waiting for idle'
@@ -120,9 +125,10 @@ function cardHTML(c) {
   return `<div class="chead">${name}<span class="badge ${esc(c.state)}">` +
     `${esc(c.state)}</span></div>` +
     `<div class="creg">${esc(where)}</div>` +
+    labels +
     (notes ? `<div class="annots">${notes}</div>` : '') +
     `<div class="cjob${c.job ? '' : ' none'}">${esc(job)}</div>` +
-    meters(c) + status + note + error +
+    meters(c) + status + drift + note + error +
     (buttons ? `<div class="actions">${buttons}</div>` : '');
 }
 
@@ -138,8 +144,12 @@ function fleetHeadHTML(f) {
   }).join('');
   const unavailable = f.available ? ''
     : `<div class="hint unavailable">${esc(f.reason || 'unavailable')}</div>`;
+  const labels = f.labels && f.labels.length
+    ? `<div class="flabels">runs-on: ${f.labels.map(l => `<span class="chip">${esc(l)}</span>`).join('')}</div>`
+    : '';
   return `<h2 class="fleet-head">${esc(f.title)}` +
     `<span class="fcount">${count} runner${count === 1 ? '' : 's'}${esc(want)}</span></h2>` +
+    labels +
     unavailable +
     `<div class="fleet-actions">${buttons}</div>`;
 }
