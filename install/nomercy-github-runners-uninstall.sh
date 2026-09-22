@@ -1,4 +1,8 @@
 #!/usr/bin/env bash
+# DEPRECATED 2026-09-22. Runners are built and driven by the controller on
+# Hyper-V workers; see docs/operations/runner-platform.md. This script
+# provisioned the retired WSL fleet and refuses to run.
+echo "deprecated: see docs/operations/runner-platform.md" >&2; exit 1
 #
 # NoMercy GitHub Actions Runners - Linux and macOS uninstaller
 #

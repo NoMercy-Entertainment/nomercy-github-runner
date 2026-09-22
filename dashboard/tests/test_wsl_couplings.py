@@ -133,12 +133,13 @@ def test_the_ui_does_not_name_a_windows_path():
         "the page still hard-codes a Windows path")
 
 
-@wsl
 def test_there_is_no_keepalive_against_distro_idle_shutdown():
     """Row 5. WSL shuts an idle distro down, taking the fleet with it.
 
     The keepalive exists only because of that behaviour. A Hyper-V VM does not
     stop itself for being quiet, so these scripts have nothing left to do.
+
+    Unmarked: T-6 (2026-09-22) deleted both scripts.
     """
     for script in ("keepalive-distro.ps1", "install-keepalive-task.ps1"):
         assert not os.path.exists(os.path.join(ROOT, "scripts", script)), (
@@ -146,7 +147,6 @@ def test_there_is_no_keepalive_against_distro_idle_shutdown():
             f"down and has no counterpart on a VM")
 
 
-@wsl
 def test_lan_access_does_not_depend_on_a_rewritten_portproxy():
     """Row 6. The dashboard is published through `netsh portproxy`.
 
@@ -154,6 +154,11 @@ def test_lan_access_does_not_depend_on_a_rewritten_portproxy():
     is why the keepalive loop rewrites it. Two stale rules already point at an
     address the macOS VM no longer has. A VM with a stable address on the LAN
     needs no hop at all.
+
+    Unmarked: T-6 (2026-09-22) deleted the scripts that rewrote the rule
+    (keepalive-distro.ps1, publish-dashboard-lan.ps1); the live rule now
+    points at a stable Hyper-V worker address and nothing in the repo
+    rewrites it.
     """
     text = scripts_text()
     assert "portproxy" not in text, (
@@ -175,25 +180,29 @@ def test_there_is_no_clock_workaround():
         "provisioning still masks the time daemon")
 
 
-@wsl
 def test_there_is_no_dns_workaround():
     """Row 8. Public resolvers are pinned because the WSL DNS proxy died.
 
     It took the whole fleet offline with UnknownHostException everywhere. The
     pin treats a WSL component's failure, and hard-coded resolvers are a
     liability anywhere else.
+
+    Unmarked: T-6 (2026-09-22) deleted provision-distro.ps1, the only place
+    that pinned resolvers.
     """
     assert "resolv.conf" not in scripts_text(), (
         "provisioning still pins resolvers around the WSL DNS proxy")
 
 
-@wsl
 def test_there_is_no_memory_reclaim_knob():
     """Row 9. `vm.compaction_proactiveness` is raised from WSL's default of 0.
 
     A tuning for the shared utility VM, where a runner's page cache grew until
     it starved everything else on the same kernel. A worker that owns its
     memory does not need it.
+
+    Unmarked: T-6 (2026-09-22) deleted provision-distro.ps1, the only place
+    that tuned this knob.
     """
     assert "compaction_proactiveness" not in scripts_text(), (
         "provisioning still tunes memory reclaim for the shared utility VM")
@@ -233,12 +242,20 @@ class TestEveryRowIsCovered:
         assert len(coupling_rows()) == 9, coupling_rows()
 
     def test_there_is_one_test_per_row(self):
-        """A row without a test is a coupling nobody is tracking."""
+        """A row without a test is a coupling nobody is tracking.
+
+        Counted by test function, not by `@wsl` marker. Unmarking a resolved
+        row's test is the whole point of this file (see module docstring);
+        counting markers instead of tests would misread that progress as a
+        row nobody tracks any more.
+        """
         with open(os.path.abspath(__file__), encoding="utf-8") as fh:
             source = fh.read()
-        marked = source.count("\n@wsl\n")
-        assert marked == len(coupling_rows()), (
-            f"{marked} marked tests for {len(coupling_rows())} rows of spec "
+        start = source.index("the nine rows")
+        end = source.index("the tally")
+        tests = source[start:end].count("\ndef test_")
+        assert tests == len(coupling_rows()), (
+            f"{tests} row tests for {len(coupling_rows())} rows of spec "
             f"2.5; every row needs exactly one")
 
     def test_every_marker_carries_the_agreed_reason(self):

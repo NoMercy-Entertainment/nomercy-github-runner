@@ -1,3 +1,7 @@
+# DEPRECATED 2026-09-22. Runners are built and driven by the controller on
+# Hyper-V workers; see docs/operations/runner-platform.md. This script
+# provisioned the retired WSL fleet and refuses to run.
+#
 # NoMercy GitHub Actions Runners - Windows uninstaller
 #
 # Removes the runners, their isolated Docker engine, the WSL distribution and
@@ -16,6 +20,9 @@ param(
     [switch] $DeleteData,
     [switch] $NonInteractive
 )
+
+Write-Error 'deprecated: see docs/operations/runner-platform.md'
+exit 1
 
 $ErrorActionPreference = 'Stop'
 

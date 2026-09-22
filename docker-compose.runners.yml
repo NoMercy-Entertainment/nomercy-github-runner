@@ -1,3 +1,8 @@
+# DEPRECATED 2026-09-22. This is the ancestor of the Linux unit image now
+# built and driven by the controller on Hyper-V workers; see
+# docs/operations/runner-platform.md. No fail-fast here: the unit images
+# descend from this file and do not read it at runtime.
+#
 # GitHub Actions runners — isolated engine
 #
 # This stack runs on the dedicated `github-runners` WSL distro, NOT on Docker
@@ -43,8 +48,9 @@ x-runner: &runner
   volumes:
     # Bound straight from the repo on D: (9p) — verified fine. An earlier
     # theory blamed 9p for a restart loop; that was wrong. The loop was WSL
-    # shutting the distro down when idle, which stops docker.service and
-    # SIGTERMs every container. See scripts/keepalive-distro.ps1.
+    # shutting the distro down when idle, which stopped docker.service and
+    # SIGTERMed every container. The keepalive that worked around it is gone
+    # along with the distro; see docs/operations/runner-platform.md.
     # Read-only: start.sh is executed, never written to.
     - ./scripts/start.sh:/root/start.sh:ro
   # No tmpfs on /tmp: that is RAM, counted against the memory limit above and

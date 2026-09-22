@@ -1,4 +1,9 @@
 #!/usr/bin/env bash
+# DEPRECATED 2026-09-22. This is the ancestor of the Forgejo unit image now
+# built and driven by the controller on Hyper-V workers; see
+# docs/operations/runner-platform.md. No fail-fast here: the unit image's
+# entrypoint still descends from this file's container-only guard below.
+#
 # Forgejo Actions runner with its own Docker daemon.
 #
 # The daemon is nested rather than the host's socket being mounted. Forgejo

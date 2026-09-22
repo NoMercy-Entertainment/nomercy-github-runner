@@ -1,5 +1,10 @@
 #!/bin/bash
 
+# DEPRECATED 2026-09-22. This is the ancestor of the Linux unit image now
+# built and driven by the controller on Hyper-V workers; see
+# docs/operations/runner-platform.md. No fail-fast here: the unit image's
+# entrypoint still descends from this file's container-only guard below.
+
 # Refuse to run anywhere but inside a container.
 #
 # This file is a container ENTRYPOINT. Run on the distro itself it overwrites

@@ -73,7 +73,7 @@ Set these in your `.env` file:
 
 ## Compose Configuration
 
-See the included `docker-compose.yml` file in this repository for the latest and recommended configuration example.
+See `docker-compose.runners.yml` in this repository for the latest and recommended configuration example.
 
 ## Token Verification
 
