@@ -48,6 +48,13 @@ def registrar(guest):
     return MacRegistrar(run=guest, fs=guest)
 
 
+def test_unknown_launchd_state_is_not_proof_of_quiescence(runtime, guest):
+    runtime.create(RID, SPEC)
+    guest.jobs[runtime.label(RID)].update(state="mystery", pid=None)
+    assert runtime.status(RID)["running"] is None
+    assert runtime.instances()[0]["state"] == "unknown"
+
+
 def launchctl(guest, verb=None):
     return [c for c in guest.calls
             if c[0] == TOOLS["launchctl"] and (verb is None or c[1] == verb)]
@@ -357,6 +364,9 @@ class TestAdoptingARunnerThatIsAlreadyThere:
 
     @pytest.fixture
     def legacy(self, guest):
+        guest.makedirs(posixpath.dirname(self.PLIST))
+        guest.write_text(self.PLIST, plistlib.dumps({"Label": self.LEGACY,
+            "KeepAlive": {"SuccessfulExit": False}, "RunAtLoad": True}).decode())
         guest.jobs[self.LEGACY] = {"state": "running", "pid": 270,
                                    "plist": self.PLIST,
                                    "job": {"Label": self.LEGACY}}
@@ -450,6 +460,9 @@ class TestWhatTheHeartbeatSeesInTheAppliance:
 
     @pytest.fixture
     def legacy(self, guest):
+        guest.makedirs("/Library/LaunchDaemons")
+        guest.write_text("/Library/LaunchDaemons/x.plist", plistlib.dumps(
+            {"Label": self.LEGACY, "KeepAlive": False, "RunAtLoad": True}).decode())
         guest.jobs[self.LEGACY] = {"state": "running", "pid": 270,
                                    "plist": "/Library/LaunchDaemons/x.plist",
                                    "job": {"Label": self.LEGACY}}

@@ -49,6 +49,13 @@ def runtime(host):
     return WindowsProcessRuntime(run=host, fs=host, tools=TOOLS)
 
 
+@pytest.mark.parametrize("service_state", ["SERVICE_STOP_PENDING", "SERVICE_START_PENDING",
+                                           "SERVICE_PAUSED", "SERVICE_PAUSE_PENDING", "nonsense"])
+def test_transitional_service_is_not_proof_of_quiescence(service_state):
+    runtime = WindowsProcessRuntime(run=lambda *args, **kwargs: (True, service_state, ""))
+    assert runtime.status(RID)["running"] is None
+
+
 @pytest.fixture
 def registrar(host):
     return WindowsRegistrar(run=host, fs=host, tools=TOOLS)
@@ -57,6 +64,21 @@ def registrar(host):
 def calls(host, tool, verb=None):
     return [c for c in host.calls
             if c[0] == TOOLS[tool] and (verb is None or c[1] == verb)]
+
+
+def test_service_launcher_ignores_runner_module_and_python_environment(tmp_path):
+    package = tmp_path / "agent"
+    package.mkdir()
+    (package / "__init__.py").write_text("print('UNTRUSTED_RUNNER_MODULE'); raise SystemExit(42)")
+    (tmp_path / "sitecustomize.py").write_text("print('UNTRUSTED_PYTHON_STARTUP')")
+    env = dict(os.environ, PYTHONPATH=str(tmp_path), PYTHONHOME=str(tmp_path))
+    result = subprocess.run(
+        [sys.executable, "-I", "-B", os.path.join(REPO, "agent", "launch_jobhost.py"), "--help"],
+        cwd=tmp_path, env=env, capture_output=True, text=True, timeout=30)
+    assert result.returncode == 0, result.stderr
+    assert "usage: jobhost" in result.stdout
+    assert "--limits-json" in result.stdout
+    assert "UNTRUSTED" not in result.stdout + result.stderr
 
 
 class TestTheServiceSid:
@@ -131,8 +153,13 @@ class TestIsolation:
         runtime.create(RID, SPEC)
         svc = host.services[naming.unit_name(RID)]
         assert svc["program"] == TOOLS["python"]
-        assert svc["args"] == ["-m", "agent.jobhost", "--root",
-                               runtime.paths(RID)["root"]]
+        launcher = os.path.join(REPO, "agent", "launch_jobhost.py")
+        assert svc["args"][:5] == ["-I", "-B", launcher, "--root",
+                                   runtime.paths(RID)["root"]]
+        assert svc["args"][5] == "--limits-json"
+        assert json.loads(svc["args"][6]) == {
+            "memory_bytes": 32 * 1024**3, "cpus": 16.0, "cpuset": "0-15"}
+        assert svc["settings"]["AppParameters"] == [subprocess.list2cmdline(svc["args"])]
 
     def test_limits_and_environment_go_to_the_unit_file(self, runtime, host):
         runtime.create(RID, SPEC)
@@ -287,7 +314,8 @@ class TestObservation:
                                     "mem_used_bytes": 1024}))
         t = runtime.telemetry(RID)
         assert t == {"cpu_percent": 12.5, "mem_used_bytes": 1024,
-                     "mem_limit_bytes": 32 * 1024 ** 3}
+                     "mem_limit_bytes": 32 * 1024 ** 3,
+                     "cpu_cores": 16, "host_cores": os.cpu_count()}
 
     def test_a_stale_report_is_unknown_not_zero(self, runtime, host):
         runtime.create(RID, SPEC)
@@ -383,14 +411,14 @@ class TestRegistrar:
         assert json.loads(host.inputs[-1])["token"] == PLAN["token"]
         assert not any(PLAN["token"] in " ".join(c) for c in host.calls)
 
-    def test_it_runs_the_templates_own_script(self, runtime, registrar,
+    def test_it_requests_registration_through_the_service(self, runtime, registrar,
                                               host):
         runtime.create(RID, SPEC)
         registrar.register(RID, PLAN)
-        argv = calls(host, "powershell")[-1]
-        assert argv[argv.index("-File") + 1] == \
-            runtime.paths(RID)["reg"] + r"\register.ps1"
-        assert "-NonInteractive" in argv
+        argv = calls(host, "python")[-1]
+        assert argv[1:] == ["-m", "agent.windows_registration", "--runner-id", RID]
+        assert not any(runtime.paths(RID)["reg"] in " ".join(call)
+                       for call in calls(host, "powershell"))
 
     def test_it_returns_the_forges_ids(self, runtime, registrar, host):
         runtime.create(RID, SPEC)
@@ -482,9 +510,10 @@ class TestTheJobHostForReal:
 
     def _run(self, tmp_path, python):
         return subprocess.run(
-            [python, "-m", "agent.jobhost", "--root", str(tmp_path),
+            [python, "-I", "-B", os.path.join(REPO, "agent", "launch_jobhost.py"),
+             "--root", str(tmp_path),
              "--report-seconds", "0.5"],
-            cwd=REPO, capture_output=True, text=True, timeout=120)
+            cwd=tmp_path / "work", capture_output=True, text=True, timeout=120)
 
     @pytest.fixture
     def python(self):

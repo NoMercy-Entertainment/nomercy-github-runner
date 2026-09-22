@@ -41,13 +41,20 @@ def runtime_for(config):
     if config.runtime == "linux-container":
         from .runtimes.linux_container import (LinuxContainerRuntime,
                                                LinuxRegistrar)
-        return LinuxContainerRuntime(), LinuxRegistrar()
+        return LinuxContainerRuntime(storage=config.storage), LinuxRegistrar()
     if config.runtime == "windows-process":
         from .runtimes.windows_process import (WindowsProcessRuntime,
                                                WindowsRegistrar)
-        return (WindowsProcessRuntime(tools=config.tools),
-                WindowsRegistrar(tools=config.tools))
+        runtime = WindowsProcessRuntime(tools=config.tools, storage=config.windows_storage)
+        return runtime, WindowsRegistrar(tools=config.tools, storage_backend=runtime._storage)
     if config.runtime == "macos-appliance":
+        if config.appliance_pool:
+            if not sys.platform.startswith("linux"):
+                raise ConfigError("appliance_pool requires a Linux KVM host")
+            from .runtimes.macos_pool import MacAppliancePoolRuntime, MacPoolRegistrar
+            guest = dict(config.guest, password=_secret(config.guest.get("password_file")))
+            pool = MacAppliancePoolRuntime(**config.appliance_pool, guest=guest, tools=config.tools)
+            return pool, MacPoolRegistrar(pool)
         # Inside the guest there is no hypervisor to reach: the appliance
         # host is the other side's (T-0803), so none is given here.
         from .runtimes.macos_appliance import (MacApplianceRuntime,
@@ -64,7 +71,12 @@ def runtime_for(config):
                         ssh=config.guest.get("ssh", "ssh"),
                         sshpass=config.guest.get("sshpass", "sshpass"))
         fs = GuestFs(run)
-        return (MacApplianceRuntime(run=run, fs=fs, tools=config.tools),
+        appliance = None
+        if config.appliance:
+            from .runtimes.appliance_host import DockerApplianceHost
+            appliance = DockerApplianceHost(guest=run, **config.appliance)
+        return (MacApplianceRuntime(run=run, fs=fs, tools=config.tools,
+                                    appliance=appliance, remote=True),
                 MacRegistrar(run=run, fs=fs))
     raise ConfigError(f"no runtime {config.runtime!r}")      # pragma: no cover
 
@@ -81,7 +93,26 @@ class Declared:
         self._capacity = dict(capacity)
 
     def capabilities(self):
-        return dict(self._runtime.capabilities() or {}, **self._capacity)
+        caps = dict(self._runtime.capabilities() or {}, **self._capacity)
+        if not hasattr(self._runtime, "memory_capacity"):
+            return caps
+        measured = self._runtime.memory_capacity()
+        if measured is None:
+            return dict(caps, capacity_valid=False, capacity_error="worker memory could not be measured")
+        physical, swap = measured["memory_bytes"], measured["swap_bytes"]
+        caps["memory_total_bytes"], caps["swap_total_bytes"] = physical, swap
+        memory_budget = self._capacity.get("memory_bytes", physical)
+        swap_budget = self._capacity.get("swap_bytes", swap)
+        commit_budget = self._capacity.get("memory_commit_bytes", memory_budget)
+        caps["memory_bytes"] = min(memory_budget, physical)
+        caps["swap_bytes"] = min(swap_budget, swap)
+        caps["capacity_valid"] = (memory_budget <= physical and swap_budget <= swap
+                                  and commit_budget <= caps["memory_bytes"] + caps["swap_bytes"])
+        if "memory_commit_bytes" in self._capacity and self._capacity.get("memory_admission") != "bounded-overcommit":
+            caps["capacity_valid"] = False
+        if not caps["capacity_valid"]:
+            caps["capacity_error"] = "configured memory or commitment exceeds measured worker capacity"
+        return caps
 
     def __getattr__(self, name):
         return getattr(self._runtime, name)
@@ -93,7 +124,7 @@ class Running:
     def __init__(self, config, runtime=None, registrar=None):
         if runtime is None or registrar is None:
             runtime, registrar = runtime_for(config)
-        if config.capacity:
+        if config.capacity or config.runtime == "linux-container":
             runtime = Declared(runtime, config.capacity)
         self.config = config
         self.agent = Agent(config.host_id, runtime, registrar,

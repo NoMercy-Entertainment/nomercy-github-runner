@@ -144,14 +144,32 @@ class TestTheBeatOutlivesOneBadBeat:
 
 
 class TestTheDeepBeat:
-    def test_the_first_measurement_is_deep_and_the_next_are_not(self, sender):
+    def test_deep_measurements_run_separately_and_retain_their_time(self, sender):
         sender.measure_once()
-        first = sender.link.posted
-        assert sender.measured == 1
+        sender.measure_depth_once()
+        sender.measure_once()
         deep = [u for u in sender._measured[1]["instances"]
                 if "storage_bytes" in (u.get("telemetry") or {})]
-        assert deep, "the first measurement measures storage"
+        assert deep
+        stamp = deep[0]["telemetry"]["storage_at"]
         sender.measure_once()
-        shallow = [u for u in sender._measured[1]["instances"]
-                   if "storage_bytes" in (u.get("telemetry") or {})]
-        assert not shallow and first == []
+        assert sender._measured[1]["instances"][0]["telemetry"]["storage_at"] == stamp
+
+    def test_blocked_storage_does_not_block_fresh_unit_measurements(self, sender):
+        sender.measure_once()
+        held = threading.Event()
+        entered = threading.Event()
+        def probe(*args):
+            entered.set()
+            held.wait(2)
+            return {"ok": False}
+        sender.agent.runtime.probe = probe
+        thread = threading.Thread(target=sender.measure_depth_once, daemon=True)
+        thread.start()
+        assert entered.wait(1)
+        started = time.monotonic()
+        sender.measure_once()
+        assert time.monotonic() - started < 1
+        assert sender._measured[1]["instances"][0]["state"] == "running"
+        held.set()
+        thread.join(2)

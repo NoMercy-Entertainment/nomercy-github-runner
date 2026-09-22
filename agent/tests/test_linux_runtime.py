@@ -370,6 +370,27 @@ class TestRemoving:
     def test_it_is_safe_when_nothing_is_there(self, runtime):
         runtime.remove(RID, keep_data=False)
 
+    def test_engine29_missing_object_errors_allow_idempotent_removal(self, docker):
+        def run(args, **kw):
+            if args[0] in ("stop", "rm", "inspect"):
+                return False, "", "error: no such object: " + naming.unit_name(RID)
+            return docker(args, **kw)
+
+        runtime = LinuxContainerRuntime(run=run)
+        runtime.remove(RID, keep_data=False)
+        assert not docker.volumes
+
+    def test_engine29_missing_object_status_allows_first_create(self, docker):
+        def run(args, **kw):
+            ok, out, err = docker(args, **kw)
+            if args[0] == "inspect" and not ok:
+                return False, out, "error: no such object: " + naming.unit_name(RID)
+            return ok, out, err
+
+        runtime = LinuxContainerRuntime(run=run)
+        runtime.create(RID, SPEC)
+        assert runtime.status(RID)["running"] is True
+
     def test_storage_that_will_not_go_is_a_failure_not_a_footnote(
             self, runtime, docker):
         """To the controller, storage outliving its runner is a half
@@ -402,6 +423,51 @@ class TestObserving:
             run=lambda args, **kw: (False, "", "Cannot connect to the "
                                                "Docker daemon"))
         assert runtime.status(RID)["exists"] is None
+
+    @pytest.mark.parametrize("error", [
+        "error: no such object: rnr-" + RID,
+        "Error response from daemon: No such container: rnr-" + RID,
+        "ERROR: NO SUCH OBJECT: rnr-" + RID,
+    ])
+    def test_docker_versions_agree_on_a_missing_container(self, error):
+        runtime = LinuxContainerRuntime(run=lambda args, **kw: (False, "", error))
+        assert runtime.status(RID) == {"exists": False, "running": False, "state": "absent"}
+
+    @pytest.mark.parametrize("error", [
+        "Cannot connect to the Docker daemon",
+        "dial unix /var/run/docker.sock: connect: no such file or directory",
+        "No such host: docker.example",
+        "permission denied while trying to connect to the Docker daemon socket",
+    ])
+    def test_transport_errors_never_prove_container_absence(self, error):
+        runtime = LinuxContainerRuntime(run=lambda args, **kw: (False, "", error))
+        assert runtime.status(RID) == {"exists": None, "running": None, "state": "unknown"}
+
+    @pytest.mark.parametrize("state", [
+        None, [], "running", 0, {}, {"Status": "exited"},
+        {"Status": "exited", "Running": None},
+        {"Status": "exited", "Running": "false"},
+        {"Status": "exited", "Running": 0},
+        {"Running": False}, {"Status": "unknown", "Running": False},
+        {"Status": "running", "Running": False},
+        {"Status": "paused", "Running": False},
+        {"Status": "exited", "Running": True},
+    ])
+    def test_malformed_state_never_proves_a_stopped_container(self, state):
+        runtime = LinuxContainerRuntime(run=lambda args, **kw: (True, json.dumps(state), ""))
+        assert runtime.status(RID) == {"exists": None, "running": None, "state": "unknown"}
+
+    @pytest.mark.parametrize("state,running", [
+        ("created", False), ("exited", False), ("running", True),
+        ("paused", True), ("removing", False), ("restarting", False),
+    ])
+    def test_valid_process_and_transition_states_remain_observable(self, state, running):
+        runtime = LinuxContainerRuntime(run=lambda args, **kw:
+            (True, json.dumps({"Status": state, "Running": running}), ""))
+        result = runtime.status(RID)
+        assert result["exists"] is True
+        assert result["running"] is running
+        assert result["state"] == state
 
     def test_instances_lists_this_engines_runners(self, runtime):
         runtime.create(RID, SPEC)
@@ -440,7 +506,21 @@ class TestObserving:
         docker.engine(naming.names(RID, "linux")["docker"], build_cache=500,
                       images=700)
         assert runtime.probe(RID, "cache_size")["value"] == 500
-        assert runtime.probe(RID, "disk_usage")["value"] == 700
+        assert runtime.probe(RID, "disk_usage")["value"] == 1200
+
+    def test_disk_usage_covers_all_five_owned_mounts(self, runtime, docker):
+        runtime.create(RID, SPEC)
+        for volume in naming.names(RID, "linux").values():
+            docker.put(volume, "data", 100)
+        docker.engine(naming.names(RID, "linux")["docker"], build_cache=300, images=200)
+        assert runtime.probe(RID, "disk_usage")["value"] == 1000
+
+    @pytest.mark.parametrize("limit", ["20GB", "40GB", "123456B"])
+    def test_cache_cap_is_read_from_the_unit(self, runtime, docker, limit):
+        runtime.create(RID, dict(SPEC, env={"RUNNER_BUILD_CACHE_GC": limit}))
+        got = runtime.probe(RID, "cache_size")
+        assert got["cap_bytes"] == {"20GB": 20 * 10 ** 9, "40GB": 40 * 10 ** 9,
+                                     "123456B": 123456}[limit]
         assert runtime.probe(RID, "agent_version")["value"] == "2.336.0"
         assert runtime.probe(RID, "job_state")["ok"] is False
 
@@ -495,11 +575,36 @@ class TestClearingTheCache:
         freed = runtime.clear_cache(RID, {"scopes": ["somewhere-else"]})
         assert "not supported" in freed["errors"]["somewhere-else"]
 
-    def test_a_unit_that_is_not_running_is_refused(self, runtime):
+    def test_a_stopped_unit_is_cleaned_without_starting_its_listener(self, runtime, docker):
+        runtime.create(RID, SPEC)
+        volume = naming.names(RID, "linux")["docker"]
+        docker.engine(volume, build_cache=800)
+        runtime.stop(RID)
+        docker.calls.clear()
+        freed = runtime.clear_cache(RID, {})
+        assert freed["total_bytes"] == 800
+        assert runtime.status(RID)["running"] is False
+        assert len(docker.containers) == 1
+        calls = [c for c in docker.calls if c[0] == "run"]
+        assert len(calls) == 1
+        assert calls[0][calls[0].index("--entrypoint") + 1] == "/runner/maintenance"
+        assert calls[0][calls[0].index("--network") + 1] == "none"
+        assert not any(c[0] == "start" for c in docker.calls)
+
+    def test_failed_maintenance_probes_remove_helper_and_leave_original_stopped(self, docker, monkeypatch):
+        from agent.runtimes import linux_container
+        monkeypatch.setattr(linux_container, "sleep", lambda seconds: None)
+        def run(args, **kwargs):
+            if args[0] == "exec" and args[-2:] == ["docker", "info"]:
+                return False, "", "engine not ready"
+            return docker(args, **kwargs)
+        runtime = LinuxContainerRuntime(run=run)
         runtime.create(RID, SPEC)
         runtime.stop(RID)
-        with pytest.raises(RuntimeError, match="not running"):
+        with pytest.raises(RuntimeError, match="maintenance engine"):
             runtime.clear_cache(RID, {})
+        assert runtime.status(RID)["running"] is False
+        assert list(docker.containers) == [naming.unit_name(RID)]
 
 
 class TestRegistering:

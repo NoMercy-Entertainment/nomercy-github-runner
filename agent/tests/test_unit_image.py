@@ -159,7 +159,7 @@ class TestTheRunnerGitHubWillTalkTo:
 
 @pytest.mark.skipif(shutil.which("bash") is None, reason="no bash here")
 @pytest.mark.parametrize("script", ["run", "register", "deregister",
-                                    "lib.sh"])
+                                    "lib.sh", "cleanup", "maintenance"])
 def test_every_script_parses(script):
     subprocess.run(["bash", "-n", os.path.join(UNIT, "runner", script)],
                    check=True)

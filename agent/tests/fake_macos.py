@@ -72,6 +72,7 @@ class FakeMac:
         self.modes = {}
         self.locked = set()
         self.jobs = {}          # label -> {"state", "pid", "plist"}
+        self.disabled = set()
         self.calls = []
         self.inputs = []
         self.root_disk = (100 * 1024 ** 3, 60 * 1024 ** 3)
@@ -205,7 +206,7 @@ class FakeMac:
             return result
         if tool == TOOLS["ps"]:
             return True, "\n".join(
-                f"{j['pid']:>5} 2.5 102400" for j in self.jobs.values()
+                f"{j['pid']:>5} 1 {j['pid']} 2.5 102400" for j in self.jobs.values()
                 if j["state"] == "running"), ""
         if tool == TOOLS["df"]:
             total, used = self.root_disk
@@ -217,6 +218,13 @@ class FakeMac:
 
     def _launchctl(self, args):
         verb = args[0]
+        if verb in ("enable", "disable"):
+            label = args[-1].split("/", 2)[-1]
+            if verb == "disable":
+                self.disabled.add(label)
+            else:
+                self.disabled.discard(label)
+            return True, "", ""
         if verb == "bootstrap":
             plist_path = args[2]
             if plist_path not in self.files:
@@ -224,6 +232,8 @@ class FakeMac:
                                   "directory"
             job = plistlib.loads(self.read_text(plist_path).encode())
             label = job["Label"]
+            if label in self.disabled:
+                return False, "", "Bootstrap failed: service disabled"
             if label in self.jobs:
                 return False, "", "Bootstrap failed: 5: Input/output error"
             self.jobs[label] = {"state": "waiting", "pid": None, "job": job}

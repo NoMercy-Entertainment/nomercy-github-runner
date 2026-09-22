@@ -115,6 +115,39 @@ class TestTheRuntimeItNames:
         assert registrar._tools["nssm"] == r"D:\tools\nssm.exe"
 
 
+class TestAppliancePowerConfiguration:
+    GUEST = {"host": "127.0.0.1", "user": "user", "key": "guest.key"}
+
+    def test_only_closed_fields_are_accepted(self):
+        with pytest.raises(ConfigError, match="appliance"):
+            ok(runtime="macos-appliance", guest=self.GUEST,
+               appliance={"name": "macos-sequoia", "command": "anything"})
+
+    def test_a_local_guest_has_no_host_power_control(self):
+        with pytest.raises(ConfigError, match="guest connection"):
+            ok(runtime="macos-appliance", appliance={"name": "macos-sequoia"})
+
+    @pytest.mark.parametrize("name", ["*", "-f", "a/b", "a b", "$(id)"])
+    def test_one_exact_unit_must_be_named(self, name):
+        with pytest.raises(ConfigError, match="appliance.name"):
+            ok(runtime="macos-appliance", guest=self.GUEST, appliance={"name": name})
+
+    def test_power_control_is_attached_to_remote_runtime(self):
+        config = ok(runtime="macos-appliance", guest=self.GUEST,
+                    appliance={"name": "macos-sequoia", "boot_timeout": 300})
+        runtime, _ = entry.runtime_for(config)
+        assert runtime._appliance.name == "macos-sequoia"
+        assert runtime._appliance._timeout == 300
+
+    def test_system_domain_requires_a_runner_user(self):
+        with pytest.raises(ConfigError, match="runner_user"):
+            ok(runtime="macos-appliance", tools={"domain": "system"})
+
+    def test_unknown_tool_names_do_not_silently_do_nothing(self):
+        with pytest.raises(ConfigError, match="tools"):
+            ok(tools={"shell": "some-command"})
+
+
 class TestCapacity:
     def test_it_is_kept(self):
         c = ok(capacity={"max_runners": 2, "memory_bytes": 12 * 2 ** 30})
@@ -140,6 +173,93 @@ class TestCapacity:
             "max_runners": 2}
         assert declared.status("x") == {"exists": True}, \
             "everything else goes straight through"
+
+
+class TestAppliancePoolConfig:
+    POOL = {"image": "sha256:" + "a" * 64, "base_disk": "/srv/base/macos.qcow2",
+            "base_system": "/srv/base/BaseSystem.img", "data_root": "/srv/instances",
+            "templates": ["github-macos", "forgejo-macos"], "base_guests_disabled": True}
+    GUEST = {"host": "127.0.0.1", "user": "runner", "key": "guest.key"}
+
+    def config(self, pool=None, **changes):
+        values = dict(runtime="macos-appliance", guest=self.GUEST, tools={"domain": "gui/501"},
+                      appliance_pool=self.POOL if pool is None else pool)
+        values.update(changes)
+        return ok(**values)
+
+    def test_explicit_opt_in_with_bounded_default_capacity(self):
+        config = self.config()
+        assert config.appliance_pool == self.POOL
+        assert config.capacity == {"max_runners": 2, "memory_bytes": 24 * 1024 ** 3}
+        assert ok(runtime="macos-appliance").appliance_pool == {}
+
+    @pytest.mark.parametrize("patch", [{"image": "some:latest"}, {"base_guests_disabled": False},
+                                       {"templates": ["../../unsafe"]}, {"ssh_port_base": True},
+                                       {"base_disk": "relative.qcow2"}, {"data_root": "/srv/x,y"},
+                                       {"command": "evil"}, {"boot_timeout": 0}])
+    def test_invalid_pool_config_is_rejected(self, patch):
+        with pytest.raises(ConfigError, match="appliance_pool"):
+            self.config(dict(self.POOL, **patch))
+
+    def test_pool_and_legacy_appliance_cannot_both_own_the_guest(self):
+        with pytest.raises(ConfigError, match="excludes appliance"):
+            self.config(appliance={"name": "legacy"})
+
+    def test_linux_host_required_before_runtime_creation(self, monkeypatch):
+        monkeypatch.setattr(entry.sys, "platform", "win32")
+        with pytest.raises(ConfigError, match="Linux KVM"):
+            entry.runtime_for(self.config())
+
+    def test_pool_runtime_gets_fixed_guest_credentials(self, monkeypatch):
+        from agent.runtimes import macos_pool
+        seen = {}
+
+        class Pool:
+            def __init__(self, **kwargs):
+                seen.update(kwargs)
+
+        monkeypatch.setattr(entry.sys, "platform", "linux")
+        monkeypatch.setattr(macos_pool, "MacAppliancePoolRuntime", Pool)
+        runtime, registrar = entry.runtime_for(self.config())
+        assert registrar.pool is runtime
+        assert seen["guest"]["key"] == "guest.key"
+        assert seen["image"] == self.POOL["image"]
+
+
+class TestDiskStorageConfig:
+    def test_linux_storage_is_explicit_and_default_bounded(self):
+        assert ok().storage == {}
+        assert ok(storage={"root": "/var/lib/runner-storage"}).storage == {
+            "root": "/var/lib/runner-storage", "default_bytes": 100 * 1024 ** 3}
+
+    @pytest.mark.parametrize("storage", [{"root": "/"}, {"root": "relative"},
+                                          {"root": "/safe", "default_bytes": True},
+                                          {"root": "/safe", "default_bytes": 1},
+                                          {"root": "/safe", "default_bytes": 2 ** 63},
+                                          {"root": "/safe", "command": "evil"}])
+    def test_linux_bad_config_rejected(self, storage):
+        with pytest.raises(ConfigError, match="storage"):
+            ok(storage=storage)
+
+    def test_wrong_runtime_rejected(self):
+        with pytest.raises(ConfigError, match="only by linux-container"):
+            ok(runtime="windows-process", storage={"root": "/safe"})
+
+    def test_windows_storage_is_explicit_and_default_bounded(self):
+        assert ok(runtime="windows-process").windows_storage == {}
+        result = ok(runtime="windows-process", windows_storage={
+            "enabled": True, "root": "D:/runner-disks"}).windows_storage
+        assert result["default_limit"] == 100 * 1024 ** 3
+        assert result["reserve_bytes"] == 20 * 1024 ** 3
+
+    @pytest.mark.parametrize("patch", [{"enabled": "yes"}, {"root": "D:/"},
+                                       {"root": "//server/share"}, {"root": "/relative"},
+                                       {"reserve_bytes": -1}, {"default_limit": False},
+                                       {"default_limit": 1}, {"default_limit": 1024 ** 3 + 1}])
+    def test_windows_bad_config_rejected(self, patch):
+        with pytest.raises(ConfigError, match="windows_storage"):
+            ok(runtime="windows-process", windows_storage=dict(
+                {"enabled": True, "root": "D:/runner-disks"}, **patch))
 
 
 class TestTheGuestOfAnAppliance:

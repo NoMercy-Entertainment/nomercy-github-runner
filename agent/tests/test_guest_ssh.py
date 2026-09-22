@@ -132,9 +132,9 @@ class TestTheSecret:
 
 class TestTheDiskInsideTheGuest:
     def test_exists_is_the_guests_answer(self, fs, run):
-        run.answers = {"test -e": (0, "", "")}
+        run.answers = {"test -e": (0, "present", "")}
         assert fs.exists("/Users/runner/runners") is True
-        run.answers = {"test -e": (1, "", "")}
+        run.answers = {"test -e": (0, "absent", "")}
         assert fs.exists("/Users/runner/runners") is False
 
     def test_makedirs_does_not_mind_an_existing_directory(self, fs, run):
@@ -151,8 +151,15 @@ class TestTheDiskInsideTheGuest:
 
     def test_listdir_of_something_that_is_not_a_directory_is_empty(self, fs,
                                                                    run):
-        run.answers = {"ls -1A": (1, "", "not a directory")}
+        run.answers = {"ls -1A": (0, "", "")}
         assert fs.listdir("/Users/runner/file") == []
+
+    @pytest.mark.parametrize("method", ["exists", "listdir"])
+    def test_an_unreachable_guest_is_not_an_absent_file_or_empty_fleet(self, fs, run, method):
+        run.answers = {"test -e": (255, "", "connection refused"),
+                       "ls -1A": (255, "", "connection refused")}
+        with pytest.raises(OSError, match="guest"):
+            getattr(fs, method)("/Users/runner/runners")
 
     def test_copytree_copies_the_contents_into_an_existing_destination(
             self, fs, run):

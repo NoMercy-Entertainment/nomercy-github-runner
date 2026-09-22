@@ -41,13 +41,17 @@ above come from.
 import hashlib
 import json
 import ntpath
+import os
 import struct
 import subprocess
 import sys
 import time
+from pathlib import Path
 
-from .. import naming
+from .. import cpu, naming
+from ..jobs import current_job
 from .localfs import LocalFs
+from .windows_storage import WindowsStorage
 
 #: Areas created per runner. `docker` is None on Windows: no nested engine.
 AREAS = tuple(a for a in naming.AREAS if a != "docker")
@@ -128,10 +132,13 @@ def _exec(args, input=None, timeout=30):
 class WindowsProcessRuntime:
     kind = "windows-process"
 
-    def __init__(self, run=None, fs=None, tools=None):
+    def __init__(self, run=None, fs=None, tools=None, storage=None, storage_backend=None):
         self._run = run or _exec
         self._fs = fs or LocalFs()
         self._tools = dict(TOOLS, **(tools or {}))
+        self._storage = storage_backend
+        if self._storage is None and (storage or {}).get("enabled"):
+            self._storage = WindowsStorage(storage, self._run, self._tools["powershell"])
 
     # ---- where things are ----------------------------------------------------
 
@@ -171,10 +178,18 @@ class WindowsProcessRuntime:
         image = (spec or {}).get("image")
         if not image:
             raise ValueError("a unit needs a template")
+        if (spec or {}).get("disk_limit") and not self._storage:
+            raise ValueError("disk_limit requires configured Windows storage")
         template = ntpath.join(self._tools["templates"], image)
         if not self._fs.exists(template):
             raise RuntimeError(f"no runner template {image!r} on this worker")
         p = self.paths(rid)
+
+        # Attach/prove the owned filesystem before creating any directory.
+        # Existing plain trees require explicit offline migration.
+        disk = None
+        if self._storage:
+            disk = self._storage.ensure(rid, (spec or {}).get("disk_limit"))
 
         # 1. The directories.
         self._fs.makedirs(p["root"])
@@ -188,15 +203,22 @@ class WindowsProcessRuntime:
         #    service that is not there yet, which is how the first live
         #    Windows worker failed (2026-09-19). So the service is made first
         #    and started last, and nothing runs while the tree is open.
-        if self.status(rid)["exists"] is not True:
+        service = self.status(rid)
+        if self._storage and service.get("exists") is None:
+            raise RuntimeError("service state is unknown; create is held")
+        if service["exists"] is not True:
+            parameters = self._jobhost_args(rid, spec, p, disk)
             ok, out, err = self._nssm(
-                "install", name, self._tools["python"], "-m", "agent.jobhost",
-                "--root", p["root"])
+                "install", name, self._tools["python"], *parameters)
             if not ok and "exists" not in (out + err):
                 raise RuntimeError(err or out or "nssm install failed")
 
         # 3. Storage, locked to this runner before anything is in it.
         self._acl(p["root"], name)
+        # Configure the account/startup policy before creating executable
+        # runner files: a host reboot during create must not launch a ready
+        # unit under NSSM's initial LocalSystem account.
+        self._configure(name, p, spec)
 
         # 4. The runner's software, once. A re-driven create must not copy
         #    over a registered runner's files while its service holds them.
@@ -209,9 +231,10 @@ class WindowsProcessRuntime:
         self._fs.write_text(ntpath.join(p["reg"], "unit.json"),
                             json.dumps(self._unit(rid, spec, p)))
 
-        self._configure(name, p)
-
-        if not self.status(rid).get("running"):
+        running = self.status(rid).get("running")
+        if running is None:
+            raise RuntimeError("service state is unknown; start is held")
+        if running is False:
             self._check(self._nssm("start", name, timeout=STOP_TIMEOUT + 30))
         return name
 
@@ -220,6 +243,9 @@ class WindowsProcessRuntime:
         for area, key in LAYOUT_ENV_KEYS.items():
             env[key] = p[area]
         env["TEMP"] = env["TMP"] = p["tmp"]
+        if self._storage:
+            env["HOME"] = env["USERPROFILE"] = p["work"]
+            env["APPDATA"] = env["LOCALAPPDATA"] = p["cache"]
         cpus = str(spec.get("cpus") or "").strip()
         return {"runner_id": rid, "env": env,
                 "memory_bytes": size_bytes(spec.get("memory")),
@@ -235,10 +261,30 @@ class WindowsProcessRuntime:
             f"*{SYSTEM_SID}:(OI)(CI)F", f"*{ADMINISTRATORS_SID}:(OI)(CI)F",
             f"*{service_sid(name)}:(OI)(CI)M", "/Q"], timeout=120))
 
-    def _configure(self, name, p):
+    def _jobhost_args(self, rid, spec, p, disk=None):
+        unit = self._unit(rid, spec, p)
+        limits = {key: unit[key] for key in ("memory_bytes", "cpus", "cpuset")}
+        from ..jobhost import checked_limits
+        checked_limits(limits)
+        launcher = str(Path(__file__).resolve().parents[1] / "launch_jobhost.py")
+        args = ["-I", "-B", launcher, "--root", p["root"],
+                "--limits-json", json.dumps(limits, separators=(",", ":")),
+                "--runner-id", rid]
+        if disk:
+            args.extend(["--volume-guid", disk["volume_guid"]])
+        return args
+
+    def _configure(self, name, p, spec):
         self._check(self._sc("config", name, "obj=", f"NT SERVICE\\{name}",
-                             "start=", "auto"))
+                             "start=", "demand" if self._storage else "auto"))
         self._check(self._sc("sidtype", name, "unrestricted"))
+        rid = name[len(naming.PREFIX) + 1:]
+        self._registration_key(rid, "ensure")
+        disk = self._storage.verify(rid) if self._storage else None
+        # Protected SCM parameters supply resource limits and volume identity.
+        # A job can edit unit.json but cannot raise these ceilings on restart.
+        parameters = subprocess.list2cmdline(self._jobhost_args(rid, spec, p, disk))
+        self._check(self._nssm("set", name, "AppParameters", parameters))
         log = ntpath.join(p["logs"], "runner.log")
         for setting in (("AppDirectory", p["work"]),
                         ("AppStdout", log), ("AppStderr", log),
@@ -246,6 +292,12 @@ class WindowsProcessRuntime:
                         ("AppStopMethodConsole", str(STOP_TIMEOUT * 1000)),
                         ("AppExit", "Default", "Restart")):
             self._check(self._nssm("set", name, *setting))
+
+    def _registration_key(self, rid, action):
+        script = str(Path(__file__).resolve().parents[1] / "registration_keys.ps1")
+        self._check(self._run([self._tools["powershell"], "-NoProfile", "-NonInteractive",
+                              "-ExecutionPolicy", "Bypass", "-File", script,
+                              "-RunnerId", naming.check(rid), "-Action", action], timeout=30))
 
     def start(self, runner_id):
         """Started, and in service. What a drain leaves behind is undone
@@ -255,9 +307,16 @@ class WindowsProcessRuntime:
         running: NSSM refuses to start one twice."""
         name = naming.unit_name(runner_id)
         p = self.paths(runner_id)
+        if self._storage:
+            self._storage.mount(runner_id)
         self._fs.remove(ntpath.join(p["reg"], DRAIN_REQUEST))
         self._check(self._nssm("set", name, "AppExit", "Default", "Restart"))
-        if not self.status(runner_id).get("running"):
+        self._check(self._sc("config", name, "start=",
+                             "demand" if self._storage else "auto"))
+        running = self.status(runner_id).get("running")
+        if running is None:
+            raise RuntimeError("service state is unknown; start is held")
+        if running is False:
             self._check(self._nssm("start", name, timeout=STOP_TIMEOUT + 30))
 
     def stop(self, runner_id):
@@ -265,14 +324,23 @@ class WindowsProcessRuntime:
         service that is already down - a drained runner's, say - is left as
         it is: NSSM refuses to stop one that has not been started, and a stop
         is asked for to make the unit down, which it is."""
-        if not self.status(runner_id).get("running"):
+        state = self.status(runner_id)
+        if state.get("exists") is False:
+            return
+        if state.get("exists") is None:
+            raise RuntimeError("service state is unknown; stop was not confirmed")
+        if state.get("running") is None:
+            raise RuntimeError("service state is unknown; stop was not confirmed")
+        self._check(self._sc("config", naming.unit_name(runner_id),
+                             "start=", "demand"))
+        if not state.get("running"):
             return
         self._check(self._nssm("stop", naming.unit_name(runner_id),
                                timeout=STOP_TIMEOUT + 30))
 
     def restart(self, runner_id):
-        self._check(self._nssm("restart", naming.unit_name(runner_id),
-                               timeout=2 * STOP_TIMEOUT + 30))
+        self.stop(runner_id)
+        self.start(runner_id)
 
     def drain(self, runner_id):
         """A graceful stop that stays stopped (OPEN-7). NSSM is told not to
@@ -287,6 +355,9 @@ class WindowsProcessRuntime:
         is written."""
         name = naming.unit_name(runner_id)
         p = self.paths(runner_id)
+        if self._storage:
+            self._storage.verify(runner_id)
+        self._check(self._sc("config", name, "start=", "demand"))
         self._check(self._nssm("set", name, "AppExit", "Default", "Exit"))
         self._fs.write_text(ntpath.join(p["reg"], DRAIN_REQUEST), "drain")
 
@@ -299,7 +370,21 @@ class WindowsProcessRuntime:
         """Remove the service and its storage. Safe when any of it is absent."""
         rid = naming.check(runner_id)
         name = naming.unit_name(rid)
-        if self.status(rid)["exists"] is not False:
+        if self._storage:
+            state = self.status(rid)
+            if state.get("exists") is None or state.get("running") is None:
+                raise RuntimeError("service state is unknown; storage is retained")
+            if state.get("exists"):
+                self.stop(rid)
+                if self.status(rid).get("running") is not False:
+                    raise RuntimeError("service has not stopped; storage is retained")
+            # No writes through an unmounted directory, including compensation.
+            if keep_data:
+                self._storage.mount(rid)
+        current = self.status(rid)
+        if self._storage and (current.get("exists") is None or current.get("running") is not False):
+            raise RuntimeError("service quiescence changed; removal is held")
+        if current["exists"] is not False:
             # Stopped first, so the runner gets its grace; a service that is
             # already stopped makes this fail, which changes nothing.
             self._nssm("stop", name, timeout=STOP_TIMEOUT + 30)
@@ -307,8 +392,17 @@ class WindowsProcessRuntime:
             if not ok and not _absent(out + err):
                 raise RuntimeError(err or out or "nssm remove failed")
         p = self.paths(rid)
-        doomed = ([p[a] for a in AREAS if a not in KEPT_ON_RECREATE]
-                  + [p["tmp"]]) if keep_data else [p["root"]]
+        if self._storage and not keep_data:
+            self._storage.remove(rid)
+            self._registration_key(rid, "remove")
+            return
+        if self._storage:
+            # Compensation must keep the prior workspace as well as caches
+            # and logs. Registration and temp are reset for fresh enrollment.
+            doomed = [p["reg"], p["tmp"]]
+        else:
+            doomed = ([p[a] for a in AREAS if a not in KEPT_ON_RECREATE]
+                      + [p["tmp"]]) if keep_data else [p["root"]]
         left = []
         for path in doomed:
             try:
@@ -317,6 +411,8 @@ class WindowsProcessRuntime:
                 left.append(f"{ntpath.basename(path)}: {e}")
         if left:
             raise RuntimeError("storage left behind: " + "; ".join(left))
+        if not keep_data:
+            self._registration_key(rid, "remove")
 
     def _check(self, result):
         ok, out, err = result
@@ -336,24 +432,50 @@ class WindowsProcessRuntime:
                 return {"exists": False, "running": False, "state": "absent"}
             return {"exists": None, "running": None, "state": "unknown"}
         state = text.strip().split()[-1] if text.strip() else ""
-        return {"exists": True, "running": state == "SERVICE_RUNNING",
+        running = True if state == "SERVICE_RUNNING" else (
+            False if state == "SERVICE_STOPPED" else None)
+        result = {"exists": True, "running": running,
                 "state": {"SERVICE_RUNNING": "running",
                           "SERVICE_STOPPED": "exited",
                           "SERVICE_PAUSED": "paused",
                           "SERVICE_START_PENDING": "starting",
                           "SERVICE_STOP_PENDING": "stopping"}.get(state,
                                                                   "unknown")}
+        if self._storage:
+            try:
+                self._storage.verify(runner_id)
+                result["storage_ready"] = True
+            except (OSError, RuntimeError, ValueError) as exc:
+                result.update(storage_ready=False, storage_error=str(exc))
+                if running is not False:
+                    result.update(running=None, state="unknown")
+        return result
 
     def telemetry(self, runner_id):
         """What the job host last measured, if it is recent. A stale or
         missing report is unknown, not zero."""
         result = {"cpu_percent": None, "mem_used_bytes": None,
-                  "mem_limit_bytes": None}
+                  "mem_limit_bytes": None, "cpu_cores": None,
+                  "host_cores": os.cpu_count()}
         p = self.paths(runner_id)
+        if self._storage:
+            try:
+                disk = self._storage.verify(runner_id)
+                result.update(disk_limit_enforced=True,
+                              disk_limit_bytes=disk["capacity_bytes"],
+                              disk_virtual_bytes=disk["virtual_bytes"],
+                              disk_free_bytes=disk["free_bytes"],
+                              disk_used_bytes=disk["capacity_bytes"] - disk["free_bytes"])
+            except (OSError, RuntimeError, ValueError):
+                result.update(disk_limit_enforced=False, disk_used_bytes=None,
+                              disk_limit_bytes=None, disk_free_bytes=None)
+                return result
         try:
             unit = json.loads(self._fs.read_text(
                 ntpath.join(p["reg"], "unit.json")))
             result["mem_limit_bytes"] = unit.get("memory_bytes")
+            result["cpu_cores"] = cpu.ceiling(unit.get("cpuset"),
+                                             float(unit.get("cpus") or 0) * 1e9)
         except (OSError, ValueError):
             pass
         path = ntpath.join(p["logs"], "telemetry.json")
@@ -367,10 +489,15 @@ class WindowsProcessRuntime:
         result["mem_used_bytes"] = report.get("mem_used_bytes")
         return result
 
+    def jobs(self, runner_ids):
+        return {rid: current_job(self.logs(rid, 86400)) for rid in runner_ids}
+
     def logs(self, runner_id, since_seconds, max_bytes=256 * 1024):
         """The tail of the runner's own output. The file carries no
         timestamps, so `since_seconds` decides only whether it has been
         written to at all in that window."""
+        if self._storage:
+            self._storage.verify(runner_id)
         path = ntpath.join(self.paths(runner_id)["logs"], "runner.log")
         try:
             if time.time() - self._fs.mtime(path) > since_seconds:
@@ -380,6 +507,10 @@ class WindowsProcessRuntime:
             return ""
 
     def probe(self, runner_id, probe):
+        if self._storage:
+            disk = self._storage.verify(runner_id)
+            if probe == "disk_usage":
+                return {"ok": True, "value": disk["capacity_bytes"] - disk["free_bytes"]}
         p = self.paths(runner_id)
         if probe == "disk_usage":
             value = self._fs.du(p["root"])
@@ -425,8 +556,7 @@ class WindowsProcessRuntime:
                 state = line.split()[-1]
                 found.append({"runner_id": rid,
                               "state": {"RUNNING": "running",
-                                        "STOPPED": "stopped",
-                                        "PAUSED": "stopped"}.get(state,
+                                        "STOPPED": "stopped"}.get(state,
                                                                  "unknown")})
                 current = None
         return found
@@ -441,6 +571,8 @@ class WindowsProcessRuntime:
         others. A second call finds nothing to free and still succeeds.
         """
         where = self.scope_locations(runner_id)
+        if self._storage:
+            self._storage.verify(runner_id)
         scopes = list((policy or {}).get("scopes") or DEFAULT_SCOPES)
         per_scope, errors, measured = {}, {}, True
         for scope in scopes:
@@ -485,6 +617,8 @@ class WindowsProcessRuntime:
                 "job_containers": False,
                 "nested_builds": False,
                 "resettable_os": False,
+                "disk_limit_enforced": self._storage is not None,
+                "disk_quota": self._storage is not None,
                 # OPEN-7: a graceful stop that stays stopped.
                 "supports_drain": True,
                 "clear_cache": True,
@@ -495,28 +629,31 @@ class WindowsProcessRuntime:
 
 
 class WindowsRegistrar:
-    """Registers the runner through its template's `register.ps1`, with the
-    plan - token included - on standard input, never in an argument list."""
+    """Asks the runner service to register under its own account and Job.
 
-    def __init__(self, run=None, fs=None, tools=None):
+    The SYSTEM agent never executes runner-writable scripts or binaries.
+    Its fixed client helper only exchanges authenticated JSON bytes.
+    """
+
+    def __init__(self, run=None, fs=None, tools=None, storage_backend=None):
         self._run = run or _exec
         self._fs = fs or LocalFs()
         self._tools = dict(TOOLS, **(tools or {}))
+        self._storage = storage_backend
 
     def _script(self, runner_id, name):
+        if self._storage:
+            self._storage.verify(runner_id)
         reg = naming.names(naming.check(runner_id), "windows")["reg"]
         return ntpath.join(reg, name)
-
-    def _powershell(self, script, input=None, timeout=120):
-        return self._run([self._tools["powershell"], "-NoProfile",
-                          "-NonInteractive", "-ExecutionPolicy", "Bypass",
-                          "-File", script], input=input, timeout=timeout)
 
     def register(self, runner_id, plan):
         script = self._script(runner_id, "register.ps1")
         if not self._fs.exists(script):
             raise RuntimeError("the unit has no registration entry point")
-        ok, out, err = self._powershell(script, input=json.dumps(plan))
+        ok, out, err = self._run([self._tools["python"], "-m", "agent.windows_registration",
+                                  "--runner-id", naming.check(runner_id)],
+                                 input=json.dumps(plan), timeout=140)
         if not ok:
             raise RuntimeError(err or "registration failed")
         try:
@@ -531,9 +668,11 @@ class WindowsRegistrar:
         if not self._fs.exists(script):
             raise RuntimeError("the unit is gone; its registration can only "
                                "be removed at the forge")
-        ok, out, err = self._powershell(script, timeout=60)
-        if not ok:
-            raise RuntimeError(err or out or "deregistration failed")
+        # Neither supported Windows runner holds a forge-removal credential.
+        # The controller deletes the known record directly; no stopped
+        # service needs to be restarted merely to repeat this same answer.
+        raise RuntimeError("Windows runners cannot remove their forge record; "
+                           "the controller must delete it by its registration id")
 
 
 def _readable(text):

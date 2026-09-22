@@ -20,6 +20,7 @@ forge, and a nested engine whose build cache and images can be pruned.
 every `except Exception` exactly as a real death would.
 """
 import json
+import os
 import shlex
 
 
@@ -78,6 +79,8 @@ class FakeDocker:
         self.crash_after = None
         #: verb -> (stderr) to fail once.
         self.fail_once = {}
+        #: unit -> what `docker logs` prints for it, where a test says.
+        self.logs = {}
         #: unit -> "running" | "aborted": the job its runner has.
         self.jobs = {}
 
@@ -162,8 +165,13 @@ class FakeDocker:
                 i += 1
                 continue
             if a in ("--name", "--restart", "--stop-timeout", "--cpus",
-                     "--memory", "--memory-swap", "--cpuset-cpus"):
+                     "--memory", "--memory-swap", "--cpuset-cpus",
+                     "--log-driver", "--log-opt", "--network", "--entrypoint"):
                 opts[a.lstrip("-")] = args[i + 1]
+                i += 2
+                continue
+            if a == "--volumes-from":
+                opts["mounts"].update(self.containers[args[i + 1]]["mounts"])
                 i += 2
                 continue
             if a == "--label":
@@ -319,6 +327,9 @@ class FakeDocker:
     #: silently served the JSON, which is how a caller that asks for a field
     #: would otherwise read a whole document as its value.
     FORMATS = {
+        "{{.Config.Image}}": lambda c: c["image"],
+        "{{json .Config.Env}}": lambda c: json.dumps(
+            [f"{k}={v}" for k, v in c["env"].items()]),
         "{{.Id}}": lambda c: "0123456789abcdef",
         "{{.State.Status}}": lambda c: c["state"],
         "{{.State.Running}}": lambda c: str(c["state"] == "running").lower(),
@@ -328,7 +339,22 @@ class FakeDocker:
             "RestartCount": c["restarts"]}),
     }
 
+    #: What a heartbeat asks of several units at once: what each may use.
+    CAPS = "{{.Name}}\t{{.HostConfig.CpusetCpus}}\t{{.HostConfig.NanoCpus}}\t{{.HostConfig.MemorySwap}}"
+
     def _inspect(self, args, input):
+        if "--format" in args and                 args[args.index("--format") + 1] == self.CAPS:
+            names = args[args.index("--format") + 2:]
+            lines = []
+            for n in names:
+                c = self.containers.get(n)
+                if c is None:
+                    continue
+                nano = int(float(c.get("cpus") or 0) * 1e9)
+                from agent.runtimes.linux_container import memory_bytes
+                swap = memory_bytes(c.get("memory-swap", "0"))
+                lines.append(f"/{n}\t{c.get('cpuset-cpus', '')}\t{nano}\t{swap}")
+            return True, os.linesep.join(lines), ""
         name = args[-1]
         missing = self._need(name)
         if missing:
@@ -366,7 +392,8 @@ class FakeDocker:
 
     def _logs(self, args, input):
         name = args[-1]
-        return self._need(name) or (True, f"log of {name}", "")
+        return self._need(name) or (
+            True, self.logs.get(name, f"log of {name}"), "")
 
     # ---- exec: what the image inside provides --------------------------------
 
@@ -390,6 +417,8 @@ class FakeDocker:
             return None
 
         engine = (volume_for("/var/lib/docker") or _new_volume())["engine"]
+        if cmd == ["docker", "info"]:
+            return True, "Docker Engine", ""
         if cmd[:3] == ["docker", "system", "df"]:
             return True, "\n".join([
                 json.dumps({"Type": "Images", "Size": _size(engine["images"])}),
@@ -402,6 +431,14 @@ class FakeDocker:
             engine["images"] = 0
             return True, "Total reclaimed space: done", ""
         if cmd[0] == "du":
+            if "-B1" in cmd:
+                rows = []
+                for path in cmd[cmd.index("-B1") + 1:]:
+                    v = volume_for(path)
+                    size = (sum(v["files"].values()) + sum(v["engine"].values())
+                            if v is not None else sum(c["tmp"].values()))
+                    rows.append(f"{size}\t{path}")
+                return True, "\n".join(rows), ""
             path = cmd[-1]
             v = volume_for(path)
             files = v["files"] if v is not None else c["tmp"]

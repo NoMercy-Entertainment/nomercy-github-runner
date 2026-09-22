@@ -22,6 +22,14 @@ refuse_outside_a_container
 
 mkdir -p "$RUNNER_WORK_DIR" "$RUNNER_CACHE_DIR" "$RUNNER_REG_DIR" \
          "$RUNNER_LOG_DIR"
+export HOME="$RUNNER_WORK_DIR/.home"
+mkdir -p "$HOME"
+prepare_runner_home
+# Keep temporary job data in owned persistent storage so maintenance of a
+# stopped unit can clear it without starting its listener.
+mkdir -p "$RUNNER_WORK_DIR/.unit-tmp"
+chmod 1777 "$RUNNER_WORK_DIR/.unit-tmp"
+mount --bind "$RUNNER_WORK_DIR/.unit-tmp" /tmp
 
 # --- the nested engine ------------------------------------------------------
 # overlay2 where /var/lib/docker is a real filesystem (the agent mounts a volume
@@ -34,26 +42,29 @@ case "$fstype" in
   overlayfs|overlay|unknown) driver=fuse-overlayfs ;;
   *)                         driver=overlay2 ;;
 esac
-mkdir -p /etc/docker
-cat > /etc/docker/daemon.json <<JSON
+gc_enabled=true
+[ "${RUNNER_MAINTENANCE:-0}" = 1 ] && gc_enabled=false
+[ "${RUNNER_CLEANUP_ENABLED:-1}" = 0 ] && gc_enabled=false
+cat > "$RUNNER_REG_DIR/daemon.json" <<JSON
 {
   "storage-driver": "${driver}",
+  "log-driver": "local",
+  "log-opts": { "max-size": "10m", "max-file": "3" },
   "features": { "containerd-snapshotter": false },
-  "builder": { "gc": { "enabled": true, "policy": [
+  "builder": { "gc": { "enabled": ${gc_enabled}, "policy": [
     { "maxUsedSpace": "${RUNNER_BUILD_CACHE_GC:-20GB}" } ] } }
 }
 JSON
 rm -f /var/run/docker.pid
-dockerd --host=unix:///var/run/docker.sock \
-  > "$RUNNER_LOG_DIR/dockerd.log" 2>&1 &
+# Docker captures this through the outer unit's bounded log driver.
+dockerd --config-file="$RUNNER_REG_DIR/daemon.json" --host=unix:///var/run/docker.sock &
 DOCKERD_PID=$!
 for _ in $(seq 1 60); do
   docker info >/dev/null 2>&1 && break
   sleep 1
 done
 if ! docker info >/dev/null 2>&1; then
-  echo "the nested engine did not come up; its log:" >&2
-  tail -n 50 "$RUNNER_LOG_DIR/dockerd.log" >&2
+  echo "the nested engine did not come up; see the unit's Docker log" >&2
   exit 1
 fi
 echo "nested engine up (${driver} on ${fstype})"
@@ -78,6 +89,14 @@ on_signal() {
 }
 trap on_signal TERM INT
 
+if [ "${RUNNER_MAINTENANCE:-0}" = 1 ]; then
+  while [ "$STOPPING" -eq 0 ] && kill -0 "$DOCKERD_PID" 2>/dev/null; do
+    sleep 1 & wait $! || true
+  done
+  stop_engine
+  exit 0
+fi
+
 # --- wait for the registration ----------------------------------------------
 until registered; do
   if [ "$STOPPING" -eq 1 ]; then
@@ -91,6 +110,7 @@ done
 # Job control on: without it bash starts a background child with SIGINT
 # ignored, and the GitHub runner's run.sh stops the listener with SIGINT.
 set -m
+/runner/cleanup
 case "$RUNNER_KIND" in
   github)
     # The GitHub runner keeps its registration beside its binaries; those
@@ -103,6 +123,15 @@ case "$RUNNER_KIND" in
     # Makes run.sh pass TERM on to the listener instead of dying and leaving
     # the listener to be killed with the unit.
     export RUNNER_MANUALLY_TRAP_SIG=1
+    export ACTIONS_RUNNER_HOOK_JOB_COMPLETED=/runner/cleanup
+    mkdir -p "$RUNNER_LOG_DIR/diagnostics"
+    if [ ! -L "$RUNNER_HOME/_diag" ]; then
+      if [ -d "$RUNNER_HOME/_diag" ]; then
+        cp -an "$RUNNER_HOME/_diag/." "$RUNNER_LOG_DIR/diagnostics/"
+        rm -rf "$RUNNER_HOME/_diag"
+      fi
+      ln -s "$RUNNER_LOG_DIR/diagnostics" "$RUNNER_HOME/_diag"
+    fi
     cd "$RUNNER_HOME"
     ./run.sh &
     RUNNER_PID=$!

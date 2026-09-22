@@ -26,6 +26,12 @@
 set -euo pipefail
 . /runner/lib.sh
 refuse_outside_a_container
+mkdir -p "$RUNNER_REG_DIR"
+exec 9>"$RUNNER_REG_DIR/.registration.lock"
+flock -w 300 9
+export HOME="$RUNNER_WORK_DIR/.home"
+mkdir -p "$HOME"
+prepare_runner_home
 
 plan="$(cat)"
 field() { printf '%s' "$plan" | jq -r --arg k "$1" '.[$k] // ""'; }

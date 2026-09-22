@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+# The GitHub completion hook is synchronous, before the next job. The same
+# bounded cleanup runs at startup before either provider's listener exists.
+set -uo pipefail
+timeout --kill-after=5s 120s python3 /runner/cleanup.py || {
+  echo 'runner cleanup incomplete; next safe opportunity will retry' >&2
+}
+exit 0

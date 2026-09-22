@@ -76,6 +76,14 @@ def registered(harness, runner_id):
     return ids["registration_id"]
 
 
+def deregistered(harness, runner_id):
+    # Native runners without a removal credential need the same controller
+    # forge-delete fallback as production. The harness must model that
+    # explicitly; the scenario still requires the old record to disappear.
+    operation = getattr(harness, "deregister", harness.registrar.deregister)
+    operation(runner_id)
+
+
 # ---------------------------------------------------------------------------
 # 1
 # ---------------------------------------------------------------------------
@@ -214,7 +222,7 @@ def test_6_recreate_gives_a_new_workspace_and_a_fresh_registration(harness):
     harness.mark_workspace(rid)
     harness.put_cache(rid, 5000)
 
-    harness.registrar.deregister(rid)
+    deregistered(harness, rid)
     harness.runtime.remove(rid, keep_data=True)
     new = registered(harness, rid)
 
@@ -233,7 +241,7 @@ def test_7_remove_leaves_no_forge_record_and_no_storage(harness):
     rid = harness.new_id()
     registered(harness, rid)
 
-    harness.registrar.deregister(rid)
+    deregistered(harness, rid)
     harness.runtime.remove(rid, keep_data=False)
 
     assert not harness.unit_present(rid)

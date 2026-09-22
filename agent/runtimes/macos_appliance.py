@@ -53,6 +53,7 @@ import time
 from typing import Protocol
 
 from .. import naming
+from ..jobs import current_job
 from .localfs import LocalFs
 
 #: The areas an appliance instance has: every one in naming except the
@@ -93,12 +94,12 @@ TOOLS = {
     "templates": "/Users/runner/templates",
     "launch_agents": "/Users/runner/Library/LaunchAgents",
     "domain": None,             # gui/<uid> or user/<uid>; see _domain
+    "runner_user": None,        # required for system launchd jobs
 }
 
 
 class ApplianceHost(Protocol):
-    """The hypervisor side of the appliance: what can boot and stop the guest
-    as a whole. Implemented for the real appliance in T-0803."""
+    """The hypervisor side: validates pre-boot cleanup and boots the guest."""
 
     def state(self) -> str: ...                 # running | stopped | unknown
     def clear_boot_leftovers(self) -> list: ...
@@ -121,11 +122,14 @@ def _exec(args, input=None, timeout=30):
 class MacApplianceRuntime:
     kind = "macos-appliance"
 
-    def __init__(self, run=None, fs=None, appliance=None, tools=None):
+    def __init__(self, run=None, fs=None, appliance=None, tools=None, remote=False):
         self._run = run or _exec
         self._fs = fs or LocalFs()
         self._appliance = appliance
+        self._remote = remote
         self._tools = dict(TOOLS, **(tools or {}))
+        if self._tools["domain"] == "system" and not self._tools["runner_user"]:
+            raise ValueError("system launchd jobs require an explicit runner_user")
 
     # ---- where things are ----------------------------------------------------
 
@@ -172,6 +176,8 @@ class MacApplianceRuntime:
     def _domain(self):
         if self._tools["domain"]:
             return self._tools["domain"]
+        if self._remote:
+            raise RuntimeError("remote appliance requires its guest's explicit launchd domain")
         return f"gui/{os.getuid()}"
 
     def _target(self, runner_id):
@@ -189,6 +195,8 @@ class MacApplianceRuntime:
             return
         state = self._appliance.state()
         if state == "running":
+            if hasattr(self._appliance, "wait_ready"):
+                self._appliance.wait_ready()
             return
         if state == "unknown":
             raise RuntimeError("the appliance's power state is unknown; not "
@@ -207,7 +215,7 @@ class MacApplianceRuntime:
             raise ValueError("an instance needs a template")
         template = posixpath.join(self._tools["templates"], image)
         self._appliance_up()
-        if not self._fs.exists(template):
+        if image not in self._templates():
             raise RuntimeError(f"no runner template {image!r} in this "
                                f"appliance")
         p = self.paths(rid)
@@ -227,10 +235,21 @@ class MacApplianceRuntime:
         # 3. The launchd job. Its environment can carry a token, so the file
         #    is readable by this user alone.
         self._fs.makedirs(self._tools["launch_agents"])
-        self._fs.write_text(p["plist"], self._plist(rid, spec, p),
-                            mode=0o600)
+        plist_text = self._plist(rid, spec, p)
+        if self._domain() == "system":
+            # launchd refuses a system plist owned by the unprivileged user.
+            # The staging file is private; install sets ownership atomically.
+            stage = posixpath.join(p["reg"], ".launchd.plist")
+            self._fs.write_text(stage, plist_text, mode=0o600)
+            self._check(self._run(["/usr/bin/sudo", "-n", "/usr/bin/install",
+                                  "-o", "root", "-g", "wheel", "-m", "0644",
+                                  stage, p["plist"]]))
+            self._fs.remove(stage)
+        else:
+            self._fs.write_text(p["plist"], plist_text, mode=0o600)
 
         # 4. Loaded and running, from whatever state a cut-off create left.
+        self._check(self._launchctl("enable", self._target(rid)))
         self._load(rid)
         if not self.status(rid).get("running"):
             self._check(self._launchctl("kickstart", self._target(rid)))
@@ -290,6 +309,8 @@ class MacApplianceRuntime:
                "KeepAlive": {"SuccessfulExit": False},
                "ExitTimeOut": STOP_TIMEOUT,
                "ProcessType": "Standard"}
+        if self._domain() == "system":
+            job["UserName"] = self._tools["runner_user"]
         return plistlib.dumps(job).decode("utf-8")
 
     def _load(self, rid):
@@ -319,6 +340,7 @@ class MacApplianceRuntime:
     def start(self, runner_id):
         rid = naming.check(runner_id)
         self._appliance_up()
+        self._check(self._launchctl("enable", self._target(rid)))
         self._load(rid)
         self._check(self._launchctl("kickstart", self._target(rid)))
 
@@ -326,6 +348,7 @@ class MacApplianceRuntime:
         """Unloaded, so launchd does not start it again. SIGTERM first, and
         the ExitTimeOut grace a deregistration needs."""
         rid = naming.check(runner_id)
+        self._check(self._launchctl("disable", self._target(rid)))
         ok, out, err = self._launchctl("bootout", self._target(rid),
                                        timeout=STOP_TIMEOUT + 30)
         if not ok and not _not_found(out + err):
@@ -333,6 +356,8 @@ class MacApplianceRuntime:
 
     def restart(self, runner_id):
         rid = naming.check(runner_id)
+        self._appliance_up()
+        self._check(self._launchctl("enable", self._target(rid)))
         self._load(rid)
         self._check(self._launchctl("kickstart", "-k", self._target(rid),
                                     timeout=STOP_TIMEOUT + 30))
@@ -343,12 +368,22 @@ class MacApplianceRuntime:
         exits cleanly - and launchd restarts it only after an unclean exit
         (`KeepAlive: SuccessfulExit false`), so it stays down."""
         rid = naming.check(runner_id)
+        record = self.adopted(rid)
+        path = (record or {}).get("plist") or self.paths(rid)["plist"]
+        try:
+            definition = plistlib.loads(self._fs.read_text(path).encode())
+        except (OSError, ValueError, TypeError):
+            raise RuntimeError("cannot verify launchd drain policy; migrate this runner first")
+        if definition.get("KeepAlive") not in (False, None, {"SuccessfulExit": False}):
+            raise RuntimeError("unsafe launchd KeepAlive policy; migrate this runner before draining")
+        self._check(self._launchctl("disable", self._target(rid)))
         if self.status(rid).get("running"):
             self._check(self._launchctl("kill", "SIGTERM", self._target(rid)))
 
     def cancel_drain(self, runner_id):
         """Back into service once drained: loaded and started again."""
         rid = naming.check(runner_id)
+        self._check(self._launchctl("enable", self._target(rid)))
         self._load(rid)
         if not self.status(rid).get("running"):
             self._check(self._launchctl("kickstart", self._target(rid)))
@@ -358,7 +393,11 @@ class MacApplianceRuntime:
         rid = naming.check(runner_id)
         self.stop(rid)
         p = self.paths(rid)
-        self._fs.remove(p["plist"])
+        if self._domain() == "system":
+            self._check(self._run(["/usr/bin/sudo", "-n", "/bin/rm", "-f",
+                                  "--", p["plist"]]))
+        else:
+            self._fs.remove(p["plist"])
         doomed = ([p[a] for a in AREAS if a not in KEPT_ON_RECREATE]
                   + [p["tmp"]]) if keep_data else [p["root"]]
         left = []
@@ -393,9 +432,13 @@ class MacApplianceRuntime:
                         "runtime_template": template}
             return {"exists": None, "running": None, "state": "unknown"}
         state = _field(out, "state") or "unknown"
-        return {"exists": True, "running": state == "running",
-                "state": "running" if state == "running" else "exited",
-                "pid": _int(_field(out, "pid")),
+        pid = _int(_field(out, "pid"))
+        running = True if state == "running" or pid else (
+            False if state in ("waiting", "not running", "exited") else None)
+        return {"exists": True, "running": running,
+                "state": "running" if running is True else (
+                    "exited" if running is False else "unknown"),
+                "pid": pid,
                 "runtime_template": template}
 
     def _template(self, p):
@@ -409,22 +452,35 @@ class MacApplianceRuntime:
         """This instance's processes, and the guest's root disk."""
         result = {"cpu_percent": None, "mem_used_bytes": None,
                   "mem_limit_bytes": None, "root_disk_used_bytes": None,
-                  "root_disk_total_bytes": None}
+                  "root_disk_total_bytes": None, "cpu_cores": None,
+                  "host_cores": None}
+        ok, out, _ = self._run(["/usr/sbin/sysctl", "-n", "hw.logicalcpu"], timeout=5)
+        if ok:
+            result["host_cores"] = _int(out.strip())
         pid = self.status(runner_id).get("pid")
         if pid:
             ok, out, _ = self._run([self._tools["ps"], "-A", "-o",
-                                    "pgid=,%cpu=,rss="], timeout=15)
+                                    "pid=,ppid=,pgid=,%cpu=,rss="], timeout=15)
             if ok:
-                cpu, rss, seen = 0.0, 0, False
+                processes = {}
                 for line in out.splitlines():
                     parts = line.split()
-                    if len(parts) == 3 and parts[0] == str(pid):
-                        seen = True
-                        cpu += float(parts[1])
-                        rss += int(parts[2]) * 1024
-                if seen:
-                    result["cpu_percent"] = round(cpu, 2)
-                    result["mem_used_bytes"] = rss
+                    if len(parts) == 5:
+                        try:
+                            processes[int(parts[0])] = (int(parts[1]), int(parts[2]),
+                                                         float(parts[3]), int(parts[4]) * 1024)
+                        except (ValueError, OverflowError):
+                            continue
+                owned = {pid} | {p for p, (_, group, _, _) in processes.items() if group == pid}
+                while True:
+                    descendants = {p for p, (parent, _, _, _) in processes.items() if parent in owned}
+                    if descendants <= owned:
+                        break
+                    owned.update(descendants)
+                measured = [processes[p] for p in owned if p in processes]
+                if measured:
+                    result["cpu_percent"] = round(sum(p[2] for p in measured), 2)
+                    result["mem_used_bytes"] = sum(p[3] for p in measured)
         ok, out, _ = self._run([self._tools["df"], "-k", "/"], timeout=15)
         lines = out.splitlines() if ok else []
         if len(lines) >= 2:
@@ -435,6 +491,9 @@ class MacApplianceRuntime:
             except (IndexError, ValueError):
                 pass
         return result
+
+    def jobs(self, runner_ids):
+        return {rid: current_job(self.logs(rid, 86400)) for rid in runner_ids}
 
     def logs(self, runner_id, since_seconds, max_bytes=256 * 1024):
         path = posixpath.join(self.paths(runner_id)["logs"], "runner.log")
@@ -484,8 +543,8 @@ class MacApplianceRuntime:
             state = self.status(rid)
             seen.add(rid)
             found.append({"runner_id": rid,
-                          "state": "running" if state.get("running") else
-                          ("stopped" if state.get("exists") else "unknown")})
+                          "state": "running" if state.get("running") is True else
+                          ("stopped" if state.get("running") is False else "unknown")})
         prefix = LABEL_PREFIX + naming.PREFIX + "-"
         for name in self._fs.listdir(self._tools["launch_agents"]):
             if not (name.startswith(prefix) and name.endswith(".plist")):
@@ -499,8 +558,8 @@ class MacApplianceRuntime:
                 continue
             s = self.status(rid)
             found.append({"runner_id": rid,
-                          "state": "running" if s.get("running") else
-                          ("stopped" if s.get("exists") else "unknown")})
+                          "state": "running" if s.get("running") is True else
+                          ("stopped" if s.get("running") is False else "unknown")})
         return found
 
     # ---- cache ---------------------------------------------------------------
@@ -535,7 +594,11 @@ class MacApplianceRuntime:
         make. A directory that cannot be read is no templates rather than a
         crash: a worker must keep answering."""
         try:
-            return sorted(self._fs.listdir(self._tools["templates"]))
+            return sorted(name for name in self._fs.listdir(self._tools["templates"])
+                          if name and posixpath.basename(name) == name
+                          and not name.startswith(".") and all(self._fs.exists(
+                              posixpath.join(self._tools["templates"], name, entry))
+                              for entry in ("run", "register", "deregister")))
         except OSError:
             return []
 
@@ -543,6 +606,7 @@ class MacApplianceRuntime:
         return {"kind": self.kind,
                 "builds_from": "template",
                 "templates": self._templates(),
+                "appliance_control": self._appliance is not None,
                 # A macOS guest runs no job images (design 9.5).
                 "job_containers": False,
                 "nested_builds": False,

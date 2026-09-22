@@ -18,8 +18,9 @@ RUNNER_WORK_DIR="${RUNNER_WORK_DIR:-/runner/work}"
 RUNNER_CACHE_DIR="${RUNNER_CACHE_DIR:-/runner/cache}"
 RUNNER_REG_DIR="${RUNNER_REG_DIR:-/runner/reg}"
 RUNNER_LOG_DIR="${RUNNER_LOG_DIR:-/runner/logs}"
-#: Where the GitHub runner is installed in the base image.
-RUNNER_HOME="${RUNNER_HOME:-/root/actions-runner}"
+HOME="${HOME:-/runner/work/.home}"
+# Writable runner files belong to the quota-backed registration filesystem.
+RUNNER_HOME="${RUNNER_HOME:-$RUNNER_REG_DIR/actions-runner}"
 FORGEJO_RUNNER_BIN="${FORGEJO_RUNNER_BIN:-forgejo-runner}"
 
 # The files a registration leaves, per forge. They live in RUNNER_REG_DIR, the
@@ -32,6 +33,19 @@ esac
 
 registered() {
   [ -s "$RUNNER_REG_DIR/.runner" ]
+}
+
+prepare_runner_home() {
+  [ "$RUNNER_KIND" = github ] || return 0
+  mkdir -p "$RUNNER_REG_DIR"
+  (
+    flock -w 120 8
+    if [ ! -f "$RUNNER_HOME/.image-complete" ]; then
+      mkdir -p "$RUNNER_HOME"
+      cp -a /opt/actions-runner-image/. "$RUNNER_HOME/"
+      touch "$RUNNER_HOME/.image-complete"
+    fi
+  ) 8>"$RUNNER_REG_DIR/.image.lock"
 }
 
 refuse_outside_a_container() {

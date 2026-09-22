@@ -114,8 +114,11 @@ class GuestFs:
                           timeout=timeout)
 
     def exists(self, path):
-        ok, _, _ = self._sh("test -e %s" % shlex.quote(path))
-        return ok
+        ok, out, err = self._sh("if test -e %s; then printf 'present'; "
+                                "else printf 'absent'; fi" % shlex.quote(path))
+        if not ok or out.strip() not in ("present", "absent"):
+            raise OSError("could not observe %s in the guest: %s" % (path, err))
+        return out.strip() == "present"
 
     def makedirs(self, path):
         ok, _, err = self._sh("mkdir -p %s" % shlex.quote(path))
@@ -128,9 +131,10 @@ class GuestFs:
             raise OSError("could not chmod %s in the guest: %s" % (path, err))
 
     def listdir(self, path):
-        ok, out, _ = self._sh("ls -1A %s" % shlex.quote(path))
+        quoted = shlex.quote(path)
+        ok, out, err = self._sh("if test -d %s; then ls -1A %s; fi" % (quoted, quoted))
         if not ok:
-            return []
+            raise OSError("could not list %s in the guest: %s" % (path, err))
         return sorted(line for line in out.splitlines() if line)
 
     def copytree(self, src, dst):

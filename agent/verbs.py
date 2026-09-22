@@ -144,7 +144,7 @@ FIELDS = MappingProxyType({
 #: What a unit spec may carry. No command, entrypoint, mount, volume, device,
 #: capability or privilege: how a unit is run is the runtime's decision, made
 #: on the worker, and where its data lives is derived from its runner_id.
-SPEC_FIELDS = frozenset({"image", "env", "labels", "cpus", "memory", "cpuset",
+SPEC_FIELDS = frozenset({"image", "env", "labels", "cpus", "memory", "memory_swap", "disk_limit", "cpuset",
                          "stop_timeout", "adopt"})
 #: Adopting names WHICH unit on this worker a runner already is, and nothing
 #: about how it runs: no path, because where a job's definition lives is
@@ -223,12 +223,23 @@ def _spec(value):
             if not isinstance(template, str) or len(template) > 256:
                 raise Refused("spec.adopt.template must be short text")
             out["adopt"]["template"] = template
-    for key in ("cpus", "memory"):
+    for key in ("cpus", "memory", "memory_swap"):
         if key in spec:
             val = str(spec[key])
             if not _SIZE.match(val):
                 raise Refused(f"spec.{key} is not a size")
             out[key] = val
+    if "memory_swap" in out:
+        from .runtimes.linux_container import memory_bytes
+        try:
+            valid = ("memory" in out and memory_bytes(out["memory"]) > 0
+                     and memory_bytes(out["memory_swap"]) >= memory_bytes(out["memory"]))
+        except ValueError:
+            valid = False
+        if not valid:
+            raise Refused("spec.memory_swap must be total RAM+swap at least spec.memory")
+    if "disk_limit" in spec:
+        out["disk_limit"] = _int(spec["disk_limit"], "spec.disk_limit", 1024**3, 2**50)
     if "cpuset" in spec:
         if not isinstance(spec["cpuset"], str) or not _CPUSET.match(
                 spec["cpuset"]):

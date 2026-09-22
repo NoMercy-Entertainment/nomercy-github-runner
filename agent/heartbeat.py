@@ -20,6 +20,7 @@ A failed beat is not retried: the next one is ten seconds away (design 17.2).
 """
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from urllib.parse import urlsplit
 
@@ -50,7 +51,25 @@ def _telemetry(runtime, runner_ids):
     try:
         if hasattr(runtime, "telemetry_all"):
             return dict(runtime.telemetry_all(runner_ids) or {})
-        return {rid: dict(runtime.telemetry(rid) or {}) for rid in runner_ids}
+        result = {}
+        for rid in runner_ids:
+            try:
+                result[rid] = dict(runtime.telemetry(rid) or {})
+            except Exception:              # one failed unit is not the fleet
+                continue
+        return result
+    except Exception:                       # noqa: BLE001
+        return {}
+
+
+def _jobs(runtime, runner_ids):
+    """Which job each running unit says it has, where the runtime can read
+    that. Display only, and never worth a beat: a runtime that cannot say,
+    or fails trying, names none."""
+    if not runner_ids or not hasattr(runtime, "jobs"):
+        return {}
+    try:
+        return dict(runtime.jobs(runner_ids) or {})
     except Exception:                       # noqa: BLE001
         return {}
 
@@ -66,6 +85,9 @@ def _depth(runtime, runner_id):
             continue
         if got.get("ok") and isinstance(got.get("value"), int):
             out[key] = got["value"]
+            out["storage_at" if key == "storage_bytes" else "cache_at"] = _stamp()
+            if key == "cache_bytes" and got.get("cap_bytes") is not None:
+                out["cache_cap_bytes"] = got["cap_bytes"]
     return out
 
 
@@ -104,16 +126,22 @@ def build(agent, server=None, deep=False):
         "served": sorted(agent.permitted),
         "sent_at": _stamp(),
     }
+    beat["measured_at"] = beat["sent_at"]
     try:
         beat["capabilities"] = dict(agent.runtime.capabilities() or {})
     except Exception:                       # noqa: BLE001
         beat["capabilities_error"] = True
     try:
-        beat["instances"] = [
-            {"runner_id": u["runner_id"],
-             "state": u.get("state") if u.get("state") in
-             ("running", "stopped", "absent") else "unknown"}
-            for u in agent.runtime.instances()]
+        instances = []
+        for observed in agent.runtime.instances():
+            unit = {"runner_id": observed["runner_id"],
+                    "state": observed.get("state") if observed.get("state") in
+                    ("running", "stopped", "absent") else "unknown"}
+            proof = observed.get("resource_enforcement")
+            if isinstance(proof, dict):
+                unit["resource_enforcement"] = dict(proof)
+            instances.append(unit)
+        beat["instances"] = instances
     except Exception:                       # noqa: BLE001
         # Not an empty list: that would say "I run nothing".
         beat["instances_error"] = True
@@ -123,13 +151,19 @@ def build(agent, server=None, deep=False):
         running = [u["runner_id"] for u in beat["instances"]
                    if u["state"] == "running"]
         used = _telemetry(agent.runtime, running)
+        jobs = _jobs(agent.runtime, running)
         for unit in beat["instances"]:
             t = {k: v for k, v in (used.get(unit["runner_id"]) or {}).items()
-                 if k in ("cpu_percent", "mem_used_bytes", "mem_limit_bytes",
+                 if k in ("cpu_percent", "cpu_cores", "host_cores",
+                          "mem_used_bytes", "mem_limit_bytes",
+                          "mem_swap_limit_bytes",
                           "root_disk_used_bytes", "root_disk_total_bytes")}
+            if jobs.get(unit["runner_id"]):
+                t["job"] = jobs[unit["runner_id"]]
             if deep:
                 t.update(_depth(agent.runtime, unit["runner_id"]))
             if t:
+                t["at"] = beat["sent_at"]
                 unit["telemetry"] = t
     beat["counters"] = {
         "refused_connections": len(server.refusals) if server else 0,
@@ -158,25 +192,54 @@ class HeartbeatSender:
         self._stop = threading.Event()
         self._thread = None
         self._measuring = None
+        self._deep_thread = None
+        self._depths = {}
 
     def measure_once(self):
-        """Build one measured payload and keep it. The first measurement,
-        and every DEEP_EVERY-th after it, also measures storage and cache.
+        """Measure live units independently of sending and storage probes.
 
-        Called from its own thread, because this is the slow half: `docker
-        stats` over every running unit, and a deep pass asks each unit's
-        nested engine. A beat that waited for it went silent for minutes on
-        a busy worker, and silence is what the controller reads as an
-        absence (2026-09-20).
+        Reused storage retains its own measurement time. The live sample's
+        age starts before collection, so a slow collection is never freshened
+        merely by finishing or by another heartbeat being sent.
         """
-        deep = self.measured % DEEP_EVERY == 0
         try:
-            built = build(self.agent, self.server, deep=deep)
+            started = time.monotonic()
+            built = build(self.agent, self.server)
         except Exception:                   # noqa: BLE001 - the next one may
             return None                     # do better; the beat goes anyway
+        for unit in built.get("instances", []):
+            depth = self._depths.get(unit["runner_id"])
+            if depth:
+                unit.setdefault("telemetry", {}).update(depth)
         self.measured += 1
-        self._measured = (time.monotonic(), built)
+        self._measured = (started, built)
         return built
+
+    def measure_depth_once(self):
+        """Deep probes cannot delay CPU, job, or instance observations."""
+        payload = self._measured
+        if not payload:
+            return
+        ids = [unit["runner_id"] for unit in payload[1].get("instances", [])]
+        def measure(rid):
+            if self._stop.is_set():
+                return rid, {}
+            return rid, _depth(self.agent.runtime, rid)
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            futures = [pool.submit(measure, rid) for rid in ids]
+            for future in as_completed(futures):
+                rid, depth = future.result()
+                self._depths[rid] = depth
+
+    def _deep_loop(self):
+        while not self._stop.is_set():
+            if self._measured:
+                started = time.monotonic()
+                self.measure_depth_once()
+                self._stop.wait(max(self.interval, DEEP_EVERY * self.interval
+                                    - (time.monotonic() - started)))
+            else:
+                self._stop.wait(self.interval)
 
     def payload(self):
         """What the next beat carries: the last measurement while it is
@@ -225,6 +288,10 @@ class HeartbeatSender:
                                            name="agent-heartbeat-measure",
                                            daemon=True)
         self._measuring.start()
+        self._deep_thread = threading.Thread(target=self._deep_loop,
+                                             name="agent-heartbeat-storage",
+                                             daemon=True)
+        self._deep_thread.start()
         return self
 
     def stop(self):

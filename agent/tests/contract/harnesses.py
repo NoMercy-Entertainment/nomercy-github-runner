@@ -159,6 +159,23 @@ class WindowsProcessHarness:
     def forge_reachable(self, reachable):
         self.host.forge.reachable = reachable
 
+    def deregister(self, runner_id):
+        """The real templates cannot self-delete; model controller fallback.
+
+        Still call the actual registrar and require its explicit refusal.
+        Earlier the fake script silently pretended to hold a forge admin
+        credential, which the production Windows runner never receives.
+        """
+        try:
+            self.registrar.deregister(runner_id)
+        except RuntimeError as exc:
+            if "controller must delete" not in str(exc):
+                raise
+        else:
+            raise AssertionError("Windows registrar must not claim forge deletion")
+        for record in self.forge_records(runner_id):
+            self.host.forge.delete(record["registration_id"])
+
     # ---- the unit and its storage -------------------------------------------
 
     def _paths(self, runner_id):

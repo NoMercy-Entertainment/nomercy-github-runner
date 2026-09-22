@@ -6,6 +6,8 @@
 #     --build-arg BASE=<the GitHub runner image> -t <name>:unit images/linux/unit
 ARG BASE=ghcr.io/nomercy-entertainment/nomercy-github-runner:latest
 FROM ${BASE}
+RUN apt-get update && apt-get install -y --no-install-recommends python3 util-linux \
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
 
 # 40GB, as the GitHub fleet's nested engines have: its builds are heavier.
 ENV RUNNER_KIND=github \
@@ -39,7 +41,15 @@ RUN set -eu; \
 
 COPY runner/ /runner/
 RUN chmod 0755 /runner/run /runner/register /runner/deregister \
+    /runner/cleanup /runner/maintenance \
     && chmod 0644 /runner/lib.sh \
     && command -v jq >/dev/null
+
+RUN mkdir -p /opt/actions-runner-image \
+    && cp -a /root/actions-runner/. /opt/actions-runner-image/ \
+    && rm -f /opt/actions-runner-image/.runner /opt/actions-runner-image/.credentials \
+             /opt/actions-runner-image/.credentials_rsaparams
+ENV RUNNER_HOME=/runner/reg/actions-runner HOME=/runner/work/.home
+LABEL nomercy.readonly_root="true"
 
 ENTRYPOINT ["/runner/run"]

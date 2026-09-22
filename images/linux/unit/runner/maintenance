@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+set -euo pipefail
+# No listener is ever started by this entrypoint.
+export RUNNER_MAINTENANCE=1
+exec /runner/run

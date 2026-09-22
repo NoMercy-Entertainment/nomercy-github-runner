@@ -35,6 +35,7 @@ or a command from anywhere but the fixed entry point in the runner's own tree.
 import argparse
 import ctypes
 import json
+import math
 import os
 import signal
 import subprocess
@@ -229,6 +230,22 @@ def read_unit(root):
         return json.load(fh)
 
 
+def checked_limits(value):
+    """Validate protected SCM limits without accepting coercions or NaN."""
+    if not isinstance(value, dict) or set(value) != {"memory_bytes", "cpus", "cpuset"}:
+        raise ValueError("protected limits must contain memory_bytes, cpus and cpuset")
+    memory, cpus, cpuset = (value[key] for key in ("memory_bytes", "cpus", "cpuset"))
+    if memory is not None and (type(memory) is not int or not 0 < memory < 2**63):
+        raise ValueError("protected memory limit must be a positive integer")
+    if cpus is not None and (type(cpus) not in (int, float) or not math.isfinite(cpus) or cpus <= 0):
+        raise ValueError("protected CPU limit must be finite and positive")
+    if cpuset is not None:
+        if not isinstance(cpuset, str) or not cpuset.strip():
+            raise ValueError("protected cpuset must be a nonempty CPU set")
+        affinity_mask(cpuset)
+    return dict(value)
+
+
 def report(root, job, last, now):
     """Write the job's usage since `last` (cpu_seconds, time)."""
     cpu = job.cpu_seconds()
@@ -247,10 +264,26 @@ def report(root, job, last, now):
 def main(argv=None):
     parser = argparse.ArgumentParser(prog="jobhost")
     parser.add_argument("--root", required=True)
+    parser.add_argument("--volume-guid")
+    parser.add_argument("--limits-json")
+    parser.add_argument("--runner-id")
     parser.add_argument("--report-seconds", type=float,
                         default=REPORT_SECONDS)
     args = parser.parse_args(argv)
     root = args.root
+    try:
+        protected_limits = checked_limits(json.loads(args.limits_json)) if args.limits_json is not None else None
+    except (ValueError, TypeError) as exc:
+        print(f"jobhost: refusing invalid protected limits: {exc}", file=sys.stderr)
+        return 6
+
+    if args.volume_guid:
+        from .runtimes.windows_storage import verify_volume
+        try:
+            verify_volume(root, args.volume_guid)
+        except (OSError, RuntimeError, ValueError) as exc:
+            print(f"jobhost: refusing unverified runner storage: {exc}", file=sys.stderr)
+            return 5
 
     if packaged():
         print("jobhost: refusing to run under a packaged (Store) Python: "
@@ -258,13 +291,28 @@ def main(argv=None):
               file=sys.stderr)
         return 3
 
+    if args.runner_id:
+        from .windows_registration import require_service_identity
+        try:
+            require_service_identity(args.runner_id)
+        except (OSError, RuntimeError, ValueError, subprocess.SubprocessError) as exc:
+            print(f"jobhost: refusing an unsafe service identity: {exc}", file=sys.stderr)
+            return 7
+
     unit = read_unit(root)
-    job = Job(memory_bytes=unit.get("memory_bytes"), cpus=unit.get("cpus"),
-              cpuset=unit.get("cpuset"))
+    limits = protected_limits if protected_limits is not None else unit
+    job = Job(memory_bytes=limits.get("memory_bytes"), cpus=limits.get("cpus"),
+              cpuset=limits.get("cpuset"))
     job.enter()
 
     env = dict(os.environ)
     env.update(unit.get("env") or {})
+    registration_listener = None
+    if args.runner_id:
+        from .windows_registration import start_server
+        # The listener and every registration child run after entering the
+        # same Job Object and under the already verified service account.
+        registration_listener = start_server(args.runner_id, root, env)
     entry = os.path.join(root, "reg", "run.cmd")
     # Its own process group, so a Ctrl+Break can be aimed at the runner and
     # nothing else. A new group ignores Ctrl+C, so the service manager's stop
@@ -277,6 +325,8 @@ def main(argv=None):
     # limits, and that is worse than no runner.
     if not in_job(child._handle, job):
         child.kill()
+        if registration_listener:
+            registration_listener.close()
         print("jobhost: the runner is not inside its Job Object; stopped it",
               file=sys.stderr)
         return 4
@@ -305,6 +355,8 @@ def main(argv=None):
             code = child.wait(timeout=GRACE_SECONDS)
         except subprocess.TimeoutExpired:
             code = 1
+    if registration_listener:
+        registration_listener.close()
     return code
 
 

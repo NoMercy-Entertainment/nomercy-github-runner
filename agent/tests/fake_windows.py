@@ -204,7 +204,8 @@ class FakeWindows:
         tool, rest = args[0], args[1:]
         handler = {TOOLS["nssm"]: self._nssm, TOOLS["sc"]: self._sc,
                    TOOLS["icacls"]: self._icacls,
-                   TOOLS["powershell"]: self._powershell}.get(tool)
+                   TOOLS["powershell"]: self._powershell,
+                   TOOLS["python"]: self._registration_client}.get(tool)
         if handler is None:
             return False, "", f"'{tool}' is not recognized"
         result = handler(rest, input)
@@ -378,6 +379,8 @@ class FakeWindows:
         return True, "", ""
 
     def _powershell(self, args, input):
+        if any(str(arg).endswith("registration_keys.ps1") for arg in args):
+            return True, "{}", ""
         script = args[args.index("-File") + 1]
         if _key(script) not in self.files:
             return False, "", (f"The argument '{script}' to the -File "
@@ -404,3 +407,13 @@ class FakeWindows:
                 del self.files[_key(marker)]
             return True, "", ""
         return False, "", f"{script}: not a template entry point"
+
+    def _registration_client(self, args, input):
+        if args[:2] != ["-m", "agent.windows_registration"]:
+            return False, "", "unknown Python helper"
+        rid = args[args.index("--runner-id") + 1]
+        name = "rnr-" + rid
+        if self.services.get(name, {}).get("state") != "running":
+            return False, "", "registration service unavailable"
+        # The service's own account executes this fake script, not the agent.
+        return self._powershell(["-File", rf"D:\runners\{rid}\reg\register.ps1"], input)

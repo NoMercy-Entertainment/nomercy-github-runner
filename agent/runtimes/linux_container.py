@@ -45,9 +45,18 @@ import re
 import subprocess
 import tempfile
 import time
+import uuid
+from contextlib import contextmanager
+from decimal import Decimal
+from concurrent.futures import ThreadPoolExecutor
 
-from .. import naming
+from .. import cpu, naming
+from ..jobs import current_job
 from .adopted import Adopted
+
+#: What a heartbeat asks of several units at once: what each may use.
+CAPS_FORMAT = ("{{.Name}}\t{{.HostConfig.CpusetCpus}}\t{{.HostConfig.NanoCpus}}"
+               "\t{{.HostConfig.MemorySwap}}")
 
 #: Where each storage area is mounted inside the unit.
 MOUNTS = {"work": "/runner/work", "docker": "/var/lib/docker",
@@ -59,13 +68,15 @@ MOUNTS = {"work": "/runner/work", "docker": "/var/lib/docker",
 LAYOUT_ENV = {"RUNNER_WORK_DIR": MOUNTS["work"],
               "RUNNER_CACHE_DIR": MOUNTS["cache"],
               "RUNNER_REG_DIR": MOUNTS["reg"],
-              "RUNNER_LOG_DIR": MOUNTS["logs"]}
+              "RUNNER_LOG_DIR": MOUNTS["logs"],
+              "HOME": MOUNTS["work"] + "/.home"}
 
 #: What a `recreate` keeps, and what it discards. See the module docstring.
 KEPT_ON_RECREATE = ("docker", "cache", "logs")
 
 RUNNER_LABEL = "nomercy.runner_id"
 STOP_TIMEOUT = 60
+READONLY_TMPFS = "/run:rw,nosuid,nodev,size=64m,mode=755"
 
 #: How long a unit may take to be made. The first container built from a
 #: freshly built unit image pays for its layers being unpacked into the
@@ -116,14 +127,14 @@ sleep = time.sleep
 #: which is this runner's alone, because the unit is. The scopes this runtime
 #: offers are generated from this table; a scope that is not in some place
 #: of the runner's own is not offered at all (design 15.2).
-SCOPE_AREAS = {"workspace": "work", "toolcache": "cache", "temp": "unit",
+SCOPE_AREAS = {"workspace": "work", "toolcache": "cache", "temp": "work",
                "engine-build-cache": "docker",
                "engine-images-unused": "docker"}
 
 #: How each scope is cleared: a path inside the unit, or a command to the
 #: unit's own nested engine, whose data is the runner's `docker` area.
 SCOPE_PATHS = {"workspace": MOUNTS["work"], "toolcache": MOUNTS["cache"],
-               "temp": "/tmp"}
+               "temp": MOUNTS["work"] + "/.unit-tmp"}
 ENGINE_SCOPES = {"engine-build-cache": ["docker", "buildx", "prune", "-af"],
                  "engine-images-unused": ["docker", "image", "prune", "-af"]}
 SUPPORTED_SCOPES = frozenset(SCOPE_AREAS)
@@ -176,7 +187,10 @@ def _absent(err, what):
     rebuild that took that for a failure stopped half-way with the unit
     already gone (2026-09-20). What does not exist cannot be left behind.
     """
-    return f"no such {what}" in (err or "").lower()
+    # Container inspect uses "no such object" on recent engines. Match the
+    # resource noun so a missing daemon socket/file still remains unknown.
+    kinds = ("container", "object") if what == "container" else (what,)
+    return any(f"no such {kind}" in (err or "").lower() for kind in kinds)
 
 
 def _state_word(state):
@@ -195,11 +209,25 @@ def _bytes(text):
     return int(float(m.group(1)) * _UNITS[m.group(2).upper()])
 
 
+def memory_bytes(value):
+    match = re.fullmatch(r"([0-9]+(?:\.[0-9]+)?)([kmgt]?)[bB]?", str(value), re.I)
+    if not match:
+        raise ValueError("memory limit must be a positive finite size")
+    powers = {"": 0, "k": 1, "m": 2, "g": 3, "t": 4}
+    size = int(Decimal(match.group(1)) * 1024 ** powers[match.group(2).lower()])
+    if size > 2 ** 63 - 1:
+        raise ValueError("memory limit exceeds the supported range")
+    return size
+
+
 class LinuxContainerRuntime:
     kind = "linux-container"
 
-    def __init__(self, run=None, adopted=None):
+    def __init__(self, run=None, adopted=None, storage=None):
         self._run = run or _docker
+        from .linux_storage import LinuxStorage
+        self._storage = (storage if isinstance(storage, LinuxStorage) else
+                         LinuxStorage(**storage) if storage else None)
         # Which container on this engine a runner already is, for the few
         # that were serving before the controller knew them (T-0802). Every
         # other runner's unit is named by its runner_id, and nothing about
@@ -215,6 +243,12 @@ class LinuxContainerRuntime:
     # ---- lifecycle ---------------------------------------------------------
 
     def create(self, runner_id, spec):
+        if self._storage and not (spec or {}).get("adopt"):
+            with self._storage.lock():
+                return self._create(runner_id, spec)
+        return self._create(runner_id, spec)
+
+    def _create(self, runner_id, spec):
         rid = naming.check(runner_id)
         if (spec or {}).get("adopt"):
             return self._adopt(rid, spec["adopt"])
@@ -222,46 +256,70 @@ class LinuxContainerRuntime:
         image = (spec or {}).get("image")
         if not image:
             raise ValueError("a unit needs an image")
+        if self._storage:
+            image = self._readonly_image(image)
+        memory = str(spec.get("memory") or "").strip()
+        memory_swap = spec.get("memory_swap")
+        if memory_swap is not None and (not memory or memory_bytes(memory) <= 0
+                or memory_bytes(memory_swap) < memory_bytes(memory)):
+            raise ValueError("memory_swap must be a positive total RAM+swap limit at least memory")
 
         existing = self.status(rid)
+        if existing.get("exists") is None:
+            raise RuntimeError("container status is unknown; storage and registration are left alone")
+        managed = None
+        if self._storage:
+            # Refuse legacy/foreign volumes before allocating a new image.
+            self._storage_volumes(rid, require_all=False)
+            managed = self._storage.ensure(rid, spec.get("disk_limit"))
         if existing["exists"] and existing.get("state") != "removing":
+            if managed:
+                self._storage_volumes(rid, require_all=True)
+                self._storage_container(rid)
             # Adopt: see the module docstring. A unit left made but not
             # started - a create whose client gave up while the engine was
             # still unpacking the image - is finished here, because the
             # registration that follows has to exec into it.
-            self.start(rid)
+            self._start(rid)
             return name
         if existing["exists"]:
             self._gone(rid)
 
         volumes = naming.names(rid, "linux")
         for area in naming.AREAS:
-            ok, _, err = self._run(["volume", "create",
+            args = ["volume", "create",
                                     "--label", f"{RUNNER_LABEL}={rid}",
-                                    "--label", f"nomercy.area={area}",
-                                    volumes[area]],
-                                   timeout=VOLUME_TIMEOUT)
+                                    "--label", f"nomercy.area={area}"]
+            if managed:
+                args += ["--driver", "local", "--opt", "type=none", "--opt", "o=bind",
+                         "--opt", f"device={managed[area]}"]
+            ok, _, err = self._run([*args, volumes[area]], timeout=VOLUME_TIMEOUT)
             if not ok:
                 raise RuntimeError(f"volume {area}: {err}")
+        if managed:
+            self._storage_volumes(rid, require_all=True)
 
         args = ["run", "-d", "--name", name,
                 # The nested engine needs it; nothing else in the spec can
                 # ask for more.
                 "--privileged",
                 "--restart", "unless-stopped",
+                "--log-driver", "local", "--log-opt", "max-size=10m",
+                "--log-opt", "max-file=3",
                 "--stop-timeout", str(spec.get("stop_timeout", STOP_TIMEOUT)),
                 "--label", f"{RUNNER_LABEL}={rid}"]
+        if managed:
+            args += ["--read-only", "--tmpfs", READONLY_TMPFS]
         for key, value in sorted((spec.get("labels") or {}).items()):
             args += ["--label", f"{key}={value}"]
         for area in naming.AREAS:
             args += ["-v", f"{volumes[area]}:{MOUNTS[area]}"]
 
         cpus = str(spec.get("cpus") or "").strip()
-        memory = str(spec.get("memory") or "").strip()
         if cpus not in ("", "0"):
             args += ["--cpus", cpus]
         if memory not in ("", "0"):
-            args += ["--memory", memory, "--memory-swap", memory]
+            args += ["--memory", memory, "--memory-swap", str(memory_swap) if memory_swap is not None else memory]
         if spec.get("cpuset"):
             args += ["--cpuset-cpus", str(spec["cpuset"])]
 
@@ -287,8 +345,10 @@ class LinuxContainerRuntime:
         deadline = time.monotonic() + wait
         while True:
             state = self.status(rid)
-            if not state["exists"]:
+            if state["exists"] is False:
                 return True
+            if state["exists"] is None:
+                return False
             if state.get("state") != "removing":
                 return False
             if time.monotonic() >= deadline:
@@ -320,6 +380,16 @@ class LinuxContainerRuntime:
         return name
 
     def start(self, runner_id):
+        if self._storage:
+            with self._storage.lock():
+                data = self._storage._metadata(runner_id)
+                self._storage.ensure(runner_id, data["bytes"])
+                self._storage_volumes(runner_id, require_all=True)
+                self._storage_container(runner_id)
+                return self._start(runner_id)
+        return self._start(runner_id)
+
+    def _start(self, runner_id):
         """Started, and in service. The restart policy a drain takes off is
         put back first, so a unit started after a drain is not left one exit
         away from staying down."""
@@ -333,6 +403,16 @@ class LinuxContainerRuntime:
                      self._unit(runner_id)], timeout=STOP_TIMEOUT + 20)
 
     def restart(self, runner_id):
+        if self._storage:
+            with self._storage.lock():
+                data = self._storage._metadata(runner_id)
+                self._storage.ensure(runner_id, data["bytes"])
+                self._storage_volumes(runner_id, require_all=True)
+                self._storage_container(runner_id)
+                return self._restart(runner_id)
+        return self._restart(runner_id)
+
+    def _restart(self, runner_id):
         self._check(["restart", "-t", str(STOP_TIMEOUT),
                      self._unit(runner_id)], timeout=STOP_TIMEOUT + 30)
 
@@ -363,8 +443,79 @@ class LinuxContainerRuntime:
         self.start(runner_id)
 
     def remove(self, runner_id, keep_data):
+        if self._storage:
+            with self._storage.lock():
+                return self._remove(runner_id, keep_data)
+        return self._remove(runner_id, keep_data)
+
+    def _storage_volumes(self, rid, require_all=False):
+        """Volume names alone are not ownership: verify driver, path and labels."""
+        from .linux_storage import AREA_DIRS
+        base = self._storage._paths(rid)[3]
+        for area, volume in naming.names(rid, "linux").items():
+            ok, out, err = self._run(["volume", "inspect", volume], timeout=VOLUME_TIMEOUT)
+            if not ok:
+                if _absent(err, "volume") and not require_all:
+                    continue
+                raise RuntimeError(f"cannot verify runner volume {area}: {err}")
+            try:
+                rows = json.loads(out)
+                info = rows[0]
+                labels = info.get("Labels") or {}
+                expected = {"type": "none", "o": "bind", "device": str(base / AREA_DIRS[area])}
+                if (len(rows) != 1 or info.get("Name") != volume or info.get("Driver") != "local"
+                        or info.get("Options") != expected or labels.get(RUNNER_LABEL) != rid
+                        or labels.get("nomercy.area") != area):
+                    raise ValueError("volume is not owned by managed storage")
+            except (ValueError, KeyError, IndexError, TypeError) as error:
+                raise RuntimeError(f"unsafe or legacy volume {volume}; explicit storage migration required") from error
+
+    def _storage_container(self, rid):
+        ok, out, err = self._run(["inspect", "--format", "{{json .}}", self._unit(rid)], timeout=30)
+        try:
+            if not ok:
+                raise ValueError(err)
+            info = json.loads(out)
+            mounts = info["Mounts"]
+            host = info["HostConfig"]
+            if host.get("ReadonlyRootfs") is not True or (host.get("Tmpfs") or {}).get("/run") != READONLY_TMPFS.split(":", 1)[1]:
+                raise ValueError("container root is not read-only with a bounded /run")
+            expected = {MOUNTS[area]: volume for area, volume in naming.names(rid).items()}
+            actual = {item["Destination"]: item.get("Name") for item in mounts if item.get("Type") == "volume"}
+            if any(actual.get(path) != volume for path, volume in expected.items()):
+                raise ValueError("container is not using its bounded volumes")
+        except (ValueError, TypeError, KeyError) as error:
+            raise RuntimeError("existing container storage does not match its owned disk; migration required") from error
+
+    def _readonly_image(self, image):
+        args = ["image", "inspect", "--format", "{{json .}}", "--", image]
+        ok, out, err = self._run(args, timeout=30)
+        if not ok and _absent(err, "image"):
+            self._check(["pull", "--", image], timeout=CREATE_TIMEOUT)
+            ok, out, err = self._run(args, timeout=30)
+        try:
+            if not ok:
+                raise ValueError(err)
+            info = json.loads(out)
+            if (info.get("Config", {}).get("Labels") or {}).get("nomercy.readonly_root") != "true":
+                raise ValueError("image has not declared read-only root compatibility")
+            identity = info["Id"]
+            if not re.fullmatch(r"sha256:[0-9a-f]{64}", identity):
+                raise ValueError("image identity is unknown")
+            return identity  # avoid a tag changing between validation and run
+        except (ValueError, TypeError, KeyError, AttributeError) as error:
+            raise RuntimeError("managed storage requires an image labelled nomercy.readonly_root=true") from error
+
+    def _storage_volume_absent(self, volume):
+        ok, _, err = self._run(["volume", "inspect", volume], timeout=VOLUME_TIMEOUT)
+        if ok or not _absent(err, "volume"):
+            raise RuntimeError(f"volume is not proven absent; retaining filesystem: {volume}")
+
+    def _remove(self, runner_id, keep_data):
         """Remove the unit and its storage. Safe when any of it is absent."""
         rid = naming.check(runner_id)
+        if self._storage:
+            self._storage_volumes(rid)
         # Stopped before it is forced. `rm -f` gives a unit ten seconds and
         # then kills it, which takes its nested engine down mid-write, and
         # the engine has twice been left unable to finish such a removal:
@@ -395,7 +546,7 @@ class LinuxContainerRuntime:
         volumes = naming.names(rid, "linux")
         left = []
         for area in naming.AREAS:
-            if keep_data and area in KEPT_ON_RECREATE:
+            if keep_data and (area in KEPT_ON_RECREATE or (self._storage and area == "work")):
                 continue
             ok, _, err = self._run(["volume", "rm", volumes[area]],
                                    timeout=VOLUME_TIMEOUT)
@@ -403,11 +554,21 @@ class LinuxContainerRuntime:
                 left.append(f"{area}: {err}")
         if left:
             raise RuntimeError("storage left behind: " + "; ".join(left))
+        if self._storage:
+            if keep_data:
+                self._storage_volume_absent(volumes["reg"])
+                if self._storage.existing(rid) is not None:
+                    self._storage.reset_registration(rid)
+            else:
+                for volume in volumes.values():
+                    self._storage_volume_absent(volume)
+                self._storage.remove(rid)
 
     def _check(self, args, timeout=30):
         ok, out, err = self._run(args, timeout=timeout)
         if not ok:
             raise RuntimeError(err or out)
+        return out
 
     # ---- observation -------------------------------------------------------
 
@@ -417,14 +578,20 @@ class LinuxContainerRuntime:
         ok, out, err = self._run(["inspect", "--format", "{{json .State}}",
                                   self._unit(runner_id)], timeout=30)
         if not ok:
-            if "No such" in err:
+            if _absent(err, "container"):
                 return {"exists": False, "running": False, "state": "absent"}
             return {"exists": None, "running": None, "state": "unknown"}
         try:
             state = json.loads(out)
         except ValueError:
             return {"exists": None, "running": None, "state": "unknown"}
-        return {"exists": True, "running": bool(state.get("Running")),
+        if (not isinstance(state, dict) or type(state.get("Running")) is not bool
+                or state.get("Status") not in
+                ("created", "running", "paused", "restarting", "removing", "exited", "dead")
+                or (state["Running"] is False and state["Status"] in ("running", "paused"))
+                or (state["Running"] is True and state["Status"] in ("created", "exited", "dead"))):
+            return {"exists": None, "running": None, "state": "unknown"}
+        return {"exists": True, "running": state["Running"],
                 "state": state.get("Status"),
                 "exit_code": state.get("ExitCode"),
                 "started_at": state.get("StartedAt"),
@@ -445,7 +612,17 @@ class LinuxContainerRuntime:
             used, _, limit = mem.partition("/")
             result["mem_used_bytes"] = _bytes(used)
             result["mem_limit_bytes"] = _bytes(limit)
+        self._storage_telemetry(runner_id, result)
         return result
+
+    def _storage_telemetry(self, rid, result):
+        if not self._storage:
+            return
+        try:
+            result.update(self._storage.telemetry(rid))
+        except (OSError, RuntimeError, ValueError):
+            result.update(disk_limit_enforced=False, disk_used_bytes=None,
+                          disk_limit_bytes=None, disk_free_bytes=None)
 
     def telemetry_all(self, runner_ids):
         """CPU and memory of several units in one `docker stats` call - one
@@ -472,7 +649,55 @@ class LinuxContainerRuntime:
             entry["mem_used_bytes"] = _bytes(used)
             entry["mem_limit_bytes"] = _bytes(limit)
             found[names[parts[0]]] = entry
+        for rid, limits in self._cores(names).items():
+            if rid in found:
+                found[rid].update(limits)
+                found[rid]["host_cores"] = os.cpu_count()
+        for rid in runner_ids:
+            if self._storage:
+                self._storage_telemetry(rid, found.setdefault(rid, {}))
         return found
+
+    def _cores(self, names):
+        """What each unit may use, as the engine has it - its cpuset and
+        its quota, read back rather than remembered from the spec, so the
+        number on a card is what the unit is really held to. One call for
+        all of them; a unit missing from the answer is left out."""
+        ok, out, _ = self._run(["inspect", "--format", CAPS_FORMAT,
+                                *sorted(names)], timeout=25)
+        cores = {}
+        for line in (out.splitlines() if ok else []):
+            parts = line.split("\t")
+            if len(parts) != 4:
+                continue
+            rid = names.get(parts[0].lstrip("/"))
+            if rid is not None:
+                try:
+                    swap = int(parts[3])
+                except ValueError:
+                    swap = -1
+                cores[rid] = {"cpu_cores": cpu.ceiling(parts[1], parts[2]),
+                              "mem_swap_limit_bytes": swap if swap > 0 else None}
+        return cores
+
+    def jobs(self, runner_ids):
+        """Which job each of these units says it is running, from the tail
+        of its own output. Read side by side: one `docker logs` per unit in
+        turn is a minute on a busy engine, and this runs for every
+        measurement. A unit whose log could not be read is left out - its
+        card then says it is busy without saying with what, which is true."""
+        names = {self._unit(r): r for r in runner_ids}
+        if not names:
+            return {}
+
+        def read(name):
+            ok, out, _ = self._run(["logs", "--tail", "200", name],
+                                   timeout=10, merge_stderr=True)
+            return names[name], (current_job(out) if ok else None)
+
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            return {rid: job for rid, job in pool.map(read, sorted(names))
+                    if job}
 
     def logs(self, runner_id, since_seconds):
         """The unit's own output, stdout and stderr merged in order - the
@@ -484,13 +709,36 @@ class LinuxContainerRuntime:
 
     def probe(self, runner_id, probe):
         name = self._unit(runner_id)
-        if probe in ("disk_usage", "cache_size"):
+        if probe == "disk_usage":
+            paths = list(MOUNTS.values())
+            ok, out, err = self._run(
+                ["exec", name, "du", "-sx", "-B1", *paths], timeout=45)
+            try:
+                measured = dict((line.split("\t", 1)[1],
+                                 int(line.split("\t", 1)[0]))
+                                for line in out.splitlines())
+                complete = ok and set(measured) == set(paths)
+                value = sum(measured.values()) if complete else None
+            except (ValueError, IndexError):
+                value = None
+            return {"ok": value is not None, "value": value,
+                    "error": err if not ok else ""}
+        if probe == "cache_size":
             rows = self._df(name)
             if rows is None:
                 return {"ok": False, "error": "docker system df did not "
                                               "answer"}
-            key = "Images" if probe == "disk_usage" else "Build Cache"
-            return {"ok": True, "value": rows.get(key)}
+            ok, out, _ = self._run(["inspect", "--format",
+                                    "{{json .Config.Env}}", name], timeout=15)
+            cap = None
+            try:
+                for env in json.loads(out) if ok else []:
+                    if env.startswith("RUNNER_BUILD_CACHE_GC="):
+                        cap = _bytes(env.split("=", 1)[1])
+            except (ValueError, TypeError, AttributeError):
+                pass
+            value = rows.get("Build Cache")
+            return {"ok": value is not None, "value": value, "cap_bytes": cap}
         if probe == "agent_version":
             ok, out, err = self._run(["exec", name, "cat",
                                       f"{MOUNTS['reg']}/agent_version"],
@@ -558,14 +806,57 @@ class LinuxContainerRuntime:
         for that scope rather than skipped in silence. A second call finds
         nothing to free and still succeeds.
         """
-        name = self._unit(runner_id)
         policy = policy or {}
         scopes = list(policy.get("scopes") or DEFAULT_SCOPES)
         timeout = int(policy.get("timeout", 300))
-        per_scope, errors, measured = {}, {}, True
+        with self._cache_unit(runner_id) as name:
+            return self._clear_scopes(name, scopes, timeout)
 
-        if not self.status(runner_id).get("running"):
-            raise RuntimeError("the unit is not running")
+    @contextmanager
+    def _cache_unit(self, runner_id):
+        name = self._unit(runner_id)
+        state = self.status(runner_id)
+        if state.get("running"):
+            yield name
+            return
+        if not state.get("exists") or state.get("state") not in ("exited", "created", "stopped"):
+            raise RuntimeError("cache cleanup requires a known execution unit")
+        image = self._check(["inspect", "--format", "{{.Config.Image}}", name])
+        extra = []
+        if self._storage:
+            self._storage_volumes(runner_id, require_all=True)
+            self._storage_container(runner_id)
+            if self._storage.existing(runner_id) is None:
+                raise RuntimeError("managed maintenance requires the owned filesystem")
+            image = self._readonly_image(image)
+            extra = ["--read-only", "--tmpfs", READONLY_TMPFS]
+        helper = f"{name}-maintenance-{uuid.uuid4().hex[:8]}"
+        try:
+            self._check(["run", "-d", "--name", helper, "--privileged",
+                         "--network", "none", "--restart", "no",
+                         "--cpus", "1", "--memory", "1g", "--memory-swap", "1g",
+                         "--log-driver", "local", "--log-opt", "max-size=10m",
+                         "--log-opt", "max-file=2", "--volumes-from", name,
+                         "--entrypoint", "/runner/maintenance", *extra, image],
+                        timeout=CREATE_TIMEOUT)
+            ready = False
+            for _ in range(30):
+                ok, _, _ = self._run(["exec", helper, "docker", "info"], timeout=5)
+                if ok:
+                    ready = True
+                    break
+                sleep(1)
+            if not ready:
+                raise RuntimeError("maintenance engine did not become ready; runner stayed stopped")
+            yield helper
+        finally:
+            self._run(["stop", "-t", "60", helper], timeout=80)
+            ok, _, err = self._run(["rm", "-f", helper], timeout=REMOVE_TIMEOUT)
+            if not ok and not _absent(err, "container"):
+                raise RuntimeError(f"maintenance cleanup failed: {err}")
+
+    def _clear_scopes(self, name, scopes, timeout):
+        per_scope, errors, measured = {}, {}, True
 
         for scope in scopes:
             if scope not in SUPPORTED_SCOPES:
@@ -611,6 +902,16 @@ class LinuxContainerRuntime:
 
     # ---- what this runtime can do -------------------------------------------
 
+    def memory_capacity(self, path="/proc/meminfo"):
+        """Physical RAM and configured swap on this worker."""
+        try:
+            with open(path, encoding="ascii") as handle:
+                fields = dict(line.split(":", 1) for line in handle if ":" in line)
+            return {"memory_bytes": int(fields["MemTotal"].split()[0]) * 1024,
+                    "swap_bytes": int(fields["SwapTotal"].split()[0]) * 1024}
+        except (OSError, KeyError, ValueError, IndexError):
+            return None
+
     def capabilities(self):
         return {"kind": self.kind,
                 # Any image this engine can pull, so no list: what a unit is
@@ -619,10 +920,17 @@ class LinuxContainerRuntime:
                 "job_containers": True,
                 "nested_builds": True,
                 "resettable_os": False,
+                "disk_limit_enforced": self._storage is not None,
+                # The name placement asks for, as the Windows runtime says it.
+                "disk_quota": self._storage is not None,
                 # OPEN-7: a graceful stop that stays stopped.
                 "supports_drain": True,
                 "clear_cache": True,
                 "cache_scopes": sorted(SUPPORTED_SCOPES),
+                # What a pinned window is cut from: the controller staggers
+                # each runner's cpuset over these, so it needs the number
+                # before any runner is here to report it.
+                "host_cores": os.cpu_count(),
                 "notes": "one container per runner, five named volumes "
                          "derived from its runner_id"}
 
