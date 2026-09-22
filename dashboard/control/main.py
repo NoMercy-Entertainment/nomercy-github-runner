@@ -359,24 +359,39 @@ def adopt(fleet, name, host_id, label, template=None, db=None, env=None,
         requested_by=requested_by)
 
 
+def _audit_retire_worker(db, decision, host_id, who, outcome=None):
+    """Never lets an audit failure change the answer (RunnerService._audit's
+    rule) - a delete that already happened must not read as failed because
+    the audit table, of all things, could not be written to."""
+    from . import audit
+    try:
+        audit.record(db, "retire_worker", decision, actor=who or "unknown",
+                     parameters={"host_id": host_id}, outcome=outcome)
+    except Exception as e:      # noqa: BLE001
+        print(f"[audit] could not record {decision} retire_worker: "
+              f"{type(e).__name__}")
+
+
 def retire_worker(host_id, db=None, who="cli"):
     """Remove a worker's row, once nothing still places a runner there.
 
     Audited either way (design 18.4): a refused destroy is exactly what an
     operator needs to find later, as carefully as an accepted one.
     """
-    from . import audit
+    from .inventory import UnknownWorker
     from .service import RunnerService
     db = _store(db)
     service = RunnerService(db)
     try:
         service.inventory.retire(host_id, service.specs)
-    except ValueError as e:
-        audit.record(db, "retire_worker", "refused", actor=who,
-                     parameters={"host_id": host_id}, outcome=str(e))
+    except UnknownWorker:
+        _audit_retire_worker(db, "refused", host_id, who,
+                             outcome=f"no worker {host_id}")
         raise
-    audit.record(db, "retire_worker", "accepted", actor=who,
-                 parameters={"host_id": host_id})
+    except ValueError as e:
+        _audit_retire_worker(db, "refused", host_id, who, outcome=str(e))
+        raise
+    _audit_retire_worker(db, "accepted", host_id, who)
     return host_id
 
 
@@ -515,8 +530,12 @@ def main(argv=None):
         print(f"operation {capacity(args.fleet, args.count)}")
         return 0
     if args.command == "retire-worker":
+        from .inventory import UnknownWorker
         try:
             retire_worker(args.host_id)
+        except UnknownWorker:
+            print(f"refused: no worker {args.host_id}")
+            return 2
         except ValueError as e:
             print(f"refused: {e}")
             return 2

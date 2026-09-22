@@ -467,8 +467,22 @@ class Inventory:
         """
         return self.health(host_id, now) == HEALTHY
 
-    def retire(self, host_id, specs):
+    def retire(self, host_id, specs=None):
         """Remove a worker's row - once nothing still places a runner there.
+
+        One transaction, one connection, `BEGIN IMMEDIATE`: the check and the
+        writes must see the same world. Reading "no runner names it" through
+        one connection and then writing on another (or later, on this one,
+        without holding the write lock across both) leaves a gap - a runner
+        the reconciler places here between the read and the write would have
+        its `host_id` silently cleared and the worker deleted under it,
+        instead of the retire being refused. `BEGIN IMMEDIATE` takes the
+        write lock before the count runs (`OperationStore.merge_progress`
+        does the same for the same reason), so a write landing in that gap
+        blocks until this transaction ends rather than being lost to it.
+
+        Refuses `UnknownWorker` for a `host_id` with no row - a typo must
+        not read as a worker successfully retired.
 
         "No runner names it" means no spec with this `host_id` that is
         neither soft-deleted nor already at the terminal `absent` state: a
@@ -482,15 +496,39 @@ class Inventory:
         `runner_specs.host_id` is `REFERENCES workers(host_id)`, enforced
         (schema.connect's `PRAGMA foreign_keys=ON`), and that lingering value
         would refuse the delete below with a bare IntegrityError instead of
-        the clean refusal this call exists to give. It is released here: the
-        spec stays, readable for ever, but the worker it names is done
-        naming anything.
+        the clean refusal this call exists to give. It is released here,
+        inside the same transaction and only once the count above has
+        cleared: the spec stays, readable for ever, but the worker it names
+        is done naming anything.
+
+        `specs` is accepted for a caller's convenience but not read from -
+        the count has to come from this transaction's own view, not a
+        second connection that could be looking at an earlier or later one.
         """
-        names = [s for s in specs.list(host_id=host_id)
-                if s["actual_state"] != "absent"]
-        if names:
-            raise ValueError(f"{len(names)} runner(s) names this worker")
-        with self._conn() as c:
-            c.execute("UPDATE runner_specs SET host_id = NULL"
-                      " WHERE host_id = ?", (host_id,))
+        c = self._conn()
+        try:
+            c.isolation_level = None
+            c.execute("BEGIN IMMEDIATE")
+            if c.execute("SELECT 1 FROM workers WHERE host_id = ?",
+                        (host_id,)).fetchone() is None:
+                raise UnknownWorker(host_id)
+            n = c.execute(
+                "SELECT COUNT(*) FROM runner_specs WHERE host_id = ? AND"
+                " deleted_at IS NULL AND actual_state != 'absent'",
+                (host_id,)).fetchone()[0]
+            if n:
+                raise ValueError(f"{n} runner(s) names this worker")
+            c.execute(
+                "UPDATE runner_specs SET host_id = NULL WHERE host_id = ?"
+                " AND (deleted_at IS NOT NULL OR actual_state = 'absent')",
+                (host_id,))
             c.execute("DELETE FROM workers WHERE host_id = ?", (host_id,))
+            c.execute("COMMIT")
+        except Exception:
+            try:
+                c.execute("ROLLBACK")
+            except Exception:          # noqa: BLE001
+                pass
+            raise
+        finally:
+            c.close()
