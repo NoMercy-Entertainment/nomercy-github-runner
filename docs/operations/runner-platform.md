@@ -51,6 +51,33 @@ Each looked healthy on the dashboard, which is why they are listed:
   the worker's per-runner filesystems as a disk quota.
 - A fleet-wide cache clear took every idle runner out at once.
 
+### 1.3 Forgejo Linux memory: what 6 GiB was measured against
+
+Each Forgejo Linux unit has 6 GiB RAM and 6 GiB combined RAM+swap. Measured
+on 2026-09-22, about a day after the units were made and with jobs having run
+on all three (`memory.stat`, `memory.events` and `memory.peak` of each unit's
+cgroup, not `docker stats`):
+
+| | unit 1 | unit 2 | unit 3 |
+| --- | --- | --- | --- |
+| peak | 6144 MiB (at the limit) | 6145 MiB | 6144 MiB |
+| anonymous (real process memory) | 56 MiB | 55 MiB | 53 MiB |
+| page cache | 2646 MiB | 4175 MiB | 4208 MiB |
+| `max` events (reclaim at the limit) | 4597 | 2785 | 1270 |
+| `oom_kill` | 0 | 0 | 0 |
+| swap used at peak | 0 | 0 | 0 |
+
+So the limit is reached, but by page cache, which the kernel reclaims; the
+work itself needs tens of MiB. Nothing was killed and nothing swapped. 6 GiB
+stands.
+
+**When to raise it:** any Forgejo unit showing `oom_kill` above 0 in
+`memory.events`, or anonymous memory above 4 GiB during a measured job. A
+raise has to fit the Linux worker's admission - 72 GiB RAM and 640 GiB swap,
+bounded overcommit - counted against the ten GitHub units at 32 GiB + 32 GiB
+each. Read `anon` before deciding: a unit sitting at its limit is not
+evidence on its own.
+
 ## 2. Gates
 
 Every task in the plan carries a gate. Nothing past LOCAL runs unattended.
