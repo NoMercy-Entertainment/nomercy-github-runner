@@ -43,9 +43,13 @@ EXEC_KINDS = {
 COMBINED_MEMORY_PLATFORMS = frozenset({providers.LINUX})
 
 #: Where a whole-number CPU limit pins each runner to its own window of cores.
-#: Linux only: there a quota leaves `nproc` at the host's count, and builds
-#: size themselves by it (control/cpusets.py).
-PINNED_CPU_PLATFORMS = frozenset({providers.LINUX})
+#: On Linux a quota leaves `nproc` at the host's count, and builds size
+#: themselves by it (control/cpusets.py); on Windows a Job Object's CPU rate
+#: leaves a build's own processor count at the host's the same way, and only
+#: an affinity mask changes it (agent/jobhost.py: `cpu_rate`, `affinity_mask`,
+#: 2026-09-23). macOS pins through its appliance's own CPU enforcement
+#: instead (`placement.enforces_appliance_limits`), so it stays out of here.
+PINNED_CPU_PLATFORMS = frozenset({providers.LINUX, providers.WINDOWS})
 
 #: (provider, platform) -> the runtime that executes that cell, as
 #: "module:attribute". Strings rather than imports so this stays a table of
@@ -240,12 +244,13 @@ class RunnerService:
                     width, exclude={spec["runner_id"]})
         return self.effective_spec(result)
 
-    # ---- pinned CPU windows (Linux) ----------------------------------------
+    # ---- pinned CPU windows (Linux, Windows) -------------------------------
 
     def _pinned_width(self, fleet):
         """How many cores each runner of this fleet is pinned to, or None when
-        the fleet asks for no pinning. Only Linux pins: there a quota leaves
-        `nproc` at the host's count, and builds size themselves by it."""
+        the fleet asks for no pinning. Only the platforms in
+        `PINNED_CPU_PLATFORMS` pin: there a quota leaves a build's own
+        processor count at the host's, and builds size themselves by it."""
         if (fleet or {}).get("platform") not in PINNED_CPU_PLATFORMS:
             return None
         return cpusets.whole_cores(fleet.get("cpu_limit"))
@@ -265,8 +270,8 @@ class RunnerService:
                 if spec.get("platform") in PINNED_CPU_PLATFORMS and isinstance(value, int) and value > 0:
                     counts.append(value)
         if not counts:
-            raise Refused("cannot pin a CPU window: no Linux worker has said how "
-                          "many cores it has yet")
+            raise Refused("cannot pin a CPU window: no worker of a pinned "
+                          "platform has said how many cores it has yet")
         return min(counts)
 
     def _cpu_window(self, width, exclude=(), also=()):

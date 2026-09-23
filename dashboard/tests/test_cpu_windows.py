@@ -1,4 +1,4 @@
-"""A Linux fleet's whole-number CPU limit is a pinned window per runner.
+"""A pinned fleet's whole-number CPU limit is a window of cores per runner.
 
 On Linux a CFS quota does not change what `nproc` reports, so a build that
 runs `-j$(nproc)` inside a quota-limited runner still starts one compiler per
@@ -7,13 +7,20 @@ by hand to staggered 16-core windows; a runner planned later got nothing and
 saw all 56 cores. These tests hold the rule that closes that gap: a whole
 number on a Linux fleet gives every new runner its own window, placed where
 the existing windows overlap least, and a recreate keeps the window it had.
+
+A Windows runner has the same gap: its CPU rate cap does not change what a
+build sees as its processor count either, and only a Job Object affinity mask
+does (`agent/jobhost.py:affinity_mask`) - so the same rule pins it, cut from
+the same host of 56 (2026-09-23). Its host does not declare `host_cores` in
+its capabilities the way a Linux worker does, so pinning it depends on the
+fallback to a runner's last measured telemetry; a test below holds that path.
 """
 import pytest
 
 import providers as P
 from control import cpusets
 from control import inventory as inv
-from control.service import RunnerService
+from control.service import Refused, RunnerService
 from store import schema
 from store.fleets import FleetStore
 
@@ -83,6 +90,26 @@ def _planned(service, fid, n):
     return [service.specs.get(r) for r in service.planned_ids(service.plan(fid, n))]
 
 
+def _win_service(tmp_path, cores=56, declare_host_cores=True):
+    """A deployment with one healthy Windows worker. Matching the live fleet
+    (2026-09-23), it declares no `host_cores` in its capabilities unless
+    asked to - only a Linux worker does that today."""
+    path = str(tmp_path / "control.db")
+    schema.init(path)
+    env = {"GH_TOKEN": "x", "GITHUB_ORG": "o"}
+    FleetStore(path).seed(env)
+    cells = {(p.key, pl): "tests.fake_runtime:UnitRuntime"
+             for p in P.ALL for pl in P.PLATFORMS}
+    service = RunnerService(path, runtimes=cells, env=env)
+    capabilities = {"kind": "windows-process"}
+    if declare_host_cores:
+        capabilities["host_cores"] = cores
+    service.inventory.register_worker("windows-1", inv.HYPERV_WINDOWS,
+                                      capabilities=capabilities)
+    service.inventory.heartbeat("windows-1")
+    return service
+
+
 class TestPlanning:
     def test_a_whole_number_on_a_linux_fleet_pins_each_new_runner(self, tmp_path):
         service = _service(tmp_path)
@@ -140,3 +167,94 @@ class TestReplacement:
                              cpu_limit="4-19")
         replacement = service.replacement_spec(service.specs.get(spec["runner_id"]))
         assert replacement["cpu_limit"] == "4-19"
+
+
+class TestWindowsPlanning:
+    """The same rule, on the platform that gets it next: a Windows worker's
+    quota (the Job Object's CPU rate) does not change what a build sees as
+    its processor count either, so a whole-number fleet limit still means a
+    window, cut from the same 56-core host the live fleet runs on."""
+
+    def test_a_whole_number_on_a_windows_fleet_pins_each_new_runner(self, tmp_path):
+        service = _win_service(tmp_path)
+        service.fleets.set_defaults("github-windows-x64", {"cpu_limit": 16})
+        specs = _planned(service, "github-windows-x64", 3)
+        windows = [s["cpu_limit"] for s in specs]
+        assert all(cpusets.is_cpuset(w) for w in windows)
+        assert all(len(cpusets.parse(w)) == 16 for w in windows)
+        assert len(set(windows)) == 3
+
+    def test_windows_on_the_same_worker_overlap_as_little_as_possible(self, tmp_path):
+        service = _win_service(tmp_path)
+        first = _planned(service, "github-windows-x64", 1)[0]
+        service.specs.update(first["runner_id"], first["spec_version"],
+                             cpu_limit="0-15")
+        service.fleets.set_defaults("github-windows-x64", {"cpu_limit": 16})
+        new = _planned(service, "github-windows-x64", 1)[0]
+        assert not cpusets.parse(new["cpu_limit"]) & set(range(16))
+
+    def test_a_fraction_stays_a_quota_on_windows(self, tmp_path):
+        service = _win_service(tmp_path)
+        service.fleets.set_defaults("github-windows-x64", {"cpu_limit": 2.5})
+        spec = _planned(service, "github-windows-x64", 1)[0]
+        assert spec["cpu_limit"] == "2.5"
+
+    def test_no_fleet_limit_leaves_the_windows_runner_unpinned(self, tmp_path):
+        service = _win_service(tmp_path)
+        spec = _planned(service, "github-windows-x64", 1)[0]
+        assert spec["cpu_limit"] is None
+
+
+class TestWindowsReplacement:
+    def test_a_recreate_keeps_a_window_of_the_right_width(self, tmp_path):
+        service = _win_service(tmp_path)
+        spec = _planned(service, "github-windows-x64", 1)[0]
+        service.specs.update(spec["runner_id"], spec["spec_version"],
+                             cpu_limit="38-53")
+        service.fleets.set_defaults("github-windows-x64", {"cpu_limit": 16})
+        replacement = service.replacement_spec(service.specs.get(spec["runner_id"]))
+        assert replacement["cpu_limit"] == "38-53"
+
+    def test_a_recreate_after_a_width_change_gets_a_new_window(self, tmp_path):
+        service = _win_service(tmp_path)
+        spec = _planned(service, "github-windows-x64", 1)[0]
+        service.specs.update(spec["runner_id"], spec["spec_version"],
+                             cpu_limit="0-15")
+        service.fleets.set_defaults("github-windows-x64", {"cpu_limit": 8})
+        replacement = service.replacement_spec(service.specs.get(spec["runner_id"]))
+        assert len(cpusets.parse(replacement["cpu_limit"])) == 8
+
+
+class TestWindowsHostCoresFallback:
+    """The live Windows worker declares no `host_cores` in its capabilities -
+    only a Linux worker does that. Pinning a Windows fleet therefore depends
+    on the fallback to what a runner on it last reported in its telemetry
+    (`WindowsProcessRuntime.telemetry`'s own `host_cores`, agent/runtimes/
+    windows_process.py)."""
+
+    def test_a_windows_worker_with_no_declared_host_cores_still_pins(
+            self, tmp_path):
+        service = _win_service(tmp_path, declare_host_cores=False)
+        # Born unpinned - the fleet names no limit yet - then placed and
+        # heard from, the way a runner already on a worker reports its
+        # telemetry before this fleet is ever pinned.
+        first = _planned(service, "github-windows-x64", 1)[0]
+        service.specs.update(first["runner_id"], first["spec_version"],
+                             host_id="windows-1", actual_state="idle")
+        service.inventory.accept_heartbeat("windows-1", {
+            "host_id": "windows-1",
+            "instances": [{"runner_id": first["runner_id"],
+                           "state": "running",
+                           "telemetry": {"host_cores": 56}}]})
+
+        service.fleets.set_defaults("github-windows-x64", {"cpu_limit": 16})
+        second = _planned(service, "github-windows-x64", 1)[0]
+        assert cpusets.is_cpuset(second["cpu_limit"])
+        assert len(cpusets.parse(second["cpu_limit"])) == 16
+
+    def test_with_no_worker_declaration_and_no_telemetry_yet_pinning_is_refused(
+            self, tmp_path):
+        service = _win_service(tmp_path, declare_host_cores=False)
+        service.fleets.set_defaults("github-windows-x64", {"cpu_limit": 16})
+        with pytest.raises(Refused):
+            service.plan("github-windows-x64", 1)
