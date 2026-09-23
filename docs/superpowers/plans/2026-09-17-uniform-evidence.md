@@ -1037,7 +1037,28 @@ one whose fleet names no template yet had a hole where the name should be.
   and `Set-VMFirmware`'s `-SecureBootTemplate` accepts `MicrosoftWindows` as
   a plain string parameter (this build's help carries no validation set to
   check it against).
-- **Not run:** neither script has been executed. The ISO at
-  `D:\HyperV\runner-platform\iso\Windows11.iso` was not touched, read, or
-  verified - it was still finishing its copy - and no VM named
+- **Not run:** neither script has been executed, and no VM named
   `rnr-windows-1` exists yet. That is the operator's step next.
+- **The install media, verified afterwards (2026-09-23).** The copy at
+  `D:\HyperV\runner-platform\iso\Windows11.iso` is byte-for-byte the
+  operator's own image: SHA-256
+  `3f8703ca7cf89f34f956e7581b3fba02543007575ee9f3db93a2a2f31326bef4`,
+  equal to the source it was copied from, 4 943 462 400 bytes.
+  Reading its ISO9660 root directory shows `AUTOUNATTEND.XML` (202 340
+  bytes) beside `SETUP.EXE` and `SOURCES`, byte-identical to the answer
+  file the operator generated with Winhance. Windows Setup reads an answer
+  file at the root of its boot media by itself, so every guest installed
+  from this ISO gets it: hardware-check bypasses in `windowsPE`; in
+  `specialize` `BypassNRO`, **every network adapter disabled**, .NET 3.5
+  from the media, and a debloat pass; hidden EULA, online-account and
+  wireless pages in `oobeSystem`; the adapters re-enabled by
+  `FirstLogonCommands`. It creates no account, sets no computer name, and
+  carries no usable product key (its key element is all zeros with
+  `WillShowUI=Always`, which only forces Setup's key page). It keeps
+  Defender and Windows Update - updates set to notify rather than install -
+  and removes Edge, the Store, Copilot, OneDrive, the Xbox stack,
+  Photos/Paint/WordPad and PowerShell ISE. Two of those reach CI:
+  WebView2 may go with Edge, and winget's `msstore` source dies with the
+  Store. This is why `Initialize-WindowsGuest.ps1` enables the management
+  adapter before addressing it, and why it names the debloat pass when the
+  OpenSSH capability cannot be installed.
