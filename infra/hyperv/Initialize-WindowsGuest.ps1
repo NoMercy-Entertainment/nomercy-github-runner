@@ -136,7 +136,7 @@ Set-VMFirmware -VMName $Name -FirstBootDevice $sysHdd
 $hostTimeZone = (Get-TimeZone).Id
 
 $guestConfig = {
-    param($MgmtMac, $Address, $PrefixLength, $Dns, $TimeZoneId)
+    param($MgmtMac, $Address, $PrefixLength, $Dns, $TimeZoneId, $VmName)
     $ErrorActionPreference = 'Stop'
     $changed = [System.Collections.Generic.List[string]]::new()
 
@@ -240,6 +240,18 @@ $guestConfig = {
     }
     Enable-NetFirewallRule -DisplayGroup 'Remote Desktop' -ErrorAction SilentlyContinue
 
+    # --- its own name ---------------------------------------------------------
+    # Setup invents one (DESKTOP-790M70M and the like). Every other machine of
+    # this platform is named for what it is, and that name turns up in logs,
+    # in telemetry and in the runner's own registration, so give the guest the
+    # name of its VM. It takes a restart, which the host side does afterwards.
+    $renamed = $false
+    if ($env:COMPUTERNAME -ne $VmName) {
+        Rename-Computer -NewName $VmName -Force -ErrorAction Stop
+        $changed.Add("computer name $env:COMPUTERNAME -> $VmName (restart pending)")
+        $renamed = $true
+    }
+
     # Report the build, not the product name. Windows 11 still carries
     # "Windows 10 Pro" in the registry key Get-ComputerInfo reads - Microsoft
     # never updated it - so the name alone reads like the wrong OS was
@@ -248,6 +260,7 @@ $guestConfig = {
     $build = [int]$cv.CurrentBuildNumber
     [pscustomobject]@{
         Changed = if ($changed.Count) { $changed -join '; ' } else { '(nothing; already configured)' }
+        Renamed = $renamed
         Info    = [pscustomobject]@{
             Name         = if ($build -ge 22000) { 'Windows 11' } else { 'Windows 10' }
             Edition      = $cv.EditionID
@@ -260,7 +273,41 @@ $guestConfig = {
 }
 
 $result = Invoke-Command -VMName $Name -Credential $Credential -ScriptBlock $guestConfig `
-    -ArgumentList $spec.MgmtMac, $spec.Address, $s.PrefixLength, $s.Dns, $hostTimeZone
+    -ArgumentList $spec.MgmtMac, $spec.Address, $s.PrefixLength, $s.Dns, $hostTimeZone, $Name
+
+# A rename only takes effect on a restart, and everything downstream - the
+# agent's enrolment, the runner's registration at the forge, every log line -
+# should already carry the new name. Do it here, while nothing is serving.
+function Wait-PowerShellDirect([string]$VmName, [pscredential]$Cred, [int]$Minutes = 5) {
+    $deadline = (Get-Date).AddMinutes($Minutes)
+    while ((Get-Date) -le $deadline) {
+        try {
+            if (Invoke-Command -VMName $VmName -Credential $Cred -ScriptBlock { $true } -ErrorAction Stop) {
+                return $true
+            }
+        } catch {
+            Start-Sleep -Seconds 5
+        }
+    }
+    return $false
+}
+if ($result.Renamed) {
+    # Stop and start rather than Restart-VM: the same clean shutdown the
+    # Secure Boot step uses, and no confirmation prompt to suppress.
+    Stop-VM -Name $Name
+    $renameDeadline = (Get-Date).AddMinutes(5)
+    while ((Get-VM -Name $Name).State -ne 'Off') {
+        if ((Get-Date) -gt $renameDeadline) {
+            throw "$Name did not reach Off within 5 minutes of the rename restart; check its console."
+        }
+        Start-Sleep -Seconds 5
+    }
+    Start-VM -Name $Name
+    if (-not (Wait-PowerShellDirect $Name $Credential)) {
+        throw "$Name did not answer PowerShell Direct within 5 minutes of the rename restart; check its console."
+    }
+    $hostChanges.Add("restarted so the new computer name took effect")
+}
 
 $changeParts = @($hostChanges)
 if ($result.Changed -ne '(nothing; already configured)') { $changeParts += $result.Changed }
