@@ -410,7 +410,17 @@ def _measured(spec, override, now):
                    "total_bytes": t.get("root_disk_total_bytes")}
     elif t.get("storage_bytes") is not None and (override is not None or
             storage_age is not None and 0 <= storage_age <= STORAGE_FRESH):
-        storage = {"used_bytes": t.get("storage_bytes"), "total_bytes": None}
+        # A runner with a disk of its own (T-27): the total is what the
+        # agent measured, when a beat has carried it, else what the
+        # controller itself told this runner's disk to be - the same number,
+        # known since before create and so before any heartbeat about it
+        # ever could arrive. Neither changes what "used" means here; a
+        # runner with no disk of its own has neither and keeps today's
+        # used-figure-with-no-total exactly.
+        total = t.get("disk_limit_bytes")
+        if total is None:
+            total = spec.get("disk_limit")
+        storage = {"used_bytes": t.get("storage_bytes"), "total_bytes": total}
     else:
         storage = None
     policy = spec.get("cache_policy") or {}

@@ -165,6 +165,48 @@ class TestTheCardShowsWhatTheUnitUses:
         assert "evil" not in t and t["cpu_percent"] is None
         assert t["mem_used_bytes"] == 5
 
+    def test_a_runners_own_disk_figures_are_kept(self, placed):
+        """T-27: the figures a Windows or Linux runner's own disk reports
+        (agent/runtimes/windows_process.py, .../linux_container.py) used to
+        be dropped on arrival - the card could not show a total it never
+        received. `disk_limit_enforced` is a boolean, not a measurement;
+        `_telemetry` keeps numbers or null, so it is deliberately left out
+        here (see inventory.TELEMETRY_KEYS) rather than given special-cased
+        handling for a value nothing downstream reads."""
+        service, rid = placed
+        self.beat(service, rid, {"cpu_percent": 1.0, "storage_bytes": 5,
+                                 "disk_limit_bytes": 100 * 10 ** 9,
+                                 "disk_used_bytes": 5,
+                                 "disk_free_bytes": 99 * 10 ** 9,
+                                 "disk_virtual_bytes": 100 * 10 ** 9,
+                                 "disk_limit_enforced": True})
+        t = service.specs.get(rid)["telemetry"]
+        assert t["disk_limit_bytes"] == 100 * 10 ** 9
+        assert t["disk_used_bytes"] == 5
+        assert t["disk_free_bytes"] == 99 * 10 ** 9
+        assert t["disk_virtual_bytes"] == 100 * 10 ** 9
+        assert "disk_limit_enforced" not in t
+
+    def test_a_linux_runners_usable_disk_figure_is_kept(self, placed):
+        """Linux's storage helper names the filesystem's own total
+        `disk_usable_bytes`, not `disk_virtual_bytes` (T-27)."""
+        service, rid = placed
+        self.beat(service, rid, {"cpu_percent": 1.0,
+                                 "disk_usable_bytes": 100 * 10 ** 9})
+        assert service.specs.get(rid)["telemetry"]["disk_usable_bytes"] ==             100 * 10 ** 9
+
+    def test_a_runners_disk_figures_are_kept_between_beats_that_do_not_measure_them(
+            self, placed):
+        """Like storage and cache, a disk's own figures are kept rather than
+        blanked by a beat that did not measure them again."""
+        service, rid = placed
+        self.beat(service, rid, {"cpu_percent": 1.0,
+                                 "disk_limit_bytes": 100 * 10 ** 9})
+        self.beat(service, rid, {"cpu_percent": 9.0})
+        t = service.specs.get(rid)["telemetry"]
+        assert t["cpu_percent"] == 9.0
+        assert t["disk_limit_bytes"] == 100 * 10 ** 9
+
 
 class TestTheReconcilerRecordsWhatTheForgeSaid:
     def test_an_answer_is_recorded_with_its_time(self, world):

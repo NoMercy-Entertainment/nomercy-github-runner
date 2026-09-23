@@ -133,10 +133,26 @@ def _decode(row):
 
 
 #: What a heartbeat may say a unit uses, and nothing else: numbers, or null.
+#:
+#: `disk_limit_bytes`, `disk_used_bytes`, `disk_free_bytes` and
+#: `disk_virtual_bytes` (Windows) / `disk_usable_bytes` (Linux) are a
+#: runner's own disk, when it has one (agent/runtimes/windows_process.py,
+#: .../linux_container.py) - T-27. `disk_limit_enforced`, the fifth figure
+#: those runtimes report alongside them, is deliberately not here: it is a
+#: boolean, and `_telemetry` below keeps numbers or null, never booleans
+#: (mirroring `resource_enforcement`, which is kept as a whole closed record
+#: rather than folded into this list for the same reason). Nothing reads a
+#: per-beat copy of it - a card decides a runner has its own disk from
+#: `disk_limit_bytes` (or the spec's own `disk_limit`) being present, not
+#: from a second flag that would need to agree with it - so it is left out
+#: rather than given the special-cased handling `job` and the timestamps
+#: below already need.
 TELEMETRY_KEYS = ("cpu_percent", "cpu_cores", "host_cores", "mem_used_bytes", "mem_limit_bytes",
                   "mem_swap_limit_bytes",
                   "root_disk_used_bytes", "root_disk_total_bytes",
-                  "storage_bytes", "cache_bytes", "cache_cap_bytes")
+                  "storage_bytes", "cache_bytes", "cache_cap_bytes",
+                  "disk_limit_bytes", "disk_used_bytes", "disk_free_bytes",
+                  "disk_virtual_bytes", "disk_usable_bytes")
 
 
 def _telemetry(value):
@@ -329,8 +345,10 @@ class Inventory:
 
     def _merge_telemetry(self, c, runner_id, fresh, at, enforcement=None, observed_at=None):
         """What a unit uses, as last reported (T-1803). CPU and memory are
-        replaced every beat; storage and cache only arrive on a deep beat and
-        are kept, with their own time, until the next one."""
+        replaced every beat; storage, cache and a runner's own disk figures
+        (T-27) only arrive on a deep beat - or, on Linux, whenever the light
+        beat could read them - and are kept until the next one rather than
+        blanked by a beat that did not measure them again."""
         row = c.execute("SELECT telemetry FROM runner_specs"
                         " WHERE runner_id = ?", (runner_id,)).fetchone()
         try:
@@ -353,6 +371,10 @@ class Inventory:
                 current["deep_at"] = current[stamp]
         if "cache_cap_bytes" in fresh:
             current["cache_cap_bytes"] = fresh["cache_cap_bytes"]
+        for key in ("disk_limit_bytes", "disk_used_bytes", "disk_free_bytes",
+                    "disk_virtual_bytes", "disk_usable_bytes"):
+            if key in fresh:
+                current[key] = fresh[key]
         c.execute("UPDATE runner_specs SET telemetry = ? WHERE runner_id = ?",
                   (json.dumps(current), runner_id))
 

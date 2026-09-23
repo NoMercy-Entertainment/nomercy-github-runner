@@ -203,6 +203,14 @@ class TestTheRenderer:
         assert "operation op-123" in html[0]
         assert "registered with other labels" in html[1]
 
+    def test_a_storage_total_is_drawn_like_memory_is(self):
+        """T-27: once a total arrives, storage reads exactly as memory does -
+        percent, then used / total - not as a bare used figure."""
+        c = dict(spec_cards()[0],
+                 storage={"used_bytes": 12 * 10 ** 7, "total_bytes": 100 * 10 ** 9})
+        html = render("cardHTML", [c])[0]
+        assert "0.1%" in html and "0.12 GB / 100 GB" in html
+
     def test_a_disabled_action_carries_its_reason(self):
         html = render("cardHTML", [cards.from_unmanaged(
             SNAPSHOT["elsewhere"][0])])[0]
