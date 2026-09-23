@@ -1,5 +1,10 @@
 # Owned fixed VHDX volumes. This file is deployed with the agent, never inside
 # a runner's writable tree. All requests arrive as JSON stdin, never commands.
+# Images are created with diskpart and attached with the Storage module's
+# disk-image cmdlets, never the Hyper-V module's virtual-disk ones: this
+# script also runs inside a Hyper-V guest, where the Hyper-V module itself
+# does not exist (2026-09-23). No fallback to that other module - one path,
+# working in both places.
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 Set-StrictMode -Version Latest
@@ -71,19 +76,40 @@ function Save-State {
     }
 }
 
+function New-FixedImage([string]$Path, [int64]$SizeBytes) {
+    # diskpart takes its commands from a script file, never inline text on its
+    # own command line, and its process exit code is not trustworthy - it can
+    # return 0 after printing a failure - so success also requires the image
+    # to actually exist afterward, not just a clean exit and quiet output.
+    $sizeMb = [int64]($SizeBytes / 1MB)
+    $scriptPath = Join-Path ([IO.Path]::GetTempPath()) `
+        ('nomercy-diskpart-' + [Guid]::NewGuid().ToString('N') + '.txt')
+    try {
+        [IO.File]::WriteAllText($scriptPath,
+            "create vdisk file=`"$Path`" maximum=$sizeMb type=fixed`r`n",
+            (New-Object Text.UTF8Encoding($false)))
+        $output = (& diskpart /s $scriptPath 2>&1 | Out-String)
+        $code = $LASTEXITCODE
+        if ($code -ne 0 -or $output -match '(?i)\berror\b' -or
+            -not (Test-Path -LiteralPath $Path)) {
+            throw "diskpart create vdisk failed: $($output.Trim())"
+        }
+    } finally {
+        Remove-Item -LiteralPath $scriptPath -ErrorAction SilentlyContinue
+    }
+}
+
 function Get-OwnedDisk {
     Assert-PlainAncestors $script:image
-    $vhd = Get-VHD -Path $script:image
-    if ($vhd.VhdType -ne 'Fixed' -or [int64]$vhd.Size -ne [int64]$script:state.limit) {
+    $diskImage = Get-DiskImage -ImagePath $script:image
+    if ([int64]$diskImage.Size -ne [int64]$script:state.limit -or
+        [int64]$diskImage.FileSize -lt [int64]$script:state.limit) {
         throw 'Backing image size/type differs from its manifest'
     }
-    if ($script:state.vhd_id -and [string]$vhd.DiskIdentifier -ne $script:state.vhd_id) {
-        throw 'Backing image identity differs from its manifest'
-    }
-    if (-not $vhd.Attached) { throw 'Backing image is not attached' }
+    if (-not $diskImage.Attached) { throw 'Backing image is not attached' }
     # Number is only a lookup obtained from this exact image; identity below
     # must match before any mutation is allowed.
-    $disk = Get-Disk -Number $vhd.DiskNumber
+    $disk = Get-Disk -Number $diskImage.Number
     if ($script:state.disk_id -and [string]$disk.UniqueId -ne $script:state.disk_id) {
         throw 'Attached disk identity differs from its manifest'
     }
@@ -176,7 +202,7 @@ try {
         Protect-Directory $root
         Protect-RunnerParent $runnerRoot
         $script:state = [pscustomobject]@{version=1; runner_id=$rid; image=$image; mount=$mount;
-            limit=[int64]$request.limit; stage='planned'; vhd_id=''; disk_id=''; partition_id=''; volume_guid=''; volume_acl=$false}
+            limit=[int64]$request.limit; stage='planned'; disk_id=''; partition_id=''; volume_guid=''; volume_acl=$false}
         Save-State
     }
     if ($request.action -in @('ensure', 'mount')) {
@@ -189,14 +215,13 @@ try {
                 [int64]$hostVolume.SizeRemaining -lt ([int64]$state.limit + [int64]$request.reserve_bytes + 64MB)) {
                 throw 'Insufficient physical NTFS space for fixed disk and host reserve'
             }
-            New-VHD -Path $image -SizeBytes $state.limit -Fixed | Out-Null
+            New-FixedImage -Path $image -SizeBytes $state.limit
         }
         Assert-PlainAncestors $image
-        $vhd = Get-VHD -Path $image
-        if ($vhd.VhdType -ne 'Fixed' -or [int64]$vhd.Size -ne [int64]$state.limit) { throw 'Unexpected backing image size/type' }
-        if (-not $state.vhd_id) { $state.vhd_id = [string]$vhd.DiskIdentifier; Save-State }
-        if ([string]$vhd.DiskIdentifier -ne $state.vhd_id) { throw 'Backing image was replaced' }
-        if (-not $vhd.Attached) { Mount-VHD -Path $image -NoDriveLetter | Out-Null }
+        $diskImage = Get-DiskImage -ImagePath $image
+        if ([int64]$diskImage.Size -ne [int64]$state.limit -or
+            [int64]$diskImage.FileSize -lt [int64]$state.limit) { throw 'Unexpected backing image size/type' }
+        if (-not $diskImage.Attached) { Mount-DiskImage -ImagePath $image -NoDriveLetter | Out-Null }
         $disk = Get-OwnedDisk
         if (-not $state.disk_id) { $state.disk_id = [string]$disk.UniqueId; Save-State }
         if ($state.stage -eq 'planned') {
@@ -259,10 +284,10 @@ try {
         if ($state.stage -notin @('ready', 'deleting')) { throw 'Incomplete disk creation retained for recovery' }
         if ($state.stage -eq 'ready') {
             Assert-PlainAncestors $image
-            $vhd = Get-VHD -Path $image
-            if ([string]$vhd.DiskIdentifier -ne $state.vhd_id -or $vhd.VhdType -ne 'Fixed' -or
-                [int64]$vhd.Size -ne [int64]$state.limit) { throw 'Refusing to remove a replaced image' }
-            if ($vhd.Attached) {
+            $diskImage = Get-DiskImage -ImagePath $image
+            if ([int64]$diskImage.Size -ne [int64]$state.limit -or
+                [int64]$diskImage.FileSize -lt [int64]$state.limit) { throw 'Refusing to remove a replaced image' }
+            if ($diskImage.Attached) {
                 $part = Get-OwnedPartition
                 $volume = $part | Get-Volume
                 if ([string]$volume.UniqueId -ne $state.volume_guid) { throw 'Refusing to remove a replaced volume' }
@@ -273,16 +298,17 @@ try {
             Save-State
         }
         if (Test-Path -LiteralPath $image) {
-            $vhd = Get-VHD -Path $image
-            if ([string]$vhd.DiskIdentifier -ne $state.vhd_id) { throw 'Refusing to remove a replaced image' }
-            if ($vhd.Attached) {
+            $diskImage = Get-DiskImage -ImagePath $image
+            if ([int64]$diskImage.Size -ne [int64]$state.limit -or
+                [int64]$diskImage.FileSize -lt [int64]$state.limit) { throw 'Refusing to remove a replaced image' }
+            if ($diskImage.Attached) {
                 $part = Get-OwnedPartition
                 $volume = $part | Get-Volume
                 if ([string]$volume.UniqueId -ne $state.volume_guid) { throw 'Refusing to remove a replaced volume' }
                 $otherPaths = @($part.AccessPaths | Where-Object { $_ -ne $mount -and $_ -ne $state.volume_guid })
                 if ($otherPaths.Count) { throw 'Owned volume has unexpected access paths' }
                 if (@($part.AccessPaths) -contains $mount) { $part | Remove-PartitionAccessPath -AccessPath $mount }
-                Dismount-VHD -Path $image
+                Dismount-DiskImage -ImagePath $image
             }
             Remove-Item -LiteralPath $image
         }

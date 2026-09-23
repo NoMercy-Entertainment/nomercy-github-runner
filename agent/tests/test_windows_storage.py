@@ -321,7 +321,7 @@ def helper(tmp_path):
     if sys.platform != "win32":
         pytest.skip("actual PowerShell helper runs on Windows")
     model_path = tmp_path / "model.json"
-    model = {"type": "Fixed", "limit": 1024**3, "vhd_id": "vhd-id", "disk_id": "disk-id",
+    model = {"limit": 1024**3, "disk_id": "disk-id",
              "attached": False, "style": "RAW", "partition": False,
              "partition_id": "partition-id", "volume_guid": VOLUME,
              "fs": "Unknown", "label": "", "access": [VOLUME],
@@ -383,10 +383,14 @@ def test_actual_helper_refuses_plain_existing_directory_and_low_space(helper):
     assert not (Path(request["root"]) / (RID + ".json")).exists()
 
 
-@pytest.mark.parametrize("changed", [{"vhd_id": "other-image"}, {"disk_id": "other-disk"},
+@pytest.mark.parametrize("changed", [{"disk_id": "other-disk"},
                                       {"partition_id": "other-partition"},
                                       {"volume_guid": VOLUME.replace("a123", "b123")}])
 def test_actual_helper_refuses_identity_substitution_before_mutation(helper, changed):
+    """No `vhd_id` case here: that identity came from Get-VHD's embedded disk
+    identifier, which Get-DiskImage does not expose. Disk identity is still
+    proven, just one step later - after Mount-DiskImage, from Get-Disk's own
+    UniqueId - which is what `disk_id` below already exercises."""
     invoke, request, model = helper
     assert invoke().returncode == 0
     before = _model(model)["calls"]
@@ -472,3 +476,33 @@ def test_a_verify_waits_long_enough_for_another_short_check():
     source = (ROOT / "agent/runtimes/windows_storage.py").read_text(encoding="utf-8")
     deadline = re.search(r'timeout=(\d+) if action == "verify"', source)
     assert deadline and int(deadline.group(1)) * 1000 >= int(wait.group(1)) + 10000
+
+
+@pytest.mark.parametrize("cmdlet", ["New-VHD", "Get-VHD", "Mount-VHD", "Dismount-VHD",
+                                     "Optimize-VHD"])
+def test_helper_never_names_a_hyperv_cmdlet(cmdlet):
+    """Raising the Windows fleet to 2 put a runner on a Hyper-V guest, where
+    the Hyper-V module does not exist, and creation failed at once: 'New-VHD'
+    is not recognized (2026-09-22). Per-runner disk quotas now come entirely
+    from diskpart and the Storage module's disk-image cmdlets; a Hyper-V
+    cmdlet name appearing here at all - even a reintroduced fallback - is
+    this same regression."""
+    text = (ROOT / "agent/runtimes/windows_storage.ps1").read_text(encoding="utf-8")
+    assert cmdlet not in text
+
+
+def test_actual_helper_treats_diskparts_zero_exit_as_failure_when_it_reports_an_error(helper):
+    """diskpart can print a failure while still exiting 0 - the helper must
+    not trust the exit code alone. The mock reproduces that exact quirk
+    (RNR_STORAGE_FAIL=create-silent-error): the real New-FixedImage function
+    still has to catch it from the output/missing file, name what it was
+    doing, and leave nothing behind to resume cleanly."""
+    invoke, request, model = helper
+    first = invoke(fail="create-silent-error")
+    assert first.returncode == 1
+    assert "diskpart create vdisk failed" in first.stderr, first.stderr
+    assert not (Path(request["root"]) / (RID + ".vhdx")).exists()
+    assert "create" not in _model(model)["calls"]
+    retry = invoke()
+    assert retry.returncode == 0, retry.stderr
+    assert _model(model)["calls"].count("create") == 1

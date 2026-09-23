@@ -27,22 +27,40 @@ function Get-Item {
         Microsoft.PowerShell.Management\Get-Item -LiteralPath $LiteralPath -Force:$Force
     }
 }
-function Get-VHD {
-    param($Path)
-    if (-not (Test-Path -LiteralPath $Path)) { throw 'no image' }
-    [pscustomobject]@{VhdType=$script:model.type; Size=$script:model.limit;
-        DiskIdentifier=$script:model.vhd_id; Attached=$script:model.attached; DiskNumber=7}
+function Get-DiskImage {
+    param($ImagePath)
+    if (-not (Test-Path -LiteralPath $ImagePath)) { throw 'no image' }
+    [pscustomobject]@{Size=$script:model.limit; FileSize=$script:model.limit;
+        Attached=$script:model.attached; Number=7}
 }
-function New-VHD {
-    param($Path, $SizeBytes, [switch]$Fixed)
-    if (-not $Fixed) { throw 'only fixed disks are allowed' }
-    [IO.File]::WriteAllText($Path, 'fake image')
-    $script:model.limit = $SizeBytes
+function diskpart {
+    # The real helper writes a script file and runs `diskpart /s <file>`; the
+    # fake here reads that file back instead of shelling out for real, and
+    # can be told (RNR_STORAGE_FAIL=create-silent-error) to reproduce
+    # diskpart's own worst habit: printing a failure while still exiting 0,
+    # which is exactly what the helper's own output check must catch.
+    param($Switch, $ScriptPath)
+    $commands = Get-Content -LiteralPath $ScriptPath -Raw
+    if ($commands -notmatch 'create vdisk file="(?<path>[^"]+)" maximum=(?<mb>\d+) type=fixed') {
+        Write-Output 'DiskPart has encountered an error: unrecognized script.'
+        $global:LASTEXITCODE = 0
+        return
+    }
+    $path = $Matches['path']
+    $mb = [int64]$Matches['mb']
+    if ($env:RNR_STORAGE_FAIL -eq 'create-silent-error') {
+        Write-Output 'DiskPart has encountered an error: The system cannot find the file specified.'
+        $global:LASTEXITCODE = 0
+        return
+    }
+    [IO.File]::WriteAllText($path, 'fake image')
+    $script:model.limit = $mb * 1MB
     Save-Model 'create'
-    Get-VHD -Path $Path
+    Write-Output 'DiskPart successfully created the virtual disk file.'
+    $global:LASTEXITCODE = 0
 }
-function Mount-VHD {
-    param($Path, [switch]$NoDriveLetter)
+function Mount-DiskImage {
+    param($ImagePath, [switch]$NoDriveLetter)
     if (-not $NoDriveLetter) { throw 'unexpected drive letter' }
     $script:model.attached = $true
     Save-Model 'attach'
@@ -104,8 +122,8 @@ function Remove-PartitionAccessPath {
         Save-Model 'unmount'
     }
 }
-function Dismount-VHD {
-    param($Path)
+function Dismount-DiskImage {
+    param($ImagePath)
     $script:model.attached = $false
     Save-Model 'detach'
 }

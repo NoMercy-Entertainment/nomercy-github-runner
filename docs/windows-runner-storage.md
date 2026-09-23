@@ -31,6 +31,16 @@ runner's virtual service account receives Modify on its own mounted volume.
 The helper refuses reparse ancestors and mismatched VHD, disk, partition,
 volume or mount identities. It never adopts an existing plain runner directory.
 
+The image is created with `diskpart` (a script file, never an inline command
+line) and attached with the Storage module's disk-image cmdlets
+(`Mount-DiskImage`, `Get-DiskImage`, `Dismount-DiskImage`). None of this comes
+from Hyper-V: those cmdlets, and the module they ship in, exist only on a
+Hyper-V host, not inside a Hyper-V guest, and a Windows runner worker can be
+either. There is no fallback to the Hyper-V cmdlets - one path, working in
+both places. diskpart also reports a failed command in its own output rather
+than always through its process exit code, so the helper checks both and
+names the operation that failed.
+
 Creation reserves the entire fixed disk physically and first checks for its
 size plus 64 MiB metadata allowance plus `reserve_bytes` free on the host NTFS
 volume. Storage mutations share a named mutex. Other host applications can
