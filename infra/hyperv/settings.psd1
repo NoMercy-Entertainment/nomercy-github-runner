@@ -110,7 +110,13 @@
             # to cores 32-47, which did not exist on it.
             Cpus      = 16
             DiskGB    = 200
-            DataDiskGB = 200
+            # 320, not 200 (corrected 2026-09-24): this guest hosts two
+            # runners and each takes a fixed 100 GB disk of its own, so 200
+            # holds one and refuses the second - "Insufficient physical NTFS
+            # space for fixed disk and host reserve", which is the storage
+            # helper correctly declining to overcommit. Two disks, their
+            # manifests and the host reserve need room to spare.
+            DataDiskGB = 320
             Address   = '10.77.0.30'
             MgmtMac   = '00155D771E0A'
             UplinkMac = '00155D771E0B'
