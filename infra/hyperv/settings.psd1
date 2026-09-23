@@ -37,12 +37,11 @@
     CommitReserveGB = 20
     # And the platform's VMs together stay inside this. The WSL VM the figure
     # above once budgeted around is retired; the live cost is now the VMs
-    # themselves. Corrected 2026-09-23: rnr-linux-1 has run at 80 GB and
-    # 56 vCPU, live, since it got its own window of cores - this entry above
-    # still reads 16/8 and is left as it is, only the budget is corrected
-    # against what is actually reserved. Measured that day: host commit 169 of
-    # 256 GB used, 87 GB free. CommitReserveGB is still enforced per VM on top
-    # of this sum.
+    # themselves. Corrected 2026-09-23 against rnr-linux-1's corrected entry
+    # below (80 GB) plus rnr-control (4 GB) plus the new rnr-windows-1
+    # (16 GB) = 100 of 110. Measured that day: host commit 169 of 256 GB
+    # used, 87 GB free. CommitReserveGB is still enforced per VM on top of
+    # this sum.
     VmBudgetGB    = 110
 
     # The GitHub cells. The image is what the fleet on the WSL worker is
@@ -84,14 +83,19 @@
         }
         'rnr-linux-1' = @{
             Role      = 'linux-worker'
-            MemoryGB  = 16
-            Cpus      = 8
+            # Live since it got its own window of cores: 80 GB static,
+            # 56 vCPU (corrected 2026-09-23; this entry used to read 16/8,
+            # which is what the VM was provisioned with before -
+            # settings.psd1 is the platform's one source of sizes, so a stale
+            # row here would rebuild the worker at a fifth of its memory).
+            MemoryGB  = 80
+            Cpus      = 56
             DiskGB    = 400
             Address   = '10.77.0.20'
             MgmtMac   = '00155D77140A'
             UplinkMac = '00155D77140B'
             # What the agent declares, and placement respects: room for two
-            # runners at 6 GB each, leaving the guest and its engine 4 GB.
+            # runners at 6 GB each, leaving the guest and its engine 68 GB.
             MaxRunners   = 2
             RunnerMemGB  = 6
         }
@@ -115,8 +119,10 @@
     ReceiverPort  = 8444
     DashboardPort = 9200
 
-    # The admin account cloud-init makes in every guest, reached by SSH with
-    # a key made for this platform only.
+    # The admin account: cloud-init makes it in every Linux guest, and it is
+    # also the name the operator gives the Windows guest's manually created
+    # local administrator (W10b) - reached by SSH with a key made for this
+    # platform only.
     AdminUser     = 'rnr-admin'
 
     # OPEN-2 and OPEN-3: the Windows worker is this host, its runners process

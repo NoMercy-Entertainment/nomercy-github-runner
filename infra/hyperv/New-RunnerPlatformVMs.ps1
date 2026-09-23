@@ -6,10 +6,16 @@
 .DESCRIPTION
     Creates, only where missing:
       - the Internal switch and the host's address on it (OPEN-6),
-      - each VM in settings.psd1: Generation 2, Secure Boot for Ubuntu, static
-        memory (OPEN-5), its own disk made from the verified base image, its
-        seed image in the DVD drive, one adapter on the Internal switch and
-        one on the Default Switch for outbound traffic - and starts it.
+      - each cloud-init Linux VM in settings.psd1 (Role control-plane or
+        linux-worker): Generation 2, Secure Boot for Ubuntu, static memory
+        (OPEN-5), its own disk made from the verified base image, its seed
+        image in the DVD drive, one adapter on the Internal switch and one on
+        the Default Switch for outbound traffic - and starts it.
+
+    A VM of any other Role (a Windows guest, for instance) is not this
+    script's to make - it has no cloud-init seed and never will - so it is
+    skipped with a printed line naming it and why, the same way an existing
+    VM is skipped and left alone.
 
     No NAT is made on the host. Touches nothing else: no existing VM or switch
     is changed, the macOS appliance and the Default Switch included; an
@@ -70,6 +76,13 @@ foreach ($name in $order) {
     $spec = $s.VMs[$name]
     if (Get-VM -Name $name -ErrorAction SilentlyContinue) {
         Write-Host "$name exists; left as it is."
+        continue
+    }
+    # This script only knows how to provision the cloud-init Linux guests;
+    # a Windows guest has no seed image and never will (New-WindowsGuest.ps1
+    # is its own script, run by hand, once, at the console).
+    if ($spec.Role -notin @('control-plane', 'linux-worker')) {
+        Write-Host "$name is a $($spec.Role); this script only provisions cloud-init Linux guests - skipped."
         continue
     }
     $headroom = Get-CommitHeadroomGB

@@ -5,14 +5,27 @@
     is installed in the VM New-WindowsGuest.ps1 made and rnr-admin exists.
 
 .DESCRIPTION
-    Reaches the guest through Invoke-Command -VMName, which Hyper-V carries
-    over the VM bus rather than the network - the guest need not have an
-    address yet, which is exactly the setting being configured. Inside it:
+    First, on the host side, before the guest is ever touched: the install
+    media is ejected (Set-VMDvdDrive -Path $null) and the firmware's first
+    boot device is set back to the system disk. The install media put the
+    DVD first so Setup could run from a blank disk; leaving it there is how
+    an unattended multi-reboot install has occasionally been reported to
+    loop back into WinPE. Both are idempotent - safe whether or not the
+    media was already out.
 
-      - the management adapter, identified by its static MAC (settings.psd1),
-        is given its static address and the platform's DNS servers;
+    Then it reaches the guest through Invoke-Command -VMName, which Hyper-V
+    carries over the VM bus rather than the network - the guest need not have
+    an address yet, which is exactly the setting being configured. Inside it:
+
+      - the management adapter, identified by its static MAC (settings.psd1):
+        the install media's autounattend disables every adapter in the
+        specialize pass and only re-enables them at first logon, so this
+        checks the adapter's status first and enables it if it is still
+        disabled, before giving it its static address and the platform's DNS
+        servers;
       - OpenSSH.Server is installed, started, and its firewall rule is in
-        place;
+        place - refusing clearly, naming the media's debloat pass as the
+        likely cause, if the capability or its install source is gone;
       - the timezone is set to match this host's;
       - sleep and hibernation are turned off, so a runner is not paused
         mid-job;
@@ -49,9 +62,25 @@ if ($vm.State -ne 'Running') {
     throw "$Name is $($vm.State), not Running; start it and finish the Windows install first."
 }
 
-if (-not $PSCmdlet.ShouldProcess($Name, 'configure over PowerShell Direct')) {
+if (-not $PSCmdlet.ShouldProcess($Name, 'eject the install media, restore the boot order, and configure over PowerShell Direct')) {
     return
 }
+
+# --- host side, before the guest is touched at all: settle the boot order ---------
+# New-WindowsGuest.ps1 boots the DVD first so Setup has something to run from
+# a blank disk. Leaving it first afterwards is how an unattended install has
+# occasionally been reported to loop back into WinPE on a mid-install reboot.
+# Both steps are safe to repeat.
+$hostChanges = [System.Collections.Generic.List[string]]::new()
+$dvd = Get-VMDvdDrive -VMName $Name -ErrorAction SilentlyContinue
+if ($dvd -and $dvd.Path) {
+    $dvd | Set-VMDvdDrive -Path $null
+    $hostChanges.Add('install media ejected')
+}
+$sysHdd = Get-VMHardDiskDrive -VMName $Name | Where-Object { (Split-Path $_.Path -Leaf) -eq "$Name.vhdx" } |
+    Select-Object -First 1
+if (-not $sysHdd) { throw "Could not find $Name's system disk ($Name.vhdx) among its hard disk drives." }
+Set-VMFirmware -VMName $Name -FirstBootDevice $sysHdd
 
 $hostTimeZone = (Get-TimeZone).Id
 
@@ -63,6 +92,19 @@ $guestConfig = {
     # --- the management adapter, told apart from the uplink one by its MAC ---
     $nic = Get-NetAdapter | Where-Object { ($_.MacAddress -replace '[:-]', '') -eq $MgmtMac }
     if (-not $nic) { throw "No network adapter with MAC $MgmtMac in this guest." }
+    # The install media's autounattend disables every adapter in the
+    # specialize pass and only re-enables them at first logon (a
+    # FirstLogonCommands entry). The operator's own console session normally
+    # reaches first logon before this script ever runs, but do not assume it.
+    if ($nic.Status -eq 'Disabled') {
+        Enable-NetAdapter -InterfaceIndex $nic.ifIndex -Confirm:$false | Out-Null
+        Start-Sleep -Seconds 2
+        $nic = Get-NetAdapter -InterfaceIndex $nic.ifIndex
+        $changed.Add('mgmt adapter enabled (the install media leaves every adapter disabled until first logon)')
+    }
+    if ($nic.Status -ne 'Up') {
+        throw "The mgmt adapter ($($nic.Name)) is $($nic.Status), not Up, even after enabling it - check the switch and cable inside Hyper-V."
+    }
     $haveAddress = Get-NetIPAddress -InterfaceIndex $nic.ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue |
         Where-Object { $_.IPAddress -eq $Address }
     if (-not $haveAddress) {
@@ -80,9 +122,25 @@ $guestConfig = {
     }
 
     # --- OpenSSH.Server, so the control plane can reach this guest by key ---
-    $cap = Get-WindowsCapability -Online -Name 'OpenSSH.Server~~~~0.0.1.0'
+    # A debloat pass on the install media is known to strip Feature-on-Demand
+    # payloads or disable Windows Update, either of which takes away
+    # Add-WindowsCapability's install source; refuse clearly instead of
+    # letting an opaque DISM error stand for it.
+    $cap = Get-WindowsCapability -Online -Name 'OpenSSH.Server~~~~0.0.1.0' -ErrorAction SilentlyContinue
+    if (-not $cap) {
+        throw ("OpenSSH.Server is not a capability this image knows about - the install media's " +
+               "debloat pass likely removed its source. Install it by hand (Settings > System > " +
+               "Optional features > Add a feature, or DISM against a Feature-on-Demand ISO), then " +
+               "run this again.")
+    }
     if ($cap.State -ne 'Installed') {
-        Add-WindowsCapability -Online -Name 'OpenSSH.Server~~~~0.0.1.0' | Out-Null
+        try {
+            Add-WindowsCapability -Online -Name 'OpenSSH.Server~~~~0.0.1.0' -ErrorAction Stop | Out-Null
+        } catch {
+            throw ("Installing OpenSSH.Server failed: $($_.Exception.Message) - likely the install " +
+                   "media's debloat pass removed its payload or disabled Windows Update as its " +
+                   "source. Install it by hand, then run this again.")
+        }
         $changed.Add('OpenSSH.Server installed')
     }
     if ((Get-Service sshd).StartType -ne 'Automatic') { Set-Service -Name sshd -StartupType Automatic }
@@ -122,8 +180,11 @@ $guestConfig = {
 $result = Invoke-Command -VMName $Name -Credential $Credential -ScriptBlock $guestConfig `
     -ArgumentList $spec.MgmtMac, $spec.Address, $s.PrefixLength, $s.Dns, $hostTimeZone
 
+$changeParts = @($hostChanges)
+if ($result.Changed -ne '(nothing; already configured)') { $changeParts += $result.Changed }
+$summary = if ($changeParts.Count) { $changeParts -join '; ' } else { '(nothing; already configured)' }
 Write-Host ""
-Write-Host "Changed: $($result.Changed)"
+Write-Host "Changed: $summary"
 Write-Host ""
 $result.Info | Format-List | Out-String | Write-Host
 Write-Host "Reachable at $($spec.Address); the operator verifies SSH from the control plane next."
