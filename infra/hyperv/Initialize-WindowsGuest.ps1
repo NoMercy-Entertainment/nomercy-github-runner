@@ -77,11 +77,6 @@ if ($dvd -and $dvd.Path) {
     $dvd | Set-VMDvdDrive -Path $null
     $hostChanges.Add('install media ejected')
 }
-$sysHdd = Get-VMHardDiskDrive -VMName $Name | Where-Object { (Split-Path $_.Path -Leaf) -eq "$Name.vhdx" } |
-    Select-Object -First 1
-if (-not $sysHdd) { throw "Could not find $Name's system disk ($Name.vhdx) among its hard disk drives." }
-Set-VMFirmware -VMName $Name -FirstBootDevice $sysHdd
-
 # This guest was created before New-WindowsGuest.ps1 started turning
 # automatic checkpoints off, so make sure of it here too, and clear any
 # checkpoint already taken: a runner host runs on its own disks, not on a
@@ -106,6 +101,23 @@ if ($existingCheckpoints) {
     }
     $hostChanges.Add('checkpoint(s) removed and merged back into their base disks')
 }
+
+# Only now is the system disk findable by its own name: while a checkpoint
+# exists the VM runs on "<name>_<guid>.avhdx", so this has to come after the
+# merge above. It is still matched by name rather than by position, because
+# "the first disk" is exactly the assumption that would point the firmware at
+# the data disk if the two were ever attached the other way round. The data
+# disk's own files all begin "<name>-data", which this cannot match.
+$sysHdd = Get-VMHardDiskDrive -VMName $Name |
+    Where-Object { (Split-Path $_.Path -Leaf) -eq "$Name.vhdx" } |
+    Select-Object -First 1
+if (-not $sysHdd) {
+    $found = (Get-VMHardDiskDrive -VMName $Name | ForEach-Object { Split-Path $_.Path -Leaf }) -join ', '
+    throw ("Could not find ${Name}'s system disk (${Name}.vhdx) among its hard disk drives; " +
+           "it has: $found. A name ending in .avhdx means a checkpoint is still merging - " +
+           "wait for it to finish and run this again.")
+}
+Set-VMFirmware -VMName $Name -FirstBootDevice $sysHdd
 
 $hostTimeZone = (Get-TimeZone).Id
 
