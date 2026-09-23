@@ -87,9 +87,14 @@ if ((Get-VM -Name $Name).AutomaticCheckpointsEnabled) {
     Set-VM -Name $Name -AutomaticCheckpointsEnabled $false
     $hostChanges.Add('automatic checkpoints turned off')
 }
-$existingCheckpoints = Get-VMCheckpoint -VMName $Name -ErrorAction SilentlyContinue
+# Get-VMSnapshot/Remove-VMSnapshot, not their -VMCheckpoint aliases: the
+# aliases live in the Hyper-V module, and PowerShell 7 loads that module
+# through the Windows PowerShell compatibility layer, which exports its
+# cmdlets but not its aliases. The alias form fails in pwsh with "not
+# recognized", which is exactly how this was found.
+$existingCheckpoints = Get-VMSnapshot -VMName $Name -ErrorAction SilentlyContinue
 if ($existingCheckpoints) {
-    $existingCheckpoints | Remove-VMCheckpoint
+    $existingCheckpoints | Remove-VMSnapshot
     $mergeTimeout = (Get-Date).AddMinutes(10)
     while (Get-VMHardDiskDrive -VMName $Name | Where-Object { $_.Path -match '\.avhdx$' }) {
         if ((Get-Date) -gt $mergeTimeout) {
