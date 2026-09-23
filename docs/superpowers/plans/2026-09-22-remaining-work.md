@@ -1038,3 +1038,30 @@ codes. Only how a disk is attached changes.
 - [ ] **Step 6:** Run the agent suite in full and report the counts.
 - [ ] **Step 7: Commit.**
 - [ ] **Step 8 (live, after review):** redeploy the agent into the guest, raise the fleet to 2, and watch the runner come up with its own disk - the first Windows runner in a Hyper-V guest.
+
+### Task 27: a storage figure says what it is a share of
+
+**What the live run established.** The card of a Windows runner with its own
+100 GB disk reads `STORAGE  0.12 GB`, which an operator reasonably read as
+"0.12 GB left". It is 0.12 GB *used*. The template already renders
+`used / total` whenever a total is known - memory and cache do exactly that -
+but storage has no total, because `dashboard/control/inventory.py`'s
+`TELEMETRY_KEYS` keeps a fixed list and the per-runner disk figures the agent
+measures (`disk_limit_bytes`, `disk_used_bytes`, `disk_free_bytes`,
+`disk_virtual_bytes`, `disk_limit_enforced`) are not in it. They are dropped
+on arrival, so the card cannot show what it does not receive.
+
+**Files:**
+- Modify: `dashboard/control/inventory.py` (keep the disk figures)
+- Modify: `dashboard/cards.py` (`_measured`: a storage total when the runner has its own disk)
+- Modify: `dashboard/tests/` (whichever cover telemetry keeping and card measurements)
+- Check, do not assume: `dashboard/templates/_card.js` already renders `used / total`; change it only if the rendering is wrong once a total arrives.
+
+**Interfaces:** the card's `storage` stays `{used_bytes, total_bytes}`; only how often `total_bytes` is filled changes.
+
+- [ ] **Step 1: Read** `agent/runtimes/windows_process.py`'s telemetry and probe, `agent/runtimes/linux_container.py`'s equivalents, `inventory.TELEMETRY_KEYS` and `_telemetry`, and `cards._measured`.
+- [ ] **Step 2: Write the failing tests.** A heartbeat carrying the disk figures must keep them; a card for a runner with a disk limit must report `total_bytes` equal to that limit and `used_bytes` to what is used; a runner without a disk of its own must keep today's behaviour exactly (a used figure, no total). Note that `_telemetry` keeps numbers or null - decide deliberately what happens to `disk_limit_enforced`, which is a boolean, and say so in a comment.
+- [ ] **Step 3: Make them pass.**
+- [ ] **Step 4: Check the rendering** against a card that now has a total: it should read like memory does (`0.1%  ·  0.12 GB / 100 GB`). Fix the template only if it does not.
+- [ ] **Step 5:** Run the dashboard suite in full and report the counts.
+- [ ] **Step 6: Commit.**
