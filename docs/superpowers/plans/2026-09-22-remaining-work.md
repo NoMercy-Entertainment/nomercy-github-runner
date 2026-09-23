@@ -921,3 +921,36 @@ controller, with the two Windows fleets placed on it.
 - [ ] **Step 9:** When both fleets serve from the guest and each has run a real job, remove the host's agent: stop and delete the `rnr-agent` service on BEAST-UNIT, keep `C:\ProgramData
 omercy` until the stability period ends, and retire the worker with `python -m control retire-worker beast-unit`.
 - [ ] **Step 10: Record** the evidence and update `docs/operations/runner-platform.md` section 1: every runner of the platform now runs in a Hyper-V guest.
+
+### Task 24: runner storage without a hypervisor under it
+
+**What the live run established.** Raising the Forgejo Windows fleet to 2
+placed a runner on `rnr-windows-1` and it failed at once:
+
+```
+provision: create_unit: 500: RuntimeError: runner storage:
+The term 'New-VHD' is not recognized as the name of a cmdlet
+```
+
+`agent/runtimes/windows_storage.ps1` creates each runner's fixed VHDX with
+`New-VHD` and attaches it with `Mount-VHD`, and those come from the Hyper-V
+module: present on the physical host because it is the Hyper-V host, absent
+in every guest. Per-runner disk quotas are what the design asked for, so the
+answer is not to drop them but to stop depending on a hypervisor being
+installed under the runner.
+
+**Files:**
+- Modify: `agent/runtimes/windows_storage.ps1`
+- Modify: `agent/tests/test_windows_storage.py`
+- Modify: `docs/windows-runner-storage.md`
+
+**Interfaces:** unchanged - the helper keeps its verbs, its JSON output and
+its exit codes; only how it makes and attaches an image changes.
+
+- [ ] **Step 1: Read** `agent/runtimes/windows_storage.ps1` whole, plus its tests and `docs/windows-runner-storage.md`, and list every Hyper-V cmdlet it uses and what each one is for.
+- [ ] **Step 2: Replace them with the storage stack every Windows carries.** Create the image with `diskpart` (`create vdisk file=<path> maximum=<MB> type=fixed`), attach with `Mount-DiskImage -ImagePath <path> -NoDriveLetter`, detach with `Dismount-DiskImage -ImagePath <path>`, and read its state and sizes with `Get-DiskImage`. No fallback to the Hyper-V cmdlets: one path, working in both places, is worth more than two paths of which one is rarely exercised.
+- [ ] **Step 3: Keep the behaviour identical** - the same mutex, the same lock waits, the same verify step, the same JSON, the same messages where they still apply. A caller must not be able to tell which cmdlets did the work.
+- [ ] **Step 4: Tests.** Update the existing tests for the new cmdlets and add one that fails if any Hyper-V cmdlet name (`New-VHD`, `Get-VHD`, `Mount-VHD`, `Dismount-VHD`, `Optimize-VHD`) appears in the helper at all - that is the regression this task exists to prevent.
+- [ ] **Step 5:** Run the agent's test suite in full and report the counts.
+- [ ] **Step 6: Commit.**
+- [ ] **Step 7 (live, after review):** redeploy the agent into the guest, raise the fleet to 2, and confirm the runner is created with its own disk under `D:\runner-disks`.
