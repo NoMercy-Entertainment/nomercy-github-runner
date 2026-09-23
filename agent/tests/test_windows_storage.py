@@ -492,11 +492,14 @@ def test_helper_never_names_a_hyperv_cmdlet(cmdlet):
 
 
 def test_actual_helper_treats_diskparts_zero_exit_as_failure_when_it_reports_an_error(helper):
-    """diskpart can print a failure while still exiting 0 - the helper must
-    not trust the exit code alone. The mock reproduces that exact quirk
-    (RNR_STORAGE_FAIL=create-silent-error): the real New-FixedImage function
-    still has to catch it from the output/missing file, name what it was
-    doing, and leave nothing behind to resume cleanly."""
+    """diskpart can print a failure while still exiting 0, and can leave a
+    partial or bad file behind while doing it - neither its exit code nor
+    its (possibly localized) text is the decision, only the post-condition:
+    does the image now exist at the size that was asked for. The mock
+    actually writes a bad file before reporting the fake error and reports
+    the wrong size for it, so "nothing left behind" proves New-FixedImage's
+    own cleanup of a real partial file, not an artifact of a mock that never
+    wrote anything (RNR_STORAGE_FAIL=create-silent-error)."""
     invoke, request, model = helper
     first = invoke(fail="create-silent-error")
     assert first.returncode == 1
@@ -506,3 +509,90 @@ def test_actual_helper_treats_diskparts_zero_exit_as_failure_when_it_reports_an_
     retry = invoke()
     assert retry.returncode == 0, retry.stderr
     assert _model(model)["calls"].count("create") == 1
+
+
+def test_actual_helper_proves_identity_via_readonly_attach_when_remove_finds_the_disk_unattached(helper):
+    """Critical review finding: remove's unattached branch - the normal
+    state after a host reboot, and the state remove is explicitly written
+    to tolerate - used to check only declared size before trusting the file
+    enough to delete it, so any same-sized unrelated image would pass. remove
+    must attach read-only, compare the disk's own identity, and dismount
+    again - and only then may it go on to delete anything."""
+    invoke, request, model = helper
+    assert invoke().returncode == 0
+    before = _model(model)["calls"]
+    _model(model, attached=False, disk_id="other-disk")
+    answer = invoke("remove")
+    assert answer.returncode == 1, answer.stdout
+    assert (Path(request["root"]) / (RID + ".vhdx")).exists()
+    assert (Path(request["root"]) / (RID + ".json")).exists()
+    calls = _model(model)["calls"][len(before):]
+    assert "attach-readonly" in calls, calls
+    assert calls[-1] == "detach", calls
+    assert _model(model)["attached"] is False
+
+
+def test_actual_helper_refuses_removal_when_the_image_cannot_be_attached_at_all(helper):
+    """Ruling: an image that cannot even be attached must be refused and
+    named as such, never treated as good enough to delete on the grounds
+    that it looked about right."""
+    invoke, request, model = helper
+    assert invoke().returncode == 0
+    _model(model, attached=False)
+    answer = invoke("remove", fail="attach-readonly")
+    assert answer.returncode == 1
+    assert "cannot be attached" in answer.stderr, answer.stderr
+    assert (Path(request["root"]) / (RID + ".vhdx")).exists()
+
+
+def test_actual_helper_dismounts_a_disk_it_attached_before_refusing_it_on_mismatch(helper):
+    """High review finding: before this fix, any image of matching declared
+    size was mounted into the OS before identity was checked at all, and a
+    disk_id mismatch discovered only afterward left the wrong disk attached
+    with no cleanup. A disk this call attaches itself must not be left
+    attached behind a refusal."""
+    invoke, request, model = helper
+    assert invoke().returncode == 0
+    before = _model(model)["calls"]
+    _model(model, attached=False, disk_id="other-disk")
+    answer = invoke("mount")
+    assert answer.returncode == 1, answer.stdout
+    calls = _model(model)["calls"][len(before):]
+    assert calls[-2:] == ["attach", "detach"], calls
+    assert _model(model)["attached"] is False
+
+
+def test_actual_helper_checks_the_manifest_recorded_type_not_a_live_guess(helper):
+    """Medium review finding: FileSize < Size is a guess about a file that
+    cannot tell a grown dynamic disk from a fixed one. diskpart only ever
+    creates fixed disks, so that fact is recorded in the manifest once, at
+    creation, and every later check trusts the record instead of
+    re-inferring it from the live file."""
+    invoke, request, model = helper
+    assert invoke().returncode == 0
+    manifest_path = Path(request["root"]) / (RID + ".json")
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8-sig"))
+    assert manifest["type"] == "Fixed"
+    manifest["type"] = "Dynamic"
+    manifest_path.write_text(json.dumps(manifest))
+    answer = invoke("verify")
+    assert answer.returncode == 1, answer.stdout
+
+
+def test_actual_helper_tolerates_a_manifest_from_before_the_type_field_existed(helper):
+    """A manifest already on disk before this fix has no `type` key at all.
+    Under Set-StrictMode, reading - or writing - a property that was never
+    declared on the object throws, so the only safe way to add this field
+    was to make its absence mean "trust it", never to reach for it
+    unconditionally. This is exactly the live compatibility the round-1 fix
+    for the dropped `vhd_id` field already established; the new `type` field
+    must honour it too."""
+    invoke, request, model = helper
+    assert invoke().returncode == 0
+    manifest_path = Path(request["root"]) / (RID + ".json")
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8-sig"))
+    assert manifest["type"] == "Fixed"
+    del manifest["type"]
+    manifest_path.write_text(json.dumps(manifest))
+    answer = invoke("verify")
+    assert answer.returncode == 0, answer.stderr

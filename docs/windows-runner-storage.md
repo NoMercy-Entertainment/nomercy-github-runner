@@ -28,8 +28,8 @@ protected JSON manifest, attaches the image without a drive letter, and mounts
 its NTFS volume at `D:/runners/<uuid>`. The image and manifest are restricted
 to SYSTEM and Administrators. The mountpoint parent is restricted too. The
 runner's virtual service account receives Modify on its own mounted volume.
-The helper refuses reparse ancestors and mismatched VHD, disk, partition,
-volume or mount identities. It never adopts an existing plain runner directory.
+The helper refuses reparse ancestors and mismatched disk, partition, volume or
+mount identities. It never adopts an existing plain runner directory.
 
 The image is created with `diskpart` (a script file, never an inline command
 line) and attached with the Storage module's disk-image cmdlets
@@ -37,9 +37,34 @@ line) and attached with the Storage module's disk-image cmdlets
 from Hyper-V: those cmdlets, and the module they ship in, exist only on a
 Hyper-V host, not inside a Hyper-V guest, and a Windows runner worker can be
 either. There is no fallback to the Hyper-V cmdlets - one path, working in
-both places. diskpart also reports a failed command in its own output rather
-than always through its process exit code, so the helper checks both and
-names the operation that failed.
+both places. Declared size is checked against the manifest on every use, and
+so is fixed-versus-dynamic type - but type is never re-inferred from the live
+file (a heuristic cannot tell a grown dynamic disk from a fixed one); it is
+recorded in the manifest once, at creation, since diskpart was asked for a
+fixed disk and that fact does not change later. Neither of these is an
+identity check, and neither may stand in for one.
+
+Disk identity is proven by attaching and reading the disk's own id, never
+inferred from size or type. A disk already attached (the normal state while
+its runner is in use) is read directly; a detached disk - the normal state
+immediately after a host reboot, before anything has remounted it - is
+attached read-only purely to read that id, then dismounted again, whether the
+id matches or not: nothing here needs write access just to prove identity,
+and nothing here is left attached after a refusal that it itself caused by
+attaching. An image that cannot be attached at all is refused and named as
+such, never treated as good enough to trust because it otherwise looked
+right. `remove` proves identity this way before it will delete anything, even
+when the disk was never attached during this run - it does not take a
+same-sized file's word for it.
+
+diskpart's own exit code and its own output text are never the decision for
+whether image creation succeeded, only supporting evidence in the failure
+message: both are documented to lie (diskpart can print a failure and still
+exit 0, and its text is localized). The only authority is the post-condition
+- the image now existing at the size that was asked for - checked directly
+against the file itself. A creation that fails this check removes whatever
+partial or corrupt file diskpart left behind, rather than leaving it for the
+next attempt to trip over.
 
 Creation reserves the entire fixed disk physically and first checks for its
 size plus 64 MiB metadata allowance plus `reserve_bytes` free on the host NTFS

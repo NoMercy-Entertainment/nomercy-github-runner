@@ -78,9 +78,13 @@ function Save-State {
 
 function New-FixedImage([string]$Path, [int64]$SizeBytes) {
     # diskpart takes its commands from a script file, never inline text on its
-    # own command line, and its process exit code is not trustworthy - it can
-    # return 0 after printing a failure - so success also requires the image
-    # to actually exist afterward, not just a clean exit and quiet output.
+    # own command line. Its exit code and its output text are never the
+    # decision, only supporting evidence in the message if this fails: both
+    # are documented to lie (diskpart can return 0 after printing a failure,
+    # and its text is localized) - the only authority is the post-condition,
+    # the image now existing at the size that was asked for. Anything else,
+    # including a partial file diskpart itself left behind, is removed here
+    # rather than handed to the next run to trip over.
     $sizeMb = [int64]($SizeBytes / 1MB)
     $scriptPath = Join-Path ([IO.Path]::GetTempPath()) `
         ('nomercy-diskpart-' + [Guid]::NewGuid().ToString('N') + '.txt')
@@ -90,22 +94,40 @@ function New-FixedImage([string]$Path, [int64]$SizeBytes) {
             (New-Object Text.UTF8Encoding($false)))
         $output = (& diskpart /s $scriptPath 2>&1 | Out-String)
         $code = $LASTEXITCODE
-        if ($code -ne 0 -or $output -match '(?i)\berror\b' -or
-            -not (Test-Path -LiteralPath $Path)) {
-            throw "diskpart create vdisk failed: $($output.Trim())"
+        $madeIt = $false
+        try {
+            $madeIt = [int64](Get-DiskImage -ImagePath $Path).Size -eq $SizeBytes
+        } catch {
+            $madeIt = $false
+        }
+        if (-not $madeIt) {
+            Remove-Item -LiteralPath $Path -ErrorAction SilentlyContinue
+            throw "diskpart create vdisk failed (exit $code): $($output.Trim())"
         }
     } finally {
         Remove-Item -LiteralPath $scriptPath -ErrorAction SilentlyContinue
     }
 }
 
-function Get-OwnedDisk {
-    Assert-PlainAncestors $script:image
+function Assert-ImageMatchesManifest([string]$FailureMessage) {
+    # The size/type half of what the old Hyper-V-based image check used to do
+    # in one step. Type is never re-inferred from the live file - diskpart
+    # only ever creates fixed disks, and that fact was recorded in the
+    # manifest the moment it was asked for; a heuristic like on-disk file
+    # size versus virtual size cannot tell a fixed disk from a dynamic one
+    # that has simply grown full, so it is not attempted. This is a sanity
+    # gate, never an identity check - nothing here may substitute for one.
     $diskImage = Get-DiskImage -ImagePath $script:image
     if ([int64]$diskImage.Size -ne [int64]$script:state.limit -or
-        [int64]$diskImage.FileSize -lt [int64]$script:state.limit) {
-        throw 'Backing image size/type differs from its manifest'
+        ($script:state.PSObject.Properties['type'] -and $script:state.type -ne 'Fixed')) {
+        throw $FailureMessage
     }
+    return $diskImage
+}
+
+function Get-OwnedDisk {
+    Assert-PlainAncestors $script:image
+    $diskImage = Assert-ImageMatchesManifest 'Backing image size/type differs from its manifest'
     if (-not $diskImage.Attached) { throw 'Backing image is not attached' }
     # Number is only a lookup obtained from this exact image; identity below
     # must match before any mutation is allowed.
@@ -114,6 +136,42 @@ function Get-OwnedDisk {
         throw 'Attached disk identity differs from its manifest'
     }
     return $disk
+}
+
+function Confirm-OwnedImage {
+    # `remove` must prove the file at $script:image is still the disk this
+    # manifest owns by the disk's own identity, never by size alone - a disk
+    # is routinely unattached here (every host reboot leaves it that way
+    # until something remounts it, which `remove` is explicitly written to
+    # tolerate), and a same-sized unrelated image must never pass just
+    # because nothing attached is compared. Attaches read-only only if not
+    # already attached, purely to read that identity, and always leaves
+    # attach state exactly as found - dismounting again on the way out
+    # whatever happens, match or refusal alike - so a caller that only needs
+    # to prove identity never leaves an image attached behind it. An image
+    # that cannot be attached at all is refused and named as such, never
+    # treated as good enough to delete on the grounds that it looked about
+    # right.
+    Assert-PlainAncestors $script:image
+    $diskImage = Assert-ImageMatchesManifest 'Refusing to remove a replaced image'
+    $selfAttached = -not $diskImage.Attached
+    if ($selfAttached) {
+        try {
+            Mount-DiskImage -ImagePath $script:image -NoDriveLetter -Access ReadOnly | Out-Null
+        } catch {
+            throw "Refusing to remove an image that cannot be attached for identity verification: $($_.Exception.Message)"
+        }
+    }
+    try {
+        $diskImage = Get-DiskImage -ImagePath $script:image
+        $disk = Get-Disk -Number $diskImage.Number
+        if ($script:state.disk_id -and [string]$disk.UniqueId -ne $script:state.disk_id) {
+            throw 'Refusing to remove a replaced image'
+        }
+        return $disk
+    } finally {
+        if ($selfAttached) { Dismount-DiskImage -ImagePath $script:image }
+    }
 }
 
 function Get-OwnedPartition {
@@ -202,7 +260,7 @@ try {
         Protect-Directory $root
         Protect-RunnerParent $runnerRoot
         $script:state = [pscustomobject]@{version=1; runner_id=$rid; image=$image; mount=$mount;
-            limit=[int64]$request.limit; stage='planned'; disk_id=''; partition_id=''; volume_guid=''; volume_acl=$false}
+            limit=[int64]$request.limit; type='Fixed'; stage='planned'; disk_id=''; partition_id=''; volume_guid=''; volume_acl=$false}
         Save-State
     }
     if ($request.action -in @('ensure', 'mount')) {
@@ -218,11 +276,21 @@ try {
             New-FixedImage -Path $image -SizeBytes $state.limit
         }
         Assert-PlainAncestors $image
-        $diskImage = Get-DiskImage -ImagePath $image
-        if ([int64]$diskImage.Size -ne [int64]$state.limit -or
-            [int64]$diskImage.FileSize -lt [int64]$state.limit) { throw 'Unexpected backing image size/type' }
-        if (-not $diskImage.Attached) { Mount-DiskImage -ImagePath $image -NoDriveLetter | Out-Null }
-        $disk = Get-OwnedDisk
+        $diskImage = Assert-ImageMatchesManifest 'Unexpected backing image size/type'
+        # A disk this call attaches itself - the routine post-reboot state,
+        # where every runner's disk starts out detached until something
+        # remounts it - must not be left attached if it then fails identity:
+        # dismount on the way out before the error propagates. A disk that
+        # was already attached before this call began is left exactly as
+        # found on a refusal; it was not this call's to attach or detach.
+        $selfAttached = -not $diskImage.Attached
+        if ($selfAttached) { Mount-DiskImage -ImagePath $image -NoDriveLetter | Out-Null }
+        try {
+            $disk = Get-OwnedDisk
+        } catch {
+            if ($selfAttached) { try { Dismount-DiskImage -ImagePath $image } catch {} }
+            throw
+        }
         if (-not $state.disk_id) { $state.disk_id = [string]$disk.UniqueId; Save-State }
         if ($state.stage -eq 'planned') {
             if ($disk.PartitionStyle -eq 'RAW') {
@@ -284,10 +352,11 @@ try {
         if ($state.stage -notin @('ready', 'deleting')) { throw 'Incomplete disk creation retained for recovery' }
         if ($state.stage -eq 'ready') {
             Assert-PlainAncestors $image
-            $diskImage = Get-DiskImage -ImagePath $image
-            if ([int64]$diskImage.Size -ne [int64]$state.limit -or
-                [int64]$diskImage.FileSize -lt [int64]$state.limit) { throw 'Refusing to remove a replaced image' }
-            if ($diskImage.Attached) {
+            # Identity is proven regardless of attach state - size/type alone
+            # is not an identity check and must never stand in for one.
+            $wasAttached = (Get-DiskImage -ImagePath $image).Attached
+            $null = Confirm-OwnedImage
+            if ($wasAttached) {
                 $part = Get-OwnedPartition
                 $volume = $part | Get-Volume
                 if ([string]$volume.UniqueId -ne $state.volume_guid) { throw 'Refusing to remove a replaced volume' }
@@ -298,10 +367,9 @@ try {
             Save-State
         }
         if (Test-Path -LiteralPath $image) {
-            $diskImage = Get-DiskImage -ImagePath $image
-            if ([int64]$diskImage.Size -ne [int64]$state.limit -or
-                [int64]$diskImage.FileSize -lt [int64]$state.limit) { throw 'Refusing to remove a replaced image' }
-            if ($diskImage.Attached) {
+            $wasAttached = (Get-DiskImage -ImagePath $image).Attached
+            $null = Confirm-OwnedImage
+            if ($wasAttached) {
                 $part = Get-OwnedPartition
                 $volume = $part | Get-Volume
                 if ([string]$volume.UniqueId -ne $state.volume_guid) { throw 'Refusing to remove a replaced volume' }

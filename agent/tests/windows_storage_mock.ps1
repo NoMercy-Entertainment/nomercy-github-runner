@@ -30,15 +30,15 @@ function Get-Item {
 function Get-DiskImage {
     param($ImagePath)
     if (-not (Test-Path -LiteralPath $ImagePath)) { throw 'no image' }
-    [pscustomobject]@{Size=$script:model.limit; FileSize=$script:model.limit;
-        Attached=$script:model.attached; Number=7}
+    [pscustomobject]@{Size=$script:model.limit; Attached=$script:model.attached; Number=7}
 }
 function diskpart {
     # The real helper writes a script file and runs `diskpart /s <file>`; the
-    # fake here reads that file back instead of shelling out for real, and
-    # can be told (RNR_STORAGE_FAIL=create-silent-error) to reproduce
-    # diskpart's own worst habit: printing a failure while still exiting 0,
-    # which is exactly what the helper's own output check must catch.
+    # fake here reads that file back instead of shelling out for real. Told
+    # to (RNR_STORAGE_FAIL=create-silent-error), it reproduces diskpart's own
+    # worst habit: writing a partial/bad file, printing a failure, and still
+    # exiting 0 - so the helper's own post-condition check, not this mock, is
+    # what has to notice the size is wrong and clean the file back up.
     param($Switch, $ScriptPath)
     $commands = Get-Content -LiteralPath $ScriptPath -Raw
     if ($commands -notmatch 'create vdisk file="(?<path>[^"]+)" maximum=(?<mb>\d+) type=fixed') {
@@ -49,6 +49,8 @@ function diskpart {
     $path = $Matches['path']
     $mb = [int64]$Matches['mb']
     if ($env:RNR_STORAGE_FAIL -eq 'create-silent-error') {
+        [IO.File]::WriteAllText($path, 'partial, bad image')
+        $script:model.limit = 0
         Write-Output 'DiskPart has encountered an error: The system cannot find the file specified.'
         $global:LASTEXITCODE = 0
         return
@@ -60,10 +62,10 @@ function diskpart {
     $global:LASTEXITCODE = 0
 }
 function Mount-DiskImage {
-    param($ImagePath, [switch]$NoDriveLetter)
+    param($ImagePath, [switch]$NoDriveLetter, $Access)
     if (-not $NoDriveLetter) { throw 'unexpected drive letter' }
     $script:model.attached = $true
-    Save-Model 'attach'
+    if ($Access -eq 'ReadOnly') { Save-Model 'attach-readonly' } else { Save-Model 'attach' }
 }
 function Get-Disk {
     param($Number)
