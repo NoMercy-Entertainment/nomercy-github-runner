@@ -995,3 +995,46 @@ Two faults behind one symptom:
 - [ ] **Step 6:** Run both suites in full and report the counts.
 - [ ] **Step 7: Commit.**
 - [ ] **Step 8 (live, after review):** deploy the controller, resize the guest, redeploy its agent, raise the fleet to 2, and confirm the runner comes up pinned inside its own guest's cores.
+
+### Task 26: a runner's disk is attached to that runner
+
+**What the live run established.** In the Windows guest (Windows 11 24H2) a
+runner's service would not start: `CreateProcess() failed: The directory name
+is invalid`, and from inside, the service reported `PermissionError: [WinError
+5] Access is denied` on its own volume - with the file ACLs demonstrably
+granting it. Proven by experiment in the guest:
+
+| service account | working directory | result |
+| --- | --- | --- |
+| its own virtual account | plain directory | runs |
+| its own virtual account | attached image (mount point or drive letter) | refused |
+| LocalSystem | the same attached image | runs |
+
+and on the physical host (Windows 10) the same image attaches and works for a
+virtual account either way, with `Mount-DiskImage` or `Mount-VHD`. So it is
+not the attach command and not the mount point: Windows 11 binds a disk
+attached with `Mount-DiskImage` to the account that attached it - the agent,
+LocalSystem - and the runner's own account is refused at the device, before
+any file ACL is consulted.
+
+`AttachVirtualDisk` takes a security descriptor for exactly this, which
+`Mount-DiskImage` does not expose. A prototype in the guest attaching with
+`O:BAG:SYD:(A;;GA;;;SY)(A;;GA;;;BA)(A;;GRGWGX;;;SU)` had the runner's service
+start, list and write on its own volume.
+
+**Files:**
+- Modify: `agent/runtimes/windows_storage.ps1` (attach through `AttachVirtualDisk`)
+- Modify: `agent/tests/test_windows_storage.py`
+- Modify: `docs/windows-runner-storage.md`
+
+**Interfaces:** unchanged - the helper keeps its verbs, its JSON and its exit
+codes. Only how a disk is attached changes.
+
+- [ ] **Step 1: Read** the helper's attach, verify and remove paths, and `agent/runtimes/windows_process.py`'s `service_sid`, which derives a service account's SID from its name without the service existing.
+- [ ] **Step 2: Write the attach.** A function that opens the image with `OpenVirtualDisk` and attaches it with `AttachVirtualDisk`, passing a security descriptor and the flags `PERMANENT_LIFETIME` and `NO_DRIVE_LETTER`. Use P/Invoke through `Add-Type`, declared once. Return codes are checked: a non-zero result throws with the code and what it was doing.
+- [ ] **Step 3: Grant the runner, not every service.** The descriptor gives full access to SYSTEM and Administrators and read/write/execute to this runner's own service SID (`NT SERVICE\rnr-<id>`), computed from the name - not `SU`, which would let any service on the machine open any runner's disk. The read-only attach that `remove` uses for identity gets SYSTEM and Administrators only.
+- [ ] **Step 4: Leave the rest alone.** `Get-DiskImage` still answers state and size; `Dismount-DiskImage` still detaches. Nothing else in the helper changes shape.
+- [ ] **Step 5: Tests.** Cover: the descriptor names the runner's own SID and not `SU`; a failing attach throws with its code; the read-only path uses the restricted descriptor. Add a test that fails if `Mount-DiskImage` appears in the helper again.
+- [ ] **Step 6:** Run the agent suite in full and report the counts.
+- [ ] **Step 7: Commit.**
+- [ ] **Step 8 (live, after review):** redeploy the agent into the guest, raise the fleet to 2, and watch the runner come up with its own disk - the first Windows runner in a Hyper-V guest.
