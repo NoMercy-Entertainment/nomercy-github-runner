@@ -99,6 +99,13 @@ if ($dvd -and $dvd.Path) {
     $dvd | Set-VMDvdDrive -Path $null
     $hostChanges.Add('install media ejected')
 }
+# And take the drive itself out. An empty optical drive still holds a drive
+# letter in the guest - the first free one, which is the letter the storage
+# root wants - and a runner host has no use for one after Setup.
+if ($dvd) {
+    $dvd | Remove-VMDvdDrive
+    $hostChanges.Add('optical drive removed')
+}
 # This guest was created before New-WindowsGuest.ps1 started turning
 # automatic checkpoints off, so make sure of it here too, and clear any
 # checkpoint already taken: a runner host runs on its own disks, not on a
@@ -296,6 +303,19 @@ $guestConfig = {
         if ($candidates.Count -gt 1) {
             $found = ($candidates | ForEach-Object { "disk $($_.Number) ($([math]::Round($_.Size / 1GB)) GB)" }) -join ', '
             throw "More than one raw candidate disk found ($found) - refusing to guess which becomes $DataDriveLetter`:."
+        }
+        # Windows gives the virtual DVD drive the first free letter, which is
+        # the one the storage root wants. Move the optical drive out of the way
+        # rather than choosing a different root: the root is what the agent and
+        # every runner's disk path are configured with.
+        $optical = Get-CimInstance Win32_Volume -Filter "DriveType = 5" |
+            Where-Object { $_.DriveLetter -eq "${DataDriveLetter}:" }
+        if ($optical) {
+            $taken = (Get-Volume | Where-Object { $_.DriveLetter }).DriveLetter
+            $free = 'Z','Y','X','W','V' | Where-Object { $_ -notin $taken } | Select-Object -First 1
+            if (-not $free) { throw "The optical drive holds $DataDriveLetter`: and no spare letter is free to move it to." }
+            Set-CimInstance -InputObject $optical -Property @{ DriveLetter = "${free}:" } | Out-Null
+            $changed.Add("optical drive moved off $DataDriveLetter`: to ${free}:")
         }
         $disk = $candidates[0]
         Initialize-Disk -Number $disk.Number -PartitionStyle GPT
