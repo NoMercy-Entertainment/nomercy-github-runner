@@ -29,7 +29,15 @@
       - the timezone is set to match this host's;
       - sleep and hibernation are turned off, so a runner is not paused
         mid-job;
-      - Remote Desktop is enabled, for when the console is not convenient.
+      - Remote Desktop is enabled, for when the console is not convenient;
+      - the second disk (settings.psd1's WindowsGuests entry names its
+        storage root, e.g. D:\runner-disks -> drive D) is brought online:
+        New-WindowsGuest.ps1 attaches it raw and unpartitioned, and nothing
+        else in this platform initialises it - repartitioning a disk is not
+        Install-WindowsWorker.ps1's job, so it happens here, once, as part of
+        making the guest usable. Idempotent (a volume already labelled
+        runner-data means this has already run); refuses rather than guess
+        if more than one raw, non-system disk is found.
 
     Nothing about Windows activation is read, checked, or reported: only
     Get-ComputerInfo's edition and version fields come back, for the
@@ -61,7 +69,12 @@ if (-not (Test-Elevated)) {
 if (-not $s.VMs.ContainsKey($Name)) {
     throw "settings.psd1 has no VM named $Name."
 }
+if (-not $s.WindowsGuests.ContainsKey($Name)) {
+    throw "settings.psd1's WindowsGuests has no entry for $Name."
+}
 $spec = $s.VMs[$Name]
+$g = $s.WindowsGuests[$Name]
+$dataDriveLetter = $g.StorageRoot.Substring(0, 1)
 
 $vm = Get-VM -Name $Name -ErrorAction SilentlyContinue
 if (-not $vm) {
@@ -136,7 +149,7 @@ Set-VMFirmware -VMName $Name -FirstBootDevice $sysHdd
 $hostTimeZone = (Get-TimeZone).Id
 
 $guestConfig = {
-    param($MgmtMac, $Address, $PrefixLength, $Dns, $TimeZoneId, $VmName)
+    param($MgmtMac, $Address, $PrefixLength, $Dns, $TimeZoneId, $VmName, $DataDriveLetter)
     $ErrorActionPreference = 'Stop'
     $changed = [System.Collections.Generic.List[string]]::new()
 
@@ -240,6 +253,36 @@ $guestConfig = {
     }
     Enable-NetFirewallRule -DisplayGroup 'Remote Desktop' -ErrorAction SilentlyContinue
 
+    # --- the data disk: brought online as the storage root's drive -----------
+    # New-WindowsGuest.ps1 attaches it raw and unpartitioned; nothing else in
+    # this platform initialises it, and repartitioning a disk is not
+    # Install-WindowsWorker.ps1's job. Idempotent: a volume already labelled
+    # runner-data means this has already run. Refuses rather than guess if
+    # more than one raw, non-system disk is found.
+    $dataVolume = Get-Volume -FileSystemLabel 'runner-data' -ErrorAction SilentlyContinue
+    if ($dataVolume) {
+        if ($dataVolume.DriveLetter -ne $DataDriveLetter) {
+            throw ("A volume labelled runner-data exists but on $($dataVolume.DriveLetter): - not " +
+                   "$DataDriveLetter`: as expected. Check by hand before running this again.")
+        }
+    } else {
+        $candidates = @(Get-Disk | Where-Object {
+            $_.PartitionStyle -eq 'RAW' -and -not $_.IsBoot -and -not $_.IsSystem
+        })
+        if ($candidates.Count -eq 0) {
+            throw "No raw, non-system disk found to become the $DataDriveLetter`: runner-data volume."
+        }
+        if ($candidates.Count -gt 1) {
+            $found = ($candidates | ForEach-Object { "disk $($_.Number) ($([math]::Round($_.Size / 1GB)) GB)" }) -join ', '
+            throw "More than one raw candidate disk found ($found) - refusing to guess which becomes $DataDriveLetter`:."
+        }
+        $disk = $candidates[0]
+        Initialize-Disk -Number $disk.Number -PartitionStyle GPT
+        $partition = New-Partition -DiskNumber $disk.Number -DriveLetter $DataDriveLetter -UseMaximumSize
+        Format-Volume -Partition $partition -FileSystem NTFS -NewFileSystemLabel 'runner-data' -Confirm:$false | Out-Null
+        $changed.Add("disk $($disk.Number) initialised, partitioned and formatted NTFS as $DataDriveLetter`: (runner-data)")
+    }
+
     # --- its own name ---------------------------------------------------------
     # Setup invents one (DESKTOP-790M70M and the like). Every other machine of
     # this platform is named for what it is, and that name turns up in logs,
@@ -273,7 +316,7 @@ $guestConfig = {
 }
 
 $result = Invoke-Command -VMName $Name -Credential $Credential -ScriptBlock $guestConfig `
-    -ArgumentList $spec.MgmtMac, $spec.Address, $s.PrefixLength, $s.Dns, $hostTimeZone, $Name
+    -ArgumentList $spec.MgmtMac, $spec.Address, $s.PrefixLength, $s.Dns, $hostTimeZone, $Name, $dataDriveLetter
 
 # A rename only takes effect on a restart, and everything downstream - the
 # agent's enrolment, the runner's registration at the forge, every log line -

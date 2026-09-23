@@ -108,8 +108,11 @@
             Address   = '10.77.0.30'
             MgmtMac   = '00155D771E0A'
             UplinkMac = '00155D771E0B'
-            MaxRunners  = 2
-            RunnerMemGB = 8
+            # Its agent capacity lives in WindowsGuests below, not here - unlike
+            # rnr-linux-1 above, nothing reads a MaxRunners/RunnerMemGB pair off
+            # this entry for a windows-worker (Initialize-RunnerPlatform.ps1's
+            # and Install-ControlPlaneDashboard.ps1's own reads of .RunnerMemGB
+            # off VMs entries are both filtered to Role -eq 'linux-worker').
         }
     }
 
@@ -151,17 +154,23 @@
         Labels        = 'windows-2022:host,windows-latest:host'
     }
 
-    # T-23 (W10b-2): rnr-windows-1's own worker block. Its host id is the VM's
-    # own name (VMs above, which already carries its address, memory and
+    # T-23 (W10b-2): rnr-windows-1's own worker block - its governing capacity,
+    # not a second unused copy of BEAST-UNIT's numbers. Its host id is the
+    # VM's own name (VMs above, which already carries its address, memory and
     # disk); this carries only what is not already there - the agent's
     # capacity and the storage root on its own second disk, the one
-    # New-WindowsGuest.ps1 attached as DataDiskGB (still raw and unpartitioned;
-    # nothing brings it online yet, so this drive letter does not exist until
-    # that is done by hand) - kept apart from the Windows block above, which
-    # keeps describing BEAST-UNIT until it is retired (task step 9).
-    # Everything an install does not need a per-worker value for - the pinned
-    # Python, NSSM and runner-binary hashes, the template name, the labels -
-    # stays shared, read from Windows above.
+    # New-WindowsGuest.ps1 attached as DataDiskGB and Initialize-WindowsGuest.ps1
+    # brings online (repartitioning a disk is not Install-WindowsWorker.ps1's
+    # job) - kept apart from the Windows block above, which keeps describing
+    # BEAST-UNIT until it is retired (task step 9). Install-WindowsGuestWorker.ps1
+    # passes MaxRunners/RunnerMemGB straight through to
+    # Install-WindowsWorker.ps1's own -MaxRunners/-RunnerMemGB, which is what
+    # actually reaches the agent's capacity block - not the shared Windows
+    # block, and not VMs.'rnr-windows-1' (which does not carry these at all;
+    # see the comment there). Everything an install does not need a
+    # per-worker value for - the pinned Python, NSSM and runner-binary
+    # hashes, the template name, the labels - stays shared, read from Windows
+    # above.
     WindowsGuests = @{
         'rnr-windows-1' = @{
             MaxRunners  = 2

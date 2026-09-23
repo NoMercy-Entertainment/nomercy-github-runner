@@ -16,6 +16,10 @@
     (-TlsBundle, -NssmSource, -RunnerBinary).
 
     One session (`New-PSSession -VMName`), then, in order:
+      0. the storage root's drive (settings.psd1's WindowsGuests entry,
+         D:\runner-disks -> D:) is checked for a ready volume - refusing,
+         and naming Initialize-WindowsGuest.ps1, if it is not there, rather
+         than installing a worker whose storage silently cannot be used;
       1. the target directory in the guest, cleared and recreated so a stale
          file from an earlier run cannot survive;
       2. `git archive HEAD` of `agent` and `infra/hyperv`, made here, copied
@@ -25,32 +29,44 @@
       4. the Windows templates directory, copied as a plain directory tree
          rather than through the archive above, because a template's fetched
          payload (images/windows/fetch-actions-runner.ps1) is gitignored and
-         `git archive` would silently leave it behind;
+         `git archive` would silently leave it behind - verified to have
+         landed nested, not renamed, since Copy-Item -ToSession's directory
+         semantics are not the same tested code path as the local Copy-Item
+         this nesting fix was proven against;
       5. the pinned NSSM and Forgejo runner binary, by their settings.psd1
          paths - both are host paths, unreachable from the guest;
       6. the guest's host id enrolled with the controller from here (this
          machine holds the platform SSH key the guest does not), and the
          resulting certificate bundle copied in;
       7. Install-WindowsWorker.ps1, run inside the guest with -HostId,
-         -ListenAddress, -TlsBundle and the guest-local -NssmSource /
-         -RunnerBinary, plus -WindowsStorage so its runners get their own
-         fixed VHDX on the data disk settings.psd1's WindowsGuests entry
-         names.
+         -ListenAddress, -TlsBundle, -MaxRunners, -RunnerMemGB and the
+         guest-local -NssmSource / -RunnerBinary, plus -WindowsStorage so
+         its runners get their own fixed VHDX on the data disk
+         settings.psd1's WindowsGuests entry names.
 
     Install-WindowsWorker.ps1 skips its own health check inside the guest
     (no SSH key there to ask the control plane with); this script does that
     check itself afterwards, from here, and only reports success once it has
     seen the worker come up healthy.
 
+    Once the install succeeds, the whole staging directory
+    (C:\ProgramData\nomercy\src) is deleted from the guest - it held, among
+    other things, a second, un-ACL'd copy of the agent's own private key
+    (Install-WindowsWorker.ps1 already deletes the TLS bundle the moment it
+    extracts it, but this removes the rest: the source tree, NSSM, the
+    runner binary). Only the installed tree under
+    C:\ProgramData\nomercy\agent (and \bin, \templates) is meant to last, and
+    none of that lives under \src.
+
     Idempotent: running it again re-copies and re-deploys, exactly as
     Install-WindowsWorker.ps1 already does with app.previous inside the
     guest.
 
-    Does not format the guest's second disk. New-WindowsGuest.ps1 attaches it
-    raw and unpartitioned; nothing in this platform brings it online yet, so
-    the drive settings.psd1 names as the storage root (D:\runner-disks) will
-    not exist until that is done by hand, before capacity is ever raised on
-    this worker.
+    Does not itself format the guest's second disk - that is
+    Initialize-WindowsGuest.ps1's job now (repartitioning a disk is not an
+    installer's job), and this script refuses up front if it finds the
+    storage root's drive missing rather than installing a worker whose
+    storage cannot be used.
 #>
 [CmdletBinding(SupportsShouldProcess)]
 param(
@@ -112,6 +128,21 @@ try {
     Write-Host "opening PowerShell Direct to $Name..."
     $session = New-PSSession -VMName $Name -Credential $Credential
 
+    # --- the storage root's drive: must already be there ---------------------------
+    # Initialize-WindowsGuest.ps1 brings the data disk online now (repartitioning a
+    # disk is not this installer's job) - refuse clearly rather than install a
+    # worker whose storage silently cannot be used until Step 6.
+    $storageDriveLetter = $g.StorageRoot.Substring(0, 1)
+    $driveReady = Invoke-Command -Session $session -ScriptBlock {
+        param($DriveLetter)
+        $ErrorActionPreference = 'Stop'
+        [bool](Get-Volume -DriveLetter $DriveLetter -ErrorAction SilentlyContinue)
+    } -ArgumentList $storageDriveLetter
+    if (-not $driveReady) {
+        throw ("$($g.StorageRoot)'s drive (${storageDriveLetter}:) does not exist in " +
+               "${Name}: run Initialize-WindowsGuest.ps1 -Name $Name first.")
+    }
+
     # --- the target directory, cleared so a stale file cannot survive -------------
     $guestSrc = 'C:\ProgramData\nomercy\src'
     Invoke-Command -Session $session -ScriptBlock {
@@ -154,6 +185,25 @@ try {
         New-Item -ItemType Directory -Force -Path $Path | Out-Null
     } -ArgumentList $guestInfraWindows
     Copy-Item -ToSession $session -Recurse -Force -Path $localTemplates -Destination $guestInfraWindows
+    # Copy-Item -ToSession is a different implementation (remoting-based
+    # transfer) from the local-filesystem Copy-Item -Recurse this
+    # pre-create-the-destination nesting fix was actually proven against
+    # (Install-WindowsWorker.ps1's agent copy) - verify it landed nested
+    # rather than assume the same behaviour carried over, so a difference
+    # is caught here, loudly, instead of burning a live run before
+    # Install-WindowsWorker.ps1's own template loop finds nothing.
+    $guestTemplatesDir = Join-Path $guestInfraWindows 'templates'
+    $templatesLanded = Invoke-Command -Session $session -ScriptBlock {
+        param($Path)
+        $ErrorActionPreference = 'Stop'
+        (Test-Path -LiteralPath $Path -PathType Container) -and
+            @(Get-ChildItem -Directory -Path $Path -ErrorAction SilentlyContinue).Count -gt 0
+    } -ArgumentList $guestTemplatesDir
+    if (-not $templatesLanded) {
+        throw ("The Windows templates did not land at $guestTemplatesDir as expected - " +
+               "Copy-Item -ToSession may have renamed $localTemplates rather than nesting it " +
+               "under $guestInfraWindows. Check by hand.")
+    }
 
     # --- the pinned NSSM and Forgejo runner binary: host paths, copied in ---------
     $guestNssm = Join-Path $guestSrc 'nssm.exe'
@@ -178,11 +228,27 @@ try {
     Write-Host "installing the worker inside $Name..."
     $guestInstaller = Join-Path $guestSrc 'infra\hyperv\Install-WindowsWorker.ps1'
     Invoke-Command -Session $session -ScriptBlock {
-        param($Installer, $HostId, $ListenAddress, $TlsBundlePath, $NssmPath, $RunnerPath, $StorageRootPath)
+        param($Installer, $HostId, $ListenAddress, $TlsBundlePath, $NssmPath, $RunnerPath, $StorageRootPath,
+              $MaxRunnersValue, $RunnerMemGBValue)
         $ErrorActionPreference = 'Stop'
         & $Installer -HostId $HostId -ListenAddress $ListenAddress -TlsBundle $TlsBundlePath `
-            -NssmSource $NssmPath -RunnerBinary $RunnerPath -WindowsStorage -StorageRoot $StorageRootPath
-    } -ArgumentList $guestInstaller, $Name, $spec.Address, $guestBundle, $guestNssm, $guestRunnerBinary, $g.StorageRoot
+            -NssmSource $NssmPath -RunnerBinary $RunnerPath -WindowsStorage -StorageRoot $StorageRootPath `
+            -MaxRunners $MaxRunnersValue -RunnerMemGB $RunnerMemGBValue
+    } -ArgumentList $guestInstaller, $Name, $spec.Address, $guestBundle, $guestNssm, $guestRunnerBinary, $g.StorageRoot,
+        $g.MaxRunners, $g.RunnerMemGB
+
+    # --- the staging directory: gone once the install has succeeded ----------------
+    # Install-WindowsWorker.ps1 already deletes the TLS bundle the moment it
+    # extracts it; this removes the rest of what was only ever meant to get the
+    # install done - the source tree, NSSM, the runner binary - none of which
+    # is the installed tree (that is under C:\ProgramData\nomercy\agent, \bin,
+    # \templates, untouched here). Left behind, this was an un-ACL'd,
+    # default-permission directory - not a place anything transient should sit.
+    Invoke-Command -Session $session -ScriptBlock {
+        param($SrcRoot)
+        $ErrorActionPreference = 'Stop'
+        Remove-Item -Recurse -Force $SrcRoot -ErrorAction SilentlyContinue
+    } -ArgumentList $guestSrc
 
     # --- healthy, checked from here: the guest has no SSH key to ask itself --------
     Write-Host "waiting for $Name to report healthy..."

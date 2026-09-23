@@ -32,21 +32,24 @@
     keeps its plain directory - the agent never adopts one - until it is
     recreated.
 
-    -HostId, -ListenAddress, -TlsBundle, -NssmSource and -RunnerBinary let
-    this install a worker that is not this host (T-23, W10b-2): a Hyper-V
-    guest, carried into by Install-WindowsGuestWorker.ps1 over PowerShell
-    Direct. Left out, every one of them defaults to exactly what this script
-    already did - settings.psd1's 'Windows' block and this host's own
-    rnr-internal address - so `.\Install-WindowsWorker.ps1 -WindowsStorage`
-    still installs BEAST-UNIT. -TlsBundle also decides where the agent's code
-    and certificate come from: given, a tar already holding the certificate
-    is imported and the agent is copied from an already-exploded `git archive
-    HEAD` tree beside this script, because a guest has neither the platform
-    SSH key that enrolling needs nor a git checkout that `git archive` needs;
-    left out, this script enrols over SSH and builds the agent from HEAD
-    itself, exactly as before. The health check needs that same SSH key, so
-    it is skipped, with a printed note, when -TlsBundle is given and the key
-    is not on this machine.
+    -HostId, -ListenAddress, -TlsBundle, -NssmSource, -RunnerBinary,
+    -MaxRunners and -RunnerMemGB let this install a worker that is not this
+    host (T-23, W10b-2): a Hyper-V guest, carried into by
+    Install-WindowsGuestWorker.ps1 over PowerShell Direct. Left out, every
+    one of them defaults to exactly what this script already did -
+    settings.psd1's 'Windows' block and this host's own rnr-internal address
+    - so `.\Install-WindowsWorker.ps1 -WindowsStorage` still installs
+    BEAST-UNIT. -TlsBundle also decides where the agent's code and
+    certificate come from: given, a tar already holding the certificate is
+    imported (and deleted once extracted) and the agent is copied from an
+    already-exploded `git archive HEAD` tree beside this script, because a
+    guest has neither the platform SSH key that enrolling needs nor a git
+    checkout that `git archive` needs; left out, this script enrols over SSH
+    and builds the agent from HEAD itself, exactly as before. The health
+    check needs that same SSH key, so it is skipped, with a printed note,
+    when -TlsBundle is given and the key is not on this machine. -TlsBundle
+    requires -HostId alongside it - a guest must never silently enrol as
+    BEAST-UNIT.
 #>
 [CmdletBinding(SupportsShouldProcess)]
 param(
@@ -56,17 +59,28 @@ param(
     [string] $ListenAddress,
     [string] $TlsBundle,
     [string] $NssmSource,
-    [string] $RunnerBinary
+    [string] $RunnerBinary,
+    [int] $MaxRunners,
+    [int] $RunnerMemGB
 )
 . "$PSScriptRoot\lib.ps1"
 $s = Get-RunnerPlatformSettings
 $w = $s.Windows
 if (-not (Test-Elevated)) { throw 'Run this elevated.' }
 
+# A guest must never silently install as BEAST-UNIT: -TlsBundle without
+# -HostId would default $HostId to $w.HostId below and enrol as beast-unit
+# while presenting a certificate issued for whatever name was actually used.
+if ($TlsBundle -and -not $PSBoundParameters.ContainsKey('HostId')) {
+    throw '-TlsBundle requires -HostId; pass both together.'
+}
+
 if (-not $HostId)        { $HostId = $w.HostId }
 if (-not $ListenAddress) { $ListenAddress = $s.HostAddress }
 if (-not $NssmSource)    { $NssmSource = $w.NssmSource }
 if (-not $RunnerBinary)  { $RunnerBinary = $w.RunnerBinary }
+if (-not $MaxRunners)    { $MaxRunners = $w.MaxRunners }
+if (-not $RunnerMemGB)   { $RunnerMemGB = $w.RunnerMemGB }
 if ($TlsBundle -and -not (Test-Path -LiteralPath $TlsBundle)) {
     throw "-TlsBundle $TlsBundle does not exist."
 }
@@ -177,9 +191,13 @@ Copy-Item -Force -LiteralPath $RunnerBinary -Destination (Join-Path $template 'f
 if ($TlsBundle) {
     # A guest: Install-WindowsGuestWorker.ps1 already enrolled $HostId from a
     # machine that holds the platform SSH key ($s.Root\ssh\id_ed25519, which
-    # is not on this one) and copied the resulting tar in.
+    # is not on this one) and copied the resulting tar in. Delete it the
+    # moment it is extracted, same as the SSH-enrolled $bundle below - it
+    # holds the same private key now sitting, ACL'd, in $tlsDir, and nothing
+    # should keep a second, unprotected copy of it lying around.
     & tar.exe -xf $TlsBundle -C $tlsDir
     if ($LASTEXITCODE -ne 0) { throw "extracting -TlsBundle $TlsBundle failed" }
+    Remove-Item -Force -LiteralPath $TlsBundle
 } else {
     $endpoint = "https://$($ListenAddress):$($s.AgentPort)"
     Invoke-Guest $s $cp ("sudo docker exec rnr-controller python -m control enrol $HostId hyperv-windows $endpoint" +
@@ -202,7 +220,7 @@ $config = [ordered]@{
     tls        = @{ cert = (Join-Path $tlsDir 'agent.crt'); key = (Join-Path $tlsDir 'agent.key')
                     ca = (Join-Path $tlsDir 'ca.pem') }
     tools      = @{ nssm = $nssm; python = $python; templates = $templates }
-    capacity   = @{ max_runners = $w.MaxRunners; memory_bytes = [int64]$w.RunnerMemGB * $w.MaxRunners * 1GB }
+    capacity   = @{ max_runners = $MaxRunners; memory_bytes = [int64]$RunnerMemGB * $MaxRunners * 1GB }
     version    = $version
 }
 if ($WindowsStorage) {
