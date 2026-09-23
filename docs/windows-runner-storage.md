@@ -28,9 +28,11 @@ protected JSON manifest, attaches the image without a drive letter, and mounts
 its NTFS volume at `D:/runners/<uuid>`. The image and manifest are restricted
 to SYSTEM and Administrators. The mountpoint parent is restricted too. The
 runner's virtual service account receives Modify on its own mounted volume
-through the filesystem ACL, and read/write/execute on the disk device itself
+through the filesystem ACL, and full access to the disk device itself
 through the security descriptor the attach is made with (below) - two
-separate grants, at two separate layers. The helper refuses reparse ancestors
+separate grants, at two separate layers, the device one deciding who may
+open the volume at all and the filesystem one deciding what is reachable
+inside it. The helper refuses reparse ancestors
 and mismatched disk, partition, volume or mount identities. It never adopts
 an existing plain runner directory.
 
@@ -47,8 +49,13 @@ enforced that, so the difference went unnoticed until a runner worker moved
 into a Hyper-V guest (2026-09-23). The descriptor grants SYSTEM and
 Administrators full access always, and this runner's own service SID -
 computed the same way as `windows_process.py`'s `service_sid`, never the
-well-known "every service" SID - read/write/execute, but only for this
-runner's own writable attach; the read-only attach `remove` uses purely to
+well-known "every service" SID - full access, but only for this
+runner's own writable attach. Full access rather than
+read/write/execute because GENERIC_WRITE at the device does not carry
+DELETE: with the narrower mask a runner could create files on its own
+disk but never rename or delete one, so the job host wrote
+`telemetry.json.tmp` every beat and could never move it into place, and
+that runner reported no CPU and no memory at all (2026-09-24). the read-only attach `remove` uses purely to
 prove identity grants SYSTEM and Administrators alone, nothing runner-owned.
 None of this comes from Hyper-V: the Storage module's own cmdlets, and the
 module they ship in, exist only on a Hyper-V host, not inside a Hyper-V

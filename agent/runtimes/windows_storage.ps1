@@ -95,12 +95,21 @@ function Get-DiskSecurityDescriptor([string]$Rid, [bool]$GrantRunner) {
     # SYSTEM and Administrators always get full access. This runner's own
     # service SID - never the well-known "every service" SID (SU), which
     # would let any service on the machine open any runner's disk - gets
-    # read/write/execute, and only for the writable attach `ensure`/`mount`
+    # full access too, and only for the writable attach `ensure`/`mount`
     # use. The read-only attach `remove` uses purely to prove identity
     # grants neither: nothing needs to read a disk that is about to be
     # deleted, least of all every service on the machine.
+    #
+    # Full access, not read/write/execute: this descriptor gates the device,
+    # and GENERIC_WRITE there does not carry DELETE. With only GRGWGX the
+    # runner could create and write files on its own disk but never rename
+    # or delete one - which is how the job host's telemetry first went
+    # missing in the guest: it wrote telemetry.json.tmp every beat and could
+    # never move it into place (2026-09-24). What the runner may reach is
+    # decided by the file system's own ACLs, which the runtime sets; the
+    # device descriptor only says who may open the volume at all.
     $sddl = 'O:BAG:SYD:(A;;GA;;;SY)(A;;GA;;;BA)'
-    if ($GrantRunner) { $sddl += "(A;;GRGWGX;;;$(Get-RunnerServiceSid $Rid))" }
+    if ($GrantRunner) { $sddl += "(A;;GA;;;$(Get-RunnerServiceSid $Rid))" }
     return $sddl
 }
 

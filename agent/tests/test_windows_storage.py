@@ -530,6 +530,22 @@ def test_actual_helper_grants_the_runners_own_sid_not_every_service(helper):
     assert ";;;SY)" in sddl and ";;;BA)" in sddl, sddl
 
 
+def test_actual_helper_grants_the_runner_enough_to_rename_on_its_own_disk(helper):
+    """The device descriptor gates the volume, and GENERIC_WRITE there does
+    not carry DELETE: with read/write/execute the runner could create files
+    on its own disk but never rename or delete one. The job host writes its
+    telemetry as telemetry.json.tmp and moves it into place every beat, so
+    that runner reported no CPU and no memory at all, with the temporary file
+    piling up beside the one it could never become (live in the guest,
+    2026-09-24). What the runner may reach is decided by the filesystem ACLs
+    the runtime sets; this descriptor only says who may open the volume."""
+    invoke, request, model = helper
+    assert invoke().returncode == 0, "setup: ensure should succeed"
+    sddl = _model(model)["attach_sddl"]
+    own_sid = service_sid(f"rnr-{RID}")
+    assert f"(A;;GA;;;{own_sid})" in sddl, sddl
+
+
 def test_actual_helper_restricts_the_readonly_identity_attach_to_system_and_administrators(helper):
     """`remove`'s read-only attach proves disk identity before anything is
     deleted; it must never hand out access to this or any other runner's
