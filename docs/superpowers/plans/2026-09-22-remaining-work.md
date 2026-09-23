@@ -842,21 +842,44 @@ staggered cores window on the platforms that pin.
 ### Task 22: W10b-1 - the Windows guest exists and answers
 
 **Files:**
-- Modify: `infra/hyperv/settings.psd1` (a `rnr-windows-1` VM entry beside the others: role `windows-worker`, address 10.77.0.30, 16 GiB, 8 vCPU, disk sizes)
-- Modify: `infra/hyperv/New-RunnerPlatformVMs.ps1` (create it like the others, but Gen 2 with vTPM and Secure Boot on, and a second data disk)
-- Create: `infra/windows/guest/autounattend.xml` (unattended install: local administrator, OpenSSH server, RDP on, no OOBE questions, no product key - the operator enters it)
-- Create: `infra/hyperv/New-WindowsGuest.ps1` (download nothing; take `-Iso <path>` and build the VM, attach the ISO and the answer file as a second ISO/floppy, start it)
+- Modify: `infra/hyperv/settings.psd1` (a `rnr-windows-1` entry beside the others, and the memory budget line, which still describes the pre-migration sizes)
+- Create: `infra/hyperv/New-WindowsGuest.ps1` (elevated: makes the VM, its two disks and its adapters, attaches the install ISO, starts it)
+- Create: `infra/hyperv/Initialize-WindowsGuest.ps1` (elevated: configures the installed guest over PowerShell Direct - no network needed - with its static address, OpenSSH, and the settings a runner host needs)
 - Evidence: `docs/superpowers/plans/2026-09-17-uniform-evidence.md`
 
-**Interfaces:** produces the VM `rnr-windows-1` reachable over SSH at 10.77.0.30 with an administrator account; consumed by Task 23.
+**Why this shape.** Windows Setup takes an answer file only from removable
+media, and building that ISO here would need the WSL distro this work is
+retiring. The operator is at the console anyway to enter the licence key, so
+Setup is done by hand once; everything after it is scripted through
+PowerShell Direct, which reaches a Windows guest without any network.
 
-- [ ] **Step 1: Read** `infra/hyperv/New-RunnerPlatformVMs.ps1`, `infra/hyperv/settings.psd1` and `infra/hyperv/lib.ps1` to follow their conventions exactly (naming, paths under `D:\HyperV\runner-platform`, the internal switch, static addresses, `Test-Elevated`, `ShouldProcess`).
-- [ ] **Step 2: Add the VM to `settings.psd1`** with its role, address, memory, vCPU and disk sizes, and a `Windows.Guest` block naming the ISO path and the answer-file path.
-- [ ] **Step 3: Write `autounattend.xml`**: one administrator account whose password the operator sets in the script's parameter (never committed), locale nl-NL/en-US as the other guests, disk 0 partitioned GPT with the system partition, OOBE skipped, `EnableRDP`, and a `FirstLogonCommands` that installs the OpenSSH Server feature and starts it. No product key element at all - an unactivated Windows 11 Pro installs and runs, and the operator activates it afterwards.
-- [ ] **Step 4: Write `New-WindowsGuest.ps1`**: parameters `-Iso`, `-AdminPassword` (SecureString), `-WhatIf` support; refuses to run unelevated; creates the VM (Gen 2, vTPM enabled with `Set-VMKeyProtector`/`Enable-VMTPM`, Secure Boot template `MicrosoftWindows`), two VHDX files, both network adapters, boots it from the ISO with the answer file attached, and prints how to watch the install and how to reach it afterwards. It changes no other VM.
-- [ ] **Step 5: Syntax-check both scripts** (`[System.Management.Automation.Language.Parser]::ParseFile`) and validate the answer file is well-formed XML (`[xml](Get-Content ...)`).
+**Interfaces:** produces the VM `rnr-windows-1`, reachable over SSH at
+10.77.0.30 with an administrator account; Task 23 installs the agent in it.
+
+- [ ] **Step 1: Read** `infra/hyperv/New-RunnerPlatformVMs.ps1`, `infra/hyperv/lib.ps1` and `infra/hyperv/settings.psd1`, and follow their conventions exactly: `Test-Elevated`, `ShouldProcess`, `Get-CommitHeadroomGB` before reserving memory, paths under `$s.Root`, the `rnr-internal` switch with a static address, a second adapter on the uplink switch, static MAC addresses, `AutomaticStartAction Start`, `AutomaticStopAction ShutDown`.
+- [ ] **Step 2: settings.psd1.** Add:
+
+```
+        'rnr-windows-1' = @{
+            Role      = 'windows-worker'
+            MemoryGB  = 16
+            Cpus      = 8
+            DiskGB    = 200
+            DataDiskGB = 200
+            Address   = '10.77.0.30'
+            MgmtMac   = '00155D771E0A'
+            UplinkMac = '00155D771E0B'
+            MaxRunners  = 2
+            RunnerMemGB = 8
+        }
+```
+
+  and correct the memory budget: `rnr-linux-1` is 80 GB and 56 vCPU live since the move (settings still says 16/8), so `VmBudgetGB` becomes 110 with a comment naming the measurement it is based on - host commit 169 of 256 GB used on 2026-09-23, 87 GB free, and `CommitReserveGB` still enforced per VM.
+- [ ] **Step 3: New-WindowsGuest.ps1.** Parameters: `-Iso <path>` (required, must exist), `-Name rnr-windows-1`. Refuses unelevated; refuses if the VM exists; checks commit headroom the way the other script does. Creates the VM (Generation 2, `-NoVHD`), a dynamic system VHDX of `DiskGB` and a second dynamic VHDX of `DataDiskGB` under `$s.Rootms\<name>`, both adapters with their MACs, static memory, `Set-VMProcessor -Count`, `Enable-VMTPM` after `Set-VMKeyProtector -NewLocalKeyProtector` (Windows 11 requires a TPM), Secure Boot on with the `MicrosoftWindows` template, the ISO in a DVD drive as first boot device, `Set-VM` for the automatic start and stop actions, then starts it and prints: how to open the console (`vmconnect.exe localhost rnr-windows-1`), that the operator installs Windows 11 Pro and enters their licence, that the local administrator must be called `rnr-admin`, and what to run next.
+- [ ] **Step 4: Initialize-WindowsGuest.ps1.** Parameters: `-Name rnr-windows-1`, `-Credential` (the guest's administrator). Over `Invoke-Command -VMName` (PowerShell Direct): set the mgmt adapter's static address from settings (identify it by its MAC), set the DNS servers from settings, install and start `OpenSSH.Server` and set its firewall rule, set the timezone to the host's, turn off sleep/hibernate, enable RDP, and report back the guest's `Get-ComputerInfo` essentials (edition, version, activation status is NOT read or recorded here). Idempotent: run it again and it changes nothing.
+- [ ] **Step 5:** Syntax-check both scripts (`[System.Management.Automation.Language.Parser]::ParseFile`) and `Import-PowerShellDataFile` the settings file.
 - [ ] **Step 6: Commit** `git commit -m "feat(infra): a Windows guest for the Windows runners"`
-- [ ] **Step 7 (operator, elevated):** run the script with the ISO path and a password, watch the install, enter the licence key and activate. The session verifies afterwards: the VM answers over SSH, `slmgr /xpr`-style activation state is confirmed by the operator (never recorded here), and the internal address answers from the control plane.
+- [ ] **Step 7 (operator, elevated):** run `New-WindowsGuest.ps1 -Iso <path>`, install Windows at the console, enter the licence and activate, create `rnr-admin`; then the session runs `Initialize-WindowsGuest.ps1` and verifies SSH from the control plane.
 
 ### Task 23: W10b-2 - the guest becomes the Windows worker and takes the runners over
 
