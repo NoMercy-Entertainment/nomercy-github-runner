@@ -241,7 +241,8 @@ class RunnerService:
                 result["cpu_limit"] = own
             else:
                 result["cpu_limit"] = self._cpu_window(
-                    width, exclude={spec["runner_id"]})
+                    fleet["platform"], width, exclude={spec["runner_id"]},
+                    host_id=spec.get("host_id"))
         return self.effective_spec(result)
 
     # ---- pinned CPU windows (Linux, Windows) -------------------------------
@@ -255,37 +256,58 @@ class RunnerService:
             return None
         return cpusets.whole_cores(fleet.get("cpu_limit"))
 
-    def _host_cores(self):
-        """The core count windows are cut from: what the workers of pinned
-        platforms declare, else what their runners last measured."""
+    def _host_cores(self, platform):
+        """The core count `platform`'s windows are cut from: what its own
+        workers declare, else what its own runners last measured.
+
+        Scoped to one platform, never pooled across every pinned one: a
+        Linux worker and a Windows worker are physically different hosts
+        with their own, independent processor numbering, so mixing their
+        counts would cut one platform's windows to a ceiling that has
+        nothing to do with the host they are actually placed on
+        (2026-09-23).
+        """
         counts = []
-        kinds = {placement.WORKER_KIND[p] for p in PINNED_CPU_PLATFORMS}
-        for worker in (w for kind in sorted(kinds) for w in self.inventory.healthy(kind=kind)):
+        kind = placement.WORKER_KIND[platform]
+        for worker in self.inventory.healthy(kind=kind):
             value = placement.declared(worker, "host_cores")
             if isinstance(value, int) and value > 0:
                 counts.append(value)
         if not counts:
             for spec in self.specs.list():
+                if spec.get("platform") != platform:
+                    continue
                 value = (spec.get("telemetry") or {}).get("host_cores")
-                if spec.get("platform") in PINNED_CPU_PLATFORMS and isinstance(value, int) and value > 0:
+                if isinstance(value, int) and value > 0:
                     counts.append(value)
         if not counts:
-            raise Refused("cannot pin a CPU window: no worker of a pinned "
-                          "platform has said how many cores it has yet")
+            raise Refused(f"cannot pin a CPU window: no {platform} worker "
+                          f"has said how many cores it has yet")
         return min(counts)
 
-    def _cpu_window(self, width, exclude=(), also=()):
-        """A window of `width` cores that overlaps the ones in use least."""
+    def _cpu_window(self, platform, width, exclude=(), also=(), host_id=None):
+        """A window of `width` cores on `platform`'s own host numbering that
+        overlaps the ones in use least.
+
+        Only specs of this same platform count as occupied - a Linux
+        fleet's windows are cores on a Linux host, and say nothing about
+        what is free on a Windows one, or the other way round (2026-09-23).
+        When `host_id` is given, occupancy is narrowed further to that one
+        host: the runner being placed already belongs there, and a second
+        host of the same platform, if there ever is one, numbers its
+        processors independently too.
+        """
         taken = [set(s) for s in also]
         for spec in self.specs.list():
-            if (spec.get("platform") not in PINNED_CPU_PLATFORMS
+            if (spec.get("platform") != platform
                     or spec["runner_id"] in exclude
                     or spec.get("actual_state") == states.TERMINAL
-                    or spec.get("deleted_at")):
+                    or spec.get("deleted_at")
+                    or (host_id is not None and spec.get("host_id") != host_id)):
                 continue
             if cpusets.is_cpuset(spec.get("cpu_limit")):
                 taken.append(cpusets.parse(spec["cpu_limit"]))
-        return cpusets.allocate(width, self._host_cores(), taken)
+        return cpusets.allocate(width, self._host_cores(platform), taken)
 
     def reserved_spec(self, spec):
         """An existing unit reserves at least its last measured memory cap."""
@@ -425,7 +447,8 @@ class RunnerService:
             # how many cores it has refuses the plan instead of half-making it.
             for _ in range(count):
                 windows.append(self._cpu_window(
-                    width, also=[cpusets.parse(w) for w in windows]))
+                    fleet["platform"], width,
+                    also=[cpusets.parse(w) for w in windows]))
 
         runner_ids = []
         for n in range(count):

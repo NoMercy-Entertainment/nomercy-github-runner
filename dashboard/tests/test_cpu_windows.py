@@ -110,6 +110,32 @@ def _win_service(tmp_path, cores=56, declare_host_cores=True):
     return service
 
 
+def _mixed_service(tmp_path, linux_cores=56, windows_cores=56):
+    """One store with a healthy worker of each pinned platform - a Linux
+    fleet and a Windows fleet side by side, the way the live deployment
+    actually is. `_service` and `_win_service` above each build their own,
+    separate database, which is exactly why a Linux fleet's windows leaking
+    into a Windows placement (and the other way round) went unnoticed: two
+    physically different hosts, each with its own independent processor
+    numbering, never appeared in the same store together (2026-09-23)."""
+    path = str(tmp_path / "control.db")
+    schema.init(path)
+    env = {"GH_TOKEN": "x", "GITHUB_ORG": "o"}
+    FleetStore(path).seed(env)
+    cells = {(p.key, pl): "tests.fake_runtime:UnitRuntime"
+             for p in P.ALL for pl in P.PLATFORMS}
+    service = RunnerService(path, runtimes=cells, env=env)
+    service.inventory.register_worker("linux-1", inv.HYPERV_LINUX,
+                                      capabilities={"kind": "linux-container",
+                                                    "host_cores": linux_cores})
+    service.inventory.register_worker("windows-1", inv.HYPERV_WINDOWS,
+                                      capabilities={"kind": "windows-process",
+                                                    "host_cores": windows_cores})
+    service.inventory.heartbeat("linux-1")
+    service.inventory.heartbeat("windows-1")
+    return service
+
+
 class TestPlanning:
     def test_a_whole_number_on_a_linux_fleet_pins_each_new_runner(self, tmp_path):
         service = _service(tmp_path)
@@ -258,3 +284,46 @@ class TestWindowsHostCoresFallback:
         service.fleets.set_defaults("github-windows-x64", {"cpu_limit": 16})
         with pytest.raises(Refused):
             service.plan("github-windows-x64", 1)
+
+
+class TestCrossPlatformIsolation:
+    """A Linux worker and a Windows worker are physically different hosts,
+    each numbering its own processors from 0 - core 5 on one says nothing
+    about core 5 on the other. Before `_host_cores` and `_cpu_window` took a
+    platform (2026-09-23), both were computed by pooling every pinned
+    platform's workers and specs together: a Linux fleet's windows counted
+    as occupied cores when a Windows window was chosen, and the smaller of
+    the two hosts' core counts silently became the ceiling for both. Each
+    test here would have failed against that pooled code."""
+
+    def test_a_windows_window_ignores_cores_a_linux_fleet_has_taken(
+            self, tmp_path):
+        service = _mixed_service(tmp_path)
+        service.fleets.set_defaults("github-linux-x64", {"cpu_limit": 16})
+        # Two Linux windows take cores 0-31 on the Linux host.
+        _planned(service, "github-linux-x64", 2)
+
+        service.fleets.set_defaults("github-windows-x64", {"cpu_limit": 16})
+        first = _planned(service, "github-windows-x64", 1)[0]
+        # Nothing is taken on the Windows host, so the first window there is
+        # still 0-15 - pooled, it would have been pushed past 31 to dodge
+        # cores the Linux fleet occupies on a different machine.
+        assert first["cpu_limit"] == "0-15"
+
+    def test_a_linux_window_ignores_cores_a_windows_fleet_has_taken(
+            self, tmp_path):
+        service = _mixed_service(tmp_path)
+        service.fleets.set_defaults("github-windows-x64", {"cpu_limit": 16})
+        _planned(service, "github-windows-x64", 2)
+
+        service.fleets.set_defaults("github-linux-x64", {"cpu_limit": 16})
+        first = _planned(service, "github-linux-x64", 1)[0]
+        assert first["cpu_limit"] == "0-15"
+
+    def test_host_core_counts_do_not_pool_across_platforms(self, tmp_path):
+        # The Linux host has fewer cores than the Windows one; pooled, the
+        # smaller number would wrongly cap the Windows window's width too.
+        service = _mixed_service(tmp_path, linux_cores=32, windows_cores=56)
+        service.fleets.set_defaults("github-windows-x64", {"cpu_limit": 40})
+        win = _planned(service, "github-windows-x64", 1)[0]
+        assert len(cpusets.parse(win["cpu_limit"])) == 40
