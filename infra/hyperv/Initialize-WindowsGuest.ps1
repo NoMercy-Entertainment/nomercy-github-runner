@@ -199,22 +199,43 @@ $guestConfig = {
     # payloads or disable Windows Update, either of which takes away
     # Add-WindowsCapability's install source; refuse clearly instead of
     # letting an opaque DISM error stand for it.
-    $cap = Get-WindowsCapability -Online -Name 'OpenSSH.Server~~~~0.0.1.0' -ErrorAction SilentlyContinue
-    if (-not $cap) {
-        throw ("OpenSSH.Server is not a capability this image knows about - the install media's " +
-               "debloat pass likely removed its source. Install it by hand (Settings > System > " +
-               "Optional features > Add a feature, or DISM against a Feature-on-Demand ISO), then " +
-               "run this again.")
-    }
-    if ($cap.State -ne 'Installed') {
+    # Ask the service first. Servicing is the expensive, brittle question -
+    # Get-WindowsCapability answers "Element not found" for a name the image
+    # does not carry, which is a terminating DISM error and not something
+    # -ErrorAction can quieten - and it is the wrong question once sshd is
+    # already there. So: if the service exists, OpenSSH is installed, and none
+    # of this needs asking.
+    if (-not (Get-Service sshd -ErrorAction SilentlyContinue)) {
+        $capName = 'OpenSSH.Server~~~~0.0.1.0'
+        $cap = $null
         try {
-            Add-WindowsCapability -Online -Name 'OpenSSH.Server~~~~0.0.1.0' -ErrorAction Stop | Out-Null
+            $cap = Get-WindowsCapability -Online -Name $capName
         } catch {
-            throw ("Installing OpenSSH.Server failed: $($_.Exception.Message) - likely the install " +
-                   "media's debloat pass removed its payload or disabled Windows Update as its " +
-                   "source. Install it by hand, then run this again.")
+            # The exact versioned name is not in this image; find it by prefix
+            # instead, which enumerates rather than looking one up.
+            $cap = Get-WindowsCapability -Online | Where-Object { $_.Name -like 'OpenSSH.Server*' } |
+                Select-Object -First 1
         }
-        $changed.Add('OpenSSH.Server installed')
+        if (-not $cap) {
+            throw ("OpenSSH.Server is not a capability this image knows about - the install media's " +
+                   "debloat pass likely removed its source. Install it by hand (Settings > System > " +
+                   "Optional features > Add a feature, or DISM against a Feature-on-Demand ISO), then " +
+                   "run this again.")
+        }
+        if ($cap.State -ne 'Installed') {
+            try {
+                Add-WindowsCapability -Online -Name $cap.Name -ErrorAction Stop | Out-Null
+            } catch {
+                throw ("Installing $($cap.Name) failed: $($_.Exception.Message) - likely the install " +
+                       "media's debloat pass removed its payload or disabled Windows Update as its " +
+                       "source. Install it by hand, then run this again.")
+            }
+            $changed.Add('OpenSSH.Server installed')
+        }
+        if (-not (Get-Service sshd -ErrorAction SilentlyContinue)) {
+            throw ("OpenSSH.Server reports installed but there is no sshd service - the image's " +
+                   "servicing state needs looking at by hand before this can continue.")
+        }
     }
     if ((Get-Service sshd).StartType -ne 'Automatic') { Set-Service -Name sshd -StartupType Automatic }
     if ((Get-Service sshd).Status -ne 'Running') { Start-Service sshd; $changed.Add('sshd started') }
