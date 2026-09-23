@@ -321,6 +321,46 @@ failed on this succeeds; a Forgejo job still succeeds.
 
 **Rollback.** Remove the key (default true) and recreate.
 
+## W10. The Windows runners move into their own Hyper-V guest
+
+**Added 2026-09-23, decided by the operator**, who will supply and activate a
+Windows licence. This reopens OPEN-2 of the parent design: it was decided on
+2026-09-18 that no licence would be bought, and the Windows runners have run
+as services on BEAST-UNIT itself ever since. The operator's objection is the
+one the design records as the cost of that choice - a job runs on the host
+that also runs their desktop, and the whole machine is its playground.
+
+**W10a (done 2026-09-22, before the guest exists):** a Windows fleet's
+whole-number CPU limit becomes a per-runner window of cores, enforced as a
+Job Object affinity mask, exactly as the Linux cpusets work. Both Windows
+runners are held to 16 of the 56 processors.
+
+**W10b, the guest.**
+
+| | |
+| --- | --- |
+| Guest | Windows 11 Pro, Gen 2, vTPM and Secure Boot on (Hyper-V supports both), 16 GiB static memory, 8 vCPU, a 200 GiB dynamic system disk and a 200 GiB data disk for the runners' VHDX store |
+| Network | The `rnr-internal` switch with a static address in 10.77.0.0/24 (.30), as the other guests have, plus the Default Switch for outbound traffic |
+| Licence | The operator's: the ISO is downloaded here, the key is entered and activated by the operator over the console or RDP. Nothing about the key is stored in this repository or passed to any tool |
+| Agent | `Install-WindowsWorker.ps1`, unchanged, run inside the guest with `-WindowsStorage`; it enrols with the controller and gets its own certificate |
+| Runners | Created by the controller on the new worker, with the same fleets, labels and limits; the two runners on the host are drained, deregistered and removed afterwards |
+
+**Division of work.** This session prepares the VM, the unattended install
+answer file (local administrator, OpenSSH server, RDP, no telemetry opt-ins)
+and the scripts; the operator runs the elevated steps and does the licence
+and activation. No key, product ID or activation output is ever written to
+the repository or to an evidence file.
+
+**What must be true before the host's runners go:** the guest's worker reports
+healthy, a runner created there registers at its forge, and it runs one real
+job of each provider. Only then are the host's services removed - the
+rollback until that moment is that they are still there and serving.
+
+**What this does not solve.** A Windows guest cannot nest Docker for Windows
+containers without nested virtualization, which Hyper-V supports on this
+processor; the runners do not use Windows containers today (design 9.2), and
+nothing here changes that.
+
 ## Order and dependencies
 
 W1 first (it is the fault with the widest effect), then W2 (small, and it

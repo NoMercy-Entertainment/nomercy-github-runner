@@ -836,3 +836,35 @@ staggered cores window on the platforms that pin.
 - [ ] **Step 4: Run the new tests, then the full dashboard suite** (baseline 1720 passed / 3 skipped / 3 xfailed).
 - [ ] **Step 5: Commit** `git commit -m "feat(control): a Windows runner gets its own window of cores"`
 - [ ] **Step 6 (controller session):** deploy, set `cpu_limit` 16 on both Windows fleets, recreate both Windows runners, and check the card reads 16 cores and the Job Object carries the affinity.
+
+---
+
+### Task 22: W10b-1 - the Windows guest exists and answers
+
+**Files:**
+- Modify: `infra/hyperv/settings.psd1` (a `rnr-windows-1` VM entry beside the others: role `windows-worker`, address 10.77.0.30, 16 GiB, 8 vCPU, disk sizes)
+- Modify: `infra/hyperv/New-RunnerPlatformVMs.ps1` (create it like the others, but Gen 2 with vTPM and Secure Boot on, and a second data disk)
+- Create: `infra/windows/guest/autounattend.xml` (unattended install: local administrator, OpenSSH server, RDP on, no OOBE questions, no product key - the operator enters it)
+- Create: `infra/hyperv/New-WindowsGuest.ps1` (download nothing; take `-Iso <path>` and build the VM, attach the ISO and the answer file as a second ISO/floppy, start it)
+- Evidence: `docs/superpowers/plans/2026-09-17-uniform-evidence.md`
+
+**Interfaces:** produces the VM `rnr-windows-1` reachable over SSH at 10.77.0.30 with an administrator account; consumed by Task 23.
+
+- [ ] **Step 1: Read** `infra/hyperv/New-RunnerPlatformVMs.ps1`, `infra/hyperv/settings.psd1` and `infra/hyperv/lib.ps1` to follow their conventions exactly (naming, paths under `D:\HyperV\runner-platform`, the internal switch, static addresses, `Test-Elevated`, `ShouldProcess`).
+- [ ] **Step 2: Add the VM to `settings.psd1`** with its role, address, memory, vCPU and disk sizes, and a `Windows.Guest` block naming the ISO path and the answer-file path.
+- [ ] **Step 3: Write `autounattend.xml`**: one administrator account whose password the operator sets in the script's parameter (never committed), locale nl-NL/en-US as the other guests, disk 0 partitioned GPT with the system partition, OOBE skipped, `EnableRDP`, and a `FirstLogonCommands` that installs the OpenSSH Server feature and starts it. No product key element at all - an unactivated Windows 11 Pro installs and runs, and the operator activates it afterwards.
+- [ ] **Step 4: Write `New-WindowsGuest.ps1`**: parameters `-Iso`, `-AdminPassword` (SecureString), `-WhatIf` support; refuses to run unelevated; creates the VM (Gen 2, vTPM enabled with `Set-VMKeyProtector`/`Enable-VMTPM`, Secure Boot template `MicrosoftWindows`), two VHDX files, both network adapters, boots it from the ISO with the answer file attached, and prints how to watch the install and how to reach it afterwards. It changes no other VM.
+- [ ] **Step 5: Syntax-check both scripts** (`[System.Management.Automation.Language.Parser]::ParseFile`) and validate the answer file is well-formed XML (`[xml](Get-Content ...)`).
+- [ ] **Step 6: Commit** `git commit -m "feat(infra): a Windows guest for the Windows runners"`
+- [ ] **Step 7 (operator, elevated):** run the script with the ISO path and a password, watch the install, enter the licence key and activate. The session verifies afterwards: the VM answers over SSH, `slmgr /xpr`-style activation state is confirmed by the operator (never recorded here), and the internal address answers from the control plane.
+
+### Task 23: W10b-2 - the guest becomes the Windows worker and takes the runners over
+
+**Files:** evidence only; the agent and its installer are unchanged.
+
+- [ ] **Step 1:** In the guest (elevated, by the operator): `infra\hyperv\Install-WindowsWorker.ps1 -WindowsStorage`, from a clone of this repository at the current commit. Confirm the worker reports healthy to the controller with its own certificate, and that its capabilities name both templates and `disk_quota: true`.
+- [ ] **Step 2:** Move the Forgejo Windows runner: set the fleet's capacity to 2 so a runner is created on the new worker beside the old one (placement chooses the healthy worker with room; pin it with `host_id` if both qualify), wait until it is idle at the forge, then let a real job run on it.
+- [ ] **Step 3:** Drain and remove the runner on the host (capacity back to 1, the reconciler drains the older one first; confirm which one it picks before letting it run).
+- [ ] **Step 4:** The same for the GitHub Windows fleet.
+- [ ] **Step 5:** When both fleets serve from the guest and have each run a real job, remove the host's agent: stop and delete the `rnr-agent` service on BEAST-UNIT, keep `C:\ProgramData\nomercy` until the stability period ends, and retire the `beast-unit` worker with `python -m control retire-worker beast-unit`.
+- [ ] **Step 6:** Record the evidence and update `docs/operations/runner-platform.md` section 1: the Windows runners now run in `rnr-windows-1`, and every runner of the platform is in a Hyper-V guest.
