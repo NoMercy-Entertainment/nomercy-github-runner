@@ -213,3 +213,46 @@ Write-Host "Changed: $summary"
 Write-Host ""
 $result.Info | Format-List | Out-String | Write-Host
 Write-Host "Reachable at $($spec.Address); the operator verifies SSH from the control plane next."
+
+# --- Secure Boot: back on now that the guest itself is configured ----------------
+# New-WindowsGuest.ps1 turns Secure Boot on by default (Windows 11 requires it),
+# but this guest's install media is a repacked ISO - rebuilt to carry an
+# autounattend.xml - and Hyper-V refused to boot it with Secure Boot on ("SCSI
+# DVD (0,2) The boot loader failed"); the operator turned Secure Boot off to get
+# Setup running. It is the repacked media's loader that failed validation, not
+# Windows itself: the installed Windows bootloader is Microsoft-signed and boots
+# fine under Secure Boot, so put it back on here, now that the guest
+# configuration above has already succeeded - never before, so a reboot for this
+# is not risked against an unconfigured guest. Idempotent: already On, do nothing.
+$firmware = Get-VMFirmware -VMName $Name
+if ($firmware.SecureBoot -eq 'On') {
+    Write-Host ""
+    Write-Host "Secure Boot is already on for $Name; nothing to do."
+} else {
+    Stop-VM -Name $Name
+    $stopDeadline = (Get-Date).AddMinutes(5)
+    while ((Get-VM -Name $Name).State -ne 'Off') {
+        if ((Get-Date) -gt $stopDeadline) {
+            throw "$Name did not reach Off within 5 minutes of Stop-VM; check its state by hand before running this again."
+        }
+        Start-Sleep -Seconds 5
+    }
+    Set-VMFirmware -VMName $Name -EnableSecureBoot On -SecureBootTemplate MicrosoftWindows
+    Start-VM -Name $Name
+    $directDeadline = (Get-Date).AddMinutes(5)
+    $direct = $false
+    while (-not $direct -and (Get-Date) -le $directDeadline) {
+        try {
+            $direct = Invoke-Command -VMName $Name -Credential $Credential -ScriptBlock { $true } -ErrorAction Stop
+        } catch {
+            Start-Sleep -Seconds 5
+        }
+    }
+    if (-not $direct) {
+        throw ("$Name did not answer PowerShell Direct within 5 minutes of turning Secure Boot back on. " +
+               "To undo: Set-VMFirmware -VMName $Name -EnableSecureBoot Off, then start the VM again.")
+    }
+    $hostChanges.Add('Secure Boot turned back on (was off only to let the repacked install media boot)')
+    Write-Host ""
+    Write-Host "Secure Boot turned back on for $Name; the guest answered PowerShell Direct again."
+}
