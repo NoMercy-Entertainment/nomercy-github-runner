@@ -35,11 +35,15 @@
     # least this much commit is still free. Static memory is a reservation;
     # commit exhaustion has killed the WSL VM twice (R-2).
     CommitReserveGB = 20
-    # And the platform's VMs together stay inside this. The live figure above
-    # does not see that the WSL VM may still grow to its 120 GB cap:
-    # .wslconfig budgets WSL 120 + about 90 outside it = about 210 of 256 GB,
-    # so about 45 GB is left, and this takes 30 of it (OPEN-5).
-    VmBudgetGB    = 30
+    # And the platform's VMs together stay inside this. The WSL VM the figure
+    # above once budgeted around is retired; the live cost is now the VMs
+    # themselves. Corrected 2026-09-23: rnr-linux-1 has run at 80 GB and
+    # 56 vCPU, live, since it got its own window of cores - this entry above
+    # still reads 16/8 and is left as it is, only the budget is corrected
+    # against what is actually reserved. Measured that day: host commit 169 of
+    # 256 GB used, 87 GB free. CommitReserveGB is still enforced per VM on top
+    # of this sum.
+    VmBudgetGB    = 110
 
     # The GitHub cells. The image is what the fleet on the WSL worker is
     # already made from; the drain group is a runner group with no repository
@@ -90,6 +94,18 @@
             # runners at 6 GB each, leaving the guest and its engine 4 GB.
             MaxRunners   = 2
             RunnerMemGB  = 6
+        }
+        'rnr-windows-1' = @{
+            Role      = 'windows-worker'
+            MemoryGB  = 16
+            Cpus      = 8
+            DiskGB    = 200
+            DataDiskGB = 200
+            Address   = '10.77.0.30'
+            MgmtMac   = '00155D771E0A'
+            UplinkMac = '00155D771E0B'
+            MaxRunners  = 2
+            RunnerMemGB = 8
         }
     }
 

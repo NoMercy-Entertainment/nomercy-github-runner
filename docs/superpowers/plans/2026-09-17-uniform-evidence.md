@@ -1004,3 +1004,40 @@ one whose fleet names no template yet had a hole where the name should be.
   `playwright install --with-deps` passes; the run still fails, but in the
   repository's own "Build" step - the same step that failed on 2026-09-19 on
   the WSL fleet, before any of this. The runner-side fault is gone.
+
+## 2026-09-23 - the Windows guest scripts written (not run; nothing on the host changed)
+
+- **Decided by:** the operator, who will supply and activate a Windows
+  licence (design W10, reopening OPEN-2). This session prepared the
+  VM-creation and guest-configuration scripts; the elevated run, the Windows
+  install and the licence are the operator's, at the console.
+- **Added to settings.psd1:** the `rnr-windows-1` entry (16 GB static,
+  8 vCPU, a 200 GB system disk and a 200 GB data disk, 10.77.0.30, MACs
+  ...1E0A/...1E0B, 2 runners at 8 GB each), and `VmBudgetGB` corrected from
+  30 to 110: `rnr-linux-1` has run at 80 GB and 56 vCPU, live, since it got
+  its own window of cores, though its own settings entry still reads 16/8 -
+  left as it is here, since only the budget line was in scope. The
+  correction is against what is actually reserved, not the stale entry.
+  Host commit measured for it: 169 of 256 GB used, 87 GB free, on
+  2026-09-23.
+- **New:** `New-WindowsGuest.ps1` (creates the VM, its two disks, both
+  adapters with their static MACs, vTPM, Secure Boot, the install ISO as
+  first boot device, and starts it) and `Initialize-WindowsGuest.ps1`
+  (configures the installed guest over PowerShell Direct - no network
+  needed: static address, DNS, OpenSSH, timezone, sleep and hibernate off,
+  RDP; every step checks the guest's state first, so running it again
+  changes nothing). Neither reads, stores, or reports anything about the
+  Windows licence or its activation.
+- **Verified, not live:** both scripts parsed with zero errors
+  (`[System.Management.Automation.Language.Parser]::ParseFile`);
+  `Import-PowerShellDataFile` on settings.psd1 read back the new entry and
+  the corrected budget; every Hyper-V cmdlet either script calls
+  (`Enable-VMTPM`, `Set-VMKeyProtector`, `Set-VMFirmware`, `Add-VMDvdDrive`,
+  `Add-VMHardDiskDrive`, `New-VHD`, `Invoke-Command`) exists on this host,
+  and `Set-VMFirmware`'s `-SecureBootTemplate` accepts `MicrosoftWindows` as
+  a plain string parameter (this build's help carries no validation set to
+  check it against).
+- **Not run:** neither script has been executed. The ISO at
+  `D:\HyperV\runner-platform\iso\Windows11.iso` was not touched, read, or
+  verified - it was still finishing its copy - and no VM named
+  `rnr-windows-1` exists yet. That is the operator's step next.
