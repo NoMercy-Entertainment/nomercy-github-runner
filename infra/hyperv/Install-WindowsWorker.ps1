@@ -31,20 +31,49 @@
     VHDX (docs/windows-runner-storage.md). A runner that already exists
     keeps its plain directory - the agent never adopts one - until it is
     recreated.
+
+    -HostId, -ListenAddress, -TlsBundle, -NssmSource and -RunnerBinary let
+    this install a worker that is not this host (T-23, W10b-2): a Hyper-V
+    guest, carried into by Install-WindowsGuestWorker.ps1 over PowerShell
+    Direct. Left out, every one of them defaults to exactly what this script
+    already did - settings.psd1's 'Windows' block and this host's own
+    rnr-internal address - so `.\Install-WindowsWorker.ps1 -WindowsStorage`
+    still installs BEAST-UNIT. -TlsBundle also decides where the agent's code
+    and certificate come from: given, a tar already holding the certificate
+    is imported and the agent is copied from an already-exploded `git archive
+    HEAD` tree beside this script, because a guest has neither the platform
+    SSH key that enrolling needs nor a git checkout that `git archive` needs;
+    left out, this script enrols over SSH and builds the agent from HEAD
+    itself, exactly as before. The health check needs that same SSH key, so
+    it is skipped, with a printed note, when -TlsBundle is given and the key
+    is not on this machine.
 #>
 [CmdletBinding(SupportsShouldProcess)]
 param(
     [switch] $WindowsStorage,
-    [string] $StorageRoot = 'D:\runner-disks'
+    [string] $StorageRoot = 'D:\runner-disks',
+    [string] $HostId,
+    [string] $ListenAddress,
+    [string] $TlsBundle,
+    [string] $NssmSource,
+    [string] $RunnerBinary
 )
 . "$PSScriptRoot\lib.ps1"
 $s = Get-RunnerPlatformSettings
 $w = $s.Windows
 if (-not (Test-Elevated)) { throw 'Run this elevated.' }
 
-$hostIp = Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue |
-    Where-Object { $_.IPAddress -eq $s.HostAddress }
-if (-not $hostIp) { throw "$($s.HostAddress) is not on this host; run New-RunnerPlatformVMs.ps1 first." }
+if (-not $HostId)        { $HostId = $w.HostId }
+if (-not $ListenAddress) { $ListenAddress = $s.HostAddress }
+if (-not $NssmSource)    { $NssmSource = $w.NssmSource }
+if (-not $RunnerBinary)  { $RunnerBinary = $w.RunnerBinary }
+if ($TlsBundle -and -not (Test-Path -LiteralPath $TlsBundle)) {
+    throw "-TlsBundle $TlsBundle does not exist."
+}
+
+$listenIp = Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue |
+    Where-Object { $_.IPAddress -eq $ListenAddress }
+if (-not $listenIp) { throw "$ListenAddress is not on this machine (looked at every IPv4 address bound here)." }
 $cpName = @($s.VMs.Keys | Where-Object { $s.VMs[$_].Role -eq 'control-plane' })[0]
 $cp = $s.VMs[$cpName].Address
 
@@ -79,22 +108,43 @@ $pth = Get-ChildItem $pythonDir -Filter 'python*._pth' | Select-Object -First 1
 $lines = Get-Content -LiteralPath $pth.FullName
 if ($lines -notcontains '..\app') { Add-Content -LiteralPath $pth.FullName -Value '..\app' }
 
-# --- the agent, from HEAD ---------------------------------------------------------
-$version = (& git -C $script:RepoRoot rev-parse --short HEAD).Trim()
-$tar = Join-Path $env:TEMP 'rnr-agent.tar'
-& git -C $script:RepoRoot archive --format=tar -o $tar HEAD agent
-if ($LASTEXITCODE -ne 0) { throw 'git archive failed' }
+# --- the agent, from HEAD -----------------------------------------------------
+# On this host, straight from a git checkout. On a guest (-TlsBundle), there
+# is no git and no clone - Install-WindowsGuestWorker.ps1 already laid an
+# exploded `git archive HEAD` tree beside this script (no .git; git cannot
+# run against it) and the version it recorded when making that archive on
+# the real host.
 $fresh = Join-Path $agentDir 'app.new'
 Remove-Item -Recurse -Force $fresh -ErrorAction SilentlyContinue
-New-Item -ItemType Directory -Path $fresh | Out-Null
-& tar.exe -xf $tar -C $fresh
-if ($LASTEXITCODE -ne 0) { throw 'extracting the agent failed' }
-Remove-Item $tar
+if ($TlsBundle) {
+    $versionFile = Join-Path $script:RepoRoot 'VERSION'
+    if (-not (Test-Path -LiteralPath $versionFile)) {
+        throw "$versionFile is missing; Install-WindowsGuestWorker.ps1 should have written it."
+    }
+    $version = (Get-Content -Raw -LiteralPath $versionFile).Trim()
+    # Copy-Item nests the source as a subdirectory of the destination only
+    # when the destination already exists - create $fresh first, so the
+    # result is $fresh\agent\... here too, matching what tar.exe -C $fresh
+    # produces below from a `git archive HEAD agent` tar (its paths keep the
+    # `agent/` prefix): AppDirectory is $appDir and `python -m agent` needs
+    # an `agent` package one level inside it.
+    New-Item -ItemType Directory -Path $fresh | Out-Null
+    Copy-Item -Recurse -Force -Path (Join-Path $script:RepoRoot 'agent') -Destination $fresh
+} else {
+    $version = (& git -C $script:RepoRoot rev-parse --short HEAD).Trim()
+    $tar = Join-Path $env:TEMP 'rnr-agent.tar'
+    & git -C $script:RepoRoot archive --format=tar -o $tar HEAD agent
+    if ($LASTEXITCODE -ne 0) { throw 'git archive failed' }
+    New-Item -ItemType Directory -Path $fresh | Out-Null
+    & tar.exe -xf $tar -C $fresh
+    if ($LASTEXITCODE -ne 0) { throw 'extracting the agent failed' }
+    Remove-Item $tar
+}
 
 # --- NSSM and the template ---------------------------------------------------------
 $nssm = Join-Path $binDir 'nssm.exe'
-Assert-Hash $w.NssmSource $w.NssmSha256
-if (-not (Test-Path $nssm)) { Copy-Item -LiteralPath $w.NssmSource -Destination $nssm }
+Assert-Hash $NssmSource $w.NssmSha256
+if (-not (Test-Path $nssm)) { Copy-Item -LiteralPath $NssmSource -Destination $nssm }
 Assert-Hash $nssm $w.NssmSha256
 
 # Every template the repository has, not only the Forgejo one: a worker can
@@ -115,31 +165,39 @@ foreach ($dir in Get-ChildItem -Directory $source) {
     Write-Host "  template $($dir.Name)"
 }
 $template = Join-Path $templates $w.Template
-Assert-Hash $w.RunnerBinary $w.RunnerSha256
-Copy-Item -Force -LiteralPath $w.RunnerBinary -Destination (Join-Path $template 'forgejo-runner.exe')
+Assert-Hash $RunnerBinary $w.RunnerSha256
+Copy-Item -Force -LiteralPath $RunnerBinary -Destination (Join-Path $template 'forgejo-runner.exe')
 
 # Each runner's job host runs this Python, as the runner's own virtual
 # account: every service account may read and run it, and nothing more.
 & icacls.exe $pythonDir /grant '*S-1-5-80-0:(OI)(CI)RX' /Q | Out-Null
 & icacls.exe $fresh /grant '*S-1-5-80-0:(OI)(CI)RX' /Q | Out-Null
 
-# --- enrolled by the controller ---------------------------------------------------
-$endpoint = "https://$($s.HostAddress):$($s.AgentPort)"
-Invoke-Guest $s $cp ("sudo docker exec rnr-controller python -m control enrol $($w.HostId) hyperv-windows $endpoint" +
-    " && sudo rm -rf /tmp/bundle && sudo docker cp rnr-controller:/data/control-tls/workers/$($w.HostId) /tmp/bundle" +
-    " && sudo tar -C /tmp/bundle -cf /tmp/bundle.tar . && sudo chown `$(id -un) /tmp/bundle.tar && sudo rm -rf /tmp/bundle") -Quiet
-$bundle = Join-Path $env:TEMP 'rnr-bundle.tar'
-Receive-FromGuest $s $cp '/tmp/bundle.tar' $bundle
-Invoke-Guest $s $cp 'rm -f /tmp/bundle.tar' -Quiet
-& tar.exe -xf $bundle -C $tlsDir
-Remove-Item $bundle
+# --- the certificate: enrolled by the controller, or imported already enrolled ----
+if ($TlsBundle) {
+    # A guest: Install-WindowsGuestWorker.ps1 already enrolled $HostId from a
+    # machine that holds the platform SSH key ($s.Root\ssh\id_ed25519, which
+    # is not on this one) and copied the resulting tar in.
+    & tar.exe -xf $TlsBundle -C $tlsDir
+    if ($LASTEXITCODE -ne 0) { throw "extracting -TlsBundle $TlsBundle failed" }
+} else {
+    $endpoint = "https://$($ListenAddress):$($s.AgentPort)"
+    Invoke-Guest $s $cp ("sudo docker exec rnr-controller python -m control enrol $HostId hyperv-windows $endpoint" +
+        " && sudo rm -rf /tmp/bundle && sudo docker cp rnr-controller:/data/control-tls/workers/$HostId /tmp/bundle" +
+        " && sudo tar -C /tmp/bundle -cf /tmp/bundle.tar . && sudo chown `$(id -un) /tmp/bundle.tar && sudo rm -rf /tmp/bundle") -Quiet
+    $bundle = Join-Path $env:TEMP 'rnr-bundle.tar'
+    Receive-FromGuest $s $cp '/tmp/bundle.tar' $bundle
+    Invoke-Guest $s $cp 'rm -f /tmp/bundle.tar' -Quiet
+    & tar.exe -xf $bundle -C $tlsDir
+    Remove-Item $bundle
+}
 & icacls.exe $tlsDir /inheritance:r /grant:r '*S-1-5-18:(OI)(CI)F' '*S-1-5-32-544:(OI)(CI)F' /Q | Out-Null
 
 # --- configuration ------------------------------------------------------------------
 $config = [ordered]@{
-    host_id    = $w.HostId
+    host_id    = $HostId
     runtime    = 'windows-process'
-    listen     = "$($s.HostAddress):$($s.AgentPort)"
+    listen     = "$($ListenAddress):$($s.AgentPort)"
     controller = "https://${cp}:$($s.ReceiverPort)"
     tls        = @{ cert = (Join-Path $tlsDir 'agent.crt'); key = (Join-Path $tlsDir 'agent.key')
                     ca = (Join-Path $tlsDir 'ca.pem') }
@@ -158,7 +216,7 @@ Write-LfFile $configPath ($config | ConvertTo-Json -Depth 4)
 $rule = 'rnr-agent (control plane only)'
 Get-NetFirewallRule -DisplayName $rule -ErrorAction SilentlyContinue | Remove-NetFirewallRule
 New-NetFirewallRule -DisplayName $rule -Direction Inbound -Action Allow -Protocol TCP `
-    -LocalAddress $s.HostAddress -LocalPort $s.AgentPort -RemoteAddress $cp | Out-Null
+    -LocalAddress $ListenAddress -LocalPort $s.AgentPort -RemoteAddress $cp | Out-Null
 
 # --- the service ----------------------------------------------------------------------
 $service = 'rnr-agent'
@@ -188,11 +246,18 @@ Start-Sleep -Seconds 3
 Get-Service $service | Format-Table Name, Status -AutoSize | Out-String | Write-Host
 Get-Content -LiteralPath $log -Tail 3 -ErrorAction SilentlyContinue
 
-$deadline = (Get-Date).AddSeconds(60)
-do {
-    Start-Sleep -Seconds 5
-    $status = Invoke-Guest $s $cp 'sudo docker exec rnr-controller python -m control status' | Out-String
-} until ($status -match "(?m)^\s+$($w.HostId)\s+\S+\s+healthy" -or (Get-Date) -gt $deadline)
-Write-Host $status
-if ($status -notmatch "(?m)^\s+$($w.HostId)\s+\S+\s+healthy") { throw "$($w.HostId) did not report healthy within 60 s" }
+if ($TlsBundle -and -not (Test-Path -LiteralPath (Get-KeyPath $s))) {
+    # This machine has no way to ask the control plane anything - the same
+    # SSH key the enrolment step above would have needed. The caller
+    # (Install-WindowsGuestWorker.ps1), which does have it, checks instead.
+    Write-Host "Skipping the health check: $(Get-KeyPath $s) is not on this machine, so the control plane cannot be reached from here."
+} else {
+    $deadline = (Get-Date).AddSeconds(60)
+    do {
+        Start-Sleep -Seconds 5
+        $status = Invoke-Guest $s $cp 'sudo docker exec rnr-controller python -m control status' | Out-String
+    } until ($status -match "(?m)^\s+$HostId\s+\S+\s+healthy" -or (Get-Date) -gt $deadline)
+    Write-Host $status
+    if ($status -notmatch "(?m)^\s+$HostId\s+\S+\s+healthy") { throw "$HostId did not report healthy within 60 s" }
+}
 Write-Host "The Windows worker is joined up at $version."

@@ -150,4 +150,23 @@
         # workflows ask for. The pilot label is gone with the pilot.
         Labels        = 'windows-2022:host,windows-latest:host'
     }
+
+    # T-23 (W10b-2): rnr-windows-1's own worker block. Its host id is the VM's
+    # own name (VMs above, which already carries its address, memory and
+    # disk); this carries only what is not already there - the agent's
+    # capacity and the storage root on its own second disk, the one
+    # New-WindowsGuest.ps1 attached as DataDiskGB (still raw and unpartitioned;
+    # nothing brings it online yet, so this drive letter does not exist until
+    # that is done by hand) - kept apart from the Windows block above, which
+    # keeps describing BEAST-UNIT until it is retired (task step 9).
+    # Everything an install does not need a per-worker value for - the pinned
+    # Python, NSSM and runner-binary hashes, the template name, the labels -
+    # stays shared, read from Windows above.
+    WindowsGuests = @{
+        'rnr-windows-1' = @{
+            MaxRunners  = 2
+            RunnerMemGB = 8
+            StorageRoot = 'D:\runner-disks'
+        }
+    }
 }
