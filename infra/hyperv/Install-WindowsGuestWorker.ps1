@@ -237,19 +237,6 @@ try {
     } -ArgumentList $guestInstaller, $Name, $spec.Address, $guestBundle, $guestNssm, $guestRunnerBinary, $g.StorageRoot,
         $g.MaxRunners, $g.RunnerMemGB
 
-    # --- the staging directory: gone once the install has succeeded ----------------
-    # Install-WindowsWorker.ps1 already deletes the TLS bundle the moment it
-    # extracts it; this removes the rest of what was only ever meant to get the
-    # install done - the source tree, NSSM, the runner binary - none of which
-    # is the installed tree (that is under C:\ProgramData\nomercy\agent, \bin,
-    # \templates, untouched here). Left behind, this was an un-ACL'd,
-    # default-permission directory - not a place anything transient should sit.
-    Invoke-Command -Session $session -ScriptBlock {
-        param($SrcRoot)
-        $ErrorActionPreference = 'Stop'
-        Remove-Item -Recurse -Force $SrcRoot -ErrorAction SilentlyContinue
-    } -ArgumentList $guestSrc
-
     # --- healthy, checked from here: the guest has no SSH key to ask itself --------
     Write-Host "waiting for $Name to report healthy..."
     $deadline = (Get-Date).AddSeconds(90)
@@ -262,6 +249,21 @@ try {
     Write-Host "$Name is joined up at $version, capacity $($g.MaxRunners) x $($g.RunnerMemGB) GB, storage root $($g.StorageRoot)."
 }
 finally {
+    # --- the staging directory, on every path out of here ---------------------------
+    # It holds the TLS bundle, and a bundle holds a private key. The installer
+    # deletes that bundle the moment it extracts it, but the installer can fail
+    # before it gets there - Python, the agent, NSSM and the templates all come
+    # first - and a failed run must not leave a key sitting in a directory with
+    # default ProgramData permissions. So this runs whether the install
+    # succeeded or threw. None of the installed tree is under \src: the agent,
+    # NSSM and the templates live under C:\ProgramData\nomercy\agent, \bin and
+    # \templates, which are not touched here.
+    if ($guestSrc -and $session -and $session.State -eq 'Opened') {
+        Invoke-Command -Session $session -ScriptBlock {
+            param($SrcRoot)
+            Remove-Item -Recurse -Force $SrcRoot -ErrorAction SilentlyContinue
+        } -ArgumentList $guestSrc -ErrorAction SilentlyContinue
+    }
     if ($session) { Remove-PSSession $session -ErrorAction SilentlyContinue }
     Remove-Item -Recurse -Force $hostStage -ErrorAction SilentlyContinue
 }
