@@ -954,3 +954,44 @@ its exit codes; only how it makes and attaches an image changes.
 - [ ] **Step 5:** Run the agent's test suite in full and report the counts.
 - [ ] **Step 6: Commit.**
 - [ ] **Step 7 (live, after review):** redeploy the agent into the guest, raise the fleet to 2, and confirm the runner is created with its own disk under `D:\runner-disks`.
+
+### Task 25: a runner's CPU window is cut from its own host
+
+**What the live run established.** With the storage fix in, the runner
+placed on `rnr-windows-1` was pinned to `32-47` - sixteen cores that do not
+exist in an eight-processor guest - and its job host died at once:
+
+```
+provision: create_unit: 500: RuntimeError: rnr-<id>:
+Unexpected status SERVICE_STOPPED in response to START control
+```
+
+Two faults behind one symptom:
+
+1. No Windows worker declares `host_cores` in its capabilities (only the
+   Linux one does; `rnr-linux-1` says 56, `beast-unit` and `rnr-windows-1`
+   say nothing), so the controller fell back to what the *runners* last
+   measured - and those runners sit on the physical host, which has 56.
+2. `_host_cores` is scoped to a platform, not to a host. Two Windows
+   workers with different processor counts are pooled with `min()`, which
+   is wrong in both directions: it can cut the big host's windows down to
+   the small guest's size, or - as here, since the guest declares nothing -
+   hand the small guest a window off the big host's numbering.
+
+**Files:**
+- Modify: `agent/runtimes/windows_process.py` (declare `host_cores` in capabilities)
+- Modify: `dashboard/control/service.py` (`_host_cores`, `_cpu_window`)
+- Modify: `dashboard/control/cpusets.py` if `allocate` does not already refuse a width wider than the host
+- Modify: `agent/tests/test_windows_runtime.py`, `dashboard/tests/` (whichever cover capabilities and windows)
+- Modify: `infra/hyperv/settings.psd1` (`rnr-windows-1` gets 16 vCPU, so a runner there has a real sixteen-core window like the ones it replaces)
+
+**Interfaces:** `_host_cores(platform, host_id)` - the count for one host, from that worker's own declaration, else from the telemetry of specs placed on it.
+
+- [ ] **Step 1: Read** `dashboard/control/service.py`'s `_pinned_width`, `_host_cores`, `_cpu_window`, `dashboard/control/cpusets.py`, and `agent/runtimes/windows_process.py`'s capabilities and telemetry.
+- [ ] **Step 2: Write the failing tests first.** A worker with 8 cores and a worker with 56 of the same platform, each with a runner: the 8-core host's window must fall inside 0-7, the 56-core host's must keep its own numbering, and neither may be cut by the other's count. A window wider than the host's cores must be refused with a message naming both numbers, never silently narrowed.
+- [ ] **Step 3: Make them pass.** `host_id` becomes part of how the count is found: the worker's declared `host_cores` first, then the telemetry of specs on that host, then a refusal naming the host.
+- [ ] **Step 4:** Declare `host_cores` in the Windows runtime's capabilities, the way the Linux runtime does, with a test.
+- [ ] **Step 5:** Give `rnr-windows-1` 16 vCPU in `settings.psd1`, and say in the comment why: its runners are pinned sixteen wide, as the ones on the physical host are.
+- [ ] **Step 6:** Run both suites in full and report the counts.
+- [ ] **Step 7: Commit.**
+- [ ] **Step 8 (live, after review):** deploy the controller, resize the guest, redeploy its agent, raise the fleet to 2, and confirm the runner comes up pinned inside its own guest's cores.
