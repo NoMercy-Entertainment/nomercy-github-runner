@@ -257,6 +257,11 @@ function Confirm-OwnedImage {
         try {
             Add-VirtualDisk $script:image (Get-DiskSecurityDescriptor $script:rid $false) -ReadOnly
         } catch {
+            # AttachVirtualDisk can succeed and still have this call throw
+            # afterward - a real disk is a raw kernel attach, not the more
+            # defensive higher-level cmdlet it replaced. Whatever this call
+            # may have surfaced is not this caller's to leave behind.
+            try { Dismount-DiskImage -ImagePath $script:image } catch {}
             throw "Refusing to remove an image that cannot be attached for identity verification: $($_.Exception.Message)"
         }
     }
@@ -382,7 +387,19 @@ try {
         # was already attached before this call began is left exactly as
         # found on a refusal; it was not this call's to attach or detach.
         $selfAttached = -not $diskImage.Attached
-        if ($selfAttached) { Add-VirtualDisk $image (Get-DiskSecurityDescriptor $rid $true) }
+        if ($selfAttached) {
+            try {
+                Add-VirtualDisk $image (Get-DiskSecurityDescriptor $rid $true)
+            } catch {
+                # AttachVirtualDisk can succeed and still have this call
+                # throw afterward - a real disk is a raw kernel attach, not
+                # the more defensive higher-level cmdlet it replaced.
+                # Whatever this call may have surfaced is not this caller's
+                # to leave behind.
+                try { Dismount-DiskImage -ImagePath $image } catch {}
+                throw
+            }
+        }
         try {
             $disk = Get-OwnedDisk
         } catch {

@@ -352,6 +352,17 @@ def _model(path, **changes):
     return value
 
 
+def _ps1_functions_only():
+    """Everything in the real helper before its JSON-stdin protocol begins -
+    pure function/type declarations, no side effects, safe to dot-source
+    standalone to reach Add-VirtualDisk, Get-DiskSecurityDescriptor and
+    Get-RunnerServiceSid directly, without sending the helper a request."""
+    text = (ROOT / "agent/runtimes/windows_storage.ps1").read_text(encoding="utf-8")
+    marker = "$mutex = $null"
+    assert marker in text
+    return text.split(marker, 1)[0]
+
+
 @pytest.mark.parametrize("failure", [None, "create", "attach", "initialize", "partition", "format", "mount", "protect-volume"])
 def test_actual_helper_resumes_each_creation_stage_without_reformatting(helper, failure):
     invoke, request, model = helper
@@ -547,19 +558,119 @@ def test_actual_add_virtual_disk_throws_with_the_failing_calls_code(tmp_path):
     pytest's own temporary directory that is guaranteed not to exist."""
     if sys.platform != "win32":
         pytest.skip("actual PowerShell helper runs on Windows")
-    text = (ROOT / "agent/runtimes/windows_storage.ps1").read_text(encoding="utf-8")
-    marker = "$mutex = $null"
-    assert marker in text
-    functions_only = text.split(marker, 1)[0]
     missing = tmp_path / "definitely-missing.vhdx"
     probe = tmp_path / "probe.ps1"
-    probe.write_text(functions_only + "\r\n" + (
+    probe.write_text(_ps1_functions_only() + "\r\n" + (
         f"Add-VirtualDisk '{missing}' (Get-DiskSecurityDescriptor '{RID}' $true)\r\n"),
         encoding="utf-8")
     result = subprocess.run([PS, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
                             "-File", str(probe)], capture_output=True, text=True, timeout=30)
     assert result.returncode != 0
     assert re.search(r"OpenVirtualDisk failed \(code -?\d+\)", result.stderr), result.stderr
+
+
+_REAL_ATTACH_PROBE_HEADER = '''param([string]$Dir, [string]$Rid)
+$principal = New-Object Security.Principal.WindowsPrincipal(
+    [Security.Principal.WindowsIdentity]::GetCurrent())
+if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+    @{skipped = "not running elevated - this would have created a scratch VHDX, attached it writable through the real Add-VirtualDisk with a descriptor, formatted it, detached it, reattached it read-only, and confirmed the read-only attach reports the same disk and volume identity as the writable one, that IsReadOnly is true, and that a write through it is refused"} | ConvertTo-Json -Compress
+    exit 0
+}
+'''
+
+_REAL_ATTACH_PROBE_BODY = '''
+$result = [ordered]@{}
+$vhdx = Join-Path $Dir 'probe.vhdx'
+$attached = $false
+try {
+    New-FixedImage -Path $vhdx -SizeBytes (64 * 1MB)
+
+    # --- writable attach: this runner's own SID gets read/write/execute ---
+    Add-VirtualDisk $vhdx (Get-DiskSecurityDescriptor $Rid $true)
+    $attached = $true
+    $diskImage = Get-DiskImage -ImagePath $vhdx
+    $result.writable_attached = [bool]$diskImage.Attached
+    $disk = Get-Disk -Number $diskImage.Number
+    $result.writable_disk_id = [string]$disk.UniqueId
+    $result.writable_is_readonly = [bool]$disk.IsReadOnly
+    if ($disk.PartitionStyle -eq 'RAW') {
+        $disk | Initialize-Disk -PartitionStyle GPT | Out-Null
+        $disk = Get-Disk -Number $diskImage.Number
+    }
+    $part = $disk | New-Partition -UseMaximumSize
+    $volume = $part | Format-Volume -FileSystem NTFS -Confirm:$false -Force
+    $result.writable_volume_id = [string]$volume.UniqueId
+    # The volume's own UniqueId (\\\\?\\Volume{guid}\\) is a valid path root
+    # in its own right - no drive letter or folder mount point needed.
+    [IO.File]::WriteAllText((Join-Path $volume.UniqueId 'probe.txt'), 'writable-ok')
+    $result.writable_write_ok = [IO.File]::Exists((Join-Path $volume.UniqueId 'probe.txt'))
+
+    Dismount-DiskImage -ImagePath $vhdx
+    $attached = $false
+
+    # --- read-only attach: identity-check descriptor, SYSTEM/Administrators only ---
+    Add-VirtualDisk $vhdx (Get-DiskSecurityDescriptor $Rid $false) -ReadOnly
+    $attached = $true
+    $diskImage = Get-DiskImage -ImagePath $vhdx
+    $result.readonly_attached = [bool]$diskImage.Attached
+    $disk = Get-Disk -Number $diskImage.Number
+    $result.readonly_disk_id = [string]$disk.UniqueId
+    $result.readonly_is_readonly = [bool]$disk.IsReadOnly
+    $part = Get-Partition -DiskNumber $disk.Number | Where-Object { $_.Type -ne 'Reserved' }
+    $volume = $part | Get-Volume
+    $result.readonly_volume_id = [string]$volume.UniqueId
+    try {
+        [IO.File]::WriteAllText((Join-Path $volume.UniqueId 'blocked.txt'), 'should not land')
+        $result.write_refused = $false
+    } catch {
+        $result.write_refused = $true
+        $result.write_refused_error = $_.Exception.GetType().Name
+    }
+} catch {
+    $result.error = $_.Exception.Message
+} finally {
+    if ($attached) { try { Dismount-DiskImage -ImagePath $vhdx } catch {} }
+    Remove-Item -LiteralPath $vhdx -ErrorAction SilentlyContinue
+}
+$result | ConvertTo-Json -Compress
+'''
+
+
+def test_actual_add_virtual_disk_attaches_a_real_disk_writable_and_readonly(tmp_path):
+    """High review finding: every other test either mocks Add-VirtualDisk or
+    only exercises OpenVirtualDisk's failure branch - nothing proved the real
+    AttachVirtualDisk call, with a real marshalled security descriptor,
+    actually succeeds. This creates a throwaway 64 MB fixed VHDX entirely
+    under pytest's own tmp_path - never D:\\runner-disks or D:\\runners, the
+    live fleet's own paths - attaches it writable through the real
+    Add-VirtualDisk, formats it, detaches it, then reattaches it read-only
+    and pins what was proved live in the guest: the read-only attach reports
+    the same disk and volume identity as the writable one, IsReadOnly is
+    true, and a write through it is refused. Skips (does not fail) when this
+    process is not elevated, since attaching a virtual disk needs privilege
+    this test session may not have - the skip message says what this would
+    have covered."""
+    if sys.platform != "win32":
+        pytest.skip("actual PowerShell helper runs on Windows")
+    probe = tmp_path / "probe.ps1"
+    probe.write_text(_REAL_ATTACH_PROBE_HEADER + _ps1_functions_only() + _REAL_ATTACH_PROBE_BODY,
+                     encoding="utf-8")
+    result = subprocess.run([PS, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+                            "-File", str(probe), "-Dir", str(tmp_path), "-Rid", RID],
+                            capture_output=True, text=True, timeout=90)
+    assert result.returncode == 0, result.stderr
+    out = json.loads(result.stdout.strip().splitlines()[-1])
+    if "skipped" in out:
+        pytest.skip(out["skipped"])
+    assert "error" not in out, out.get("error")
+    assert out["writable_attached"] is True
+    assert out["writable_is_readonly"] is False
+    assert out["writable_write_ok"] is True
+    assert out["readonly_attached"] is True
+    assert out["readonly_is_readonly"] is True
+    assert out["readonly_disk_id"] == out["writable_disk_id"]
+    assert out["readonly_volume_id"] == out["writable_volume_id"]
+    assert out["write_refused"] is True
 
 
 def test_actual_helper_treats_diskparts_zero_exit_as_failure_when_it_reports_an_error(helper):
@@ -630,6 +741,39 @@ def test_actual_helper_dismounts_a_disk_it_attached_before_refusing_it_on_mismat
     assert answer.returncode == 1, answer.stdout
     calls = _model(model)["calls"][len(before):]
     assert calls[-2:] == ["attach", "detach"], calls
+    assert _model(model)["attached"] is False
+
+
+def test_actual_helper_dismounts_after_a_failure_following_a_successful_attach(helper):
+    """Medium review finding: AttachVirtualDisk is a raw kernel call, not the
+    more defensive higher-level cmdlet it replaced, so it could plausibly
+    fail after the disk is already surfaced. The writable attach call site
+    must attempt a best-effort dismount of whatever it just attached before
+    propagating any failure from Add-VirtualDisk itself - not only a later
+    failure from Get-OwnedDisk, which was already covered. The mock's fake
+    Add-VirtualDisk marks the disk attached before the injected 'attach'
+    failure fires, modelling a failure that happens after the real
+    AttachVirtualDisk already succeeded."""
+    invoke, request, model = helper
+    answer = invoke(fail="attach")
+    assert answer.returncode == 1
+    calls = _model(model)["calls"]
+    assert calls[-2:] == ["attach", "detach"], calls
+    assert _model(model)["attached"] is False
+
+
+def test_actual_helper_dismounts_after_a_failure_following_a_successful_readonly_attach(helper):
+    """Same fix, the other call site: remove's read-only identity-check
+    attach (Confirm-OwnedImage) must also dismount whatever it just attached
+    before propagating a failure that happens after the attach itself
+    succeeded, not just wrap the message."""
+    invoke, request, model = helper
+    assert invoke().returncode == 0
+    _model(model, attached=False)
+    answer = invoke("remove", fail="attach-readonly")
+    assert answer.returncode == 1
+    calls = _model(model)["calls"]
+    assert calls[-2:] == ["attach-readonly", "detach"], calls
     assert _model(model)["attached"] is False
 
 
