@@ -111,14 +111,16 @@ Add-VMDvdDrive -VMName $Name -Path $Iso
 Set-VMFirmware -VMName $Name -FirstBootDevice (Get-VMDvdDrive -VMName $Name)
 
 # Back after a host restart; shut down cleanly with the host, never saved (a
-# saved VM keeps a file the size of its memory on disk).
+# saved VM keeps a file the size of its memory on disk). Automatic checkpoints
+# off: a runner host runs on its own disks, not on a differencing chain.
 Set-VM -Name $Name -AutomaticStartAction Start -AutomaticStartDelay 30 `
-    -AutomaticStopAction ShutDown -Notes "runner platform: $($spec.Role), $($spec.Address)"
+    -AutomaticStopAction ShutDown -AutomaticCheckpointsEnabled $false `
+    -Notes "runner platform: $($spec.Role), $($spec.Address)"
 Start-VM -Name $Name
 
 Write-Host ""
-Write-Host ("{0} created and started: {1} GB static, {2} vCPU, {3} GB system disk, {4} GB data disk, {5}; " +
-    "commit free now {6} GB" -f $Name, $spec.MemoryGB, $spec.Cpus, $spec.DiskGB, $spec.DataDiskGB, $spec.Address,
+Write-Host (("{0} created and started: {1} GB static, {2} vCPU, {3} GB system disk, {4} GB data disk, {5}; " +
+    "commit free now {6} GB") -f $Name, $spec.MemoryGB, $spec.Cpus, $spec.DiskGB, $spec.DataDiskGB, $spec.Address,
     (Get-CommitHeadroomGB))
 Write-Host ""
 Write-Host "Open its console:  vmconnect.exe localhost $Name"

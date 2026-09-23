@@ -82,6 +82,31 @@ $sysHdd = Get-VMHardDiskDrive -VMName $Name | Where-Object { (Split-Path $_.Path
 if (-not $sysHdd) { throw "Could not find $Name's system disk ($Name.vhdx) among its hard disk drives." }
 Set-VMFirmware -VMName $Name -FirstBootDevice $sysHdd
 
+# This guest was created before New-WindowsGuest.ps1 started turning
+# automatic checkpoints off, so make sure of it here too, and clear any
+# checkpoint already taken: a runner host runs on its own disks, not on a
+# differencing chain, and only removing the checkpoint - then waiting for its
+# merge - gets the VM off the .avhdx files it left behind. Safe to repeat:
+# with checkpoints already off and none present, this changes nothing.
+if ((Get-VM -Name $Name).AutomaticCheckpointsEnabled) {
+    Set-VM -Name $Name -AutomaticCheckpointsEnabled $false
+    $hostChanges.Add('automatic checkpoints turned off')
+}
+$existingCheckpoints = Get-VMCheckpoint -VMName $Name -ErrorAction SilentlyContinue
+if ($existingCheckpoints) {
+    $existingCheckpoints | Remove-VMCheckpoint
+    $mergeTimeout = (Get-Date).AddMinutes(10)
+    while (Get-VMHardDiskDrive -VMName $Name | Where-Object { $_.Path -match '\.avhdx$' }) {
+        if ((Get-Date) -gt $mergeTimeout) {
+            throw ("$Name's checkpoint removal did not finish merging within 10 minutes; check " +
+                   "Get-VM $Name | Select-Object -ExpandProperty Status and the disk files under " +
+                   "its directory by hand before running this again.")
+        }
+        Start-Sleep -Seconds 5
+    }
+    $hostChanges.Add('checkpoint(s) removed and merged back into their base disks')
+}
+
 $hostTimeZone = (Get-TimeZone).Id
 
 $guestConfig = {
