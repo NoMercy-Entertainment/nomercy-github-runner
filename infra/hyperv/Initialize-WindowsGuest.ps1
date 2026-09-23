@@ -195,8 +195,8 @@ $guestConfig = {
     # "Unidentified network" and files it under Public, where firewall rules
     # scoped to Private do nothing. This is the management path; mark it
     # Private so those rules apply and discovery stays off the uplink.
-    $profile = Get-NetConnectionProfile -InterfaceIndex $nic.ifIndex -ErrorAction SilentlyContinue
-    if ($profile -and $profile.NetworkCategory -ne 'Private') {
+    $netProfile = Get-NetConnectionProfile -InterfaceIndex $nic.ifIndex -ErrorAction SilentlyContinue
+    if ($netProfile -and $netProfile.NetworkCategory -ne 'Private') {
         Set-NetConnectionProfile -InterfaceIndex $nic.ifIndex -NetworkCategory Private
         $changed.Add('mgmt network marked Private (it comes up as an unidentified, Public network)')
     }
@@ -294,11 +294,18 @@ $guestConfig = {
                    "$DataDriveLetter`: as expected. Check by hand before running this again.")
         }
     } else {
-        $candidates = @(Get-Disk | Where-Object {
-            $_.PartitionStyle -eq 'RAW' -and -not $_.IsBoot -and -not $_.IsSystem
-        })
+        # "Empty", not merely "raw": initialising a disk stops it being raw, so
+        # a run that failed between Initialize-Disk and New-Partition would
+        # otherwise leave a disk this could never pick up again. An initialised
+        # but unpartitioned disk carries only its reserved partition.
+        $candidates = @(Get-Disk | Where-Object { -not $_.IsBoot -and -not $_.IsSystem } |
+            Where-Object {
+                $_.PartitionStyle -eq 'RAW' -or
+                -not (@(Get-Partition -DiskNumber $_.Number -ErrorAction SilentlyContinue |
+                        Where-Object { $_.Type -ne 'Reserved' }).Count)
+            })
         if ($candidates.Count -eq 0) {
-            throw "No raw, non-system disk found to become the $DataDriveLetter`: runner-data volume."
+            throw "No empty, non-system disk found to become the $DataDriveLetter`: runner-data volume."
         }
         if ($candidates.Count -gt 1) {
             $found = ($candidates | ForEach-Object { "disk $($_.Number) ($([math]::Round($_.Size / 1GB)) GB)" }) -join ', '
@@ -318,7 +325,9 @@ $guestConfig = {
             $changed.Add("optical drive moved off $DataDriveLetter`: to ${free}:")
         }
         $disk = $candidates[0]
-        Initialize-Disk -Number $disk.Number -PartitionStyle GPT
+        if ($disk.PartitionStyle -eq 'RAW') {
+            Initialize-Disk -Number $disk.Number -PartitionStyle GPT
+        }
         $partition = New-Partition -DiskNumber $disk.Number -DriveLetter $DataDriveLetter -UseMaximumSize
         Format-Volume -Partition $partition -FileSystem NTFS -NewFileSystemLabel 'runner-data' -Confirm:$false | Out-Null
         $changed.Add("disk $($disk.Number) initialised, partitioned and formatted NTFS as $DataDriveLetter`: (runner-data)")
