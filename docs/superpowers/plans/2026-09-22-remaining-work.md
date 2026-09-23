@@ -1065,3 +1065,32 @@ on arrival, so the card cannot show what it does not receive.
 - [ ] **Step 4: Check the rendering** against a card that now has a total: it should read like memory does (`0.1%  ·  0.12 GB / 100 GB`). Fix the template only if it does not.
 - [ ] **Step 5:** Run the dashboard suite in full and report the counts.
 - [ ] **Step 6: Commit.**
+
+### Task 28: the disk figures a runner measures reach the dashboard
+
+**What Task 27 uncovered.** The controller now keeps the per-runner disk
+figures, and a card falls back to the `disk_limit` the controller itself set
+- so a total is shown. But the measured figures still never leave the
+machine: `agent/heartbeat.py`'s `build()` has an allow-list of its own that
+drops every `disk_*` key before a beat is sent. Linux genuinely measures
+them (`shutil.disk_usage`) and throws them away; Windows' `probe()` computes
+a disk's capacity only to report the used figure as `storage_bytes`.
+
+So today a card can say how large a runner's disk is meant to be, never how
+full it actually is against that size.
+
+**Files:**
+- Modify: `agent/heartbeat.py` (the beat's allow-list)
+- Modify: `agent/runtimes/windows_process.py` (`probe` reports the disk's real capacity and free space, not only usage)
+- Modify: `agent/tests/` (heartbeat and Windows runtime tests)
+
+**Interfaces:** the keys the controller already keeps since Task 27 -
+`disk_limit_bytes`, `disk_used_bytes`, `disk_free_bytes`,
+`disk_virtual_bytes`, `disk_usable_bytes`. No new names.
+
+- [ ] **Step 1: Read** `agent/heartbeat.py`'s `build()` and its allow-list, `dashboard/control/inventory.py`'s `TELEMETRY_KEYS` (the receiving end, already correct), `linux_container.py`'s `telemetry()` and `windows_process.py`'s `telemetry()`/`probe()`.
+- [ ] **Step 2: Write the failing tests.** A beat built from a runtime that reports disk figures must carry them; one from a runtime that does not must be unchanged. For Windows, `probe()` must report the disk's capacity and free space beside what is used.
+- [ ] **Step 3: Make them pass**, keeping the light beat light: the Windows disk figures come from the deep probe, never from every ten-second beat, for the reason recorded in `telemetry()`'s docstring (the storage helper can wait 8 s on a lock, which once pushed a beat past the dashboard's freshness window).
+- [ ] **Step 4:** Run the agent suite in full and report the counts.
+- [ ] **Step 5: Commit.**
+- [ ] **Step 6 (live, after review):** deploy the agent to both Windows workers and the Linux worker, and confirm a card shows measured used against measured total.
