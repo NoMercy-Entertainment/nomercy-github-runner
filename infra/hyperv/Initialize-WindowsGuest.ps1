@@ -46,6 +46,15 @@ param(
 . "$PSScriptRoot\lib.ps1"
 $s = Get-RunnerPlatformSettings
 
+# PowerShell Direct reads a bare user name as a domain account and answers
+# "The credential is invalid" - the guest's local account has to be named
+# ".\<user>". Operators type `Get-Credential rnr-admin`, so make the local
+# form here rather than making that their problem.
+if ($Credential.UserName -notmatch '[\\@]') {
+    $Credential = [System.Management.Automation.PSCredential]::new(
+        ".\$($Credential.UserName)", $Credential.Password)
+}
+
 if (-not (Test-Elevated)) {
     throw "Run this elevated: PowerShell Direct needs an administrator on the host."
 }
