@@ -404,7 +404,22 @@ class Reconciler:
                 return
             # Interrupted work without an error resumes through the same
             # replacement preflight and rolling gate as an explicit request.
-            self.service.recreate(spec["runner_id"], requested_by="reconciler")
+            # That preflight (`_act`'s own `validate_replacement`, on the
+            # same `replacement_spec` -> `_cpu_window`/`_host_cores` ->
+            # `cpusets.allocate` machinery guarded at the other call sites
+            # below) can refuse - a pinned width that no longer fits this
+            # host, say - and `service.recreate` raises rather than
+            # swallowing it. Unguarded, that `Refused` would reach
+            # `pass_once`'s generic handler on every single pass forever:
+            # `last_error` never set, `current_operation` never set, so this
+            # same branch re-enters and re-raises identically next time -
+            # finding 2's sibling, at the recovery path rather than the
+            # explicit one (2026-09-23).
+            try:
+                self.service.recreate(spec["runner_id"], requested_by="reconciler")
+            except Exception as error:          # noqa: BLE001
+                self._fail(spec, operation, error, report, "recreate resume")
+                return
             spec = self.service.specs.get(spec["runner_id"])
             operation = self._operation(spec)
 

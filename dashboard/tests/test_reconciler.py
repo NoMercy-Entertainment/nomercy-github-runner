@@ -1026,6 +1026,48 @@ class TestARemovalThatLostItsOperation:
         before = service.specs.get(runner["runner_id"])["current_operation"]
         assert before
 
+    def test_one_that_cannot_be_resumed_is_held_not_retried_forever(
+            self, world):
+        """A sibling of every test above, but where resuming it fails.
+        `_step`'s recovery calls `service.recreate` (line ~407) exactly the
+        way `test_one_that_should_run_is_built_again` does, and that reaches
+        the same `validate_replacement` -> `replacement_spec` ->
+        `_cpu_window`/`_host_cores` -> `cpusets.allocate` machinery the
+        explicit `recreate` verb's own preflight is guarded against
+        (`_step`'s later `try: validate_replacement ... except: _fail`).
+        Unguarded here, a `Refused` - a pinned width that no longer fits
+        this host - would reach `pass_once`'s generic per-spec handler on
+        every pass forever: nothing sets `last_error`, so this exact branch
+        re-enters and re-raises identically, since the check that would
+        otherwise hold it (`if spec.get("last_error"): ... return`, right
+        above the resume) never sees one (task 25 review round 2,
+        2026-09-23)."""
+        service, executor, reconciler = world
+        # A pinned fleet whose one worker cannot hold the width it asks for
+        # - the same condition `validate_replacement` refuses on.
+        service.inventory.register_worker(
+            WORKER, inv.HYPERV_LINUX,
+            capabilities={"kind": "linux-container", "host_cores": 8})
+        service.fleets.set_defaults(GH, {"cpu_limit": 16})
+        spec = self.stuck(service, "running")
+
+        report = reconciler.pass_once()
+
+        current = service.specs.get(spec["runner_id"])
+        assert current["actual_state"] == "removing", (
+            "unresumable, so it stays exactly where it was found")
+        assert current["last_error"], (
+            "a Refused raised while resuming a stranded removal must be "
+            "recorded on the runner, not silently dropped by the pass's "
+            "generic per-spec handler")
+        assert current["current_operation"] is None
+        assert any(rid == spec["runner_id"] for rid, _ in report.errors)
+
+        # Held on the very next pass, not retried blindly again.
+        report2 = reconciler.pass_once()
+        assert not report2.errors
+        assert any(rid == spec["runner_id"] for rid, _ in report2.held)
+
 
 class TestRecreateRefusalAfterRemoval:
     """Finding 2 of the task 25 review (2026-09-23): `_do_remove`'s recreate
