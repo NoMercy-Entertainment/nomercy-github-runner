@@ -610,3 +610,38 @@ class TestTheForgeIsAskedOncePerPass:
         flow._records(P.GITHUB)
         flow._records(P.GITHUB, fresh=True)
         assert len(asked) == 2
+
+
+class TestThePinnedWindowBackstop:
+    """Finding 1 of the task 25 review (2026-09-23): a window is assigned
+    only once `_step_create_unit`'s own placement has named a host, by
+    calling `effective_spec(spec, host_id=...)` - which, for a pinned
+    platform, always either returns a real window or raises. There is no
+    path through it today that reaches `runtime.create` with a pinned
+    platform's `cpu_limit` still unset. The explicit check right before that
+    call is the backstop anyway: not because today's code can slip past it,
+    but so that a future change to `effective_spec` - a new call site, a
+    different default - cannot silently create a unit with the full host's
+    cores instead of the one it was promised, without something refusing by
+    name. Proven here by forcing exactly that slip, the only way to reach
+    code that must otherwise be unreachable."""
+
+    def test_a_pinned_unit_created_without_a_window_is_refused_by_name(
+            self, platform, monkeypatch):
+        service, flow, agent, forges = platform
+        service.inventory.register_worker(
+            "linux-1", inv.HYPERV_LINUX,
+            capabilities={"kind": "linux-container", "host_cores": 56})
+        service.fleets.set_defaults(fleet_id("github", "linux", "x64"),
+                                    {"cpu_limit": 16})
+        spec = a_planned(service)
+        real_effective_spec = service.effective_spec
+        def slips_the_window(spec, env=None, host_id=None):
+            result = real_effective_spec(spec, env=env, host_id=host_id)
+            result["cpu_limit"] = None
+            return result
+        monkeypatch.setattr(service, "effective_spec", slips_the_window)
+        with pytest.raises(StepFailed) as caught:
+            flow.provision(spec)
+        assert caught.value.step == "create_unit"
+        assert "pins a CPU window" in str(caught.value)

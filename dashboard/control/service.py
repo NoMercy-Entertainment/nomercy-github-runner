@@ -182,17 +182,37 @@ class RunnerService:
             (fleet["provider"], fleet["platform"]))
         return str(fleet.get("unit_template") or named or fleet.get("template") or "").split(" ")[0]
 
-    def effective_spec(self, spec, env=None):
-        """Resolve deployment defaults before either scheduling or creation."""
+    def effective_spec(self, spec, env=None, host_id=None):
+        """Resolve deployment defaults before either scheduling or creation.
+
+        `host_id`: this runner's host, once placement has chosen one - the
+        only time a pinned platform's `cpu_limit` is actually computed here.
+        Left out (the default), a pinned fleet's number is never turned into
+        a window: it is a width, and a width is not a window until there is
+        a host to cut it from. That is deliberate, not an oversight - a
+        window computed before a host is known is exactly how a runner
+        ended up pinned to cores that belonged to a different machine
+        (finding 1, 2026-09-23), and every caller that does not yet have a
+        real host (`plan()`, a placement fit-check, a reservation computed
+        for somebody else's placement) must leave it unset rather than
+        guess. The one caller that does have one (`ProvisioningFlow.
+        _step_create_unit`, once its own placement step succeeds) passes it
+        explicitly."""
         result = dict(spec)
         fleet = self.fleets.get(spec.get("fleet_id")) or {}
         cell = (spec.get("provider"), spec.get("platform"))
         for field in ("cpu_limit", "memory_limit", "memory_swap_limit", "disk_limit"):
             if result.get(field) is None and fleet.get(field) is not None:
                 if field == "cpu_limit" and self._pinned_width(fleet) is not None:
-                    # A pinned fleet's number is a window width, which only
-                    # planning or a recreate turns into cores; read as a quota
-                    # it would bound nothing `nproc` reports.
+                    if host_id is None:
+                        # A pinned fleet's number is a window width, which
+                        # only a known host turns into cores; read as a
+                        # quota it would bound nothing `nproc` reports.
+                        continue
+                    result["cpu_limit"] = self._cpu_window(
+                        fleet["platform"], self._pinned_width(fleet),
+                        host_id=host_id,
+                        exclude={result["runner_id"]} if result.get("runner_id") else ())
                     continue
                 result[field] = fleet[field]
         if result.get("memory_limit") is None:
@@ -256,30 +276,59 @@ class RunnerService:
             return None
         return cpusets.whole_cores(fleet.get("cpu_limit"))
 
-    def _host_cores(self, platform, host_id=None):
-        """The core count a window on `platform` is cut from: `host_id`'s
-        own declaration, else what its own placed runners last measured.
+    def _any_host_could_hold(self, platform, width):
+        """Whether some healthy worker of `platform`, known today by its own
+        declaration or by a runner's last telemetry, could hold a window
+        this wide at all - not yet asking which one, only whether the
+        fleet's own setting is achievable anywhere.
 
-        Scoped to one host once `host_id` is known, never pooled across two:
-        a small guest and the physical host behind it are different
-        machines with their own, independent processor numbering, so
-        mixing their counts is wrong in both directions - it can cut the
-        big host's windows down to the small guest's size, or hand the
-        small guest a window off the big host's numbering, which is how a
-        runner on an eight-processor guest was pinned to cores 32-47
-        (2026-09-23).
-
-        `host_id=None` is `plan()`'s case: a runner not yet placed, with no
-        host to scope to yet. It keeps the old, platform-wide search - the
-        most a window can promise before it knows its host is not to claim
-        more cores than the smallest healthy one of them has, and
-        `cpusets.allocate` now refuses rather than silently narrowing a
-        width that still does not fit once a host is chosen.
+        This is the existence check `plan()` makes before any spec exists
+        and before any host is chosen (`max` across hosts): a width the
+        smallest host cannot hold may still be exactly what the largest one
+        is for, so refusing on the pooled minimum, the way this code used
+        to, would refuse plans that a real placement could have served.
+        `_host_cores` asks the opposite, narrower question - what one
+        already-chosen host actually has - once placement has chosen one
+        (finding 1, 2026-09-23).
         """
         kind = placement.WORKER_KIND[platform]
-        workers = self.inventory.healthy(kind=kind)
-        if host_id is not None:
-            workers = [w for w in workers if w["host_id"] == host_id]
+        per_host = {}
+        for worker in self.inventory.healthy(kind=kind):
+            value = placement.declared(worker, "host_cores")
+            if isinstance(value, int) and value > 0:
+                per_host[worker["host_id"]] = value
+        for spec in self.specs.list():
+            if spec.get("platform") != platform:
+                continue
+            host_id = spec.get("host_id")
+            if not host_id or host_id in per_host:
+                continue
+            value = (spec.get("telemetry") or {}).get("host_cores")
+            if isinstance(value, int) and value > 0:
+                per_host[host_id] = value
+        return any(cores >= width for cores in per_host.values())
+
+    def _host_cores(self, platform, host_id):
+        """The core count `host_id`'s window is cut from: its own
+        declaration, else what its own placed runners last measured, else a
+        refusal naming it.
+
+        Scoped to exactly the host asked about, never pooled across two: a
+        small guest and the physical host behind it are different machines
+        with their own, independent processor numbering, so mixing their
+        counts is wrong in both directions - it can cut the big host's
+        windows down to the small guest's size, or hand the small guest a
+        window off the big host's numbering, which is how a runner on an
+        eight-processor guest was pinned to cores 32-47 (2026-09-23).
+        `host_id` is required on purpose: a window is only ever real once a
+        host is known (`effective_spec`'s own `host_id` parameter), and a
+        caller with no host yet has `_any_host_could_hold` to ask instead,
+        not a pooled number pretending to answer for a host that has not
+        been chosen.
+        """
+        kind = placement.WORKER_KIND[platform]
+        workers = [w for w in self.inventory.healthy(kind=kind)
+                   if w["host_id"] == host_id]
         counts = []
         for worker in workers:
             value = placement.declared(worker, "host_cores")
@@ -287,38 +336,35 @@ class RunnerService:
                 counts.append(value)
         if not counts:
             for spec in self.specs.list():
-                if spec.get("platform") != platform:
-                    continue
-                if host_id is not None and spec.get("host_id") != host_id:
+                if spec.get("platform") != platform or spec.get("host_id") != host_id:
                     continue
                 value = (spec.get("telemetry") or {}).get("host_cores")
                 if isinstance(value, int) and value > 0:
                     counts.append(value)
         if not counts:
-            where = f"host {host_id}" if host_id is not None else f"{platform} worker"
-            raise Refused(f"cannot pin a CPU window: no {where} has said "
-                          f"how many cores it has yet")
+            raise Refused(f"cannot pin a CPU window: host {host_id!r} has "
+                          f"not said how many cores it has yet")
         return min(counts)
 
-    def _cpu_window(self, platform, width, exclude=(), also=(), host_id=None):
-        """A window of `width` cores on `host_id`'s own numbering - or, when
-        it is not yet known, on `platform`'s pooled one - that overlaps the
-        ones in use least.
+    def _cpu_window(self, platform, width, host_id, exclude=()):
+        """A window of `width` cores on `host_id`'s own numbering that
+        overlaps the ones in use least.
 
-        Only specs of this same platform count as occupied - a Linux
-        fleet's windows are cores on a Linux host, and say nothing about
-        what is free on a Windows one, or the other way round (2026-09-23).
-        When `host_id` is given, occupancy is narrowed further to that one
-        host, for the same reason `_host_cores` is: a second host of the
-        same platform numbers its processors independently too.
+        Only specs of this same platform, on this same host, count as
+        occupied - a Linux fleet's windows are cores on a Linux host and say
+        nothing about what is free on a Windows one, and a window on one
+        Windows host says nothing about another Windows host's own,
+        independently numbered cores (2026-09-23). `host_id` is required for
+        the same reason `_host_cores` requires it: there is no such thing as
+        a window that is not cut from one specific host's cores.
         """
-        taken = [set(s) for s in also]
+        taken = []
         for spec in self.specs.list():
             if (spec.get("platform") != platform
+                    or spec.get("host_id") != host_id
                     or spec["runner_id"] in exclude
                     or spec.get("actual_state") == states.TERMINAL
-                    or spec.get("deleted_at")
-                    or (host_id is not None and spec.get("host_id") != host_id)):
+                    or spec.get("deleted_at")):
                 continue
             if cpusets.is_cpuset(spec.get("cpu_limit")):
                 taken.append(cpusets.parse(spec["cpu_limit"]))
@@ -451,23 +497,36 @@ class RunnerService:
         if not can:
             raise Refused(f"{fid} cannot be built: {why}")
 
-        defaults = self.effective_spec(dict(fleet, runtime_template=self.unit_image(fleet)), env=env)
+        # An impossible width is refused here, before a single spec exists -
+        # an operator should learn a fleet's pinned width fits no worker of
+        # its platform when they set it, not from a runner that fails after
+        # being placed. This is an existence check across every host
+        # ("could ANY of them hold it"), never `_host_cores`'s pooled
+        # `min()`: which *specific* host this runner lands on is not yet
+        # known, and a width the smallest host cannot hold may still be
+        # exactly what the largest one is for (finding 1, 2026-09-23) - the
+        # window itself is cut once placement actually chooses one.
+        width = self._pinned_width(fleet)
+        if width is not None and not self._any_host_could_hold(fleet["platform"], width):
+            raise Refused(
+                f"{fid} pins a {width}-core window, but no healthy "
+                f"{fleet['platform']} worker is known to have that many "
+                f"cores yet")
+
+        # `cpu_limit=None` is forced here even though `fleet` itself carries
+        # one: `fleet["cpu_limit"]` for a pinned platform is a width, not a
+        # window, and starting `effective_spec` with it already "set" would
+        # skip the very check that keeps a width from leaking out as if it
+        # were one (finding 1, 2026-09-23).
+        defaults = self.effective_spec(
+            dict(fleet, runtime_template=self.unit_image(fleet), cpu_limit=None),
+            env=env)
         operation, created = self.operations.open(
             "plan", fleet_id=fid, requested_by=requested_by,
             idempotency_key=idempotency_key,
             note=f"plan {count} for {fid}")
         if not created:
             return operation["operation_id"]
-
-        width = self._pinned_width(fleet)
-        windows = []
-        if width is not None:
-            # Chosen before the operation opens, so a host that has not said
-            # how many cores it has refuses the plan instead of half-making it.
-            for _ in range(count):
-                windows.append(self._cpu_window(
-                    fleet["platform"], width,
-                    also=[cpusets.parse(w) for w in windows]))
 
         runner_ids = []
         for n in range(count):
@@ -477,7 +536,14 @@ class RunnerService:
                 platform=fleet["platform"],
                 architecture=fleet["architecture"],
                 runtime_template=defaults.get("runtime_template"),
-                cpu_limit=windows[n] if windows else defaults.get("cpu_limit"),
+                # Never a window here (finding 1, 2026-09-23): a pinned
+                # platform's `cpu_limit` stays unset until placement knows
+                # which host to cut it from
+                # (`effective_spec`'s own `host_id`, `ProvisioningFlow.
+                # _step_create_unit`). `defaults.get("cpu_limit")` is None
+                # for a pinned fleet for exactly that reason, and is
+                # whatever quota a non-pinned one asks for otherwise.
+                cpu_limit=defaults.get("cpu_limit"),
                 memory_limit=defaults.get("memory_limit"),
                 memory_swap_limit=defaults.get("memory_swap_limit"),
                 disk_limit=defaults.get("disk_limit"),

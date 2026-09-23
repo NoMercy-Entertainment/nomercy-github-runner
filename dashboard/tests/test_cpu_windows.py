@@ -96,6 +96,20 @@ def _planned(service, fid, n):
     return [service.specs.get(r) for r in service.planned_ids(service.plan(fid, n))]
 
 
+def _provisioned(service, spec, host_id):
+    """What `ProvisioningFlow._step_create_unit` does once its own placement
+    step has actually chosen a host: compute this runner's effective spec
+    with that host now known, and persist what it decided - the same
+    "recorded before" write the real flow makes, so a later runner's own
+    placement sees this one occupying real cores rather than none at all
+    (finding 1, 2026-09-23). `plan()` itself never does this: there is no
+    host yet to cut a window from until placement names one."""
+    effective = service.effective_spec(spec, host_id=host_id)
+    service.specs.update(spec["runner_id"], spec["spec_version"],
+                         cpu_limit=effective["cpu_limit"], host_id=host_id)
+    return service.specs.get(spec["runner_id"])
+
+
 def _win_service(tmp_path, cores=56, declare_host_cores=True):
     """A deployment with one healthy Windows worker. Matching the live fleet
     (2026-09-23), it declares no `host_cores` in its capabilities unless
@@ -143,11 +157,23 @@ def _mixed_service(tmp_path, linux_cores=56, windows_cores=56):
 
 
 class TestPlanning:
-    def test_a_whole_number_on_a_linux_fleet_pins_each_new_runner(self, tmp_path):
+    def test_plan_decides_the_width_but_never_the_window(self, tmp_path):
+        """finding 1 (2026-09-23): a window is cut from a host's own cores,
+        and `plan()` runs before any host is chosen - so a pinned fleet's
+        freshly planned runners carry no `cpu_limit` at all, not a width and
+        not a window, until placement names a host."""
         service = _service(tmp_path)
         service.fleets.set_defaults("github-linux-x64", {"cpu_limit": 16})
         specs = _planned(service, "github-linux-x64", 3)
-        windows = [s["cpu_limit"] for s in specs]
+        assert all(s["cpu_limit"] is None for s in specs)
+
+    def test_a_whole_number_on_a_linux_fleet_pins_each_runner_once_placed(self, tmp_path):
+        service = _service(tmp_path)
+        service.fleets.set_defaults("github-linux-x64", {"cpu_limit": 16})
+        specs = _planned(service, "github-linux-x64", 3)
+        windows = []
+        for spec in specs:
+            windows.append(_provisioned(service, spec, "linux-1")["cpu_limit"])
         assert all(cpusets.is_cpuset(w) for w in windows)
         assert all(len(cpusets.parse(w)) == 16 for w in windows)
         assert len(set(windows)) == 3
@@ -156,10 +182,24 @@ class TestPlanning:
         service = _service(tmp_path)
         first = _planned(service, "github-linux-x64", 1)[0]
         service.specs.update(first["runner_id"], first["spec_version"],
-                             cpu_limit="0-15")
+                             cpu_limit="0-15", host_id="linux-1")
         service.fleets.set_defaults("github-linux-x64", {"cpu_limit": 16})
         new = _planned(service, "github-linux-x64", 1)[0]
+        new = _provisioned(service, new, "linux-1")
         assert not cpusets.parse(new["cpu_limit"]) & set(range(16))
+
+    def test_a_fleet_pinned_wider_than_every_known_host_is_refused_at_plan_time(
+            self, tmp_path):
+        """An operator learns an impossible width when they set it, not from
+        a runner that fails after being placed (finding 1, 2026-09-23) - the
+        existence check `plan()` makes across every host of the platform,
+        never the pooled minimum a specific placement would use."""
+        service = _service(tmp_path, cores=8)
+        service.fleets.set_defaults("github-linux-x64", {"cpu_limit": 16})
+        with pytest.raises(Refused) as excinfo:
+            service.plan("github-linux-x64", 1)
+        message = str(excinfo.value)
+        assert "16" in message
 
     def test_a_fraction_stays_a_quota(self, tmp_path):
         service = _service(tmp_path)
@@ -174,11 +214,17 @@ class TestPlanning:
 
 
 class TestReplacement:
+    """Every runner reaching `replacement_spec` here is already placed - a
+    recreate is only ever reachable from `idle`, `busy`, `deregistering` or
+    `removing` (states.GUARDED), all of which mean provisioning already ran
+    and gave it a real `host_id`. Each test sets one explicitly, matching
+    that precondition rather than the accident of an unplaced test spec."""
+
     def test_a_recreate_keeps_a_window_of_the_right_width(self, tmp_path):
         service = _service(tmp_path)
         spec = _planned(service, "github-linux-x64", 1)[0]
         service.specs.update(spec["runner_id"], spec["spec_version"],
-                             cpu_limit="38-53")
+                             cpu_limit="38-53", host_id="linux-1")
         service.fleets.set_defaults("github-linux-x64", {"cpu_limit": 16})
         replacement = service.replacement_spec(service.specs.get(spec["runner_id"]))
         assert replacement["cpu_limit"] == "38-53"
@@ -187,7 +233,7 @@ class TestReplacement:
         service = _service(tmp_path)
         spec = _planned(service, "github-linux-x64", 1)[0]
         service.specs.update(spec["runner_id"], spec["spec_version"],
-                             cpu_limit="0-15")
+                             cpu_limit="0-15", host_id="linux-1")
         service.fleets.set_defaults("github-linux-x64", {"cpu_limit": 8})
         replacement = service.replacement_spec(service.specs.get(spec["runner_id"]))
         assert len(cpusets.parse(replacement["cpu_limit"])) == 8
@@ -196,7 +242,7 @@ class TestReplacement:
         service = _service(tmp_path)
         spec = _planned(service, "github-linux-x64", 1)[0]
         service.specs.update(spec["runner_id"], spec["spec_version"],
-                             cpu_limit="4-19")
+                             cpu_limit="4-19", host_id="linux-1")
         replacement = service.replacement_spec(service.specs.get(spec["runner_id"]))
         assert replacement["cpu_limit"] == "4-19"
 
@@ -207,11 +253,19 @@ class TestWindowsPlanning:
     its processor count either, so a whole-number fleet limit still means a
     window, cut from the same 56-core host the live fleet runs on."""
 
-    def test_a_whole_number_on_a_windows_fleet_pins_each_new_runner(self, tmp_path):
+    def test_plan_leaves_a_windows_fleets_runners_unpinned_too(self, tmp_path):
         service = _win_service(tmp_path)
         service.fleets.set_defaults("github-windows-x64", {"cpu_limit": 16})
         specs = _planned(service, "github-windows-x64", 3)
-        windows = [s["cpu_limit"] for s in specs]
+        assert all(s["cpu_limit"] is None for s in specs)
+
+    def test_a_whole_number_on_a_windows_fleet_pins_each_runner_once_placed(self, tmp_path):
+        service = _win_service(tmp_path)
+        service.fleets.set_defaults("github-windows-x64", {"cpu_limit": 16})
+        specs = _planned(service, "github-windows-x64", 3)
+        windows = []
+        for spec in specs:
+            windows.append(_provisioned(service, spec, "windows-1")["cpu_limit"])
         assert all(cpusets.is_cpuset(w) for w in windows)
         assert all(len(cpusets.parse(w)) == 16 for w in windows)
         assert len(set(windows)) == 3
@@ -220,9 +274,10 @@ class TestWindowsPlanning:
         service = _win_service(tmp_path)
         first = _planned(service, "github-windows-x64", 1)[0]
         service.specs.update(first["runner_id"], first["spec_version"],
-                             cpu_limit="0-15")
+                             cpu_limit="0-15", host_id="windows-1")
         service.fleets.set_defaults("github-windows-x64", {"cpu_limit": 16})
         new = _planned(service, "github-windows-x64", 1)[0]
+        new = _provisioned(service, new, "windows-1")
         assert not cpusets.parse(new["cpu_limit"]) & set(range(16))
 
     def test_a_fraction_stays_a_quota_on_windows(self, tmp_path):
@@ -242,7 +297,7 @@ class TestWindowsReplacement:
         service = _win_service(tmp_path)
         spec = _planned(service, "github-windows-x64", 1)[0]
         service.specs.update(spec["runner_id"], spec["spec_version"],
-                             cpu_limit="38-53")
+                             cpu_limit="38-53", host_id="windows-1")
         service.fleets.set_defaults("github-windows-x64", {"cpu_limit": 16})
         replacement = service.replacement_spec(service.specs.get(spec["runner_id"]))
         assert replacement["cpu_limit"] == "38-53"
@@ -251,7 +306,7 @@ class TestWindowsReplacement:
         service = _win_service(tmp_path)
         spec = _planned(service, "github-windows-x64", 1)[0]
         service.specs.update(spec["runner_id"], spec["spec_version"],
-                             cpu_limit="0-15")
+                             cpu_limit="0-15", host_id="windows-1")
         service.fleets.set_defaults("github-windows-x64", {"cpu_limit": 8})
         replacement = service.replacement_spec(service.specs.get(spec["runner_id"]))
         assert len(cpusets.parse(replacement["cpu_limit"])) == 8
@@ -281,6 +336,7 @@ class TestWindowsHostCoresFallback:
 
         service.fleets.set_defaults("github-windows-x64", {"cpu_limit": 16})
         second = _planned(service, "github-windows-x64", 1)[0]
+        second = _provisioned(service, second, "windows-1")
         assert cpusets.is_cpuset(second["cpu_limit"])
         assert len(cpusets.parse(second["cpu_limit"])) == 16
 
@@ -307,10 +363,12 @@ class TestCrossPlatformIsolation:
         service = _mixed_service(tmp_path)
         service.fleets.set_defaults("github-linux-x64", {"cpu_limit": 16})
         # Two Linux windows take cores 0-31 on the Linux host.
-        _planned(service, "github-linux-x64", 2)
+        for spec in _planned(service, "github-linux-x64", 2):
+            _provisioned(service, spec, "linux-1")
 
         service.fleets.set_defaults("github-windows-x64", {"cpu_limit": 16})
         first = _planned(service, "github-windows-x64", 1)[0]
+        first = _provisioned(service, first, "windows-1")
         # Nothing is taken on the Windows host, so the first window there is
         # still 0-15 - pooled, it would have been pushed past 31 to dodge
         # cores the Linux fleet occupies on a different machine.
@@ -320,10 +378,12 @@ class TestCrossPlatformIsolation:
             self, tmp_path):
         service = _mixed_service(tmp_path)
         service.fleets.set_defaults("github-windows-x64", {"cpu_limit": 16})
-        _planned(service, "github-windows-x64", 2)
+        for spec in _planned(service, "github-windows-x64", 2):
+            _provisioned(service, spec, "windows-1")
 
         service.fleets.set_defaults("github-linux-x64", {"cpu_limit": 16})
         first = _planned(service, "github-linux-x64", 1)[0]
+        first = _provisioned(service, first, "linux-1")
         assert first["cpu_limit"] == "0-15"
 
     def test_host_core_counts_do_not_pool_across_platforms(self, tmp_path):
@@ -332,6 +392,7 @@ class TestCrossPlatformIsolation:
         service = _mixed_service(tmp_path, linux_cores=32, windows_cores=56)
         service.fleets.set_defaults("github-windows-x64", {"cpu_limit": 40})
         win = _planned(service, "github-windows-x64", 1)[0]
+        win = _provisioned(service, win, "windows-1")
         assert len(cpusets.parse(win["cpu_limit"])) == 40
 
 
@@ -405,13 +466,44 @@ class TestWindowsHostIsolation:
         assert len(cpusets.parse(replacement["cpu_limit"])) == 16
         assert max(cpusets.parse(replacement["cpu_limit"])) > 7
 
-    def test_the_small_hosts_window_falls_inside_its_own_cores(self, tmp_path):
+    def test_a_freshly_scaled_runners_window_is_cut_from_the_host_it_lands_on(
+            self, tmp_path):
+        """The exact live scenario, and round 1's unfixed gap (finding 1,
+        2026-09-23): a fleet SCALED UP - `plan()`, never a recreate - with
+        two Windows hosts of different sizes already in the pool. Round 1
+        still computed the window inside `plan()`, pooled across every host
+        of the platform with `min()`: scaling this fleet at the width its
+        physical host's own runners already use (16) refused outright,
+        because the *other*, smaller host in the pool could not have held
+        it - even though the host this runner is actually going to land on
+        could. A window is only real once a host is chosen, cut from that
+        host alone; this must fail against 0298e72."""
         service = _two_host_windows_service(tmp_path, small_cores=8, big_cores=56)
-        _placed(service, "github-windows-x64", "windows-big", "0-15")
-        small = _placed(service, "github-windows-x64", "windows-small", "0-3")
+        service.fleets.set_defaults("github-windows-x64", {"cpu_limit": 16})
+        spec = _planned(service, "github-windows-x64", 1)[0]
+        # plan() decided only the width - there is no host yet to cut a
+        # window from.
+        assert spec["cpu_limit"] is None
+        placed = _provisioned(service, spec, "windows-big")
+        assert cpusets.is_cpuset(placed["cpu_limit"])
+        assert len(cpusets.parse(placed["cpu_limit"])) == 16
+        # Cut from the big host's own numbering, not narrowed to the small
+        # host's eight cores just because they share a platform.
+        assert max(cpusets.parse(placed["cpu_limit"])) > 7
+
+    def test_a_freshly_scaled_runners_window_still_fits_a_small_host(
+            self, tmp_path):
+        """The mirror of the test above: placed on the *small* host instead,
+        the same freshly planned runner's window must still fall inside its
+        eight cores - the other, larger host's numbering must not leak in
+        just because nothing has been placed on the small host yet."""
+        service = _two_host_windows_service(tmp_path, small_cores=8, big_cores=56)
         service.fleets.set_defaults("github-windows-x64", {"cpu_limit": 8})
-        replacement = service.replacement_spec(service.specs.get(small["runner_id"]))
-        assert cpusets.parse(replacement["cpu_limit"]) <= set(range(8))
+        spec = _planned(service, "github-windows-x64", 1)[0]
+        assert spec["cpu_limit"] is None
+        placed = _provisioned(service, spec, "windows-small")
+        assert cpusets.is_cpuset(placed["cpu_limit"])
+        assert cpusets.parse(placed["cpu_limit"]) <= set(range(8))
 
     def test_host_core_counts_do_not_pool_within_one_platform(self, tmp_path):
         service = _two_host_windows_service(tmp_path, small_cores=8, big_cores=56)

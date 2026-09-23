@@ -1025,3 +1025,67 @@ class TestARemovalThatLostItsOperation:
         service.recreate(runner["runner_id"])
         before = service.specs.get(runner["runner_id"])["current_operation"]
         assert before
+
+
+class TestRecreateRefusalAfterRemoval:
+    """Finding 2 of the task 25 review (2026-09-23): `_do_remove`'s recreate
+    branch calls `replacement_spec` again after `executor.remove` has already
+    succeeded - the old unit is gone by then. The identical computation ran
+    moments earlier, inside the same `_step()` call, as a guarded preflight
+    (`validate_replacement`, which fails cleanly through `_fail`); this second
+    call is not guarded at all. A `Refused` here - the fleet's pinned width no
+    longer fitting the host it is going, say, a same-pass race the earlier
+    preflight could not have seen - must not fall into `pass_once`'s generic
+    per-spec handler: that leaves the runner stuck in `removing` with no
+    `last_error` and its `recreate` operation open forever."""
+
+    def test_a_refusal_discovered_after_removal_is_recorded_not_swallowed(
+            self, world):
+        service, executor, reconciler = world
+        # A pinned fleet, with its one worker declaring enough cores to hold
+        # it - the ordinary case that must recreate cleanly right up until
+        # the moment the width stops fitting.
+        service.inventory.register_worker(
+            WORKER, inv.HYPERV_LINUX,
+            capabilities={"kind": "linux-container", "host_cores": 56})
+        service.fleets.set_defaults(GH, {"cpu_limit": 16})
+        service.scale_up(GH, by=1)
+        converge(service, reconciler)
+        runner = live(service)[0]
+        assert runner["actual_state"] == "idle"
+        service.specs.update(runner["runner_id"], runner["spec_version"],
+                             actual_state="drained")
+
+        # Widened past what the host has, exactly when the old unit is
+        # actually removed. At the preflight moments earlier in the same
+        # pass the width still fit 56 cores fine - this is the same-pass
+        # race finding 2 describes, not something that preflight could catch.
+        # The state is checked on the very same pass `remove` runs in - a
+        # later pass would re-run the guarded preflight too and could catch
+        # the same bad width by then, masking exactly the gap this test
+        # exists to catch.
+        removed = {"done": False}
+        real_remove = executor.remove
+        def remove_then_widen(spec, keep_data=False):
+            result = real_remove(spec, keep_data=keep_data)
+            service.fleets.set_defaults(GH, {"cpu_limit": 999})
+            removed["done"] = True
+            return result
+        executor.remove = remove_then_widen
+
+        operation_id = service.recreate(runner["runner_id"])
+        for _ in range(10):
+            service.inventory.heartbeat(WORKER)
+            reconciler.pass_once()
+            if removed["done"]:
+                break
+        else:
+            pytest.fail("the recreate never reached its remove step")
+
+        current = service.specs.get(runner["runner_id"])
+        assert current["last_error"], (
+            "a Refused discovered right after the unit was removed must be "
+            "recorded on the runner, not silently dropped by the pass's "
+            "generic per-spec handler")
+        assert current["current_operation"] is None
+        assert service.operations.get(operation_id)["state"] == "failed"

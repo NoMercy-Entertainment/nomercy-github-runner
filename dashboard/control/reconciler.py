@@ -897,7 +897,18 @@ class Reconciler:
             # other, and under the fleet's own name (T-0802, 2026-09-20).
             forget_adoption(self.service.specs, spec)
             spec = self.service.specs.get(spec["runner_id"])
-            replacement = self.service.replacement_spec(spec)
+            try:
+                replacement = self.service.replacement_spec(spec)
+            except Exception as error:          # noqa: BLE001
+                # The old unit is already gone by this point (`self.
+                # executor.remove` above succeeded), so a `Refused` here -
+                # a pinned width that no longer fits this host, say - must
+                # not fall into the pass's generic handler: that leaves the
+                # runner stuck in `removing` with no recorded reason and its
+                # `recreate` operation open forever (finding 2, 2026-09-23).
+                self._fail(spec, operation, error, report,
+                           "replacement after removal")
+                return
             fields = {key: replacement.get(key) for key in
                       ("runtime_template", "cpu_limit", "memory_limit", "memory_swap_limit", "disk_limit",
                        "labels", "cache_policy", "runner_group")}

@@ -44,8 +44,8 @@ import time
 
 import providers
 
-from . import placement, retry
-from .service import forget_adoption
+from . import cpusets, placement, retry
+from .service import Refused, forget_adoption
 from .redact import redact
 from .retry import (AGENT_FAST, AGENT_SLOW, FORGE_DELETE, FORGE_DRAIN,
                     FORGE_REGISTRATION, FORGE_STATUS)
@@ -276,7 +276,29 @@ class ProvisioningFlow:
             spec = self.service.specs.get(spec["runner_id"])
         self._void_registration(spec)
         spec = self.service.specs.get(spec["runner_id"])
-        unit = self.service.effective_spec(spec)
+        # `state["host_id"]` is the first point a pinned platform's window
+        # can be computed at all: place, just above, is what determines it,
+        # and effective_spec leaves cpu_limit alone without one
+        # (finding 1, 2026-09-23). Recorded now, on the spec itself, not
+        # only in the dict handed to `runtime.create` below - the same
+        # "recorded before" 12.5 already asks for `host_id` itself
+        # (`on_placed`), so a later read of this runner (a recreate's "keep
+        # my own window", another runner's occupancy, the dashboard's card)
+        # sees the window it actually got, not none at all.
+        unit = self.service.effective_spec(spec, host_id=state["host_id"])
+        if unit.get("cpu_limit") != spec.get("cpu_limit"):
+            self.service.specs.update(spec["runner_id"], spec["spec_version"],
+                                      cpu_limit=unit["cpu_limit"])
+            spec = self.service.specs.get(spec["runner_id"])
+        fleet = self.service.fleets.get(spec.get("fleet_id")) or {}
+        if self.service._pinned_width(fleet) is not None and not cpusets.is_cpuset(unit.get("cpu_limit")):
+            # The backstop (2026-09-23): unreachable today - effective_spec
+            # above either returns a real window or raises - but a pinned
+            # platform's unit must never be created without one, whatever a
+            # future change might otherwise let slip through silently with
+            # the full host's cores instead of the one it was promised.
+            raise Refused(f"provision refuses: {spec['platform']} pins a "
+                          f"CPU window and {spec['runner_id']} has none")
         unit["name"] = name
         unit["storage"] = storage.names(spec["runner_id"], spec["platform"])
         unit["host_id"] = state["host_id"]
