@@ -15,7 +15,8 @@ from types import SimpleNamespace
 import pytest
 
 from agent import jobhost, naming
-from agent.runtimes.windows_process import WindowsProcessRuntime, WindowsRegistrar
+from agent.runtimes.windows_process import (WindowsProcessRuntime,
+                                            WindowsRegistrar, service_sid)
 from agent.runtimes.windows_storage import DEFAULT_LIMIT, WindowsStorage, verify_volume
 from .fake_windows import FakeWindows, TEMPLATE, TOOLS
 
@@ -489,6 +490,76 @@ def test_helper_never_names_a_hyperv_cmdlet(cmdlet):
     this same regression."""
     text = (ROOT / "agent/runtimes/windows_storage.ps1").read_text(encoding="utf-8")
     assert cmdlet not in text
+
+
+def test_helper_never_names_mount_diskimage_again():
+    """Windows 11 binds a disk attached with Mount-DiskImage to the account
+    that attached it (this agent, LocalSystem), and refuses the runner's own
+    account at the device itself, before any file ACL is even consulted -
+    proven live in a Hyper-V guest (2026-09-23). AttachVirtualDisk replaces
+    it because it alone takes a security descriptor; there is no fallback,
+    so that name must never appear here again, even in a comment claiming
+    to explain why it was removed."""
+    text = (ROOT / "agent/runtimes/windows_storage.ps1").read_text(encoding="utf-8")
+    assert "Mount-DiskImage" not in text
+
+
+def test_actual_helper_grants_the_runners_own_sid_not_every_service(helper):
+    """Critical review finding on the guest prototype: an attach descriptor
+    granting the well-known 'every service' SID (SU) would let any service
+    on the machine open any runner's disk. The writable attach `ensure`/
+    `mount` use must name only this runner's own service SID - computed the
+    same way as windows_process.py's service_sid - never SU."""
+    invoke, request, model = helper
+    assert invoke().returncode == 0, "setup: ensure should succeed"
+    sddl = _model(model)["attach_sddl"]
+    own_sid = service_sid(f"rnr-{RID}")
+    assert f";;;{own_sid})" in sddl, sddl
+    assert not re.search(r";;;SU\)", sddl), sddl
+    assert ";;;SY)" in sddl and ";;;BA)" in sddl, sddl
+
+
+def test_actual_helper_restricts_the_readonly_identity_attach_to_system_and_administrators(helper):
+    """`remove`'s read-only attach proves disk identity before anything is
+    deleted; it must never hand out access to this or any other runner's
+    service SID for a disk that is about to be removed - only SYSTEM and
+    Administrators, exactly as the writable attach's descriptor minus the
+    runner grant."""
+    invoke, request, model = helper
+    assert invoke().returncode == 0, "setup: ensure should succeed"
+    _model(model, attached=False)
+    answer = invoke("remove")
+    assert answer.returncode == 0, answer.stderr
+    sddl = _model(model)["readonly_attach_sddl"]
+    assert sddl == "O:BAG:SYD:(A;;GA;;;SY)(A;;GA;;;BA)", sddl
+    own_sid = service_sid(f"rnr-{RID}")
+    assert own_sid not in sddl
+    assert not re.search(r";;;SU\)", sddl), sddl
+
+
+def test_actual_add_virtual_disk_throws_with_the_failing_calls_code(tmp_path):
+    """Step 2's own requirement: a non-zero return from the virtual-disk API
+    must throw with the code and what it was doing, not just a generic
+    PowerShell error. Exercised against the real (unmocked) Add-VirtualDisk,
+    defined by dot-sourcing everything in the helper up to the point where
+    the JSON-stdin protocol begins - no request is sent, no disk anywhere
+    near D:\\runner-disks or D:\\runners is touched, only a path under
+    pytest's own temporary directory that is guaranteed not to exist."""
+    if sys.platform != "win32":
+        pytest.skip("actual PowerShell helper runs on Windows")
+    text = (ROOT / "agent/runtimes/windows_storage.ps1").read_text(encoding="utf-8")
+    marker = "$mutex = $null"
+    assert marker in text
+    functions_only = text.split(marker, 1)[0]
+    missing = tmp_path / "definitely-missing.vhdx"
+    probe = tmp_path / "probe.ps1"
+    probe.write_text(functions_only + "\r\n" + (
+        f"Add-VirtualDisk '{missing}' (Get-DiskSecurityDescriptor '{RID}' $true)\r\n"),
+        encoding="utf-8")
+    result = subprocess.run([PS, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+                            "-File", str(probe)], capture_output=True, text=True, timeout=30)
+    assert result.returncode != 0
+    assert re.search(r"OpenVirtualDisk failed \(code -?\d+\)", result.stderr), result.stderr
 
 
 def test_actual_helper_treats_diskparts_zero_exit_as_failure_when_it_reports_an_error(helper):

@@ -27,22 +27,40 @@ The privileged agent creates `D:/runner-disks/<uuid>.vhdx` and an adjacent
 protected JSON manifest, attaches the image without a drive letter, and mounts
 its NTFS volume at `D:/runners/<uuid>`. The image and manifest are restricted
 to SYSTEM and Administrators. The mountpoint parent is restricted too. The
-runner's virtual service account receives Modify on its own mounted volume.
-The helper refuses reparse ancestors and mismatched disk, partition, volume or
-mount identities. It never adopts an existing plain runner directory.
+runner's virtual service account receives Modify on its own mounted volume
+through the filesystem ACL, and read/write/execute on the disk device itself
+through the security descriptor the attach is made with (below) - two
+separate grants, at two separate layers. The helper refuses reparse ancestors
+and mismatched disk, partition, volume or mount identities. It never adopts
+an existing plain runner directory.
 
 The image is created with `diskpart` (a script file, never an inline command
-line) and attached with the Storage module's disk-image cmdlets
-(`Mount-DiskImage`, `Get-DiskImage`, `Dismount-DiskImage`). None of this comes
-from Hyper-V: those cmdlets, and the module they ship in, exist only on a
-Hyper-V host, not inside a Hyper-V guest, and a Windows runner worker can be
-either. There is no fallback to the Hyper-V cmdlets - one path, working in
-both places. Declared size is checked against the manifest on every use, and
-so is fixed-versus-dynamic type - but type is never re-inferred from the live
-file (a heuristic cannot tell a grown dynamic disk from a fixed one); it is
-recorded in the manifest once, at creation, since diskpart was asked for a
-fixed disk and that fact does not change later. Neither of these is an
-identity check, and neither may stand in for one.
+line); its state is read and it is detached with the Storage module's
+disk-image cmdlets (`Get-DiskImage`, `Dismount-DiskImage`). It is attached
+through `AttachVirtualDisk` directly (P/Invoke against `virtdisk.dll`, the
+same API the Storage module's own mount cmdlet wraps) rather than that
+cmdlet, because only `AttachVirtualDisk` takes a security descriptor.
+Windows 11 binds a disk attached without one to the account that attached
+it - this agent, LocalSystem - and refuses the runner's own account at the
+device itself, before any file ACL is even consulted; Windows 10 never
+enforced that, so the difference went unnoticed until a runner worker moved
+into a Hyper-V guest (2026-09-23). The descriptor grants SYSTEM and
+Administrators full access always, and this runner's own service SID -
+computed the same way as `windows_process.py`'s `service_sid`, never the
+well-known "every service" SID - read/write/execute, but only for this
+runner's own writable attach; the read-only attach `remove` uses purely to
+prove identity grants SYSTEM and Administrators alone, nothing runner-owned.
+None of this comes from Hyper-V: the Storage module's own cmdlets, and the
+module they ship in, exist only on a Hyper-V host, not inside a Hyper-V
+guest, and a Windows runner worker can be either; `virtdisk.dll` itself is
+present on both. There is no fallback to the Hyper-V cmdlets, and no
+fallback to the Storage module's own mount cmdlet either - one attach path,
+working in both places. Declared size is checked against the manifest on
+every use, and so is fixed-versus-dynamic type - but type is never
+re-inferred from the live file (a heuristic cannot tell a grown dynamic disk
+from a fixed one); it is recorded in the manifest once, at creation, since
+diskpart was asked for a fixed disk and that fact does not change later.
+Neither of these is an identity check, and neither may stand in for one.
 
 Disk identity is proven by attaching and reading the disk's own id, never
 inferred from size or type. A disk already attached (the normal state while

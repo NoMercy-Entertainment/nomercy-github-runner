@@ -61,11 +61,17 @@ function diskpart {
     Write-Output 'DiskPart successfully created the virtual disk file.'
     $global:LASTEXITCODE = 0
 }
-function Mount-DiskImage {
-    param($ImagePath, [switch]$NoDriveLetter, $Access)
-    if (-not $NoDriveLetter) { throw 'unexpected drive letter' }
+function Add-VirtualDisk {
+    # Stands in for the real Add-VirtualDisk's AttachVirtualDisk P/Invoke -
+    # no real virtual-disk handle exists for a fake image file, so this
+    # records what it was asked to do instead of calling into virtdisk.dll.
+    # The security descriptor is captured verbatim so a test can check who
+    # it names, exactly as Set-Acl above captures ACLs.
+    param($Path, $Sddl, [switch]$ReadOnly)
     $script:model.attached = $true
-    if ($Access -eq 'ReadOnly') { Save-Model 'attach-readonly' } else { Save-Model 'attach' }
+    $prop = if ($ReadOnly) { 'readonly_attach_sddl' } else { 'attach_sddl' }
+    $script:model | Add-Member -Force -NotePropertyName $prop -NotePropertyValue $Sddl
+    if ($ReadOnly) { Save-Model 'attach-readonly' } else { Save-Model 'attach' }
 }
 function Get-Disk {
     param($Number)

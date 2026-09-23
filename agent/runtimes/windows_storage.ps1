@@ -1,10 +1,14 @@
 # Owned fixed VHDX volumes. This file is deployed with the agent, never inside
 # a runner's writable tree. All requests arrive as JSON stdin, never commands.
-# Images are created with diskpart and attached with the Storage module's
-# disk-image cmdlets, never the Hyper-V module's virtual-disk ones: this
-# script also runs inside a Hyper-V guest, where the Hyper-V module itself
-# does not exist (2026-09-23). No fallback to that other module - one path,
-# working in both places.
+# Images are created with diskpart, read and detached with the Storage
+# module's disk-image cmdlets, and attached through virtdisk.dll's own
+# AttachVirtualDisk (P/Invoke, below) rather than that module's mount
+# cmdlet - the only one of these calls that takes a security descriptor, so
+# it is the only one that can grant a runner's own account access instead of
+# binding the disk to whichever account attached it. Never the Hyper-V
+# module's virtual-disk cmdlets either: this script also runs inside a
+# Hyper-V guest, where that module does not exist (2026-09-23). No fallback
+# to either alternative - one path, working on both hosts.
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 Set-StrictMode -Version Latest
@@ -63,6 +67,100 @@ function Protect-RunnerParent([string]$Path) {
     $acl.AddAccessRule((New-Object Security.AccessControl.FileSystemAccessRule(
         $services, 'ListDirectory,ReadAttributes,Traverse,Synchronize', 'None', 'None', 'Allow')))
     Set-Acl -LiteralPath $Path -AclObject $acl
+}
+
+function Get-RunnerServiceSid([string]$Rid) {
+    # The SID Windows would derive for this runner's own service account,
+    # `NT SERVICE\rnr-<rid>` - the same derivation as
+    # agent/runtimes/windows_process.py's service_sid: SHA-1 of the
+    # upper-cased name in UTF-16LE, taken as five little-endian 32-bit words
+    # after S-1-5-80. Independently computable before the service exists,
+    # which is the whole point of that Python helper (icacls answers "No
+    # mapping between account names and security IDs was done" for a
+    # service that is not there yet) - and it is plain hashing, nothing
+    # privileged, so it runs for real whether or not Add-VirtualDisk below
+    # is mocked.
+    $name = ("rnr-$Rid").ToUpperInvariant()
+    $sha1 = [Security.Cryptography.SHA1]::Create()
+    try {
+        $digest = $sha1.ComputeHash([Text.Encoding]::Unicode.GetBytes($name))
+    } finally {
+        $sha1.Dispose()
+    }
+    $words = 0..4 | ForEach-Object { [BitConverter]::ToUInt32($digest, $_ * 4) }
+    return 'S-1-5-80-' + ($words -join '-')
+}
+
+function Get-DiskSecurityDescriptor([string]$Rid, [bool]$GrantRunner) {
+    # SYSTEM and Administrators always get full access. This runner's own
+    # service SID - never the well-known "every service" SID (SU), which
+    # would let any service on the machine open any runner's disk - gets
+    # read/write/execute, and only for the writable attach `ensure`/`mount`
+    # use. The read-only attach `remove` uses purely to prove identity
+    # grants neither: nothing needs to read a disk that is about to be
+    # deleted, least of all every service on the machine.
+    $sddl = 'O:BAG:SYD:(A;;GA;;;SY)(A;;GA;;;BA)'
+    if ($GrantRunner) { $sddl += "(A;;GRGWGX;;;$(Get-RunnerServiceSid $Rid))" }
+    return $sddl
+}
+
+if (-not (Test-Path function:Add-VirtualDisk)) {
+    # Attach through AttachVirtualDisk, which takes a security descriptor -
+    # the Storage module's own mount cmdlet does not expose one, and binds
+    # whatever it attaches to the account that called it (this agent,
+    # LocalSystem), so Windows 11 refuses the runner's own account at the
+    # device itself, before any file ACL is even consulted (proven live in a
+    # Hyper-V guest, 2026-09-23). Windows 10 (beast-unit) never enforced
+    # that, so the old attach was harmless there, but this is the only
+    # attach path now for both hosts - no fallback to the old one anywhere.
+    # Guarded so a test double can replace Add-VirtualDisk before this file
+    # is dot-sourced, the same seam every other privileged cmdlet here uses.
+    Add-Type -Namespace Rnr -Name VirtDisk -MemberDefinition @'
+[StructLayout(LayoutKind.Sequential)]
+public struct VIRTUAL_STORAGE_TYPE { public uint DeviceId; public Guid VendorId; }
+
+[DllImport("virtdisk.dll", CharSet = CharSet.Unicode, SetLastError = false)]
+public static extern int OpenVirtualDisk(
+    ref VIRTUAL_STORAGE_TYPE VirtualStorageType, string Path, uint VirtualDiskAccessMask,
+    uint Flags, IntPtr Parameters, out IntPtr Handle);
+
+[DllImport("virtdisk.dll", SetLastError = false)]
+public static extern int AttachVirtualDisk(
+    IntPtr VirtualDiskHandle, IntPtr SecurityDescriptor, uint Flags,
+    uint ProviderSpecificFlags, IntPtr Parameters, IntPtr Overlapped);
+
+[DllImport("kernel32.dll", SetLastError = true)]
+public static extern bool CloseHandle(IntPtr h);
+'@
+
+    function Add-VirtualDisk([string]$Path, [string]$Sddl, [switch]$ReadOnly) {
+        $type = New-Object Rnr.VirtDisk+VIRTUAL_STORAGE_TYPE
+        $type.DeviceId = 3   # VHDX
+        $type.VendorId = [Guid]'EC984AEC-A0F9-47e9-901F-71415A66345B'   # Microsoft
+        $handle = [IntPtr]::Zero
+        # VIRTUAL_DISK_ACCESS_ALL
+        $rc = [Rnr.VirtDisk]::OpenVirtualDisk([ref]$type, $Path, 0x003f0000, 0,
+            [IntPtr]::Zero, [ref]$handle)
+        if ($rc -ne 0) { throw "OpenVirtualDisk failed (code $rc) opening $Path" }
+        try {
+            $sd = New-Object Security.AccessControl.RawSecurityDescriptor($Sddl)
+            $bytes = New-Object byte[] $sd.BinaryLength
+            $sd.GetBinaryForm($bytes, 0)
+            $mem = [Runtime.InteropServices.Marshal]::AllocHGlobal($bytes.Length)
+            try {
+                [Runtime.InteropServices.Marshal]::Copy($bytes, 0, $mem, $bytes.Length)
+                # ATTACH_VIRTUAL_DISK_FLAG: NO_DRIVE_LETTER (0x2) and
+                # PERMANENT_LIFETIME (0x4) always - the same combination the
+                # guest prototype proved (2026-09-23); READ_ONLY (0x1) added
+                # only for the identity-check attach.
+                $flags = 0x2 -bor 0x4
+                if ($ReadOnly) { $flags = $flags -bor 0x1 }
+                $rc = [Rnr.VirtDisk]::AttachVirtualDisk($handle, $mem, $flags, 0,
+                    [IntPtr]::Zero, [IntPtr]::Zero)
+                if ($rc -ne 0) { throw "AttachVirtualDisk failed (code $rc) attaching $Path" }
+            } finally { [Runtime.InteropServices.Marshal]::FreeHGlobal($mem) }
+        } finally { [void][Rnr.VirtDisk]::CloseHandle($handle) }
+    }
 }
 
 function Save-State {
@@ -157,7 +255,7 @@ function Confirm-OwnedImage {
     $selfAttached = -not $diskImage.Attached
     if ($selfAttached) {
         try {
-            Mount-DiskImage -ImagePath $script:image -NoDriveLetter -Access ReadOnly | Out-Null
+            Add-VirtualDisk $script:image (Get-DiskSecurityDescriptor $script:rid $false) -ReadOnly
         } catch {
             throw "Refusing to remove an image that cannot be attached for identity verification: $($_.Exception.Message)"
         }
@@ -284,7 +382,7 @@ try {
         # was already attached before this call began is left exactly as
         # found on a refusal; it was not this call's to attach or detach.
         $selfAttached = -not $diskImage.Attached
-        if ($selfAttached) { Mount-DiskImage -ImagePath $image -NoDriveLetter | Out-Null }
+        if ($selfAttached) { Add-VirtualDisk $image (Get-DiskSecurityDescriptor $rid $true) }
         try {
             $disk = Get-OwnedDisk
         } catch {
