@@ -102,7 +102,13 @@
         'rnr-windows-1' = @{
             Role      = 'windows-worker'
             MemoryGB  = 16
-            Cpus      = 8
+            # 16, not 8 (corrected 2026-09-23): a pinned Windows fleet
+            # gives each runner a sixteen-core window, the same width as
+            # the ones already running on BEAST-UNIT's own 56 cores. An
+            # eight-processor guest cannot hold a real sixteen-core window
+            # at all - the fault behind a runner placed here being pinned
+            # to cores 32-47, which did not exist on it.
+            Cpus      = 16
             DiskGB    = 200
             DataDiskGB = 200
             Address   = '10.77.0.30'

@@ -256,20 +256,32 @@ class RunnerService:
             return None
         return cpusets.whole_cores(fleet.get("cpu_limit"))
 
-    def _host_cores(self, platform):
-        """The core count `platform`'s windows are cut from: what its own
-        workers declare, else what its own runners last measured.
+    def _host_cores(self, platform, host_id=None):
+        """The core count a window on `platform` is cut from: `host_id`'s
+        own declaration, else what its own placed runners last measured.
 
-        Scoped to one platform, never pooled across every pinned one: a
-        Linux worker and a Windows worker are physically different hosts
-        with their own, independent processor numbering, so mixing their
-        counts would cut one platform's windows to a ceiling that has
-        nothing to do with the host they are actually placed on
+        Scoped to one host once `host_id` is known, never pooled across two:
+        a small guest and the physical host behind it are different
+        machines with their own, independent processor numbering, so
+        mixing their counts is wrong in both directions - it can cut the
+        big host's windows down to the small guest's size, or hand the
+        small guest a window off the big host's numbering, which is how a
+        runner on an eight-processor guest was pinned to cores 32-47
         (2026-09-23).
+
+        `host_id=None` is `plan()`'s case: a runner not yet placed, with no
+        host to scope to yet. It keeps the old, platform-wide search - the
+        most a window can promise before it knows its host is not to claim
+        more cores than the smallest healthy one of them has, and
+        `cpusets.allocate` now refuses rather than silently narrowing a
+        width that still does not fit once a host is chosen.
         """
-        counts = []
         kind = placement.WORKER_KIND[platform]
-        for worker in self.inventory.healthy(kind=kind):
+        workers = self.inventory.healthy(kind=kind)
+        if host_id is not None:
+            workers = [w for w in workers if w["host_id"] == host_id]
+        counts = []
+        for worker in workers:
             value = placement.declared(worker, "host_cores")
             if isinstance(value, int) and value > 0:
                 counts.append(value)
@@ -277,25 +289,28 @@ class RunnerService:
             for spec in self.specs.list():
                 if spec.get("platform") != platform:
                     continue
+                if host_id is not None and spec.get("host_id") != host_id:
+                    continue
                 value = (spec.get("telemetry") or {}).get("host_cores")
                 if isinstance(value, int) and value > 0:
                     counts.append(value)
         if not counts:
-            raise Refused(f"cannot pin a CPU window: no {platform} worker "
-                          f"has said how many cores it has yet")
+            where = f"host {host_id}" if host_id is not None else f"{platform} worker"
+            raise Refused(f"cannot pin a CPU window: no {where} has said "
+                          f"how many cores it has yet")
         return min(counts)
 
     def _cpu_window(self, platform, width, exclude=(), also=(), host_id=None):
-        """A window of `width` cores on `platform`'s own host numbering that
-        overlaps the ones in use least.
+        """A window of `width` cores on `host_id`'s own numbering - or, when
+        it is not yet known, on `platform`'s pooled one - that overlaps the
+        ones in use least.
 
         Only specs of this same platform count as occupied - a Linux
         fleet's windows are cores on a Linux host, and say nothing about
         what is free on a Windows one, or the other way round (2026-09-23).
         When `host_id` is given, occupancy is narrowed further to that one
-        host: the runner being placed already belongs there, and a second
-        host of the same platform, if there ever is one, numbers its
-        processors independently too.
+        host, for the same reason `_host_cores` is: a second host of the
+        same platform numbers its processors independently too.
         """
         taken = [set(s) for s in also]
         for spec in self.specs.list():
@@ -307,7 +322,11 @@ class RunnerService:
                 continue
             if cpusets.is_cpuset(spec.get("cpu_limit")):
                 taken.append(cpusets.parse(spec["cpu_limit"]))
-        return cpusets.allocate(width, self._host_cores(platform), taken)
+        try:
+            return cpusets.allocate(
+                width, self._host_cores(platform, host_id), taken)
+        except ValueError as e:
+            raise Refused(str(e)) from e
 
     def reserved_spec(self, spec):
         """An existing unit reserves at least its last measured memory cap."""

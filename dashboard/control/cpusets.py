@@ -46,8 +46,19 @@ def window(start, width, cores):
 
 def allocate(width, cores, taken):
     """The window of `width` cores that overlaps the `taken` sets least:
-    lowest peak first, then lowest total, then lowest start."""
-    width = max(1, min(int(width), int(cores)))
+    lowest peak first, then lowest total, then lowest start.
+
+    Refused, never narrowed, when `width` does not fit `cores`: a runner
+    quietly pinned to fewer cores than its fleet asked for is worse than
+    one that fails to start, and the caller - which knows which host
+    `cores` came from - can say why in a way this function cannot
+    (2026-09-23).
+    """
+    width, cores = int(width), int(cores)
+    if width > cores:
+        raise ValueError(
+            f"a window of {width} cores does not fit a host of {cores}")
+    width = max(1, width)
     cover = [0] * cores
     for used in taken:
         for core in used:

@@ -453,6 +453,16 @@ class TestCapabilities:
         assert caps["supports_drain"] is True
         assert caps["cache_scopes"] == ["temp", "toolcache", "workspace"]
 
+    def test_it_declares_its_own_host_cores(self, runtime):
+        """The same key the Linux runtime declares, the same way
+        (agent/runtimes/linux_container.py's own `host_cores`): what a
+        pinned window on this worker is cut from, known before any runner
+        is here to report it in telemetry. Without it, a small guest with
+        no runner yet is invisible to the controller's window sizing,
+        which is how one was pinned to cores that do not exist on it
+        (2026-09-23)."""
+        assert runtime.capabilities()["host_cores"] == os.cpu_count()
+
 
 class TestTheJobHostsArithmetic:
     @pytest.mark.parametrize("cpus,count,rate", [

@@ -67,8 +67,14 @@ class TestAllocate:
         cover = [sum(c in t for t in taken) for c in range(56)]
         assert min(cover) >= 3 and max(cover) <= 4
 
-    def test_a_window_wider_than_the_host_is_the_whole_host(self):
-        assert cpusets.allocate(80, 56, []) == "0-55"
+    def test_a_window_wider_than_the_host_is_refused_naming_both(self):
+        # Never silently narrowed (2026-09-23): a runner told to pin fewer
+        # cores than its fleet asked for is a runner quietly running with
+        # less than it was promised, and this is where both numbers - what
+        # was asked and what the host actually has - are known together.
+        with pytest.raises(ValueError) as excinfo:
+            cpusets.allocate(80, 56, [])
+        assert "80" in str(excinfo.value) and "56" in str(excinfo.value)
 
 
 def _service(tmp_path, cores=56):
@@ -327,3 +333,95 @@ class TestCrossPlatformIsolation:
         service.fleets.set_defaults("github-windows-x64", {"cpu_limit": 40})
         win = _planned(service, "github-windows-x64", 1)[0]
         assert len(cpusets.parse(win["cpu_limit"])) == 40
+
+
+def _two_host_windows_service(tmp_path, small_cores=8, big_cores=56,
+                              declare_small=True, declare_big=True):
+    """Two Windows workers of the same platform, physically different
+    machines with their own, independent processor numbering: a small
+    guest beside the physical host it does not share cores with - the
+    live `rnr-windows-1` beside `beast-unit` (2026-09-23). `_mixed_service`
+    above proved platform isolation with one worker per platform; this is
+    the gap it could not see, because it never put two hosts of the *same*
+    platform in one store together."""
+    path = str(tmp_path / "control.db")
+    schema.init(path)
+    env = {"GH_TOKEN": "x", "GITHUB_ORG": "o"}
+    FleetStore(path).seed(env)
+    cells = {(p.key, pl): "tests.fake_runtime:UnitRuntime"
+             for p in P.ALL for pl in P.PLATFORMS}
+    service = RunnerService(path, runtimes=cells, env=env)
+    big_caps = {"kind": "windows-process"}
+    if declare_big:
+        big_caps["host_cores"] = big_cores
+    small_caps = {"kind": "windows-process"}
+    if declare_small:
+        small_caps["host_cores"] = small_cores
+    service.inventory.register_worker("windows-big", inv.HYPERV_WINDOWS,
+                                      capabilities=big_caps)
+    service.inventory.register_worker("windows-small", inv.HYPERV_WINDOWS,
+                                      capabilities=small_caps)
+    service.inventory.heartbeat("windows-big")
+    service.inventory.heartbeat("windows-small")
+    return service
+
+
+def _placed(service, fid, host_id, cpu_limit):
+    """A runner already on a host, with the window it already has -
+    standing in for one of the runners that was there before this fleet's
+    width, or this host, ever changed."""
+    spec = _planned(service, fid, 1)[0]
+    service.specs.update(spec["runner_id"], spec["spec_version"],
+                         host_id=host_id, cpu_limit=cpu_limit,
+                         actual_state="idle")
+    return service.specs.get(spec["runner_id"])
+
+
+class TestWindowsHostIsolation:
+    """Two Windows workers of the same platform - a small guest and the
+    physical host behind it - number their own processors independently.
+    Before `_host_cores` took a `host_id` (2026-09-23), the two were pooled
+    with `min()` across the whole platform: the big host's windows could be
+    cut to the small guest's size, or - since neither worker declared
+    `host_cores` at all until this task - the small guest could be handed a
+    window off the big host's numbering. That second failure is exactly how
+    a runner placed on an eight-processor guest was pinned to cores 32-47
+    and died on start (task 25's live run, 2026-09-23)."""
+
+    def test_the_big_hosts_window_keeps_its_own_numbering(self, tmp_path):
+        service = _two_host_windows_service(tmp_path, small_cores=8, big_cores=56)
+        # Planned and placed before the fleet is pinned at all - like every
+        # runner already on a host before its fleet's width, in this
+        # deployment, ever became a window (`_service`/`_win_service`'s own
+        # replacement tests do the same). Only the recreate below asks
+        # `_cpu_window` to compute anything.
+        _placed(service, "github-windows-x64", "windows-small", "0-7")
+        big = _placed(service, "github-windows-x64", "windows-big", "0-31")
+        service.fleets.set_defaults("github-windows-x64", {"cpu_limit": 16})
+        replacement = service.replacement_spec(service.specs.get(big["runner_id"]))
+        # Pooled with the small host's 8 cores, this would have been cut
+        # to an 8-wide window instead of the 16 the fleet actually asks
+        # for.
+        assert len(cpusets.parse(replacement["cpu_limit"])) == 16
+        assert max(cpusets.parse(replacement["cpu_limit"])) > 7
+
+    def test_the_small_hosts_window_falls_inside_its_own_cores(self, tmp_path):
+        service = _two_host_windows_service(tmp_path, small_cores=8, big_cores=56)
+        _placed(service, "github-windows-x64", "windows-big", "0-15")
+        small = _placed(service, "github-windows-x64", "windows-small", "0-3")
+        service.fleets.set_defaults("github-windows-x64", {"cpu_limit": 8})
+        replacement = service.replacement_spec(service.specs.get(small["runner_id"]))
+        assert cpusets.parse(replacement["cpu_limit"]) <= set(range(8))
+
+    def test_host_core_counts_do_not_pool_within_one_platform(self, tmp_path):
+        service = _two_host_windows_service(tmp_path, small_cores=8, big_cores=56)
+        assert service._host_cores(P.WINDOWS, "windows-small") == 8
+        assert service._host_cores(P.WINDOWS, "windows-big") == 56
+
+    def test_a_window_wider_than_its_host_is_refused_naming_both_numbers(
+            self, tmp_path):
+        service = _two_host_windows_service(tmp_path, small_cores=8, big_cores=56)
+        with pytest.raises(Refused) as excinfo:
+            service._cpu_window(P.WINDOWS, 16, host_id="windows-small")
+        message = str(excinfo.value)
+        assert "16" in message and "8" in message

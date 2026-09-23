@@ -637,6 +637,12 @@ class WindowsProcessRuntime:
                 "supports_drain": True,
                 "clear_cache": True,
                 "cache_scopes": sorted(SUPPORTED_SCOPES),
+                # What a pinned window is cut from: the controller stages
+                # each runner's cpuset over these, so it needs the number
+                # before any runner is here to report it - the same key
+                # agent/runtimes/linux_container.py declares, the same way
+                # (2026-09-23).
+                "host_cores": os.cpu_count(),
                 "notes": "one service per runner under its own virtual "
                          "account, in a Job Object, over a directory tree "
                          "only it can read"}
