@@ -883,11 +883,41 @@ PowerShell Direct, which reaches a Windows guest without any network.
 
 ### Task 23: W10b-2 - the guest becomes the Windows worker and takes the runners over
 
-**Files:** evidence only; the agent and its installer are unchanged.
+**What the live run of Task 22 established.** `Install-WindowsWorker.ps1` was
+written for the physical host and cannot run inside a guest as it stands:
 
-- [ ] **Step 1:** In the guest (elevated, by the operator): `infra\hyperv\Install-WindowsWorker.ps1 -WindowsStorage`, from a clone of this repository at the current commit. Confirm the worker reports healthy to the controller with its own certificate, and that its capabilities name both templates and `disk_quota: true`.
-- [ ] **Step 2:** Move the Forgejo Windows runner: set the fleet's capacity to 2 so a runner is created on the new worker beside the old one (placement chooses the healthy worker with room; pin it with `host_id` if both qualify), wait until it is idle at the forge, then let a real job run on it.
-- [ ] **Step 3:** Drain and remove the runner on the host (capacity back to 1, the reconciler drains the older one first; confirm which one it picks before letting it run).
-- [ ] **Step 4:** The same for the GitHub Windows fleet.
-- [ ] **Step 5:** When both fleets serve from the guest and have each run a real job, remove the host's agent: stop and delete the `rnr-agent` service on BEAST-UNIT, keep `C:\ProgramData\nomercy` until the stability period ends, and retire the `beast-unit` worker with `python -m control retire-worker beast-unit`.
-- [ ] **Step 6:** Record the evidence and update `docs/operations/runner-platform.md` section 1: the Windows runners now run in `rnr-windows-1`, and every runner of the platform is in a Hyper-V guest.
+- it refuses unless `10.77.0.1` (the host's own rnr-internal address) is on
+  the machine, and the guest has `10.77.0.30`;
+- it enrols by SSH-ing into the control plane with the platform key under
+  `D:\HyperVunner-platform\ssh`, which does not exist in the guest;
+- its NSSM and Forgejo-runner sources are host paths
+  (`C:orgejo-runner
+ssm.exe`, `D:\HyperVunner-platformrtefacts\...`);
+- it builds the agent with `git archive` from a clone, which the guest has not
+  got either.
+
+So the host stays the orchestrator - the same shape the Linux workers already
+use, where `Initialize-RunnerPlatform.ps1` enrols and pushes the bundle - and
+the installer becomes able to run on the machine it is installing.
+
+**Files:**
+- Modify: `infra/hyperv/Install-WindowsWorker.ps1` (parameters, so it can install a worker that is not this host)
+- Create: `infra/hyperv/Install-WindowsGuestWorker.ps1` (host side: carry everything into the guest over PowerShell Direct, then run the installer there)
+- Modify: `infra/hyperv/settings.psd1` (the guest's worker block: host id, capacity, the storage root inside the guest)
+- Modify: `docs/operations/runner-platform.md` (section 1, once the runners serve from the guest)
+- Evidence: `docs/superpowers/plans/2026-09-17-uniform-evidence.md`
+
+**Interfaces:** produces the worker `rnr-windows-1` reporting healthy to the
+controller, with the two Windows fleets placed on it.
+
+- [ ] **Step 1: Read** `Install-WindowsWorker.ps1` whole, plus `Initialize-RunnerPlatform.ps1`'s enrolment block (the `control enrol` / `docker cp` / `tar` sequence) and `lib.ps1`'s `Invoke-Guest` / `Receive-FromGuest`.
+- [ ] **Step 2: Parameterise the installer.** Add `-HostId` (default `$s.Windows.HostId`), `-ListenAddress` (default `$s.HostAddress`), `-TlsBundle <path>` (when given, import this tar instead of enrolling over SSH), `-NssmSource` and `-RunnerBinary` (default to the settings values). The address check becomes: the listen address must be on this machine, whichever it is, with the message naming what it looked for. Everything else - Python, icacls, the firewall rule, the service, the health check - stays as it is, except that the health check needs the control plane, so skip it with a printed note when `-TlsBundle` is used and the control plane cannot be reached from here.
+- [ ] **Step 3: Write the host-side script.** `Install-WindowsGuestWorker.ps1 -Name rnr-windows-1 -Credential <guest admin>`: refuses unelevated; opens one `New-PSSession -VMName`; creates the target directories in the guest; copies with `Copy-Item -ToSession` the repository archive (made here with `git archive HEAD`), the pinned NSSM, the Forgejo runner binary and the Windows templates; enrols the guest's host id with the controller from here and copies the TLS bundle in; then runs the installer inside the guest with `-HostId`, `-ListenAddress` and `-TlsBundle`; finally waits for `control status` to show the worker healthy. Idempotent: running it again re-copies and re-deploys, exactly as the host installer already does with `app.previous`.
+- [ ] **Step 4: Settings.** Give `rnr-windows-1` its worker block - host id `rnr-windows-1`, `MaxRunners` 2, `RunnerMemGB` 8, the storage root on the guest's data disk (`D:unner-disks`, which is the second VHDX) - beside the existing `Windows` block, which keeps describing the physical host until it is retired.
+- [ ] **Step 5 (operator, elevated):** run it. Confirm the worker is healthy in `control status`, that its capabilities name the templates and `disk_quota`, and that the dashboard shows it.
+- [ ] **Step 6: Move the Forgejo Windows runner.** Raise that fleet's capacity to 2 so a runner is created on the new worker beside the old one, wait until it is idle at the forge, and let a real job run on it.
+- [ ] **Step 7:** Capacity back to 1 and confirm the reconciler drains the host's runner, not the guest's, before letting it run.
+- [ ] **Step 8:** The same for the GitHub Windows fleet.
+- [ ] **Step 9:** When both fleets serve from the guest and each has run a real job, remove the host's agent: stop and delete the `rnr-agent` service on BEAST-UNIT, keep `C:\ProgramData
+omercy` until the stability period ends, and retire the worker with `python -m control retire-worker beast-unit`.
+- [ ] **Step 10: Record** the evidence and update `docs/operations/runner-platform.md` section 1: every runner of the platform now runs in a Hyper-V guest.
