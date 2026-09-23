@@ -171,6 +171,15 @@ $guestConfig = {
         Set-DnsClientServerAddress -InterfaceIndex $nic.ifIndex -ServerAddresses $Dns
         $changed.Add("dns -> $($Dns -join ', ')")
     }
+    # An internal management network has no gateway, so Windows calls it
+    # "Unidentified network" and files it under Public, where firewall rules
+    # scoped to Private do nothing. This is the management path; mark it
+    # Private so those rules apply and discovery stays off the uplink.
+    $profile = Get-NetConnectionProfile -InterfaceIndex $nic.ifIndex -ErrorAction SilentlyContinue
+    if ($profile -and $profile.NetworkCategory -ne 'Private') {
+        Set-NetConnectionProfile -InterfaceIndex $nic.ifIndex -NetworkCategory Private
+        $changed.Add('mgmt network marked Private (it comes up as an unidentified, Public network)')
+    }
 
     # --- OpenSSH.Server, so the control plane can reach this guest by key ---
     # A debloat pass on the install media is known to strip Feature-on-Demand
@@ -196,10 +205,20 @@ $guestConfig = {
     }
     if ((Get-Service sshd).StartType -ne 'Automatic') { Set-Service -Name sshd -StartupType Automatic }
     if ((Get-Service sshd).Status -ne 'Running') { Start-Service sshd; $changed.Add('sshd started') }
-    if (-not (Get-NetFirewallRule -Name 'OpenSSH-Server-In-TCP' -ErrorAction SilentlyContinue)) {
+    # The rule has to hold for every profile. An internal management network
+    # has no gateway, so Windows files it under Public, and a rule scoped to
+    # Domain or Private silently does nothing there - which is how a guest
+    # ends up answering RDP (opened for all profiles) while port 22 stays
+    # shut. Belt and braces: the network itself is marked Private below.
+    $sshRule = Get-NetFirewallRule -Name 'OpenSSH-Server-In-TCP' -ErrorAction SilentlyContinue
+    if (-not $sshRule) {
         New-NetFirewallRule -Name 'OpenSSH-Server-In-TCP' -DisplayName 'OpenSSH Server (sshd)' `
-            -Enabled True -Direction Inbound -Protocol TCP -Action Allow -LocalPort 22 | Out-Null
+            -Enabled True -Direction Inbound -Protocol TCP -Action Allow -LocalPort 22 `
+            -Profile Any | Out-Null
         $changed.Add('OpenSSH firewall rule created')
+    } elseif ($sshRule.Enabled -ne 'True' -or $sshRule.Profile -ne 'Any') {
+        $sshRule | Set-NetFirewallRule -Enabled True -Profile Any
+        $changed.Add('OpenSSH firewall rule opened for every profile')
     }
 
     # --- timezone, matching the host's, so schedules and logs read the same ---
@@ -221,10 +240,22 @@ $guestConfig = {
     }
     Enable-NetFirewallRule -DisplayGroup 'Remote Desktop' -ErrorAction SilentlyContinue
 
+    # Report the build, not the product name. Windows 11 still carries
+    # "Windows 10 Pro" in the registry key Get-ComputerInfo reads - Microsoft
+    # never updated it - so the name alone reads like the wrong OS was
+    # installed. The build number is the fact: 22000 and up is Windows 11.
+    $cv = Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion'
+    $build = [int]$cv.CurrentBuildNumber
     [pscustomobject]@{
         Changed = if ($changed.Count) { $changed -join '; ' } else { '(nothing; already configured)' }
-        Info    = Get-ComputerInfo | Select-Object CsName, WindowsProductName, WindowsEditionId,
-                                                     WindowsVersion, OsArchitecture
+        Info    = [pscustomobject]@{
+            Name         = if ($build -ge 22000) { 'Windows 11' } else { 'Windows 10' }
+            Edition      = $cv.EditionID
+            Release      = $cv.DisplayVersion
+            Build        = "$build.$($cv.UBR)"
+            Architecture = $env:PROCESSOR_ARCHITECTURE
+            ComputerName = $env:COMPUTERNAME
+        }
     }
 }
 
