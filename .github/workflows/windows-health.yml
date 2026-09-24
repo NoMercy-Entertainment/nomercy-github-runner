@@ -1,0 +1,82 @@
+name: Windows runner health
+
+# The platform checking its own Windows runners: which machine took the job,
+# what it may use, whether it can write and rename on its own disk, and
+# whether it can reach the network. Nothing is built. Run it by hand from the
+# Actions tab when a Windows runner looks off, and after any change to how
+# those runners are made.
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '41 6 * * 1'
+
+jobs:
+  health:
+    runs-on: [self-hosted, Windows, X64, beast-unit]
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: Which runner is this
+        run: |
+          "runner name : $($env:RUNNER_NAME)"
+          "runner os   : $($env:RUNNER_OS) ($($env:RUNNER_ARCH))"
+          "hostname    : $(hostname)"
+          "user        : $(whoami)"
+          $cv = Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion'
+          $build = [int]$cv.CurrentBuildNumber
+          "windows     : $(if ($build -ge 22000) { 'Windows 11' } else { 'Windows 10' }) $($cv.EditionID) $($cv.DisplayVersion) build $build.$($cv.UBR)"
+
+      - name: What it may use
+        run: |
+          $mask = (Get-Process -Id $PID).ProcessorAffinity
+          $cores = 0; $m = [int64]$mask
+          while ($m -gt 0) { $cores += $m -band 1; $m = $m -shr 1 }
+          "cpus visible : $($env:NUMBER_OF_PROCESSORS)"
+          "cpu affinity : $cores cores (mask 0x$('{0:x}' -f [int64]$mask))"
+          $os = Get-CimInstance Win32_OperatingSystem
+          "memory total : $([math]::Round($os.TotalVisibleMemorySize/1MB,2)) GB"
+          "memory free  : $([math]::Round($os.FreePhysicalMemory/1MB,2)) GB"
+          $drive = (Get-Item $env:GITHUB_WORKSPACE).PSDrive
+          "workspace    : $($env:GITHUB_WORKSPACE)"
+          "its volume   : $($drive.Name): $([math]::Round($drive.Used/1GB,2)) GB used, $([math]::Round($drive.Free/1GB,2)) GB free"
+
+      - name: Write, rename and read on its own disk
+        run: |
+          $f = Join-Path $env:GITHUB_WORKSPACE 'health-check.txt'
+          (Get-Date).ToUniversalTime().ToString('o') | Set-Content -Path $f -Encoding ascii
+          if (-not (Test-Path $f)) { throw "could not write $f" }
+          # Renaming over an existing file needs more than write access. A
+          # runner whose disk was granted too narrowly passes every other
+          # check and fails exactly this one, silently, in the job host's
+          # telemetry rather than in a job - so ask it here, out loud.
+          $tmp = "$f.tmp"
+          'x' | Set-Content -Path $tmp -Encoding ascii
+          Move-Item -Path $tmp -Destination $f -Force
+          "wrote, renamed over an existing file, and read back: $(Get-Content $f)"
+          Remove-Item $f -Force
+
+      - name: Reach the network
+        run: |
+          foreach ($t in @(@{ n = 'github  '; u = 'https://api.github.com' },
+                           @{ n = 'internet'; u = 'https://cloudflare.com' })) {
+            try {
+              $r = Invoke-WebRequest -Uri $t.u -UseBasicParsing -TimeoutSec 10 -Method Head
+              "$($t.n): $($r.StatusCode)"
+            } catch {
+              "$($t.n): failed - $($_.Exception.Message)"
+            }
+          }
+
+      - name: Check out this repository
+        continue-on-error: true
+        uses: actions/checkout@v4
+
+      - name: What is installed
+        continue-on-error: true
+        run: |
+          foreach ($tool in 'git', 'node', 'npm', 'python', 'dotnet') {
+            $c = Get-Command $tool -ErrorAction SilentlyContinue
+            if ($c) { "$tool`: $((& $tool --version 2>&1 | Select-Object -First 1))" }
+            else { "$tool`: absent" }
+          }
