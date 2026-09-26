@@ -122,7 +122,11 @@ $agentConfig = [ordered]@{
         templates     = '/Users/runner/templates' 
         launch_agents = '/Library/LaunchDaemons'
     }
-    capacity   = @{ max_runners = $MaxRunners; memory_bytes = $GuestMemoryBytes }
+    # This legacy appliance runs listeners in one shared macOS guest. It
+    # cannot enforce a RAM limit per listener, so advertise only the slot
+    # count. A memory_bytes admission budget would strand the second runner
+    # because neither listener has an enforceable per-runner reservation.
+    capacity   = @{ max_runners = $MaxRunners }
     version    = $version
 }
 if ($AppliancePool) {

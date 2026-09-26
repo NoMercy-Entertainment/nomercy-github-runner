@@ -94,17 +94,24 @@ function actionButton(a, i) {
     esc(a.label) + `</button>`;
 }
 
+function displayName(c) {
+  const base = [c.provider, c.platform, c.architecture].join('-');
+  return new RegExp('^' + base + '-[0-9]+$').test(c.display_name || '')
+    ? base : c.display_name;
+}
+
 function cardHTML(c) {
+  const shownName = displayName(c);
   const name = c.href
-    ? `<a class="cname" href="${esc(c.href)}">${esc(c.display_name)}</a>`
-    : `<span class="cname">${esc(c.display_name)}</span>`;
+    ? `<a class="cname" href="${esc(c.href)}">${esc(shownName)}</a>`
+    : `<span class="cname">${esc(shownName)}</span>`;
   const where = ['worker ' + (c.worker || '?'), c.runtime,
                  [c.platform, c.architecture].filter(Boolean).join('/'),
                  c.registration, c.uptime].filter(Boolean).join(' · ');
   const labels = c.labels == null
-    ? `<div class="clabels"><span class="lhead">labels</span> unknown</div>`
-    : `<div class="clabels"><span class="lhead">labels</span> ` +
-      c.labels.map(l => `<span class="chip">${esc(l)}</span>`).join('') + `</div>`;
+    ? `<div class="clabels">Labels unavailable</div>`
+    : `<div class="clabels">` +
+      (c.labels.length ? c.labels.map(l => `<span class="chip">${esc(l)}</span>`).join('') : 'No labels configured') + `</div>`;
   const drift = c.label_drift ? `<div class="cwarn">${esc(c.label_drift)}</div>` : '';
   const notes = (c.annotations || []).map(
     t => `<span class="annot">${esc(t)}</span>`).join('');
@@ -123,19 +130,20 @@ function cardHTML(c) {
   // drift, the warning above already says it - the note does not repeat it.
   const note = (c.last_note && !c.label_drift) ? `<div class="cnote">${esc(c.last_note)}</div>` : '';
   const buttons = (c.actions || []).map(actionButton).join('');
+  const metadata = `<details class="card-meta"><summary>Labels and details</summary>` +
+    labels + (notes ? `<div class="annots">${notes}</div>` : '') + `</details>`;
   return `<div class="chead">${name}<span class="badge ${esc(c.state)}">` +
     `${esc(c.state)}</span></div>` +
     `<div class="creg">${esc(where)}</div>` +
-    labels +
-    (notes ? `<div class="annots">${notes}</div>` : '') +
     `<div class="cjob${c.job ? '' : ' none'}">${esc(job)}</div>` +
-    meters(c) + status + drift + note + error +
-    (buttons ? `<div class="actions">${buttons}</div>` : '');
+    `<div class="metrics">${meters(c)}</div>` + status + drift + note + error +
+    metadata +
+    (buttons ? `<details class="card-manage"><summary>Manage runner</summary>` +
+      `<div class="actions">${buttons}</div></details>` : '');
 }
 
 function fleetHeadHTML(f) {
   const count = (f.runners || []).length;
-  const want = f.desired == null ? '' : ` · wants ${f.desired}`;
   const buttons = (f.actions || []).map((a, i) => {
     if (!a.visible) return '';
     const title = a.enabled ? '' : ` title="${esc(a.reason)}"`;
@@ -148,11 +156,13 @@ function fleetHeadHTML(f) {
   const labels = f.labels && f.labels.length
     ? `<div class="flabels">runs-on: ${f.labels.map(l => `<span class="chip">${esc(l)}</span>`).join('')}</div>`
     : '';
-  return `<h2 class="fleet-head">${esc(f.title)}` +
-    `<span class="fcount">${count} runner${count === 1 ? '' : 's'}${esc(want)}</span></h2>` +
-    labels +
-    unavailable +
-    `<div class="fleet-actions">${buttons}</div>`;
+  const summary = f.summary || {};
+  const running = summary.running == null ? '' :
+    `<span class="fleet-ready">${summary.running} online</span>`;
+  return `<div class="fleet-heading"><div><h2 class="fleet-head">${esc(f.title)}</h2>` +
+    `<div class="fleet-summary"><span class="fcount">${count} runner${count === 1 ? '' : 's'}</span>${running}</div>` +
+    `</div><div class="fleet-actions">${buttons}</div></div>` +
+    labels + unavailable;
 }
 
 if (typeof module !== 'undefined') {

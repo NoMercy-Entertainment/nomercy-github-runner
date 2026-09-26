@@ -178,9 +178,13 @@ class RunnerService:
         own template. A reference may carry its digest after a space - the
         worker knows it by its name."""
         from .main import unit_images
+        arch_key = ("RUNNER_UNIT_IMAGE_" + fleet["provider"].upper() +
+                    "_" + fleet["platform"].upper() + "_" +
+                    fleet["architecture"].upper())
         named = unit_images(self.env or {}).get(
             (fleet["provider"], fleet["platform"]))
-        return str(fleet.get("unit_template") or named or fleet.get("template") or "").split(" ")[0]
+        arch_named = (self.env or {}).get(arch_key)
+        return str(fleet.get("unit_template") or arch_named or named or fleet.get("template") or "").split(" ")[0]
 
     def effective_spec(self, spec, env=None, host_id=None):
         """Resolve deployment defaults before either scheduling or creation.
@@ -218,7 +222,11 @@ class RunnerService:
         if result.get("memory_limit") is None:
             from .main import unit_memory
             defaults = getattr(self.agents, "memory", {}) or unit_memory(self.env if env is None else env)
-            value = defaults.get(cell)
+            source_env = self.env if env is None else env
+            arch_key = ("RUNNER_UNIT_MEMORY_" + result["provider"].upper() +
+                        "_" + result["platform"].upper() + "_" +
+                        result["architecture"].upper())
+            value = (source_env or {}).get(arch_key) or defaults.get(cell)
             if value:
                 match = re.fullmatch(r"([0-9]+(?:\.[0-9]+)?)\s*([kmgtpe]?)(?:i?b)?",
                                      str(value).strip(), re.IGNORECASE)
@@ -766,7 +774,7 @@ class RunnerService:
     # `states.COMPOSITE`, for the provisioner to follow.
 
     def create(self, fid, count=1, requested_by=None, idempotency_key=None):
-        """One more runner for a fleet: which is to say, a higher capacity.
+        """Add runners to a fleet's persisted desired count.
 
         Not a direct `plan`, and the first version was one. A runner planned
         straight into existence while the fleet still wanted zero was withdrawn
@@ -871,7 +879,7 @@ class RunnerService:
         takes it from here - drain, deregister, remove - which is the
         graceful path the design already had.
 
-        And it lowers what the fleet wants. Capacity is what the controller
+        And it lowers what the fleet wants. The desired count is what the controller
         keeps true, so a removal that left it alone was a removal the next
         pass undid: the runner came back. A recreate, a scale-down's own
         victims and the reconciler's own work all go elsewhere, so this is
@@ -882,7 +890,8 @@ class RunnerService:
                                      requested_by=requested_by,
                                      idempotency_key=idempotency_key)
         fleet = self.fleets.get(spec.get("fleet_id") or "")
-        if fleet and fleet["desired_capacity"] > 0:
+        if (fleet and spec["desired_state"] != "absent"
+                and fleet["desired_capacity"] > 0):
             self.fleets.set_capacity(
                 fleet["fleet_id"], fleet["desired_capacity"] - 1,
                 requested_by=requested_by,

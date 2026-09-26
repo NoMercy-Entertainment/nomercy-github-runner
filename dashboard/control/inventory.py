@@ -378,6 +378,22 @@ class Inventory:
         c.execute("UPDATE runner_specs SET telemetry = ? WHERE runner_id = ?",
                   (json.dumps(current), runner_id))
 
+    def invalidate_cache(self, runner_id):
+        """Discard a pre-clear cache reading until the next measured beat."""
+        with self._conn() as c:
+            row = c.execute("SELECT telemetry FROM runner_specs WHERE runner_id = ?",
+                            (runner_id,)).fetchone()
+            if not row:
+                return
+            try:
+                current = json.loads(row["telemetry"]) if row["telemetry"] else {}
+            except (TypeError, ValueError):
+                current = {}
+            current.pop("cache_bytes", None)
+            current.pop("cache_at", None)
+            c.execute("UPDATE runner_specs SET telemetry = ? WHERE runner_id = ?",
+                      (json.dumps(current), runner_id))
+
     def get(self, host_id):
         with self._conn() as c:
             return _decode(c.execute(

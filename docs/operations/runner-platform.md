@@ -8,7 +8,7 @@ what to do when something goes wrong. The design is
 
 ## 1. Where things stand
 
-As of 2026-09-22. Every runner below is built, registered and driven by the
+As of 2026-09-24. Every runner below is built, registered and driven by the
 controller; nothing is started by hand.
 
 | Part | Where | State |
@@ -18,7 +18,8 @@ controller; nothing is started by hand.
 | Forgejo Linux, 3 runners | `rnr-linux-1` | Running, 6 GiB RAM + 6 GiB swap, labels `ubuntu-latest`, `ubuntu-22.04(-full)`, `ubuntu-24.04(-full)` |
 | Forgejo Windows, 1 runner | BEAST-UNIT itself (OPEN-2) | Running as its own service and virtual account, in a Job Object, on its own fixed 100 GiB VHDX, labels `windows-2022`, `windows-latest` |
 | GitHub Windows | BEAST-UNIT | Cell buildable; see section 1.1 |
-| Forgejo macOS, 1 runner | Hyper-V VM `macos-runner` (QEMU guest) | Adopted: driven through the controller, but not yet rebuildable from a template |
+| Forgejo macOS, 1 runner | Hyper-V VM `macos-runner` (QEMU guest) | Running from the debloated reusable base with its original Forgejo registration; the per-runner pool is not deployed |
+| Windows ARM64 (GitHub + Forgejo) | Separate QEMU guest on `macos-runner` | Windows 11 ARM64 installer booted; guest installation and both registrations still in progress. See `images/windows/arm64/README.md` |
 | GitHub macOS | - | Not running; see section 1.1 |
 | WSL distro `github-runners` | - | Stopped, kept as the rollback copy of the old volumes. Its worker `wsl-linux-1` has no runners and reads degraded |
 | Docker Desktop | its own WSL VM, 32 GiB | Unrelated to the runners since the move |
@@ -28,9 +29,11 @@ controller; nothing is started by hand.
 - **GitHub macOS.** The existing macOS guest is one shared appliance with no
   per-runner memory limit, and placement refuses to put a second runner on a
   host whose memory it cannot account for. The per-runner appliance pool
-  (`agent/runtimes/macos_pool.py`, `images/macos/`) is built and tested, but
-  its clean base image has not yet been shown to boot to macOS and SSH, and
-  the macOS host still runs the older agent.
+  (`agent/runtimes/macos_pool.py`, `images/macos/`) is built and tested. On
+  2026-09-24 the debloated standalone base booted to macOS and SSH from a
+  fresh overlay; see `images/macos/pool/BASE-20260924.md`. The shared Forgejo
+  guest now uses this base, but the pool has not been deployed and the macOS
+  host still runs the older agent.
 - **Forgejo macOS rebuildable.** Needs `FORGEJO_RUNNER_ARTIFACT_MACOS` naming
   the installed template, which the pool work brings with it.
 - **The WSL rollback copy** is deleted only after a stability period, by the
@@ -139,8 +142,8 @@ in 1.2).
 the repository's HEAD. It keeps the code it replaces as
 `C:\ProgramData\nomercy\agent\app.previous`. A runner made before storage
 was switched on keeps its plain directory and cannot be managed with storage
-on: remove it (capacity 0) before switching storage on, then raise capacity
-again. Creating a runner allocates its fixed 100 GiB disk, which takes about
+on: remove that runner before switching storage on, then add a new runner.
+Creating a runner allocates its fixed 100 GiB disk, which takes about
 six minutes.
 
 ## 4. Where things live
@@ -186,10 +189,13 @@ and its runners are held, not removed: they return when it does.
 
 1. Each runner's storage and cache are on its card, from the heartbeat
    every five minutes.
+   The GitHub Linux fleet clears unused nested Docker cache and old workspaces
+   synchronously after every job, then again at unit startup. The cleanup
+   preserves the just-finished job's workspace until the next safe start.
 2. `POST /api/v2/fleets/<fleet_id>/clear-cache` clears the idle runners of a
    fleet and reports, per runner, what it freed or why it was skipped.
-3. If that is not enough, lower the fleet's capacity (admin): the reconciler
-   drains, deregisters and removes, the idlest first, never a busy one.
+3. If that is not enough, remove runners individually (admin): the reconciler
+   drains, deregisters and removes each one without interrupting its job.
 4. Never delete a volume by hand: `remove` does it after the registration.
 
 ### 5.4 Rotating an agent certificate
@@ -200,9 +206,10 @@ are prepared and activated per role, under the existing authority.
 
 ### 5.5 Emergency: stop everything without losing registrations
 
-`POST /api/v2/fleets/<fleet_id>/capacity {"desired": 0}` as admin, per
-fleet. Slower than stopping containers, and the only way that leaves no
-orphaned registration. Busy runners finish their jobs first.
+Remove each runner from the dashboard, or use
+`POST /api/v2/runners/<runner_id>/actions/remove` with an `Idempotency-Key`
+header as admin. The desired runner count falls with each removal and stays
+at zero after a reboot. Busy runners finish their jobs first.
 
 ### 5.6 A runner's forge says something else than the process
 
@@ -231,8 +238,8 @@ to watch. So at each release:
 | Role | May |
 | --- | --- |
 | viewer | read everything; post nothing |
-| operator | start, stop, restart, drain, cancel drain, clear cache, add runners, raise capacity |
-| admin | as operator, and remove, recreate, deregister, recreate a fleet, lower capacity, manage access, set the forge tokens |
+| operator | start, stop, restart, drain, cancel drain, clear cache, add runners |
+| admin | as operator, and remove, recreate, deregister, recreate a fleet, manage access, set the forge tokens |
 
 Every request to the controller is audited, accepted or refused, with the
 actor and the reason, and how each operation ended: `GET /api/v2/audit`,

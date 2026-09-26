@@ -18,6 +18,7 @@ claimed to do nothing while quietly calling out would still fail.
 """
 import ast
 import itertools
+import json
 import os
 
 import pytest
@@ -591,12 +592,21 @@ class TestOperationsAreCarriedOut:
         service, executor, reconciler = world
         runner_id = self.a_serving_runner(world)
         executor.world[runner_id] = "idle"
+        with schema.connect(service.specs.path) as db:
+            db.execute("UPDATE runner_specs SET telemetry = ? WHERE runner_id = ?",
+                       (json.dumps({"cache_bytes": 33_000_000_000,
+                                    "cache_at": "2026-09-25T11:21:43Z",
+                                    "storage_bytes": 58_000_000_000}), runner_id))
         operation_id = service.clear_cache(runner_id)
         reconciler.pass_once()
         reconciler.pass_once()
         operation = service.operations.get(operation_id)
         assert operation["state"] == "succeeded"
         assert "1024" in operation["result"]
+        telemetry = service.specs.get(runner_id)["telemetry"]
+        assert "cache_bytes" not in telemetry
+        assert "cache_at" not in telemetry
+        assert telemetry["storage_bytes"] == 58_000_000_000
 
     def test_clear_cache_fails_if_the_runner_took_a_job_meanwhile(self,
                                                                   world):

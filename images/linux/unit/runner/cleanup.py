@@ -44,7 +44,7 @@ def remove_old(root, age_seconds, protected=(), now=None):
 
 def docker(*args):
     return subprocess.run(["docker", *args], capture_output=True, text=True,
-                          timeout=30, check=True).stdout.strip()
+                          timeout=120, check=True).stdout.strip()
 
 
 def cleanup(env=None):
@@ -53,26 +53,27 @@ def cleanup(env=None):
         return
     scopes = set(env.get("RUNNER_CLEANUP_SCOPES",
                         "workspace,temp,diagnostics,engine-build-cache,engine-images-unused").split(","))
-    # Containers that outlived the job may still own files: skip all cleanup.
-    if docker("ps", "-q"):
-        return
+    # Containers that outlived the job may still own workspace files. Docker
+    # itself can safely decide which build layers and images are unused.
+    live_containers = bool(docker("ps", "-q"))
     days = max(1, int(env.get("RUNNER_CLEANUP_RETENTION_DAYS", "7")))
     work = Path(env.get("RUNNER_WORK_DIR", "/runner/work"))
     logs = Path(env.get("RUNNER_LOG_DIR", "/runner/logs"))
     current = env.get("GITHUB_WORKSPACE")
-    if "workspace" in scopes:
-        protected = [work / p for p in ("_tool", "_actions", "_temp", ".unit-tmp")]
-        remove_old(work, days * 86400, [*protected, current])
-    if "temp" in scopes:
+    if "workspace" in scopes and not live_containers:
+        protected = [work / p for p in ("_tool", "_actions", "_temp", ".unit-tmp", ".home")]
+        # The completed job's own workspace is still used by the runner while
+        # the hook runs. Clear previous jobs now, without an age threshold.
+        remove_old(work, 0, [*protected, current])
+    if "temp" in scopes and not live_containers:
         for path in (work / ".unit-tmp", work / "_temp"):
-            remove_old(path, days * 86400, [current])
+            remove_old(path, 0, [current])
     if "diagnostics" in scopes:
         remove_old(logs / "diagnostics", days * 86400)
     if "engine-build-cache" in scopes:
-        docker("builder", "prune", "-af", "--filter", f"until={days * 24}h",
-               "--keep-storage", env.get("RUNNER_BUILD_CACHE_GC", "20GB"))
+        docker("builder", "prune", "-af")
     if "engine-images-unused" in scopes:
-        docker("image", "prune", "-af", "--filter", f"until={days * 24}h")
+        docker("image", "prune", "-af")
 
 
 if __name__ == "__main__":

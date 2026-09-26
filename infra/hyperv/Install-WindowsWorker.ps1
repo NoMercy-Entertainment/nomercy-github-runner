@@ -21,7 +21,7 @@
     Changes nothing that runs. The Windows runner (`forgejo-runner`) and its
     files are only read, to copy nssm.exe. The agent makes nothing until the
     controller asks it to, and the controller builds nothing until an
-    operator raises a fleet's capacity.
+    operator adds a runner to a fleet.
 
     Every step is idempotent; run it again to deploy a newer HEAD. The code
     it replaces is kept beside it as app.previous, so going back is moving
@@ -60,6 +60,10 @@ param(
     [string] $TlsBundle,
     [string] $NssmSource,
     [string] $RunnerBinary,
+    [ValidateSet('x64', 'arm64')] [string] $Architecture = 'x64',
+    [string] $RunnerTemplate,
+    [string] $RunnerSha256,
+    [string] $FirewallRemoteAddress,
     [int] $MaxRunners,
     [int] $RunnerMemGB
 )
@@ -79,8 +83,17 @@ if (-not $HostId)        { $HostId = $w.HostId }
 if (-not $ListenAddress) { $ListenAddress = $s.HostAddress }
 if (-not $NssmSource)    { $NssmSource = $w.NssmSource }
 if (-not $RunnerBinary)  { $RunnerBinary = $w.RunnerBinary }
+if (-not $RunnerTemplate) { $RunnerTemplate = $w.Template }
+if (-not $RunnerSha256) { $RunnerSha256 = $w.RunnerSha256 }
 if (-not $MaxRunners)    { $MaxRunners = $w.MaxRunners }
 if (-not $RunnerMemGB)   { $RunnerMemGB = $w.RunnerMemGB }
+if ($Architecture -eq 'arm64' -and -not ($PSBoundParameters.ContainsKey('RunnerTemplate') -and
+        $PSBoundParameters.ContainsKey('RunnerBinary') -and $PSBoundParameters.ContainsKey('RunnerSha256'))) {
+    throw 'An ARM64 worker requires explicit -RunnerTemplate, -RunnerBinary and -RunnerSha256.'
+}
+if ($Architecture -eq 'arm64' -and $WindowsStorage) {
+    throw 'WindowsStorage requires Hyper-V VHD cmdlets inside the worker; this QEMU guest does not have them.'
+}
 if ($TlsBundle -and -not (Test-Path -LiteralPath $TlsBundle)) {
     throw "-TlsBundle $TlsBundle does not exist."
 }
@@ -168,6 +181,8 @@ Assert-Hash $nssm $w.NssmSha256
 # empty for a create to fail on.
 $source = Join-Path $PSScriptRoot '..\windows\templates'
 foreach ($dir in Get-ChildItem -Directory $source) {
+    if ($Architecture -eq 'arm64' -and $dir.Name -notlike '*-arm64') { continue }
+    if ($Architecture -eq 'x64' -and $dir.Name -like '*-arm64') { continue }
     $into = Join-Path $templates $dir.Name
     if ($dir.Name -like 'actions-runner-*' -and
         -not (Test-Path (Join-Path $dir.FullName 'agent\config.cmd'))) {
@@ -178,8 +193,11 @@ foreach ($dir in Get-ChildItem -Directory $source) {
     Copy-Item -Recurse -Force -Path (Join-Path $dir.FullName '*') -Destination $into
     Write-Host "  template $($dir.Name)"
 }
-$template = Join-Path $templates $w.Template
-Assert-Hash $RunnerBinary $w.RunnerSha256
+$template = Join-Path $templates $RunnerTemplate
+if (-not (Test-Path -LiteralPath $template -PathType Container)) {
+    throw "Runner template $RunnerTemplate was not installed."
+}
+Assert-Hash $RunnerBinary $RunnerSha256
 Copy-Item -Force -LiteralPath $RunnerBinary -Destination (Join-Path $template 'forgejo-runner.exe')
 
 # Each runner's job host runs this Python, as the runner's own virtual
@@ -220,7 +238,8 @@ $config = [ordered]@{
     tls        = @{ cert = (Join-Path $tlsDir 'agent.crt'); key = (Join-Path $tlsDir 'agent.key')
                     ca = (Join-Path $tlsDir 'ca.pem') }
     tools      = @{ nssm = $nssm; python = $python; templates = $templates }
-    capacity   = @{ max_runners = $MaxRunners; memory_bytes = [int64]$RunnerMemGB * $MaxRunners * 1GB }
+    capacity   = @{ max_runners = $MaxRunners; memory_bytes = [int64]$RunnerMemGB * $MaxRunners * 1GB
+                    architecture = $Architecture }
     version    = $version
 }
 if ($WindowsStorage) {
@@ -232,9 +251,10 @@ Write-LfFile $configPath ($config | ConvertTo-Json -Depth 4)
 
 # --- the firewall -------------------------------------------------------------------
 $rule = 'rnr-agent (control plane only)'
+$allowedSource = if ($FirewallRemoteAddress) { $FirewallRemoteAddress } else { $cp }
 Get-NetFirewallRule -DisplayName $rule -ErrorAction SilentlyContinue | Remove-NetFirewallRule
 New-NetFirewallRule -DisplayName $rule -Direction Inbound -Action Allow -Protocol TCP `
-    -LocalAddress $ListenAddress -LocalPort $s.AgentPort -RemoteAddress $cp | Out-Null
+    -LocalAddress $ListenAddress -LocalPort $s.AgentPort -RemoteAddress $allowedSource | Out-Null
 
 # --- the service ----------------------------------------------------------------------
 $service = 'rnr-agent'

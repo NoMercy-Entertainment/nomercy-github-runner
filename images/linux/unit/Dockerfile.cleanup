@@ -1,0 +1,7 @@
+ARG BASE=nomercy/github-unit:toolchain-20260925
+FROM ${BASE}
+
+# Refresh the post-job cleanup without rebuilding the large toolchain layer.
+COPY runner/cleanup.py /runner/cleanup.py
+COPY runner/cleanup /runner/cleanup
+RUN chmod 0755 /runner/cleanup && chmod 0644 /runner/cleanup.py

@@ -8,8 +8,6 @@
                              heartbeats and events, until told to stop
     status                   workers, fleets and runners, as the store has
                              them - read-only
-    capacity FLEET N         set a fleet's desired capacity; the running
-                             controller does the rest, never aborting a job
 
 Everything a pass does is the reconciler's (control/reconciler.py); this file
 only builds the parts and keeps them running. The parts are the ones the tests
@@ -409,7 +407,7 @@ def status(db=None):
     lines.append("fleets:")
     for f in service.fleets.list():
         if f["desired_capacity"] or not f["available"]:
-            lines.append(f"  {f['fleet_id']:<22} capacity "
+            lines.append(f"  {f['fleet_id']:<22} runners "
                          f"{f['desired_capacity']}"
                          + ("" if f["available"] else
                             f" - unavailable: {f['unavailable_reason']}"))
@@ -421,12 +419,6 @@ def status(db=None):
                      + (f" - {r['last_error']}" if r.get("last_error") else
                         ""))
     return "\n".join(lines)
-
-
-def capacity(fleet, count, db=None, who="cli"):
-    from .service import RunnerService
-    return RunnerService(_store(db)).set_capacity(fleet, int(count),
-                                                  requested_by=who)
 
 
 def verify_timeout(env):
@@ -462,9 +454,6 @@ def main(argv=None):
     e.add_argument("endpoint", help="https://address:port of its agent")
     sub.add_parser("run")
     sub.add_parser("status")
-    c = sub.add_parser("capacity")
-    c.add_argument("fleet", help="e.g. forgejo-linux-x64")
-    c.add_argument("count", type=int)
     r = sub.add_parser("retire-worker",
                        help="remove a worker no runner names")
     r.add_argument("host_id")
@@ -525,9 +514,6 @@ def main(argv=None):
 
     if args.command == "status":
         print(status())
-        return 0
-    if args.command == "capacity":
-        print(f"operation {capacity(args.fleet, args.count)}")
         return 0
     if args.command == "retire-worker":
         from .inventory import UnknownWorker

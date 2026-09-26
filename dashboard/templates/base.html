@@ -9,58 +9,68 @@
 <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http%3A//www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='7' fill='%230e1113'/><rect x='.75' y='.75' width='30.5' height='30.5' rx='6.5' fill='none' stroke='%231d5c40' stroke-width='1.5'/><path d='M9 8.5 L20 16 L9 23.5 Z' fill='%235ee6a0'/><rect x='22.5' y='8.5' width='3.5' height='15' rx='1.25' fill='%235ee6a0'/></svg>">
 <style>
 :root {
-  --bg:#0b0d0f; --bg-panel:#121619; --bg-inset:#0e1113;
-  --rule:#1e262b; --rule-hot:#2b373e;
-  --text:#d5dde2; --text-dim:#6b7a84; --text-faint:#3d4a52;
-  --signal:#5ee6a0; --signal-dk:#1d5c40;
+  color-scheme:dark;
+  --accent-h:220;
+  --bg:hsl(var(--accent-h) 14% 8%); --bg-panel:hsl(var(--accent-h) 14% 12%); --bg-inset:hsl(var(--accent-h) 14% 10%);
+  --rule:#343b48; --rule-hot:#717d90;
+  --text:#f1f3f7; --text-dim:#cfd6e1; --text-faint:#c5ccd8;
+  --accent:#8cb2ff; --accent-dk:#314a76;
+  --signal:#9bd9b8; --signal-dk:#325a45;
   --busy:#ffb340; --busy-dk:#5c4118;
   --drain:#7aa7ff; --drain-dk:#22406e;
-  --alert:#ff5f56; --alert-dk:#5c1f1c;
-  --grid:rgba(255,255,255,.022);
-  --label:"Bahnschrift","DIN Alternate","Roboto Condensed",system-ui,sans-serif;
+  --alert:#ff8982; --alert-dk:#5c1f1c;
+  --grid:rgba(255,255,255,.014);
+  --body:"Segoe UI",-apple-system,BlinkMacSystemFont,"Helvetica Neue",sans-serif;
+  --label:var(--body);
   --mono:"Cascadia Mono","Cascadia Code",ui-monospace,"JetBrains Mono",Menlo,Consolas,monospace;
+  --radius:16px; --radius-small:6px;
+  --type-small:.8125rem;--type-body:.875rem;--type-title:1.125rem;
+  --space-1:4px;--space-2:8px;--space-3:12px;--space-4:16px;
+  --space-5:24px;--space-6:32px;--space-7:48px;
+  --select-arrow:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='18' height='18' viewBox='0 0 18 18'%3E%3Cpath d='m4 7 5 5 5-5' fill='none' stroke='%23b9bfca' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
 }
 @media (prefers-color-scheme: light) {
   :root {
-    --bg:#e9e6df; --bg-panel:#f5f3ee; --bg-inset:#dedad1;
-    --rule:#c9c3b6; --rule-hot:#a89f8d;
-    --text:#1d2226; --text-dim:#5d6670; --text-faint:#9aa2aa;
-    --signal:#0d7a4d; --signal-dk:#a9dcc3;
-    --busy:#a1610a; --busy-dk:#f0d9ae;
+    color-scheme:light;
+    --bg:#edf0f5; --bg-panel:#fff; --bg-inset:#e6eaf1;
+    --rule:#cbd1dc; --rule-hot:#6c7789;
+    --text:#222936; --text-dim:#3e4959; --text-faint:#505c6e;
+    --accent:#275bb3; --accent-dk:#c8d9f5;
+    --signal:#197347; --signal-dk:#bce2cc;
+    --busy:#875009; --busy-dk:#f0d9ae;
     --drain:#2b5bb5; --drain-dk:#c3d5f2;
     --alert:#b3241c; --alert-dk:#f0c0bd;
     --grid:rgba(0,0,0,.03);
+    --select-arrow:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='18' height='18' viewBox='0 0 18 18'%3E%3Cpath d='m4 7 5 5 5-5' fill='none' stroke='%23495465' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
   }
 }
 *{box-sizing:border-box;margin:0;padding:0}
 body{
-  background:
-    linear-gradient(var(--grid) 1px,transparent 1px) 0 0/100% 3px,
-    radial-gradient(120% 80% at 50% -10%,rgba(94,230,160,.05),transparent 60%),
-    var(--bg);
-  color:var(--text); font-family:var(--mono); font-size:13px; line-height:1.45;
-  min-height:100vh; padding:clamp(14px,3vw,32px);
+  background:var(--bg);
+  color:var(--text); font-family:var(--body); font-size:1rem; line-height:1.5;
+  min-height:100vh; padding:clamp(16px,2.8vw,36px);max-width:1800px;margin:auto;
 }
 a{color:inherit}
+.skip-link{position:fixed;left:16px;top:16px;z-index:100;padding:12px 16px;background:var(--bg-panel);color:var(--text);transform:translateY(-200%)}
+.skip-link:focus{transform:none}
+main:focus{outline:none}
 header{
-  display:flex;flex-wrap:wrap;align-items:flex-end;gap:clamp(14px,3vw,36px);
-  border-bottom:1px solid var(--rule);padding-bottom:16px;margin-bottom:20px;
+  display:flex;flex-wrap:wrap;align-items:center;gap:clamp(16px,2vw,30px);
+  padding-bottom:var(--space-4);margin-bottom:var(--space-5);
 }
 .brand{margin-right:auto}
-.brand h1{font-family:var(--label);font-weight:600;font-size:clamp(19px,3.2vw,28px);
-  letter-spacing:.14em;text-transform:uppercase;line-height:1}
-.brand .sub{font-size:10.5px;letter-spacing:.2em;text-transform:uppercase;
-  color:var(--text-faint);margin-top:6px}
-nav{display:flex;gap:8px;align-items:center}
-nav a{font-size:10px;letter-spacing:.16em;text-transform:uppercase;
-  padding:6px 11px;border:1px solid var(--rule);text-decoration:none;color:var(--text-dim)}
-nav a:hover{border-color:var(--rule-hot);color:var(--text)}
-nav a.on{color:var(--signal);border-color:var(--signal-dk)}
+.brand h1{font-family:var(--label);font-weight:650;font-size:clamp(1.5rem,2.1vw,2rem);
+  letter-spacing:-.035em;line-height:1.2}
+.brand .sub{font-size:var(--type-small);color:var(--text-faint);margin-top:var(--space-1)}
+nav{display:flex;gap:4px;align-items:center;flex-wrap:wrap}
+nav a{font-size:var(--type-small);font-weight:600;padding:10px 12px;border-radius:var(--radius-small);
+  text-decoration:none;color:var(--text-dim)}
+nav a:hover{background:var(--bg-panel);color:var(--text)}
+nav a.on{color:var(--text);background:var(--bg-panel)}
 .stat{text-align:right}
 .stat .n{font-family:var(--label);font-size:clamp(20px,3.2vw,30px);font-weight:600;
   line-height:1;font-variant-numeric:tabular-nums}
-.stat .k{font-size:9.5px;letter-spacing:.2em;text-transform:uppercase;
-  color:var(--text-faint);margin-top:5px}
+.stat .k{font-size:var(--type-small);color:var(--text-faint);margin-top:var(--space-2)}
 .n.ok{color:var(--signal)} .n.work{color:var(--busy)}
 
 .live{display:inline-flex;align-items:center;gap:7px;font-size:10px;
@@ -74,63 +84,111 @@ nav a.on{color:var(--signal);border-color:var(--signal-dk)}
 .stale{color:var(--alert);border-color:var(--alert-dk)}
 
 .notice{border:1px solid var(--rule);border-left:3px solid var(--busy);
-  background:var(--bg-panel);padding:10px 13px;margin-bottom:16px;font-size:11.5px;
+  background:var(--bg-panel);padding:16px 20px;margin-bottom:24px;font-size:var(--type-body);
   color:var(--text-dim)}
 .notice b{color:var(--busy)}
 .err{border-left-color:var(--alert);color:var(--alert)}
 .err b{color:var(--alert)}
 .ok-msg{border-left-color:var(--signal);color:var(--signal)}
 
-.panel{background:var(--bg-panel);border:1px solid var(--rule);padding:16px 17px;
-  margin-bottom:14px}
-.panel h2{font-family:var(--label);font-size:12px;letter-spacing:.18em;
-  text-transform:uppercase;color:var(--text-dim);margin-bottom:14px;font-weight:600}
+.panel{background:var(--bg-panel);border:1px solid var(--rule);border-radius:var(--radius);
+  padding:24px;margin-bottom:24px}
+.panel h2{font-family:var(--label);font-size:17px;letter-spacing:.015em;
+  color:var(--text);margin-bottom:14px;font-weight:600}
 
-label{display:block;font-size:9.5px;letter-spacing:.15em;text-transform:uppercase;
-  color:var(--text-faint);margin-bottom:5px}
-input[type=text],input[type=password],input[type=number]{
-  width:100%;background:var(--bg-inset);border:1px solid var(--rule);color:var(--text);
-  font-family:var(--mono);font-size:12.5px;padding:8px 10px;outline:none}
+label{display:block;font-size:var(--type-small);font-weight:600;color:var(--text-dim);margin-bottom:8px}
+input[type=text],input[type=password],input[type=number],input[type=search]{
+  width:100%;background:var(--bg-inset);border:1px solid var(--rule-hot);color:var(--text);
+  font-family:var(--body);font-size:15px;padding:10px 12px;border-radius:var(--radius-small)}
 /* A number field left to the browser is a white box on a dark page. The
    spinners go with it: the value is typed, and they only widen the box. */
 input[type=number]{-moz-appearance:textfield;appearance:textfield}
 input[type=number]::-webkit-outer-spin-button,
 input[type=number]::-webkit-inner-spin-button{-webkit-appearance:none;margin:0}
-input:focus{border-color:var(--signal-dk)}
+input:focus{border-color:var(--accent)}
+select:not([multiple]){
+  appearance:none;background-color:var(--bg-panel);background-image:var(--select-arrow);
+  background-repeat:no-repeat;background-size:18px 18px;background-position:right 11px center;
+  border:1px solid var(--rule-hot);border-radius:var(--radius-small);
+  color:var(--text);font-family:var(--body);font-size:13px;
+  min-height:40px;padding:9px 38px 9px 12px;cursor:pointer;
+}
+select:not([multiple]):hover{border-color:var(--text-faint)}
+select:not([multiple]):focus{border-color:var(--accent)}
 .field{margin-bottom:14px}
-.hint{font-size:10.5px;color:var(--text-faint);margin-top:5px}
+.hint{font-size:var(--type-small);color:var(--text-faint);margin-top:8px}
 
-button,.btn{font-family:var(--label);font-size:10px;letter-spacing:.15em;
-  text-transform:uppercase;padding:7px 12px;background:transparent;
+button,.btn{font-family:var(--body);font-size:var(--type-small);font-weight:600;line-height:1.2;min-height:40px;
+  padding:9px 13px;background:transparent;border-radius:var(--radius-small);
   border:1px solid var(--rule-hot);color:var(--text-dim);cursor:pointer;
-  transition:border-color .15s,color .15s}
-button:hover:not(:disabled){border-color:var(--signal);color:var(--signal)}
+  transition:border-color .12s,color .12s,background-color .12s}
+button:hover:not(:disabled){border-color:var(--accent);color:var(--accent)}
 button:disabled{opacity:.35;cursor:not-allowed}
 button.warn:hover:not(:disabled){border-color:var(--busy);color:var(--busy)}
 button.danger:hover:not(:disabled){border-color:var(--alert);color:var(--alert)}
-button.primary{border-color:var(--signal-dk);color:var(--signal)}
-button.primary:hover:not(:disabled){background:var(--signal-dk);color:var(--text)}
+button.primary{border-color:var(--accent);background:var(--accent);color:var(--bg)}
+button.primary:hover:not(:disabled){filter:brightness(1.08)}
+:where(a,button,input,select,summary):focus-visible{outline:2px solid var(--accent);outline-offset:3px}
+.card-meta,.card-manage{margin-top:10px;border:1px solid var(--rule);
+  border-radius:var(--card-inner-radius,var(--radius-small));background:var(--bg-inset)}
+.card-meta summary,.card-manage summary{
+  display:flex;align-items:center;justify-content:space-between;gap:12px;
+  width:100%;min-height:44px;padding:10px 12px;border-radius:inherit;
+  background:transparent;border:0;
+  color:var(--text-dim);font-size:var(--type-small);font-weight:600;cursor:pointer;list-style:none;
+}
+.card-meta summary::-webkit-details-marker,.card-manage summary::-webkit-details-marker{display:none}
+.card-meta:hover,.card-manage:hover,.card-meta[open],.card-manage[open]{border-color:var(--rule-hot)}
+.card-meta summary:hover,.card-manage summary:hover,.card-meta[open] summary,.card-manage[open] summary{color:var(--text)}
+.card-meta summary::after,.card-manage summary::after{
+  content:"";width:7px;height:7px;flex:none;margin-right:3px;
+  border-right:1.5px solid currentColor;border-bottom:1.5px solid currentColor;
+  transform:rotate(45deg);transition:transform .15s ease-out;
+}
+.card-meta[open] summary::after,.card-manage[open] summary::after{transform:rotate(225deg)}
+.card-meta:has(summary:focus-visible),.card-manage:has(summary:focus-visible){outline:2px solid var(--accent);outline-offset:3px}
+.card-meta summary:focus-visible,.card-manage summary:focus-visible{outline:none}
+.card-meta .clabels,.card-meta .annots,.card-manage .actions{margin:0;padding:0 12px 12px}
+.card-meta .clabels{display:flex;align-items:center;flex-wrap:wrap;gap:6px}
+.card-meta .chip{margin:0}
+.toast{position:fixed;right:16px;bottom:16px;max-width:min(380px,calc(100vw - 32px));
+  background:var(--bg-panel);border:1px solid var(--rule-hot);border-left:3px solid var(--accent);
+  border-radius:var(--radius-small);padding:16px;font-size:var(--type-body);display:none;z-index:10}
+.toast.show{display:block}
+.toast.err{border-left-color:var(--alert);color:var(--alert)}
+@media (max-width:640px){
+  body{font-size:16px}
+  header{align-items:flex-start}
+  header .brand{width:100%}
+  header .stat{text-align:left;min-width:66px}
+  nav{width:100%}
+  nav a{padding:10px 12px}
+  button{min-height:44px}
+  select:not([multiple]){min-height:44px;font-size:1rem}
+  input[type=text],input[type=password],input[type=number],input[type=search]{font-size:16px}
+}
+@media (prefers-reduced-motion:reduce){
+  *,*::before,*::after{animation-duration:.01ms!important;transition-duration:.01ms!important}
+}
 
-footer{margin-top:18px;display:flex;flex-wrap:wrap;gap:10px 20px;font-size:10px;
-  letter-spacing:.12em;text-transform:uppercase;color:var(--text-faint);
-  border-top:1px solid var(--rule);padding-top:12px}
+footer{margin-top:32px;display:flex;flex-wrap:wrap;gap:12px 24px;font-size:var(--type-small);
+  color:var(--text-faint);padding-top:16px}
 .center{max-width:380px;margin:12vh auto}
 /* Confirmation dialog. One element in the shared layout rather than one per
    page: every page asks the same kind of question, and four copies would
    drift. */
-dialog#confirm{border:1px solid var(--rule-hot);background:var(--bg-panel);
+dialog#confirm{border:1px solid var(--rule-hot);border-radius:var(--radius);background:var(--bg-panel);
   color:var(--text);padding:0;max-width:440px;width:calc(100% - 32px);
   /* The reset above zeroes every margin, including the margin:auto a browser
      uses to centre a modal dialog - without this it sits in the top-left. */
   margin:auto}
 dialog#confirm::backdrop{background:rgba(0,0,0,.65)}
-dialog#confirm .dlg-t{font-family:var(--label);font-size:11px;letter-spacing:.18em;
-  text-transform:uppercase;color:var(--text);padding:14px 18px;
-  border-bottom:1px solid var(--rule)}
-dialog#confirm .dlg-b{padding:16px 18px;font-size:12px;line-height:1.65;
-  color:var(--text-dim);font-family:var(--mono)}
+dialog#confirm .dlg-t{font-family:var(--label);font-size:var(--type-title);font-weight:600;
+  color:var(--text);padding:24px 24px 0}
+dialog#confirm .dlg-b{padding:16px 24px;font-size:var(--type-body);line-height:1.65;
+  color:var(--text-dim)}
 dialog#confirm .dlg-a{display:flex;gap:10px;justify-content:flex-end;
-  padding:12px 18px;border-top:1px solid var(--rule)}
+  padding:8px 24px 24px}
 dialog#confirm.is-danger{border-color:var(--alert-dk)}
 dialog#confirm.is-danger .dlg-t{color:var(--alert)}
 
@@ -140,7 +198,7 @@ dialog#confirm.is-danger .dlg-t{color:var(--alert)}
 <body>
 {% block body %}{% endblock %}
 
-<dialog id="confirm">
+<dialog id="confirm" aria-labelledby="confirm-t" aria-describedby="confirm-b">
   <!-- method="dialog" so the buttons close natively and set returnValue;
        Escape closes with "" and therefore reads as a cancel. -->
   <form method="dialog">

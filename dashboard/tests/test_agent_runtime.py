@@ -270,7 +270,7 @@ class TestTheAuthority:
         assert main.status(db=str(tmp_path / "other.db")).startswith(
             "workers:")
         assert "linux-1" in main.status(db=db)
-        main.capacity("forgejo-linux-x64", 0, db=str(tmp_path / "third.db"))
+        assert main.status(db=str(tmp_path / "third.db")).startswith("workers:")
 
     def test_a_worker_is_never_enrolled_over_plain_http(self, tmp_path):
         with pytest.raises(ValueError, match="https"):
@@ -290,21 +290,11 @@ class TestTheAuthority:
         schema.init(db)
         FleetStore(db).seed({})
         Inventory(db).register_worker("linux-1", "hyperv-linux")
-        main.capacity("github-linux-x64", 2, db=db)
+        FleetStore(db).set_capacity("github-linux-x64", 2)
         text = main.status(db=db)
         assert "linux-1" in text and "unknown" in text
-        assert "github-linux-x64       capacity 2" in text
+        assert "github-linux-x64       runners 2" in text
         assert "runners:" in text
-
-    def test_capacity_on_an_unavailable_fleet_is_refused(self, tmp_path):
-        from control.service import Refused
-        from store import schema
-        from store.fleets import FleetStore
-        db = str(tmp_path / "c.db")
-        schema.init(db)
-        FleetStore(db).seed({})     # no Forgejo artefact for Windows
-        with pytest.raises(Refused):
-            main.capacity("forgejo-windows-x64", 1, db=db)
 
     def test_unit_images_come_from_the_deployment(self):
         assert main.unit_images({

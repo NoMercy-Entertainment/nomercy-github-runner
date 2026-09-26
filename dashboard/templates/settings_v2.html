@@ -1,13 +1,24 @@
 {% extends "base.html" %}
 {% block title %}Runner settings{% endblock %}
 {% block style %}
-.fields{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:16px}
+.fields{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:24px}
+.fields .field{margin:0;min-width:0}
+.fields .field-wide{grid-column:1/-1}
 #message{white-space:pre-wrap;margin:14px 0}button:disabled{opacity:.5}
-select{width:100%;background:var(--bg-inset);color:var(--text);border:1px solid var(--rule);padding:8px}input:disabled{opacity:.5}
+select{width:100%}
+select[multiple]{background:var(--bg-inset);color:var(--text);border:1px solid var(--rule-hot);border-radius:var(--radius-small);font:inherit;padding:10px 12px}
+input:disabled{opacity:.5}
+.panel{max-width:1040px}
+.panel p{margin-bottom:12px}
+.panel button[type=submit]{margin-top:5px}
+#secrets form{display:grid;grid-template-columns:minmax(220px,1fr) minmax(220px,1fr) auto;align-items:end;gap:12px;margin:12px 0}
+@media(max-width:740px){.fields,#secrets form{grid-template-columns:1fr}}
 {% endblock %}
 {% block body %}
+<a class="skip-link" href="#main">Skip to content</a>
 <header><div class="brand"><h1>Runner settings</h1><div class="sub">Defaults for every fleet</div></div>
-<nav><a href="/">Fleet</a><a href="/history">History</a><a class="on" href="/settings">Settings</a></nav></header>
+<nav aria-label="Main"><a href="/">Fleet</a><a href="/history">History</a><a class="on" aria-current="page" href="/settings">Settings</a>{% if role == 'admin' %}<a href="/users">Access</a>{% endif %}<a href="/logout">Sign out</a></nav></header>
+<main id="main" tabindex="-1">
 <p class="notice">Changes apply to newly created runners and subsequent recreations. Existing runners keep their current limits until recreated.</p>
 <div id="message" role="status" aria-live="polite"></div>
 {% if role == 'admin' %}
@@ -18,6 +29,7 @@ select{width:100%;background:var(--bg-inset);color:var(--text);border:1px solid 
 <div id="secrets"></div></section>
 {% endif %}
 <div id="fleets">Loading settings</div>
+</main>
 <script>
 {% include "_card.js" %}
 const admin = {{ (role == 'admin')|tojson }};
@@ -28,7 +40,7 @@ async function api(url, body) {
   const data=await res.json();if(!res.ok)throw new Error(data.error||('HTTP '+res.status));return data;
 }
 function field(fid,key,label,value,type='text',disabled=false,bounds={}) {
-  return `<div class="field"><label for="${esc(fid+'-'+key)}">${esc(label)}</label><input id="${esc(fid+'-'+key)}" name="${esc(key)}" type="${type}" value="${esc(value??'')}" ${type==='number'?`min="${bounds.min??0.01}" step="${bounds.step??'any'}" ${bounds.max?`max="${bounds.max}"`:''}`:''} ${disabled?'disabled':''}></div>`;
+  return `<div class="field${['unit_template','labels'].includes(key)?' field-wide':''}"><label for="${esc(fid+'-'+key)}">${esc(label)}</label><input id="${esc(fid+'-'+key)}" name="${esc(key)}" type="${type}" value="${esc(value??'')}" ${type==='number'?`min="${bounds.min??0.01}" step="${bounds.step??'any'}" ${bounds.max?`max="${bounds.max}"`:''}`:''} ${disabled?'disabled':''}></div>`;
 }
 function cacheFields(f) {
   const policy=f.cache_policy||{}, fid=f.fleet_id;
@@ -83,7 +95,7 @@ document.addEventListener('submit',async ev=>{
 });
 if(admin)document.getElementById('maintenance-toggle').addEventListener('click',async()=>{
   if(!maintenance && !(await confirmDialog({title:'Pause reconciliation?',body:'Runners that are already running can still accept jobs.',confirm:'Pause'})))return;
-  if(maintenance && !(await confirmDialog({title:'Resume reconciliation?',body:'Desired runner capacity and queued operations will be applied. Runners may start accepting jobs.',confirm:'Resume'})))return;
+  if(maintenance && !(await confirmDialog({title:'Resume reconciliation?',body:'Queued runner operations will be applied. Runners may start accepting jobs.',confirm:'Resume'})))return;
   try{const d=await api('/api/v2/maintenance',{enabled:!maintenance});message(d.note);await load();}catch(e){message(e.message,true);}
 });
 load().catch(e=>message(e.message,true));

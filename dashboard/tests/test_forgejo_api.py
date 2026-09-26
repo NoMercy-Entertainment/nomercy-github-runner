@@ -92,6 +92,15 @@ def test_find_task_matches_on_id_and_maps_to_the_runs_columns():
     }
 
 
+def test_task_info_names_a_running_job_without_waiting_for_completion():
+    fj = forgejo_api.Forgejo("https://forgejo.example/", "tok")
+    fj._get = lambda path, params=None, timeout=None: {
+        "workflow_runs": [dict(TASKS["workflow_runs"][0], status="running")]}
+    assert fj.task_info("FiLL/p", 830) == {
+        "name": "build", "workflow": "build.yml"}
+    assert fj.task_info("FiLL/p", 999) is None
+
+
 def test_find_task_falls_back_to_the_start_time():
     """If ActionTask.id turns out not to be the runner's task number, the
     exact start timestamp from the log still identifies the task."""

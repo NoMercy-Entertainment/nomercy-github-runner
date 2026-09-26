@@ -24,6 +24,18 @@ mkdir -p "$RUNNER_WORK_DIR" "$RUNNER_CACHE_DIR" "$RUNNER_REG_DIR" \
          "$RUNNER_LOG_DIR"
 export HOME="$RUNNER_WORK_DIR/.home"
 mkdir -p "$HOME"
+if [ "$RUNNER_KIND" = github ]; then
+  if [ ! -d "$HOME/.rustup/toolchains" ]; then
+    mkdir -p "$HOME/.rustup"
+    cp -a /root/.rustup/. "$HOME/.rustup/"
+  fi
+  if [ ! -d "$HOME/.cargo/bin" ]; then
+    mkdir -p "$HOME/.cargo"
+    cp -a /root/.cargo/. "$HOME/.cargo/"
+  fi
+  export RUSTUP_HOME="$HOME/.rustup" CARGO_HOME="$HOME/.cargo"
+  export PATH="$CARGO_HOME/bin:$PATH"
+fi
 prepare_runner_home
 # Keep temporary job data in owned persistent storage so maintenance of a
 # stopped unit can clear it without starting its listener.
@@ -148,6 +160,10 @@ runner:
   shutdown_timeout: 3h
 cache:
   dir: ${RUNNER_CACHE_DIR}/actcache
+container:
+  # Each runner owns a separate nested Docker daemon. Expose only that
+  # daemon to its own Forgejo job containers so docker build works there too.
+  docker_host: automount
 host:
   workdir_parent: ${RUNNER_WORK_DIR}
 YAML

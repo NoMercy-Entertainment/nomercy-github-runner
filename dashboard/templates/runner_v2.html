@@ -3,49 +3,29 @@
 
 {% block style %}
 .wrap{max-width:1100px}
-.card{background:var(--bg-panel);border:1px solid var(--rule);padding:14px 15px 13px;margin-bottom:18px}
-.chead{display:flex;align-items:baseline;gap:9px;margin-bottom:3px}
-.cname{font-family:var(--label);font-size:17px;font-weight:600;letter-spacing:.09em;
-  text-transform:uppercase;color:var(--drain);text-decoration:none}
-.badge{margin-left:auto;font-size:9px;letter-spacing:.16em;text-transform:uppercase;
-  padding:2px 7px;border:1px solid currentColor;color:var(--text-dim)}
-.creg{font-size:11px;color:var(--text-faint)}
-.annots{display:flex;gap:6px;flex-wrap:wrap;margin-top:6px}
-.annot{font-size:9.5px;color:var(--text-dim);border:1px dashed var(--rule);padding:1px 6px}
-.cjob{margin:9px 0 11px;font-size:11.5px;color:var(--busy);border-left:2px solid var(--busy-dk);padding-left:8px}
-.cjob.none{color:var(--text-faint);border-color:var(--rule)}
-.cerr{margin-top:6px;font-size:11px;color:var(--alert)}
-.cnote{margin-top:6px;font-size:11px;color:var(--text-faint)}
-.clabels,.flabels{margin-top:6px;font-size:11px;color:var(--text-faint)}
-.chip{display:inline-block;border:1px solid var(--rule);padding:0 5px;margin:0 4px 2px 0;color:var(--text)}
-.cwarn{margin-top:6px;font-size:11px;color:#e0a040}
-.meter{margin-top:9px}
-.mrow{display:flex;justify-content:space-between;font-size:9.5px;letter-spacing:.15em;
-  text-transform:uppercase;color:var(--text-faint);margin-bottom:4px}
-.mval{color:var(--text-dim);font-size:10.5px;text-transform:none;letter-spacing:.02em}
-.track{height:7px;background:var(--bg-inset);border:1px solid var(--rule);overflow:hidden}
-.fill{height:100%;background:var(--signal)} .fill.warn{background:var(--busy)} .fill.crit{background:var(--alert)}
-.actions{display:flex;flex-wrap:wrap;gap:6px;margin-top:13px;padding-top:12px;border-top:1px solid var(--rule)}
-.actions button{padding:5px 9px;font-size:9px}
-button[disabled]{opacity:.45;cursor:not-allowed}
-h2.sec{font-family:var(--label);font-size:12px;letter-spacing:.18em;text-transform:uppercase;
-  color:var(--text-dim);margin:22px 0 8px;font-weight:600}
-table.kv{border-collapse:collapse;font-size:11.5px;width:100%}
-table.kv td,table.kv th{border-bottom:1px solid var(--rule);padding:4px 8px;text-align:left;vertical-align:top}
+{% include "_card.css" %}
+.card{margin-bottom:var(--space-5)}
+h2.sec{font-family:var(--label);font-size:var(--type-title);color:var(--text);margin:32px 0 16px;font-weight:600}
+table.kv{border-collapse:collapse;font-size:var(--type-body);width:100%}
+table.kv td,table.kv th{border-bottom:1px solid var(--rule);padding:9px 10px;text-align:left;vertical-align:top}
 table.kv th{color:var(--text-faint);font-weight:400;letter-spacing:.06em}
+table.kv tr:last-child td,table.kv tr:last-child th{border-bottom:0}
 td.no{color:var(--alert)} td.yes{color:var(--signal)}
-pre.logs{background:var(--bg-inset);border:1px solid var(--rule);padding:10px;font-size:11px;
+pre.logs{background:var(--bg-inset);border:1px solid var(--rule);border-radius:var(--radius-small);padding:14px;font-size:12px;
   max-height:420px;overflow:auto;white-space:pre-wrap}
 #toast{position:fixed;right:18px;bottom:18px;max-width:380px;background:var(--bg-panel);
   border:1px solid var(--rule);border-left:3px solid var(--signal);padding:11px 14px;font-size:11.5px;display:none}
 #toast.show{display:block} #toast.bad{border-left-color:var(--alert);color:var(--alert)}
+@media(max-width:640px){.metrics{grid-template-columns:1fr}.wrap{overflow-x:auto}}
 {% endblock %}
 
 {% block body %}
+<a class="skip-link" href="#main">Skip to content</a>
 <header>
   <div class="brand"><h1>Runner</h1><div class="sub" id="rid">{{ runner_id }}</div></div>
-  <nav><a href="/">Fleet</a><a href="/history">History</a></nav>
+  <nav aria-label="Main"><a href="/">Fleet</a><a href="/history">History</a><a href="/settings">Settings</a>{% if g.role == 'admin' %}<a href="/users">Access</a>{% endif %}<a href="/logout">Sign out</a></nav>
 </header>
+<main id="main" tabindex="-1">
 <div class="wrap">
   <article class="card" id="card"><div class="creg">Loading</div></article>
   <p class="hint" id="resource-notice"></p>
@@ -70,8 +50,9 @@ pre.logs{background:var(--bg-inset);border:1px solid var(--rule);padding:10px;fo
   <button id="load-logs">Load the last 5 minutes</button>
   <pre class="logs" id="logs" hidden></pre>
 </div>
-<div id="toast"></div>
+<div id="toast" role="status" aria-live="polite"></div>
 
+</main>
 <script>
 {% include "_card.js" %}
 {% include "_v2_push.js" %}

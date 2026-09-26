@@ -60,6 +60,11 @@ class TestTheDrain:
         assert re.search(r'daemon --config "\$RUNNER_REG_DIR/config.yaml"',
                          forgejo)
 
+    def test_forgejo_jobs_get_their_own_nested_docker_engine(self):
+        forgejo = branch(read("runner", "run"), "forgejo")
+        assert re.search(r"(?m)^container:\n(?:.*\n)*?  docker_host: automount$",
+                         forgejo)
+
     def test_the_entry_point_waits_for_its_runner_without_a_limit(self):
         """PID 1 exiting ends every process in the unit. The start scripts
         the fleet runs today give up after two seconds."""

@@ -7,6 +7,12 @@ import signal
 import sys
 import time
 
+os.environ["PATH"] = "/usr/local/bin:/usr/local/sbin:" + os.environ.get(
+    "PATH", "/usr/bin:/bin:/usr/sbin:/sbin")
+android_sdk = str(Path.home() / "Library" / "Android" / "sdk")
+os.environ.setdefault("ANDROID_HOME", android_sdk)
+os.environ.setdefault("ANDROID_SDK_ROOT", android_sdk)
+
 root = Path(__file__).resolve().parent
 provider = (root / "provider").read_text().strip()
 home = root / "agent" if provider == "github" else root

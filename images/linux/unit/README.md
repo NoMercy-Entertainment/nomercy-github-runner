@@ -30,6 +30,14 @@ The controller is told which image a cell's units use by
 `RUNNER_UNIT_IMAGE_<PROVIDER>_<PLATFORM>`, for example
 `RUNNER_UNIT_IMAGE_FORGEJO_LINUX=nomercy/runner-unit-forgejo:<version>`.
 
+The GitHub unit runs `/runner/cleanup` synchronously after each job and at
+startup. It removes unused nested Docker build cache and images without an age
+limit, plus previous job workspaces, while retaining the active workspace and
+installed tools. The running fleet uses the `postjob-cleanup-20260926` overlay
+image built with `Dockerfile.cleanup` from `github-unit:toolchain-20260925`.
+Forgejo currently runs this cleanup only at unit startup; it has no GitHub
+completion hook.
+
 ## Why the entry points are written the way they are
 
 - **The runner is waited for.** `/runner/run` is PID 1, and PID 1 exiting

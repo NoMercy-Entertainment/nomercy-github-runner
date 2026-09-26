@@ -44,23 +44,41 @@ def test_cleanup_does_not_traverse_links(tmp_path):
     assert foreign.exists() and (root / "link").is_symlink()
 
 
-def test_live_nested_container_prevents_all_cleanup(tmp_path, monkeypatch):
+def test_live_nested_container_preserves_files_but_prunes_unused_engine_data(tmp_path, monkeypatch):
     artifact = old(tmp_path / "old-file")
-    monkeypatch.setattr(cleanup, "docker", lambda *args: "container-still-running")
+    calls = []
+    def docker(*args):
+        calls.append(args)
+        return "container-still-running" if args == ("ps", "-q") else ""
+    monkeypatch.setattr(cleanup, "docker", docker)
     cleanup.cleanup({"RUNNER_WORK_DIR": str(tmp_path)})
     assert artifact.exists()
+    assert ("builder", "prune", "-af") in calls
+    assert ("image", "prune", "-af") in calls
 
 
-def test_cache_policy_cap_and_scopes_are_honored(monkeypatch):
+def test_completed_job_prunes_all_unused_build_cache(monkeypatch):
     calls = []
     def docker(*args):
         calls.append(args)
         return ""
     monkeypatch.setattr(cleanup, "docker", docker)
-    cleanup.cleanup({"RUNNER_CLEANUP_SCOPES": "engine-build-cache",
-                     "RUNNER_BUILD_CACHE_GC": "123456B"})
-    assert calls == [("ps", "-q"), ("builder", "prune", "-af", "--filter",
-                                    "until=168h", "--keep-storage", "123456B")]
+    cleanup.cleanup({"RUNNER_CLEANUP_SCOPES": "engine-build-cache,engine-images-unused"})
+    assert calls == [("ps", "-q"), ("builder", "prune", "-af"),
+                     ("image", "prune", "-af")]
     calls.clear()
     cleanup.cleanup({"RUNNER_CLEANUP_ENABLED": "0"})
     assert calls == []
+
+
+def test_completed_job_clears_previous_workspace_but_keeps_current_and_home(tmp_path, monkeypatch):
+    work = tmp_path / "work"
+    previous = old(work / "previous" / "artifact")
+    current = old(work / "current" / "artifact")
+    home = old(work / ".home" / "tool")
+    monkeypatch.setattr(cleanup, "docker", lambda *args: "")
+    cleanup.cleanup({"RUNNER_CLEANUP_SCOPES": "workspace",
+                     "RUNNER_WORK_DIR": str(work),
+                     "GITHUB_WORKSPACE": str(current.parent)})
+    assert not previous.exists()
+    assert current.exists() and home.exists()

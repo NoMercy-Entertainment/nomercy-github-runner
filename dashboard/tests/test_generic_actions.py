@@ -102,11 +102,11 @@ class TestRefusalsAreAnswers:
         assert r.status_code == 400
         assert "GET" in r.get_json()["error"]
 
-    def test_a_fleet_verb_is_not_a_runner_action(self, client, plane):
+    def test_removed_scale_verb_is_not_an_action(self, client, plane):
         rid = plane[1][("github", "linux")]
         r = post(client, f"/api/v2/runners/{rid}/actions/scale_up")
-        assert r.status_code == 400
-        assert "/capacity" in r.get_json()["error"]
+        assert r.status_code == 404
+        assert "no action" in r.get_json()["error"]
 
     def test_no_key_no_mutation(self, client, plane):
         service, runners = plane
@@ -174,12 +174,12 @@ class TestTheEighteenVerbs:
     def test_the_design_lists_eighteen(self):
         assert len(self.design_verbs()) == 18
 
-    def test_every_one_has_a_route_and_nothing_else_does(self):
-        assert set(api_v2.ROUTES) == self.design_verbs()
+    def test_operator_routes_exclude_numeric_scaling(self):
+        assert set(api_v2.ROUTES) == self.design_verbs() - {"scale_up", "scale_down"}
 
-    def test_and_the_controller_knows_the_same_eighteen(self):
+    def test_and_the_controller_knows_the_other_verbs(self):
         from control import states
-        assert set(api_v2.ROUTES) == set(states.VERBS)
+        assert set(api_v2.ROUTES) == set(states.VERBS) - {"scale_up", "scale_down"}
 
     def test_reads_are_get_and_mutations_post(self):
         from control import states

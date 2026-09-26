@@ -40,7 +40,7 @@ RUNTIMES = ("linux-container", "windows-process", "macos-appliance")
 FIELDS = frozenset({"host_id", "runtime", "listen", "controller", "tls",
                     "permitted", "tools", "version", "capacity", "guest", "appliance", "appliance_pool", "storage", "windows_storage"})
 APPLIANCE_FIELDS = frozenset({"name", "docker", "boot_timeout"})
-POOL_FIELDS = frozenset({"image", "base_disk", "base_system", "data_root", "templates",
+POOL_FIELDS = frozenset({"image", "base_disk", "base_system", "nvram_seed", "data_root", "templates",
                          "base_guests_disabled", "ssh_port_base", "docker", "qemu_img",
                          "boot_timeout", "shutdown_timeout", "image_uid", "image_gid"})
 TOOLS_FIELDS = {
@@ -237,6 +237,11 @@ def parse(data, exists=os.path.isfile):
                 raise ConfigError(f"appliance_pool.{key} must be an absolute Linux path without commas")
             if key != "data_root" and not exists(path):
                 raise ConfigError(f"appliance_pool.{key} does not exist")
+        if "nvram_seed" in pool:
+            path = pool["nvram_seed"]
+            if (not isinstance(path, str) or not path.startswith("/")
+                    or any(c in path for c in (",", "\n", "\r")) or not exists(path)):
+                raise ConfigError("appliance_pool.nvram_seed must be an existing absolute Linux path without commas")
         templates = pool.get("templates")
         if (not isinstance(templates, list) or not templates or any(
                 not isinstance(t, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}", t)

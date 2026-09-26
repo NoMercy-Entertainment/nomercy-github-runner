@@ -55,6 +55,14 @@ class TestTheMatrix:
 
 
 class TestConfiguringTheSelfBuiltArtefact:
+    def test_windows_arm_uses_its_own_artefact_and_label(self):
+        env = {"FORGEJO_RUNNER_ARTIFACT_WINDOWS": "forgejo-x64.exe",
+               "FORGEJO_RUNNER_LABELS_WINDOWS": "windows-latest:host"}
+        assert not P.FORGEJO.supports(P.WINDOWS, P.ARM64, env)
+        assert P.FORGEJO.default_labels(P.WINDOWS, P.ARM64, env) == "windows-arm64:host"
+        env["FORGEJO_RUNNER_ARTIFACT_WINDOWS_ARM64"] = "forgejo-arm64.exe"
+        assert P.FORGEJO.agent_artifact(P.WINDOWS, P.ARM64, env).reference == "forgejo-arm64.exe"
+
     def test_naming_the_artefact_enables_the_cell(self):
         env = {"FORGEJO_RUNNER_ARTIFACT_MACOS": "forgejo-runner-darwin-arm64"}
         assert P.FORGEJO.supports(P.MACOS, P.ARM64, env)

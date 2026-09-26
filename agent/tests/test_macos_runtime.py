@@ -424,6 +424,19 @@ class TestAdoptingARunnerThatIsAlreadyThere:
         runtime.create(RID, self.ADOPT)
         assert runtime.adopted(RID)["plist"] == self.PLIST
 
+    def test_adopted_job_name_comes_from_its_launchd_log(self, runtime,
+                                                         legacy):
+        log = "/usr/local/forgejo-runner/runner.err.log"
+        legacy.makedirs(posixpath.dirname(log))
+        legacy.write_text(self.PLIST, plistlib.dumps({
+            "Label": self.LEGACY, "StandardErrorPath": log,
+            "RunAtLoad": True}).decode())
+        legacy.write_text(log, 'time="2026-09-25T02:00:00Z" '
+                          'level=info msg="task 1272 repo is FiLL/app"\n')
+        runtime.create(RID, self.ADOPT)
+        assert runtime.jobs([RID])[RID] == "task 1272 - FiLL/app"
+        assert "task 1272" in runtime.logs(RID, 86400)
+
     def test_a_stopped_adopted_instance_can_be_started_again(self, runtime,
                                                              legacy):
         runtime.create(RID, self.ADOPT)

@@ -2,88 +2,94 @@
 {% block title %}NoMercy Runners · v2{% endblock %}
 
 {% block style %}
-.fleet{margin-bottom:22px}
-.fleet-head{font-family:var(--label);font-size:12px;letter-spacing:.18em;
-  text-transform:uppercase;color:var(--text-dim);margin-bottom:8px;font-weight:600;
-  display:flex;gap:10px;align-items:baseline}
-.fcount{font-size:10px;letter-spacing:.08em;color:var(--text-faint);text-transform:none;font-weight:400}
-.fleet-actions{display:flex;gap:8px;margin-bottom:14px;flex-wrap:wrap;align-items:center}
-.unavailable{margin-bottom:8px}
-.grid{display:grid;gap:12px;grid-template-columns:repeat(auto-fill,minmax(330px,1fr))}
-.card{background:var(--bg-panel);border:1px solid var(--rule);padding:14px 15px 13px;
-  position:relative;overflow:hidden;animation:rise .45s cubic-bezier(.2,.7,.3,1) backwards}
-@keyframes rise{from{opacity:0;transform:translateY(9px)}to{opacity:1;transform:none}}
-.card::before{content:"";position:absolute;left:0;top:0;bottom:0;width:2px;background:var(--rule-hot)}
-.card.busy::before{background:var(--busy)}
-.card.idle::before{background:var(--signal-dk)}
-.card.draining::before{background:var(--drain)}
-.card.stopped::before,.card.offline::before,.card.failed::before{background:var(--alert-dk)}
-.card.stopped,.card.offline{opacity:.72}
-.chead{display:flex;align-items:baseline;gap:9px;margin-bottom:3px}
-.cname{font-family:var(--label);font-size:15px;font-weight:600;letter-spacing:.09em;
-  text-transform:uppercase;color:var(--drain);text-decoration:none}
-a.cname:hover{text-decoration:underline}
-.badge{margin-left:auto;font-size:9px;letter-spacing:.16em;text-transform:uppercase;
-  padding:2px 7px;border:1px solid currentColor;color:var(--text-dim)}
-.badge.busy{color:var(--busy)} .badge.draining{color:var(--drain)}
-.badge.stopped,.badge.offline,.badge.failed{color:var(--alert)}
-.creg{font-size:11px;color:var(--text-faint)}
-.annots{display:flex;gap:6px;flex-wrap:wrap;margin-top:6px}
-.annot{font-size:9.5px;letter-spacing:.06em;color:var(--text-dim);border:1px dashed var(--rule);padding:1px 6px}
-.cjob{margin:9px 0 11px;font-size:11.5px;color:var(--busy);
-  border-left:2px solid var(--busy-dk);padding-left:8px;white-space:nowrap;
-  overflow:hidden;text-overflow:ellipsis}
-.cjob.none{color:var(--text-faint);border-color:var(--rule)}
-.cstatus{margin-top:9px}
-.cerr{margin-top:6px;font-size:11px;color:var(--alert)}
-.cnote{margin-top:6px;font-size:11px;color:var(--text-faint)}
-.clabels,.flabels{margin-top:6px;font-size:11px;color:var(--text-faint)}
-.chip{display:inline-block;border:1px solid var(--rule);padding:0 5px;margin:0 4px 2px 0;color:var(--text)}
-.cwarn{margin-top:6px;font-size:11px;color:#e0a040}
-.meter{margin-top:9px}
-.mrow{display:flex;justify-content:space-between;align-items:baseline;font-size:9.5px;
-  letter-spacing:.15em;text-transform:uppercase;color:var(--text-faint);margin-bottom:4px}
-.mval{color:var(--text-dim);font-size:10.5px;font-variant-numeric:tabular-nums;
-  text-transform:none;letter-spacing:.02em}
-.track{position:relative;height:7px;background:var(--bg-inset);border:1px solid var(--rule);overflow:hidden}
-.fill{height:100%;width:0;transition:width .6s cubic-bezier(.2,.7,.3,1);background:var(--signal)}
-.fill.warn{background:var(--busy)} .fill.crit{background:var(--alert)}
-.actions{display:flex;flex-wrap:wrap;gap:6px;margin-top:13px;padding-top:12px;border-top:1px solid var(--rule)}
-.actions button{padding:5px 9px;font-size:9px}
-button[disabled]{opacity:.45;cursor:not-allowed}
-.plane{font-size:11px;color:var(--text-faint);margin-bottom:16px}
-.skel{color:var(--text-faint);padding:18px 0;letter-spacing:.2em;text-transform:uppercase;font-size:11px}
+.fleet{margin-bottom:var(--space-7)}
+.fleet-info{margin-bottom:var(--space-5)}
+.fleet-heading{display:flex;align-items:end;justify-content:space-between;gap:var(--space-4);flex-wrap:wrap}
+.fleet-head{font-family:var(--label);font-size:var(--type-title);color:var(--text);font-weight:650}
+.fleet-summary{display:flex;gap:var(--space-3);font-size:var(--type-small);color:var(--text-faint);margin-top:var(--space-2)}
+.fleet-ready{color:var(--signal)}
+.fleet-actions{display:flex;gap:var(--space-2);flex-wrap:wrap;align-items:center}
+.fleet-actions .primary{background:var(--bg-panel);border-color:var(--rule-hot);color:var(--text)}
+.fleet-actions .primary:hover:not(:disabled){background:var(--bg-inset);border-color:var(--accent);filter:none}
+.unavailable{margin-top:var(--space-3)}
+.grid{display:grid;align-items:start;gap:var(--space-4);grid-template-columns:repeat(auto-fill,minmax(min(100%,360px),1fr))}
+{% include "_card.css" %}
+.plane{display:inline-flex;align-items:center;gap:8px;font-size:var(--type-small);color:var(--text-faint);margin-bottom:var(--space-5)}
+.plane::before{content:"";width:7px;height:7px;border-radius:50%;background:var(--signal)}
+.plane.down::before{background:var(--alert)}
+.plane.paused::before{background:var(--busy)}
+.toolbar{display:flex;align-items:end;gap:var(--space-5);flex-wrap:wrap;margin:var(--space-2) 0 var(--space-6)}
+.filter-field{display:flex;flex-direction:column;gap:var(--space-1)}
+.toolbar label{margin:0}
+.toolbar input{background-color:var(--bg-panel);border:1px solid var(--rule-hot);border-radius:var(--radius-small);color:var(--text);padding:9px 11px}
+.filter-field:first-child{flex-basis:320px}
+.toolbar input{width:100%;font-size:1rem;min-height:44px}
+.toolbar select{min-width:150px}
+.toolbar select{min-height:44px}
+.skel{color:var(--text-dim);padding:18px 0;font-size:13px}
 #toast{position:fixed;right:18px;bottom:18px;max-width:380px;background:var(--bg-panel);
-  border:1px solid var(--rule);border-left:3px solid var(--signal);padding:11px 14px;
-  font-size:11.5px;display:none;z-index:9}
+  border:1px solid var(--rule);border-left:3px solid var(--accent);padding:12px 15px;
+  font-size:13px;border-radius:var(--radius-small);display:none;z-index:9}
 #toast.show{display:block}
 #toast.bad{border-left-color:var(--alert);color:var(--alert)}
-#operation-results{max-height:300px;overflow:auto;margin-bottom:18px;white-space:pre-wrap;font-size:11px}
-#operation-results .failed{color:var(--alert)}
+#operation-results{background:var(--bg-panel);border:1px solid var(--rule);border-radius:var(--radius);padding:15px 18px;margin-bottom:22px}
+#operation-results h2{font-size:15px;font-family:var(--label)}
+#operation-summary{color:var(--text-dim);font-size:13px;margin-top:3px}
+#operation-results details{margin-top:10px}
+#operation-results summary{cursor:pointer;color:var(--accent);font-size:12px;font-weight:600}
+#operation-results ul{list-style:none;margin-top:9px;max-height:200px;overflow:auto}
+#operation-results li{font-size:12px;padding:6px 0;border-top:1px solid var(--rule);overflow-wrap:anywhere}
+#operation-results li.failed{color:var(--alert)}
+@media(max-width:640px){
+  .metrics{grid-template-columns:1fr 1fr}
+  .toolbar{display:grid;grid-template-columns:1fr;gap:var(--space-4)}
+  .toolbar input,.toolbar select{width:100%}
+  .filter-field:first-child{flex-basis:auto}
+  .fleet-heading{align-items:start}
+  .fleet-heading>div:first-child{width:100%}
+}
 {% endblock %}
 
 {% block body %}
+<a class="skip-link" href="#main">Skip to content</a>
 <header>
   <div class="brand">
     <h1>NoMercy Runners</h1>
-    <div class="sub">Six fleets &middot; one card</div>
+    <div class="sub">Runner fleets</div>
   </div>
-  <div class="stat"><div class="n ok" id="s-online">&mdash;</div><div class="k">Running</div></div>
+  <div class="stat"><div class="n" id="s-total">&mdash;</div><div class="k">Total runners</div></div>
+  <div class="stat"><div class="n ok" id="s-online">&mdash;</div><div class="k">Online</div></div>
   <div class="stat"><div class="n work" id="s-busy">&mdash;</div><div class="k">Busy</div></div>
-  <nav>
-    <a href="/" class="on">Fleet</a>
+  <div class="stat"><div class="n" id="s-attention">&mdash;</div><div class="k">Need attention</div></div>
+  <nav aria-label="Main">
+    <a href="/" class="on" aria-current="page">Fleet</a>
     <a href="/history">History</a>
     <a href="/settings">Settings</a>
+    {% if g.role == 'admin' %}<a href="/users">Access</a>{% endif %}
     <a href="/logout">Sign out</a>
   </nav>
 </header>
+<main id="main" tabindex="-1">
 
-<div class="plane" id="plane">&mdash;</div>
-<section id="operation-results" aria-live="polite" hidden></section>
+<div class="plane" id="plane" role="status">&mdash;</div>
+<section id="operation-results" hidden>
+  <h2 id="operation-title">Runner activity</h2>
+  <p id="operation-summary" role="status" aria-live="polite"></p>
+  <details><summary>Show individual runners</summary><ul id="operation-list"></ul></details>
+</section>
+<div class="toolbar" role="search" aria-label="Find runners">
+  <div class="filter-field"><label for="runner-search">Find runner</label>
+    <input id="runner-search" type="search" placeholder="Name, worker, label or job" autocomplete="off"></div>
+  <div class="filter-field"><label for="provider-filter">Forge</label>
+    <select id="provider-filter"><option value="all">All forges</option><option value="github">GitHub</option><option value="forgejo">Forgejo</option></select></div>
+  <div class="filter-field"><label for="state-filter">Status</label>
+    <select id="state-filter"><option value="all">All statuses</option><option value="busy">Busy</option><option value="idle">Idle</option><option value="attention">Need attention</option></select></div>
+</div>
 <div id="fleets"><div class="skel">Awaiting telemetry</div></div>
 
+</main>
 <footer><span id="f-gen">Updated &mdash;</span></footer>
-<div id="toast"></div>
+<div id="toast" role="status" aria-live="polite"></div>
 
 <script>
 {% include "_card.js" %}
@@ -92,6 +98,7 @@ button[disabled]{opacity:.45;cursor:not-allowed}
 const $ = id => document.getElementById(id);
 let state = {fleets: [], runners: []};
 const drawn = new Map();        // element id -> the HTML it was last given
+const operations = new Map();
 
 function toast(msg, bad) {
   const t = $('toast');
@@ -102,40 +109,78 @@ function toast(msg, bad) {
 }
 
 function patch(el, html) {
-  if (drawn.get(el.id) !== html) { el.innerHTML = html; drawn.set(el.id, html); }
+  if (drawn.get(el.id) !== html) {
+    const open = [...el.querySelectorAll('details[open]')].map(details => details.className);
+    const active = el.contains(document.activeElement) ? document.activeElement : null;
+    const focus = active?.matches('summary') ? ['details.' + active.parentElement.className, 'summary']
+      : active?.matches('button[data-action]') ? ['button', active.dataset.action] : null;
+    el.innerHTML = html;
+    el.querySelectorAll('details').forEach(details => {
+      if (open.includes(details.className)) details.open = true;
+    });
+    if (focus) {
+      const next = focus[0] === 'button' ? el.querySelector(`button[data-action="${focus[1]}"]`)
+        : el.querySelector(`${focus[0]} ${focus[1]}`);
+      next?.focus({preventScroll:true});
+    }
+    drawn.set(el.id, html);
+  }
 }
 
 function safeId(s) { return String(s).replace(/[^A-Za-z0-9_-]/g, '_'); }
 
+function matchesRunner(c, f) {
+  const query = $('runner-search').value.trim().toLowerCase();
+  const wanted = $('state-filter').value;
+  const forge = f.provider;
+  if ($('provider-filter').value !== 'all' && forge !== $('provider-filter').value) return false;
+  if (wanted === 'attention' && c.reachable !== false && !['failed','offline','stopped'].includes(c.state)) return false;
+  if (wanted !== 'all' && wanted !== 'attention' && c.state !== wanted) return false;
+  if (!query) return true;
+  return [c.display_name,c.worker,c.job,c.runtime,...(c.labels || [])]
+    .some(part => String(part || '').toLowerCase().includes(query));
+}
+
 function render(d) {
   state = d;
   const byKey = new Map((d.runners || []).map(c => [c.key, c]));
+  $('s-total').textContent = (d.runners || []).length;
   $('s-online').textContent = (d.runners || []).filter(c => c.reachable).length;
   $('s-busy').textContent = (d.runners || []).filter(c => c.state === 'busy').length;
+  $('s-attention').textContent = (d.runners || []).filter(c =>
+    c.reachable === false || ['failed','offline','stopped'].includes(c.state)).length;
   $('f-gen').textContent = 'Updated ' + String(d.generated || '').replace('T', ' ').replace('Z', ' UTC');
   const plane = d.control_plane || {};
+  $('plane').className = 'plane' + (plane.maintenance ? ' paused' : plane.running ? '' : ' down');
   $('plane').textContent = plane.maintenance ? 'Maintenance · reconciliation paused'
     : plane.running ? 'Control plane running' : 'Control plane: ' + (plane.note || 'not running');
 
   const root = $('fleets');
   const skel = root.querySelector('.skel');
   if (skel) skel.remove();
+  root.querySelector('.filter-empty')?.remove();
   const seenFleets = new Set();
   (d.fleets || []).forEach(f => {
+    const members = (f.runners || []).filter(key => {
+      const c = byKey.get(key); return c && matchesRunner(c, f);
+    });
+    if (!members.length && ($('runner-search').value.trim() ||
+        $('provider-filter').value !== 'all' || $('state-filter').value !== 'all')) return;
     const fid = 'fleet-' + safeId(f.fleet_id);
     seenFleets.add(fid);
     let sec = document.getElementById(fid);
     if (!sec) {
       sec = document.createElement('section');
       sec.id = fid; sec.className = 'fleet';
-      sec.innerHTML = `<div id="${fid}-head"></div><div class="grid" id="${fid}-grid"></div>`;
+      sec.innerHTML = `<div class="fleet-info" id="${fid}-head"></div><div class="grid" id="${fid}-grid"></div>`;
       root.appendChild(sec);
     }
     sec.dataset.fleet = f.fleet_id;
-    patch(document.getElementById(fid + '-head'), fleetHeadHTML(f));
+    patch(document.getElementById(fid + '-head'), fleetHeadHTML({...f,
+      summary: {running: (f.runners || []).filter(key => byKey.get(key)?.reachable).length}}));
     const grid = document.getElementById(fid + '-grid');
     const keys = new Set();
-    (f.runners || []).forEach((key, i) => {
+    members.forEach((key, i) => {
       const c = byKey.get(key);
       if (!c) return;
       const cid = 'card-' + safeId(key);
@@ -143,7 +188,7 @@ function render(d) {
       let el = document.getElementById(cid);
       if (!el) {
         el = document.createElement('article');
-        el.id = cid; el.style.animationDelay = (i * 45) + 'ms';
+        el.id = cid;
         grid.appendChild(el);
       }
       el.dataset.key = key;
@@ -154,15 +199,20 @@ function render(d) {
     [...grid.children].forEach(el => {
       if (!keys.has(el.id)) { el.remove(); drawn.delete(el.id); }
     });
-    if (!(f.runners || []).length && !grid.querySelector('.skel')) {
-      grid.innerHTML = '<div class="skel">No runners</div>';
-    } else if ((f.runners || []).length) {
+    if (!members.length && !grid.querySelector('.skel')) {
+      grid.innerHTML = '<div class="skel">No runners yet. Use Add runner to start one.</div>';
+    } else if (members.length) {
       const s = grid.querySelector('.skel'); if (s) s.remove();
     }
   });
   [...root.children].forEach(el => {
-    if (el.id && !seenFleets.has(el.id)) el.remove();
+    if (el.id && !seenFleets.has(el.id)) {
+      drawn.delete(el.id + '-head');
+      el.querySelectorAll('article[id]').forEach(card => drawn.delete(card.id));
+      el.remove();
+    }
   });
+  if (!seenFleets.size) root.innerHTML = '<p class="filter-empty skel">No runners match these filters.</p>';
 }
 
 function newKey() {
@@ -170,12 +220,29 @@ function newKey() {
   return Date.now().toString(36) + '-' + Math.random().toString(36).slice(2);
 }
 
-function operationProgress(id, text, failed) {
-  const root=$('operation-results');root.hidden=false;
-  let row=document.getElementById('operation-'+id);
-  if(!row){row=document.createElement('p');row.id='operation-'+id;root.prepend(row);}
-  row.textContent=text;row.className=failed?'failed':'';
-  while(root.children.length>100)root.lastElementChild.remove();
+function startOperations(label) {
+  operations.clear();
+  $('operation-title').textContent = label;
+  $('operation-list').replaceChildren();
+  $('operation-results').hidden = false;
+  $('operation-summary').textContent = 'Sending request…';
+  $('operation-results').querySelector('details').open = false;
+}
+
+function operationProgress(id, text, failed, status='pending') {
+  operations.set(id, {text, failed, status});
+  const list = $('operation-list');
+  let row = document.getElementById('operation-' + safeId(id));
+  if (!row) { row = document.createElement('li'); row.id = 'operation-' + safeId(id); list.appendChild(row); }
+  row.textContent = text;
+  row.className = failed ? 'failed' : '';
+  const all = [...operations.values()];
+  const done = all.filter(item => item.status === 'succeeded').length;
+  const errors = all.filter(item => item.failed).length;
+  const active = all.length - done - errors;
+  $('operation-summary').textContent = `${done} of ${all.length} complete` +
+    (active ? ` · ${active} in progress` : '') + (errors ? ` · ${errors} failed` : '');
+  if (errors) $('operation-results').querySelector('details').open = true;
 }
 
 // Runs one action exactly as its data describes it: where it goes, with what
@@ -184,16 +251,9 @@ async function run(a, btn) {
   if (!a.enabled) { toast(a.reason || 'not available', true); return; }
   if (a.method === 'LINK') { location.href = a.url; return; }
   let body = a.body || {};
-  if(a.verb === 'capacity') {
-    const f=state.fleets.find(f=>f.actions.includes(a));
-    const value=window.prompt('Desired number of runners for '+f.title, String(f.desired||0));
-    if(value===null)return;
-    if(!/^\d+$/.test(value)||!Number.isSafeInteger(Number(value))){toast('Capacity must be a non-negative whole number',true);return;}
-    body={desired:Number(value)};
-    if(body.desired<f.desired && !(await confirmDialog({title:'Reduce capacity?',body:'Surplus runners will be drained and removed.',confirm:'Reduce'})))return;
-  }
   if (a.confirm && !(await confirmDialog(a.confirm))) return;
   if (btn) btn.disabled = true;
+  startOperations(a.label);
   try {
     const headers = {'Content-Type': 'application/json'};
     if (a.idempotent) headers['Idempotency-Key'] = newKey();
@@ -201,18 +261,34 @@ async function run(a, btn) {
       body: JSON.stringify(body)});
     const d = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(d.error || ('HTTP ' + res.status));
-    if(d.results)d.results.forEach(r=>operationProgress(r.operation_id||r.runner_id,r.runner_id+': '+(r.error||r.skipped||'queued'),!!r.error));
+    if(d.results)d.results.forEach(r=>{
+      const name=(state.runners||[]).find(c=>c.runner_id===r.runner_id)?.display_name||r.runner_id;
+      operationProgress(r.operation_id||r.runner_id,
+        name+': '+(r.error||r.skipped||'queued'),!!r.error,r.error?'failed':r.skipped?'succeeded':'pending');
+    });
     else if(d.ok===false)throw new Error(d.error||'Action refused');
-    if(!d.results)toast(a.label + ': ' + (d.note || d.operation_id || 'ok'));
+    if(!d.results){
+      if(d.operation_id)operationProgress(d.operation_id,'Queued',false);
+      toast(a.label + ': ' + (d.note || d.operation_id || 'ok'));
+    }
     const ids=d.operation_id?[d.operation_id]:(d.results||[]).filter(r=>r.operation_id).map(r=>r.operation_id);
-    ids.forEach(id=>watchOperation(id,(text,bad)=>operationProgress(id,text,bad)).catch(e=>operationProgress(id,e.message,true)));
+    ids.forEach(id=>{
+      const name=(d.results||[]).find(r=>r.operation_id===id);
+      const label=name ? ((state.runners||[]).find(c=>c.runner_id===name.runner_id)?.display_name||name.runner_id)+' · ' : '';
+      watchOperation(id,(text,bad,op)=>operationProgress(id,label+text,bad,op?.state||'running'))
+        .catch(e=>operationProgress(id,label+e.message,true,'failed'));
+    });
     tick();
   } catch (e) {
     toast(a.label + ' failed - ' + e.message, true);
+    operationProgress('request',e.message,true,'failed');
   } finally {
     if (btn) btn.disabled = !a.enabled;
   }
 }
+
+['runner-search','provider-filter','state-filter'].forEach(id =>
+  $(id).addEventListener(id === 'runner-search' ? 'input' : 'change', () => render(state)));
 
 document.addEventListener('click', ev => {
   const b = ev.target.closest('button');
@@ -236,7 +312,8 @@ async function tick() {
     if (!res.ok) throw new Error('HTTP ' + res.status);
     render(await res.json());
   } catch (e) {
-    $('plane').textContent = 'Could not load the fleet - ' + e.message;
+    $('plane').className = 'plane down';
+    $('plane').textContent = 'Could not refresh runners. Reconnecting…';
   }
 }
 

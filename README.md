@@ -1,6 +1,22 @@
 
 
-# GitHub Actions Self-Hosted Runner (Docker)
+# NoMercy Runners
+
+The canonical repository for this runner platform is
+[FiLL/nomercy-runners on Forgejo](https://forgejo.phillippepelzer.me/FiLL/nomercy-runners).
+It manages GitHub and Forgejo runners on Linux, Windows and macOS, with
+Hyper-V/QEMU infrastructure, shared toolchains and a fleet dashboard.
+
+Start with the [current platform operations guide](docs/operations/runner-platform.md).
+The [repository ownership guide](docs/operations/repository.md) explains cloning,
+push destinations and the pre-redesign backup. This repository preserves the
+existing Git history and authorship; subsequent platform changes belong here.
+
+## Legacy Docker setup
+
+The instructions below describe the original standalone Docker runner. Current
+Hyper-V installations use the platform operations guide linked above; the
+retired installer scripts are retained for historical reference.
 
 This project provides a Dockerized GitHub Actions runner that supports scaling, custom labels, runner groups, and Docker-in-Docker (DinD) for CI/CD workflows.
 

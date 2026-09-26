@@ -25,7 +25,7 @@ if [ -n "$WANT" ] && [ "$WANT" != "$HAVE" ]; then
   exit 1
 fi
 
-for target in windows/amd64 darwin/amd64 darwin/arm64; do
+for target in windows/amd64 windows/arm64 darwin/amd64 darwin/arm64; do
   os="${target%/*}" arch="${target#*/}"
   ext=""; [ "$os" = windows ] && ext=".exe"
   out="/out/forgejo-runner-${TAG}-${os}-${arch}${ext}"

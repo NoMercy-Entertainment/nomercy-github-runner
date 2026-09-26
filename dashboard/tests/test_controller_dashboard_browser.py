@@ -56,10 +56,11 @@ def test_controller_pages_use_the_same_state_and_show_remote_history(client, tmp
             playwright.expect(page.locator('#plane')).to_have_text('Control plane running')
             page.wait_for_timeout(200)
             assert any('snapshot' in str(frame) for frame in frames)
-            page.once('dialog', lambda dialog: dialog.accept('2'))
-            page.locator('section[data-fleet="github-linux-x64"]').get_by_role('button', name='Set capacity').click()
-            playwright.expect(page.locator('section[data-fleet="github-linux-x64"] .fcount')).to_contain_text('wants 2')
-            assert FleetStore(path).get('github-linux-x64')['desired_capacity'] == 2
+            fleet = page.locator('section[data-fleet="github-linux-x64"]')
+            playwright.expect(fleet.get_by_role('button', name='Set capacity')).to_have_count(0)
+            fleet.get_by_role('button', name='Add runner').click()
+            playwright.expect(fleet.locator('.fcount')).to_contain_text('1 runner')
+            assert FleetStore(path).get('github-linux-x64')['desired_capacity'] == 1
             page.goto(base + '/settings')
             playwright.expect(page.locator('form[data-fleet]')).to_have_count(6)
             playwright.expect(page.locator('[name="memory_swap_limit"]')).to_have_count(2)

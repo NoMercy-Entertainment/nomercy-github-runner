@@ -44,12 +44,16 @@
       - Docker. Windows containers inside a Hyper-V guest need nested
         virtualisation turned on for that guest and a licence story of their
         own; no Windows job of this platform has asked for it yet.
-      - Visual Studio build tools. Multi-gigabyte, and nothing has needed
-        them; add them here when something does, rather than carrying them
-        for everyone.
+
+    The C++ desktop workload is installed by Install-CppBuildTools.ps1 and
+    verified with an actual compile and link, because native build jobs now
+    run on these Windows workers.
 #>
 [CmdletBinding(SupportsShouldProcess)]
-param()
+param(
+    [ValidateSet('x64', 'arm64')]
+    [string] $Architecture = 'x64'
+)
 
 $ErrorActionPreference = 'Stop'
 
@@ -57,11 +61,20 @@ $ErrorActionPreference = 'Stop'
 # PATH when the installer does not do it itself (7-Zip never does).
 $Tools = [ordered]@{
     'git'    = @{ Package = 'Git.Git';              Dir = 'C:\Program Files\Git\cmd' }
+    'bash'   = @{ Package = 'Git.Git';              Dir = 'C:\Program Files\Git\bin' }
     'pwsh'   = @{ Package = 'Microsoft.PowerShell'; Dir = 'C:\Program Files\PowerShell\7' }
     'node'   = @{ Package = 'OpenJS.NodeJS.LTS';    Dir = 'C:\Program Files\nodejs' }
     'python' = @{ Package = 'Python.Python.3.12';   Dir = 'C:\Program Files\Python312' }
     'dotnet' = @{ Package = 'Microsoft.DotNet.SDK.10'; Dir = 'C:\Program Files\dotnet' }
     'cmake'  = @{ Package = 'Kitware.CMake';        Dir = 'C:\Program Files\CMake\bin' }
+    'go'     = @{ Package = 'GoLang.Go';            Dir = 'C:\Program Files\Go\bin' }
+    'java'   = @{ Package = 'EclipseAdoptium.Temurin.21.JDK'
+                  DirGlob = 'C:\Program Files\Eclipse Adoptium\jdk-21*\bin' }
+    'php'    = @{ Package = 'PHP.PHP.8.4'
+                  DirGlob = 'C:\Program Files\WinGet\Packages\PHP.PHP.8.4*' }
+    'ruby'   = @{ Package = 'RubyInstallerTeam.RubyWithDevKit.3.3'
+                  DirGlob = 'C:\Ruby33*\bin' }
+    'clang'  = @{ Package = 'LLVM.LLVM';            Dir = 'C:\Program Files\LLVM\bin' }
     'gh'     = @{ Package = 'GitHub.cli';           Dir = 'C:\Program Files\GitHub CLI' }
     'cargo'  = @{ Package = 'Rustlang.Rustup';      Dir = 'C:\Rust\cargo\bin'
                   # rustup has no machine-wide installer: it installs into
@@ -76,6 +89,17 @@ $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
 if (-not ([Security.Principal.WindowsPrincipal]$identity).IsInRole(
         [Security.Principal.WindowsBuiltInRole]::Administrator)) {
     throw 'Run this elevated: installing for every user needs an administrator.'
+}
+if (-not (Get-Command winget -ErrorAction SilentlyContinue)) {
+    # App Installer registration happens after the first interactive logon.
+    # A freshly installed guest may run this script before that finishes.
+    try {
+        Add-AppxPackage -RegisterByFamilyName `
+            -MainPackage 'Microsoft.DesktopAppInstaller_8wekyb3d8bbwe' `
+            -ErrorAction Stop
+    } catch {
+        Write-Warning "Could not register App Installer: $($_.Exception.Message)"
+    }
 }
 if (-not (Get-Command winget -ErrorAction SilentlyContinue)) {
     throw ('winget is not on this machine. The install media''s debloat pass ' +
@@ -106,6 +130,16 @@ function Add-ToMachinePath([string]$Dir) {
     return $true
 }
 
+function Get-ToolDirs($Spec) {
+    $dirs = @()
+    if ($Spec.Dir -and (Test-Path -LiteralPath $Spec.Dir)) { $dirs += $Spec.Dir }
+    if ($Spec.DirGlob) {
+        $dirs += @(Get-Item -Path $Spec.DirGlob -ErrorAction SilentlyContinue |
+                   Where-Object PSIsContainer | Select-Object -ExpandProperty FullName)
+    }
+    return $dirs
+}
+
 $report = [ordered]@{}
 foreach ($command in $Tools.Keys) {
     $spec = $Tools[$command]
@@ -126,13 +160,14 @@ foreach ($command in $Tools.Keys) {
     }
 
     # Already on the disk but out of sight: a PATH entry is the whole fix.
-    if ($spec.Dir -and (Test-Path -LiteralPath $spec.Dir)) {
-        if (Add-ToMachinePath $spec.Dir) {
+    foreach ($dir in (Get-ToolDirs $spec)) {
+        if (Add-ToMachinePath $dir) {
             Write-Host ('on the PATH   : {0} (was installed, could not be reached)' -f $command)
         }
         $found = Resolve-ForService $command
-        if ($found) { $report[$command] = $found; continue }
+        if ($found) { break }
     }
+    if ($found) { $report[$command] = $found; continue }
 
     Write-Host ('installing    : {0} ({1}), for the machine' -f $command, $spec.Package)
     $out = (& winget install --exact --id $spec.Package --source winget --silent --scope machine --force `
@@ -142,13 +177,46 @@ foreach ($command in $Tools.Keys) {
         $out = (& winget install --exact --id $spec.Package --source winget --silent --force `
                     --accept-source-agreements --accept-package-agreements 2>&1 | Out-String)
     }
-    if ($spec.Dir -and (Test-Path -LiteralPath $spec.Dir)) { [void](Add-ToMachinePath $spec.Dir) }
+    foreach ($dir in (Get-ToolDirs $spec)) { [void](Add-ToMachinePath $dir) }
     $found = Resolve-ForService $command
     $report[$command] = $found
     if (-not $found) {
         Write-Host ('  still not reachable: {0}' -f
                     (($out -split "`r?`n" | Where-Object { $_.Trim() } | Select-Object -Last 2) -join ' | '))
     }
+}
+
+# The WinGet PHP package can resolve on PATH while its package ACL denies
+# virtual service accounts (NT SERVICE\rnr-*) read/execute access. A job then
+# fails with "Access is denied" even though Get-Command finds php.exe.
+$phpExecutable = Resolve-ForService 'php'
+if ($phpExecutable -and $phpExecutable.StartsWith('C:\Program Files\WinGet\Packages\',
+        [System.StringComparison]::OrdinalIgnoreCase) -and $PSCmdlet.ShouldProcess(
+        $phpExecutable, 'grant authenticated runner services read/execute access')) {
+    $phpDirectory = Split-Path -Parent $phpExecutable
+    & icacls.exe $phpDirectory /grant '*S-1-5-11:(OI)(CI)RX' /T /C | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw "Could not make PHP executable accessible to runner services: $phpDirectory" }
+}
+
+$cppInstaller = Join-Path $PSScriptRoot 'Install-CppBuildTools.ps1'
+if (-not (Test-Path -LiteralPath $cppInstaller)) {
+    throw "Missing $cppInstaller"
+}
+if ($PSCmdlet.ShouldProcess('MSVC C++ Build Tools', 'install and compile smoke test')) {
+    $cppResultPath = 'C:\ProgramData\nomercy\cpp-build-tools-result.json'
+    & $cppInstaller -Architecture $Architecture -ResultPath $cppResultPath
+    $cppResult = Get-Content -LiteralPath $cppResultPath -Raw | ConvertFrom-Json
+    if ($cppResult.State -ne 'ready') {
+        throw "MSVC C++ Build Tools are $($cppResult.State): $($cppResult.Detail)"
+    }
+}
+$androidInstaller = Join-Path $PSScriptRoot 'Install-AndroidSdk.ps1'
+if (-not (Test-Path -LiteralPath $androidInstaller)) {
+    throw "Missing $androidInstaller"
+}
+if ($PSCmdlet.ShouldProcess('Android SDK', 'install platform and build tools')) {
+    if (-not (Resolve-ForService java)) { throw 'Android SDK requires a machine-wide Java installation.' }
+    & $androidInstaller
 }
 
 Write-Host ''
@@ -161,9 +229,8 @@ foreach ($command in $Tools.Keys) {
 }
 
 Write-Host ''
-if ($missing.Count) {
-    Write-Host ('Not reachable by a runner: {0}.' -f ($missing -join ', '))
-    Write-Host 'A job will report these absent whatever an administrator sees; fix them before relying on them.'
+if ($missing.Count -and -not $WhatIfPreference) {
+    throw ('Not reachable by a runner: {0}.' -f ($missing -join ', '))
 } else {
     Write-Host 'Every tool resolves from the machine PATH, which is the one a runner gets.'
 }

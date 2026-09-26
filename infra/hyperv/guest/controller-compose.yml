@@ -26,6 +26,7 @@ services:
   dashboard:
     image: nomercy/runner-dashboard:platform
     container_name: rnr-dashboard
+    entrypoint: ["python", "-u", "app.py"]
     env_file: /etc/runner-platform/dashboard.env
     environment:
       DASH_DATA: /data

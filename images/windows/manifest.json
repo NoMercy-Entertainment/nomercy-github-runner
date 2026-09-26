@@ -26,6 +26,18 @@
       "reproduced": "a second build in a fresh container on the same machine gave the same SHA-256; a second machine is not yet checked"
     }
   ],
+  "forgejo-runner-windows-arm64": [
+    {
+      "status": "built, not deployed",
+      "where": "D:\\HyperV\\runner-platform\\artefacts\\forgejo-runner-v13.1.0\\forgejo-runner-v13.1.0-windows-arm64.exe",
+      "sha256": "cd59d117346c32419ddb62679150ba2f11ff7f6fbbf64b7400830287c4b15b07",
+      "tag": "v13.1.0",
+      "commit": "6095cb17bfdbded5aa4ea84c18a4b69fd9574cca",
+      "go": "go1.26.7",
+      "built": "2026-09-24T15:55:12Z",
+      "recipe": "images/windows/build-forgejo-runner.sh in golang:1.26.7"
+    }
+  ],
   "forgejo-runner-darwin-amd64": [
     {
       "status": "built, not deployed",
@@ -59,6 +71,17 @@
       "source": "https://github.com/actions/runner/releases/tag/v2.336.0",
       "verified_against": "the hash GitHub publishes in that release's own notes, read from the API on 2026-09-20 - not against our own download",
       "recipe": "images/windows/fetch-actions-runner.ps1"
+    }
+  ],
+  "actions-runner-win-arm64": [
+    {
+      "status": "downloaded, not deployed",
+      "version": "2.336.0",
+      "asset": "actions-runner-win-arm64-2.336.0.zip",
+      "where": "D:\\HyperV\\runner-platform\\artefacts\\actions-runner-win-arm64-2.336.0.zip",
+      "sha256": "b3799e9cf754fe4dfcb3d220c9701c924829737ee815dbeb674f8bd076794504",
+      "source": "https://github.com/actions/runner/releases/tag/v2.336.0",
+      "verified_against": "SHA-256 published in GitHub's v2.336.0 release notes"
     }
   ],
   "actions-runner-osx-x64": [

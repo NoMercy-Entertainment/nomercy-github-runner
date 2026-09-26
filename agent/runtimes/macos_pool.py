@@ -50,7 +50,7 @@ class MacAppliancePoolRuntime:
     kind = "macos-appliance"
 
     def __init__(self, *, image, base_disk, base_system, data_root, templates,
-                 base_guests_disabled, guest, tools=None, ssh_port_base=51000,
+                 base_guests_disabled, guest, tools=None, nvram_seed=None, ssh_port_base=51000,
                  docker="docker", qemu_img="qemu-img", boot_timeout=600,
                  shutdown_timeout=180, image_uid=1000, image_gid=1000,
                  run=None, guest_factory=None,
@@ -69,8 +69,12 @@ class MacAppliancePoolRuntime:
         self.base_disk, self.base_system = Path(base_disk).resolve(), Path(base_system).resolve()
         if not self.base_disk.is_file() or not self.base_system.is_file():
             raise ValueError("pool base disk and BaseSystem must exist")
+        self.nvram_seed = Path(nvram_seed).resolve() if nvram_seed else None
+        if self.nvram_seed and not self.nvram_seed.is_file():
+            raise ValueError("pool NVRAM seed must exist")
         self.root = Path(data_root).resolve()
         if (self.base_disk.is_relative_to(self.root) or self.base_system.is_relative_to(self.root)
+                or (self.nvram_seed and self.nvram_seed.is_relative_to(self.root))
                 or self.root == Path(self.root.anchor)):
             raise ValueError("pool data_root must be a dedicated instances directory")
         self.root.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -144,6 +148,7 @@ class MacAppliancePoolRuntime:
             raise RuntimeError("runner has no owned appliance metadata")
         if (not isinstance(value, dict) or value.get("runner_id") != rid or value.get("image") != self.image
                 or value.get("base_disk") != str(self.base_disk)
+                or value.get("nvram_seed") != (str(self.nvram_seed) if self.nvram_seed else None)
                 or value.get("image_uid") != self.image_uid or value.get("image_gid") != self.image_gid
                 or type(value.get("port")) is not int
                 or not self._port_base <= value["port"] < 65536):
@@ -196,7 +201,9 @@ class MacAppliancePoolRuntime:
                 raise RuntimeError("runner storage exists without ownership metadata; repair it before creating")
             directory.mkdir(mode=0o700, exist_ok=True)
             record = dict(runner_id=rid, port=port, image=self.image,
-                          base_disk=str(self.base_disk), template=spec["image"],
+                          base_disk=str(self.base_disk),
+                          nvram_seed=str(self.nvram_seed) if self.nvram_seed else None,
+                          template=spec["image"],
                           image_uid=self.image_uid, image_gid=self.image_gid,
                           cpus=cpu, memory=memory, listener_disabled=True,
                           initialized=False, retained=False)
@@ -244,11 +251,15 @@ class MacAppliancePoolRuntime:
                 "/home/arch/OSX-KVM/BaseSystem.img": (str(self.base_system), False),
                 str(self.base_disk): (str(self.base_disk), False),
             }
+            if self.nvram_seed:
+                expected["/home/arch/OSX-KVM/OVMF_VARS-1024x768.fd"] = (
+                    str(self._directory(rid) / "nvram.fd"), True)
             if (config.get("Image") != self.image or config.get("Entrypoint") != [BOOT_ENTRYPOINT]
                     or config.get("Cmd") != self._image_cmd
                     or environment.get("RAM") != str(record["memory"] // GIB)
                     or environment.get("SMP") != str(record["cpus"])
                     or environment.get("CORES") != str(record["cpus"])
+                    or environment.get("NOPICKER") != "true"
                     or ports != [{"HostIp": "127.0.0.1", "HostPort": str(record["port"])}]
                     or host.get("Privileged") is not False
                     or host.get("Memory") != record["memory"] + OVERHEAD_BYTES
@@ -357,6 +368,27 @@ class MacAppliancePoolRuntime:
                 stat = overlay.stat()
                 if stat.st_uid != self.image_uid or stat.st_gid != self.image_gid or stat.st_mode & 0o777 != 0o600:
                     raise RuntimeError("appliance overlay permissions do not match the trusted image user")
+            if self.nvram_seed:
+                nvram = self._directory(rid) / "nvram.fd"
+                if nvram.is_symlink():
+                    raise RuntimeError("appliance NVRAM is not an owned regular file")
+                if not nvram.exists():
+                    if power != "absent" or record.get("initialized"):
+                        raise RuntimeError("existing appliance lost its NVRAM; refusing to replace it")
+                    temporary = nvram.with_suffix(".creating")
+                    if temporary.exists():
+                        temporary.unlink()
+                    shutil.copyfile(self.nvram_seed, temporary)
+                    if hasattr(os, "chown"):
+                        os.chown(temporary, self.image_uid, self.image_gid)
+                    os.chmod(temporary, 0o600)
+                    os.replace(temporary, nvram)
+                if not nvram.is_file():
+                    raise RuntimeError("appliance NVRAM is not an owned regular file")
+                if os.name == "posix":
+                    stat = nvram.stat()
+                    if stat.st_uid != self.image_uid or stat.st_gid != self.image_gid or stat.st_mode & 0o777 != 0o600:
+                        raise RuntimeError("appliance NVRAM permissions do not match the trusted image user")
             if power == "absent":
                 if not self._port_free(record["port"]):
                     raise RuntimeError("assigned appliance SSH port is occupied")
@@ -371,9 +403,12 @@ class MacAppliancePoolRuntime:
                         "--mount", f"type=bind,src={overlay},dst=/home/arch/OSX-KVM/mac_hdd_ng.img",
                         "--mount", f"type=bind,src={self.base_disk},dst={self.base_disk},readonly",
                         "--mount", f"type=bind,src={self.base_system},dst=/home/arch/OSX-KVM/BaseSystem.img,readonly",
+                        *(["--mount", f"type=bind,src={nvram},dst=/home/arch/OSX-KVM/OVMF_VARS-1024x768.fd"]
+                          if self.nvram_seed else []),
                         "--env", f"RAM={record['memory'] // GIB}",
                         "--env", f"SMP={record['cpus']}",
-                        "--env", f"CORES={record['cpus']}", self.image]
+                        "--env", f"CORES={record['cpus']}",
+                        "--env", "NOPICKER=true", self.image]
                 self._command(argv, timeout=300)
             inner, _ = self._boot(record)
             # Mark before enabling: a crash must never leave a false disabled proof.

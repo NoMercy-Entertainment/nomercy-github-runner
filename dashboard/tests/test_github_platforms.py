@@ -103,6 +103,10 @@ def spec_for(platform, arch=P.X64, **kw):
 
 
 class TestLabels:
+    def test_windows_arm_does_not_inherit_x64_labels(self):
+        env = {"RUNNER_LABELS_WINDOWS": "self-hosted,Windows,X64,old"}
+        assert GH.default_labels(P.WINDOWS, P.ARM64, env) == "self-hosted,Windows,ARM64"
+
     @pytest.mark.parametrize("platform,arch", CELLS)
     def test_each_cell_defaults_to_githubs_own_three(self, platform, arch):
         os_label = {"linux": "Linux", "windows": "Windows",

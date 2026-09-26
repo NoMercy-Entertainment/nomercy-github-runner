@@ -4,9 +4,10 @@
 #
 #   docker build -f images/linux/unit/Dockerfile.github \
 #     --build-arg BASE=<the GitHub runner image> -t <name>:unit images/linux/unit
-ARG BASE=ghcr.io/nomercy-entertainment/nomercy-github-runner:latest
+ARG BASE=ghcr.io/nomercy-entertainment/nomercy-github-runner@sha256:1934fdb1c641fc88007f344f54acb3dc89409a852d7e87a25f21a13cf18d1436
 FROM ${BASE}
-RUN apt-get update && apt-get install -y --no-install-recommends python3 util-linux \
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        python3 util-linux clang clang-format clang-tidy \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
 # 40GB, as the GitHub fleet's nested engines have: its builds are heavier.
@@ -50,6 +51,10 @@ RUN mkdir -p /opt/actions-runner-image \
     && rm -f /opt/actions-runner-image/.runner /opt/actions-runner-image/.credentials \
              /opt/actions-runner-image/.credentials_rsaparams
 ENV RUNNER_HOME=/runner/reg/actions-runner HOME=/runner/work/.home
+# The base image has an installed Rust toolchain under /root. Forgejo uses
+# this image as its job container; the GitHub unit copies the toolchain to its
+# writable runner home before starting the listener (runner/run).
+ENV CARGO_HOME=/root/.cargo RUSTUP_HOME=/root/.rustup
 LABEL nomercy.readonly_root="true"
 
 ENTRYPOINT ["/runner/run"]

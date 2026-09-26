@@ -2,48 +2,45 @@
 {% block title %}Access - NoMercy Runners{% endblock %}
 
 {% block style %}
-.tbl{width:100%;border-collapse:collapse;font-size:12px}
-.tbl th{text-align:left;font-family:var(--label);font-size:10px;
-  letter-spacing:.15em;text-transform:uppercase;color:var(--text-faint);
-  border-bottom:1px solid var(--rule);padding:8px 10px;font-weight:400}
-.tbl td{padding:9px 10px;border-bottom:1px solid var(--rule)}
+.tbl{width:100%;border-collapse:collapse;font-size:var(--type-body)}
+.tbl th{text-align:left;font-size:var(--type-small);color:var(--text-faint);
+  border-bottom:1px solid var(--rule);padding:12px;font-weight:600}
+.tbl td{padding:16px 12px;border-bottom:1px solid var(--rule)}
 .tbl tr:last-child td{border-bottom:0}
-.sub-id{font-size:10px;color:var(--text-faint)}
-.role{font-family:var(--label);font-size:10px;letter-spacing:.14em;
-  text-transform:uppercase}
+.sub-id{font-size:var(--type-small);color:var(--text-faint);margin-top:4px}
+.role{font-size:var(--type-small);font-weight:600}
 .role.admin{color:var(--signal)} .role.operator{color:var(--drain)}
 .role.viewer{color:var(--text-dim)}
-.row-actions{display:flex;gap:6px;justify-content:flex-end}
-select{background:var(--bg-inset);color:var(--text);border:1px solid var(--rule-hot);
-  font-family:var(--label);font-size:10px;letter-spacing:.12em;
-  text-transform:uppercase;padding:6px 8px}
+.row-actions{display:flex;gap:8px;justify-content:flex-end}
+.row-actions select{min-width:130px}
 .empty{padding:14px 10px;color:var(--text-faint);font-size:12px}
+.panel{overflow-x:auto}
+h2.section-title{margin:32px 0 16px;font-size:var(--type-title);font-weight:600}
 {% endblock %}
 
 {% block body %}
+<a class="skip-link" href="#main">Skip to content</a>
 <header>
   <div class="brand">
     <h1>NoMercy Runners</h1>
     <div class="sub">Access</div>
   </div>
-  <nav>
+  <nav aria-label="Main">
     <a href="/">Fleet</a>
     <a href="/history">History</a>
     <a href="/settings">Settings</a>
+    <a href="/users" class="on" aria-current="page">Access</a>
     <a href="/logout">Sign out</a>
   </nav>
 </header>
+<main id="main" tabindex="-1">
 
 <div class="notice">
-  <b>Signing in is not access.</b> Anyone with a NoMercy account can
-  authenticate. Only the people listed below can reach this dashboard, and a
-  change here takes effect on their very next request - not when their session
-  expires.
+  Approve who can use this dashboard and assign their role. Access changes take effect on their next request.
 </div>
 
-<h2 style="margin:22px 0 8px;font-family:var(--label);font-size:11px;
-    letter-spacing:.18em;text-transform:uppercase;color:var(--text-dim)">
-  Waiting for a decision
+<h2 class="section-title">
+  Pending requests
 </h2>
 <div class="panel">
   {% if waiting %}
@@ -55,7 +52,7 @@ select{background:var(--bg-inset);color:var(--text);border:1px solid var(--rule-
       <td>{{ p.first_seen }}</td>
       <td>
         <div class="row-actions">
-          <select id="role-{{ loop.index }}">
+          <select id="role-{{ loop.index }}" aria-label="Role for {{ p.name }}">
             {% for r in roles %}
             <option value="{{ r }}"{% if r == 'operator' %} selected{% endif %}>{{ r }}</option>
             {% endfor %}
@@ -73,9 +70,8 @@ select{background:var(--bg-inset);color:var(--text);border:1px solid var(--rule-
   {% endif %}
 </div>
 
-<h2 style="margin:22px 0 8px;font-family:var(--label);font-size:11px;
-    letter-spacing:.18em;text-transform:uppercase;color:var(--text-dim)">
-  Has access
+<h2 class="section-title">
+  Members
 </h2>
 <div class="panel">
   <table class="tbl">
@@ -88,7 +84,7 @@ select{background:var(--bg-inset);color:var(--text);border:1px solid var(--rule-
       <td>
         <div class="row-actions">
           {% if u.sub != me %}
-          <select id="has-{{ loop.index }}">
+          <select id="has-{{ loop.index }}" aria-label="Role for {{ u.name }}">
             {% for r in roles %}
             <option value="{{ r }}"{% if r == u.role %} selected{% endif %}>{{ r }}</option>
             {% endfor %}
@@ -106,8 +102,9 @@ select{background:var(--bg-inset);color:var(--text);border:1px solid var(--rule-
   </table>
 </div>
 
-<div id="toast" class="toast"></div>
+<div id="toast" class="toast" role="status" aria-live="polite"></div>
 
+</main>
 <script>
 const $ = id => document.getElementById(id);
 

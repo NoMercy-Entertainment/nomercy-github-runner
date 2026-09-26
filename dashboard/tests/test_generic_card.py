@@ -15,12 +15,32 @@ import re
 import shutil
 import subprocess
 import threading
+from types import SimpleNamespace
 
 import pytest
 
 import api_v2
 import cards
 import providers as P
+
+
+def test_forgejo_busy_card_uses_the_workflow_job_name(monkeypatch):
+    calls = []
+
+    class Client:
+        def task_info(self, repo, task_id):
+            calls.append((repo, task_id))
+            return {"workflow": "verify.yml", "name": "macos-latest"}
+
+    monkeypatch.setattr(api_v2.providers, "by_key", lambda key: SimpleNamespace(
+        forge_client=lambda env: Client()))
+    api_v2._task_name_cache.clear()
+    service = SimpleNamespace(env={"FORGEJO_INSTANCE_URL": "https://forgejo.example"})
+    job = "task 1272 - FiLL/HA-Companion-App"
+    expected = "FiLL/HA-Companion-App · verify.yml / macos-latest"
+    assert api_v2._named_forgejo_job(service, job) == expected
+    assert api_v2._named_forgejo_job(service, job) == expected
+    assert calls == [("FiLL/HA-Companion-App", 1272)]
 
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CARD_JS = os.path.join(HERE, "templates", "_card.js")
@@ -185,6 +205,12 @@ def render(fn, payload):
 
 @pytest.mark.skipif(NODE is None, reason="node is not installed")
 class TestTheRenderer:
+    def test_generated_runner_number_is_hidden_on_the_card(self):
+        card = dict(spec_cards()[0], display_name="github-linux-x64-2")
+        html = render("cardHTML", [card])[0]
+        assert '>github-linux-x64</a>' in html
+        assert "github-linux-x64-2" not in html
+
     def test_one_function_draws_all_six_cells_and_every_field(self):
         specs = spec_cards()
         for c, html in zip(specs, render("cardHTML", specs)):
@@ -349,10 +375,10 @@ def no_control_plane(tmp_path, monkeypatch):
 
 
 class TestThePagesData:
-    def test_six_fleets_and_every_runner_in_one(self, client,
+    def test_eight_fleets_and_every_runner_in_one(self, client,
                                                 no_control_plane):
         body = client.get("/api/v2/fleet").get_json()
-        assert len(body["fleets"]) == 6
+        assert len(body["fleets"]) == 8
         assert body["control_plane"]["running"] is False
         placed = [k for f in body["fleets"] for k in f["runners"]]
         assert sorted(placed) == sorted(c["key"] for c in body["runners"])
@@ -373,13 +399,14 @@ class TestThePagesData:
         r = client.get("/")
         assert r.status_code == 200
         assert b"cardHTML" in r.data and b"/api/v2/fleet" in r.data
+        assert b'href="/users">Access</a>' in r.data
 
 
 # ---------------------------------------------------------------------------
 # the page, in a real browser
 # ---------------------------------------------------------------------------
 
-def test_the_page_renders_all_six_fleets_in_a_real_browser(tmp_path,
+def test_the_page_renders_all_eight_fleets_in_a_real_browser(tmp_path,
                                                              monkeypatch):
     """A stub serving the page and the v2 data - no docker, no forge, no
     sign-in - loaded by headless Edge, whose DOM is then read back."""
@@ -407,8 +434,11 @@ def test_the_page_renders_all_six_fleets_in_a_real_browser(tmp_path,
                                tmp_path / "edge")
     finally:
         server.shutdown()
-    assert dom.count('class="fleet"') == 6, dom[-2000:]
+    assert dom.count('class="fleet"') == 8, dom[-2000:]
     assert dom.count("<article") == 4, "two containers, two forge-only"
+    assert 'id="s-total">4</div>' in dom
+    assert '<div class="k">Total runners</div>' in dom
+    assert '<div class="k">Online</div>' in dom
     assert "beaststack-windows-runner" in dom
     assert "no job containers" in dom
     assert "T-0802" in dom
@@ -435,8 +465,7 @@ def test_every_kind_of_input_the_pages_use_is_styled():
 def test_the_page_asks_for_no_numbers():
     """A fleet has the runners you add, and keeps them until you remove one.
     Typing a number was a second way of saying the same thing, and the box
-    beside the buttons read as a stray box (2026-09-20). The capacity route
-    stays for a script; the page does not ask."""
+    beside the buttons read as a stray box (2026-09-20)."""
     card_js = open(os.path.join(HERE, "templates", "_card.js"),
                    encoding="utf-8").read()
     assert 'type="number"' not in card_js

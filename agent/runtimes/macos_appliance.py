@@ -496,13 +496,29 @@ class MacApplianceRuntime:
         return {rid: current_job(self.logs(rid, 86400)) for rid in runner_ids}
 
     def logs(self, runner_id, since_seconds, max_bytes=256 * 1024):
-        path = posixpath.join(self.paths(runner_id)["logs"], "runner.log")
-        try:
-            if time.time() - self._fs.mtime(path) > since_seconds:
-                return ""
-            return self._fs.tail(path, max_bytes)
-        except OSError:
-            return ""
+        rid = naming.check(runner_id)
+        paths = []
+        adopted = self.adopted(rid)
+        if adopted and adopted.get("plist"):
+            try:
+                plist = plistlib.loads(self._fs.read_text(
+                    adopted["plist"]).encode("utf-8"))
+                for key in ("StandardErrorPath", "StandardOutPath"):
+                    path = plist.get(key)
+                    if isinstance(path, str) and posixpath.isabs(path):
+                        paths.append(path)
+            except (OSError, ValueError, TypeError):
+                pass
+        paths.append(posixpath.join(self.paths(rid)["logs"], "runner.log"))
+        for path in dict.fromkeys(paths):
+            try:
+                if time.time() - self._fs.mtime(path) <= since_seconds:
+                    text = self._fs.tail(path, max_bytes)
+                    if text:
+                        return text
+            except OSError:
+                continue
+        return ""
 
     def probe(self, runner_id, probe):
         p = self.paths(runner_id)

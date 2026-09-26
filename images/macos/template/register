@@ -12,7 +12,8 @@ def register(plan, root):
     home = root / "agent" if provider == "github" else root
     record = home / ".runner"
     if record.exists() and not plan.get("replace"):
-        data = json.loads(record.read_text())
+        # GitHub's macOS listener writes .runner with a UTF-8 BOM.
+        data = json.loads(record.read_text(encoding="utf-8-sig"))
         return {"registration_id": str(data.get("agentId") if provider == "github"
                                        else data.get("id")),
                 "registration_uuid": data.get("uuid")}

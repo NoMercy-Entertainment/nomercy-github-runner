@@ -1,0 +1,17 @@
+[Unit]
+Description=Windows 11 ARM64 QEMU runner guest
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+Group=root
+ExecStart=/var/lib/runner-appliances/windows-arm64/start-qemu.sh
+Restart=on-failure
+RestartSec=15
+TimeoutStopSec=180
+KillMode=control-group
+
+[Install]
+WantedBy=multi-user.target

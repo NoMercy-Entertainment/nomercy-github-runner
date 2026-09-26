@@ -91,6 +91,44 @@ class TestABeatIsNeverHeldUpByMeasuring:
         assert sender.link.posted[-1]["sent_at"] != "old"
         assert measured_at
 
+    def test_new_sample_wakes_sender_before_next_period(self, sender):
+        sender.interval = 1
+        thread = threading.Thread(target=sender._loop, daemon=True)
+        thread.start()
+        try:
+            deadline = time.monotonic() + 1
+            while not sender.link.posted and time.monotonic() < deadline:
+                time.sleep(0.005)
+            assert sender.link.posted[-1]["measuring"] is True
+            sender.measure_once()
+            deadline = time.monotonic() + 0.5
+            while len(sender.link.posted) < 2 and time.monotonic() < deadline:
+                time.sleep(0.005)
+            assert "instances" in sender.link.posted[-1]
+        finally:
+            sender.stop()
+
+    def test_slow_measurement_does_not_add_a_second_full_interval(self, sender):
+        sender.interval = 0.05
+        started = []
+
+        def slow():
+            started.append(time.monotonic())
+            time.sleep(0.08)
+
+        sender.measure_once = slow
+        thread = threading.Thread(target=sender._measure_loop, daemon=True)
+        thread.start()
+        try:
+            deadline = time.monotonic() + 0.5
+            while len(started) < 3 and time.monotonic() < deadline:
+                time.sleep(0.005)
+            assert len(started) >= 3
+            assert started[1] - started[0] < 0.12
+        finally:
+            sender.stop()
+            thread.join(1)
+
 
 class TestTheBeatOutlivesOneBadBeat:
     """The thread that beats is the worker's only way of saying it is here.

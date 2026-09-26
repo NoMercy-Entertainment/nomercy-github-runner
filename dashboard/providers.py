@@ -436,12 +436,15 @@ class _GitHub(Provider):
     #: Linux jobs.
     _LABELS_ENV = {LINUX: "RUNNER_LABELS", WINDOWS: "RUNNER_LABELS_WINDOWS",
                    MACOS: "RUNNER_LABELS_MACOS"}
+    _LABELS_ENV_ARCH = {(WINDOWS, ARM64): "RUNNER_LABELS_WINDOWS_ARM64"}
 
     #: GitHub's `os` field on a runner record, in this platform's words.
     _OS = {"linux": LINUX, "windows": WINDOWS, "macos": MACOS}
 
     def default_labels(self, platform, arch=X64, env=None):
-        configured = (env or {}).get(self._LABELS_ENV.get(platform, ""), "")
+        key = self._LABELS_ENV_ARCH.get((platform, arch),
+                                        self._LABELS_ENV.get(platform, ""))
+        configured = (env or {}).get(key, "")
         return configured.strip() or self._DEFAULT_LABELS.get(
             (platform, arch), "self-hosted")
 
@@ -718,8 +721,10 @@ class _Forgejo(Provider):
     #: the cell reports itself unavailable with the reason, rather than
     #: failing later at registration.
     _ARTIFACT_KEY = {
-        WINDOWS: "FORGEJO_RUNNER_ARTIFACT_WINDOWS",
-        MACOS: "FORGEJO_RUNNER_ARTIFACT_MACOS",
+        (WINDOWS, X64): "FORGEJO_RUNNER_ARTIFACT_WINDOWS",
+        (WINDOWS, ARM64): "FORGEJO_RUNNER_ARTIFACT_WINDOWS_ARM64",
+        (MACOS, X64): "FORGEJO_RUNNER_ARTIFACT_MACOS",
+        (MACOS, ARM64): "FORGEJO_RUNNER_ARTIFACT_MACOS",
     }
 
     def supports(self, platform, arch=X64, env=None):
@@ -727,7 +732,7 @@ class _Forgejo(Provider):
             return Support(True)
         if platform not in PLATFORMS:
             return Support(False, f"unknown platform {platform!r}")
-        key = self._ARTIFACT_KEY.get(platform)
+        key = self._ARTIFACT_KEY.get((platform, arch))
         if key and (env or {}).get(key, "").strip():
             return Support(True)
         if key:
@@ -746,7 +751,7 @@ class _Forgejo(Provider):
                 reference=f"forgejo/runner:{platform}-"
                           f"{'amd64' if arch == X64 else 'arm64'}",
                 notes="published at code.forgejo.org/forgejo/runner/releases")
-        key = self._ARTIFACT_KEY[platform]
+        key = self._ARTIFACT_KEY[(platform, arch)]
         return ArtifactRef(
             source="self-built",
             reference=(env or {}).get(key, "").strip(),
@@ -773,11 +778,17 @@ class _Forgejo(Provider):
     #: was. Windows and macOS can only run on the host, so that choice is
     #: already made.
     _DEFAULT_LABELS = {WINDOWS: "windows:host", MACOS: "macos:host"}
+    _DEFAULT_LABELS_ARCH = {(WINDOWS, ARM64): "windows-arm64:host"}
+    _LABELS_ENV_ARCH = {(WINDOWS, ARM64): "FORGEJO_RUNNER_LABELS_WINDOWS_ARM64"}
 
     def default_labels(self, platform, arch=X64, env=None):
-        configured = ((env or {}).get(self._LABELS_ENV.get(platform, ""))
-                      or "").strip()
-        return configured or self._DEFAULT_LABELS.get(platform, "")
+        key = self._LABELS_ENV_ARCH.get((platform, arch),
+                                        self._LABELS_ENV.get(platform, ""))
+        configured = ((env or {}).get(key) or "").strip()
+        if configured:
+            return configured
+        return self._DEFAULT_LABELS_ARCH.get((platform, arch),
+                                             self._DEFAULT_LABELS.get(platform, ""))
 
     def _label_name(self, text):
         """A Forgejo label is `name`, `name:host` or `name:docker://image`;

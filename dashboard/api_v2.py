@@ -19,6 +19,7 @@ carried a key.
 """
 import os
 import json
+import re
 import sqlite3
 import time
 from datetime import datetime, timezone
@@ -32,6 +33,36 @@ bp = Blueprint("api_v2", __name__)
 
 #: How the app hands over its v1 status snapshot. Set by `init`.
 _status = {"fn": lambda: {}}
+_task_name_cache = {}
+_forgejo_task = re.compile(r"^task ([0-9]+) - ([^\s]+)$")
+
+
+def _named_forgejo_job(service, job):
+    match = _forgejo_task.fullmatch(job or "")
+    if not match:
+        return job
+    task_id, repo = int(match.group(1)), match.group(2)
+    key = (service.env.get("FORGEJO_INSTANCE_URL"), repo, task_id)
+    now = time.monotonic()
+    cached = _task_name_cache.get(key)
+    if cached and cached[0] > now:
+        return cached[1]
+    provider = providers.by_key("forgejo")
+    client = provider.forge_client(service.env) if provider else None
+    try:
+        info = client.task_info(repo, task_id) if client else None
+    except Exception:  # display must never stop a dashboard read
+        info = None
+    if info:
+        name = info["name"]
+        workflow = info.get("workflow")
+        result = f"{repo} · {workflow} / {name}" if workflow else f"{repo} · {name}"
+    else:
+        result = job
+    if len(_task_name_cache) >= 128:
+        _task_name_cache.clear()
+    _task_name_cache[key] = (now + (300 if info else 15), result)
+    return result
 
 
 def init(app, status):
@@ -154,6 +185,8 @@ def _controller_cards(service):
 
 def _runner_card(service, spec, reachable):
     card = cards.from_spec(spec, worker_reachable=reachable)
+    if spec.get("provider") == "forgejo" and spec.get("actual_state") in ("busy", "draining"):
+        card["job"] = _named_forgejo_job(service, card.get("job"))
     from control import states
     if spec.get("actual_state") == "failed":
         card["actions"].append({"verb": "repair", "label": "Repair", "tone": "primary",
@@ -281,11 +314,11 @@ PLATFORM_NAMES = {providers.LINUX: "Linux", providers.WINDOWS: "Windows",
 #: still go to v1 until T-1407. Data, looked up - not a branch in the page.
 V1_FLEETS = {("github", providers.LINUX), ("forgejo", providers.LINUX)}
 
-#: The controller exposes desired capacity explicitly. The UI validates and
-#: submits the entered count; reducing capacity requires an administrator.
-FLEET_ACTIONS = ("add", "capacity", "recreate", "clear_cache")
+#: Runners are added and removed one at a time. The internal count follows
+#: those actions; there is no separate operator control for it.
+FLEET_ACTIONS = ("add", "recreate", "clear_cache")
 FLEET_LABELS = {"add": "+ Add runner", "recreate": "Recreate fleet",
-                "clear_cache": "Clear all cache", "capacity": "Set capacity"}
+                "clear_cache": "Clear all cache"}
 FLEET_TONES = {"add": "primary", "recreate": "warn", "clear_cache": "warn"}
 
 
@@ -328,7 +361,6 @@ def fleet_actions(fid, provider_key, platform, available, reason,
     base = f"/api/v2/fleets/{fid}"
     return [
         _fleet_action("add", f"{base}/runners", {}, idempotent=True),
-        _fleet_action("capacity", f"{base}/capacity", {}, idempotent=True),
         _fleet_action("recreate", f"{base}/recreate", {}, idempotent=True,
                       confirm=recreate_confirm, visible=has_runners),
         _fleet_action("clear_cache", f"{base}/clear-cache", {},
@@ -384,13 +416,11 @@ def requested_by():
 RUNNER = "/api/v2/runners/<runner_id>"
 FLEET = "/api/v2/fleets/<fleet_id>"
 
-#: Design 12.2's eighteen verbs and where each is served. Mutations are POSTs
-#: carrying an Idempotency-Key; the three reads are GETs. A test parses the
-#: verb list out of the design and asserts it is exactly these keys.
+#: Operator routes for runner actions. Numeric scaling stays internal; users
+#: change the persistent runner count through create and remove. Mutations
+#: carry an Idempotency-Key; the three reads are GETs.
 ROUTES = {
     "create": ("POST", f"{FLEET}/runners"),
-    "scale_up": ("POST", f"{FLEET}/capacity"),
-    "scale_down": ("POST", f"{FLEET}/capacity"),
     "provision": ("POST", f"{RUNNER}/actions/provision"),
     "register": ("POST", f"{RUNNER}/actions/register"),
     "start": ("POST", f"{RUNNER}/actions/start"),
@@ -622,40 +652,9 @@ def fleet_detail(fleet_id):
     return _refuse(404, f"no fleet {fleet_id}")
 
 
-@bp.route(f"{FLEET}/capacity", methods=["POST"])
-def fleet_capacity(fleet_id):
-    """Scale up and scale down are this one call with a different number
-    (design 14.3)."""
-    service, fleet, key, err = _fleet_mutation(fleet_id)
-    if err:
-        return err
-    desired = (request.get_json(silent=True) or {}).get("desired")
-    if isinstance(desired, bool) or not isinstance(desired, int) or             desired < 0:
-        return _refuse(400, "desired must be a whole number, 0 or more")
-    # A decrease removes runners: design 18.2's destroy group (T-1902).
-    from flask import g
-    if desired < fleet["desired_capacity"] and             getattr(g, "role", None) != "admin":
-        from control import audit
-        audit.record(_db_path(), "set_capacity", "refused",
-                     actor=requested_by(), fleet_id=fleet_id,
-                     parameters={"desired": desired},
-                     outcome="a decrease requires admin")
-        return _refuse(403, "Reducing a fleet's capacity needs the admin "
-                            "role.")
-    from control.service import Refused
-    try:
-        op = service.set_capacity(fleet_id, desired,
-                                  requested_by=requested_by(),
-                                  idempotency_key=key)
-    except Refused as e:
-        return _refuse(409, str(e))
-    return jsonify(ok=True, operation_id=op,
-                   note=f"{fleet_id} wants {desired}"), 202
-
-
 @bp.route(f"{FLEET}/runners", methods=["POST"])
 def fleet_add(fleet_id):
-    """One more runner: which is to say, a higher capacity."""
+    """Add one runner to this fleet's persisted desired count."""
     service, fleet, key, err = _fleet_mutation(fleet_id)
     if err:
         return err

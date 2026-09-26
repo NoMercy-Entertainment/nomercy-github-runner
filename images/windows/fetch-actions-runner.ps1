@@ -23,12 +23,14 @@
 [CmdletBinding()]
 param(
     [string] $Version = '2.336.0',
+    [ValidateSet('x64', 'arm64')] [string] $Architecture = 'x64',
     [string] $Sha256,
+    [string] $ArchivePath,
     [string] $Repo = 'D:\docker-compose\GithubRunners'
 )
 $ErrorActionPreference = 'Stop'
 
-$artefact = "actions-runner-win-x64"
+$artefact = "actions-runner-win-$Architecture"
 $manifestPath = Join-Path $Repo 'images\windows\manifest.json'
 $manifest = Get-Content -Raw -LiteralPath $manifestPath | ConvertFrom-Json
 $recorded = @($manifest.$artefact | Where-Object { $_.version -eq $Version })
@@ -40,16 +42,17 @@ if (-not $Sha256) {
     }
     $Sha256 = $recorded[0].sha256
 }
-$asset = "actions-runner-win-x64-$Version.zip"
+$asset = "actions-runner-win-$Architecture-$Version.zip"
 $url = "https://github.com/actions/runner/releases/download/v$Version/$asset"
-$template = Join-Path $Repo "infra\windows\templates\actions-runner-v$Version-windows"
+$suffix = if ($Architecture -eq 'arm64') { '-arm64' } else { '' }
+$template = Join-Path $Repo "infra\windows\templates\actions-runner-v$Version-windows$suffix"
 if (-not (Test-Path $template)) {
     throw "no template at $template - its three entry points come from the repository"
 }
 
-$stage = Join-Path ([IO.Path]::GetTempPath()) "rnr-actions-runner-$Version"
+$stage = Join-Path ([IO.Path]::GetTempPath()) "rnr-actions-runner-$Version-$Architecture"
 New-Item -ItemType Directory -Force -Path $stage | Out-Null
-$zip = Join-Path $stage $asset
+$zip = if ($ArchivePath) { $ArchivePath } else { Join-Path $stage $asset }
 if (-not (Test-Path $zip)) {
     Write-Host "fetching $asset"
     Invoke-WebRequest -Uri $url -OutFile $zip -UseBasicParsing
@@ -57,7 +60,7 @@ if (-not (Test-Path $zip)) {
 
 $got = (Get-FileHash -Algorithm SHA256 -LiteralPath $zip).Hash.ToLower()
 if ($got -ne $Sha256.ToLower()) {
-    Remove-Item -LiteralPath $zip -Force
+    if (-not $ArchivePath) { Remove-Item -LiteralPath $zip -Force }
     throw "$asset does not match what GitHub published: expected $Sha256, got $got"
 }
 Write-Host "sha256 matches what GitHub published for v$Version"

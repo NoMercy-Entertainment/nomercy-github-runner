@@ -1,4 +1,4 @@
-"""The six fleets, and how many runners each is meant to have.
+"""The runner fleets, and how many runners each is meant to have.
 
 A fleet is one cell of the provider x platform matrix: what to build, how many
 of them, and with which defaults. The dashboard sets a number; the controller
@@ -20,7 +20,7 @@ of a kind that cannot be built.
 **Why a fleet id is readable and a runner id is not.** A runner's identity must
 not be derivable from anything a caller knows, because names are how this fleet
 came to have three of them for one runner. A fleet is different in kind: it is
-a coordinate in a fixed matrix, it is unique on `(provider, platform,
+a coordinate in the supported fleet set, it is unique on `(provider, platform,
 architecture)` by constraint, and there is exactly one of each. A readable
 `github-linux-x64` is the coordinate written down, not a name that might drift
 from what it points at.
@@ -37,14 +37,14 @@ import providers
 
 from . import schema
 
-#: The six cells of design section 9.5. Architecture is x64 throughout: ARM64
-#: is documented by GitHub but there is no ARM worker to place it on, so a
-#: seventh row would claim capacity that cannot be satisfied.
+# The existing x64 cells plus Windows ARM64 for both forges. New rows start
+# at zero capacity; seeding does not change an operator's existing capacity.
 CELLS = tuple(
     (provider.key, platform, providers.X64)
     for provider in providers.ALL
     for platform in providers.PLATFORMS
-)
+) + tuple((provider.key, providers.WINDOWS, providers.ARM64)
+          for provider in providers.ALL)
 
 
 def fleet_id(provider_key, platform, architecture):
@@ -65,7 +65,7 @@ class FleetStore:
         """Create any missing fleet and refresh every fleet's availability.
 
         Idempotent by construction: identity comes from the coordinate, so a
-        second run finds the same six rows. `desired_capacity` is left alone on
+        second run finds the same rows. `desired_capacity` is left alone on
         rows that already exist, because it is an operator's intent and seeding
         is not an operator.
 

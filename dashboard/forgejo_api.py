@@ -53,7 +53,7 @@ class Forgejo:
         self.token = token
 
     # ----------------------------------------------------------------- http
-    def _request(self, path, method="GET", params=None):
+    def _request(self, path, method="GET", params=None, timeout=REQUEST_TIMEOUT):
         url = self.base + path
         if params:
             url += "?" + urllib.parse.urlencode(params)
@@ -65,7 +65,7 @@ class Forgejo:
             "User-Agent": "nomercy-runner-dashboard",
         })
         try:
-            with urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT) as r:
+            with urllib.request.urlopen(req, timeout=timeout) as r:
                 body = r.read().decode()
                 return json.loads(body) if body.strip() else True
         except urllib.error.HTTPError as e:
@@ -75,8 +75,8 @@ class Forgejo:
             print(f"[forgejo] {method} {path}: {e}")
             return None
 
-    def _get(self, path, params=None):
-        return self._request(path, "GET", params)
+    def _get(self, path, params=None, timeout=REQUEST_TIMEOUT):
+        return self._request(path, "GET", params, timeout)
 
     # -------------------------------------------------------------- runners
     def runner_statuses(self):
@@ -153,6 +153,23 @@ class Forgejo:
             return False
 
     # ---------------------------------------------------------------- tasks
+    def task_info(self, repo, task_id):
+        """Name the job currently assigned to a runner from its task id."""
+        path = "/api/v1/repos/%s/actions/tasks" % urllib.parse.quote(
+            repo or "", safe="/")
+        data = self._get(path, {"limit": 50}, timeout=5)
+        if not isinstance(data, dict):
+            return None
+        for task in data.get("workflow_runs") or []:
+            if not isinstance(task, dict) or task.get("id") != task_id:
+                continue
+            name = task.get("name")
+            if not isinstance(name, str) or not name.strip():
+                return None
+            return {"name": " ".join(name.split())[:200],
+                    "workflow": str(task.get("workflow_id") or "")[:200]}
+        return None
+
     def find_task(self, repo, task_id, started_at):
         """The finished task a recorded run corresponds to, or None.
 

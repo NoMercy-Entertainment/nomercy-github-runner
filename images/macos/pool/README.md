@@ -19,6 +19,11 @@ provider templates, each containing executable `run`, `register`, `deregister`:
 * `actions-runner-v2.336.0-macos-r20260921`
 * `forgejo-runner-v13.1.0-macos-r20260921`
 
+Before freezing a new base, run `install-runner-toolchains.sh` in the guest as
+the listener user. It fills the Rust and Android SDK gaps beside the existing
+Xcode, Java, PHP, .NET, Go and other tools. The shared production guest needs
+the same script so GitHub and Forgejo jobs see one toolchain.
+
 The base must contain **no enabled runner listeners** or registrations belonging
 to the old shared instance. Verify launchd's persistent disabled settings and
 auto-start locations before setting `base_guests_disabled: true`. This field is
@@ -26,6 +31,11 @@ an operator attestation, not a claim that the agent can inspect a powered-off
 guest. Give the configured SSH user the existing launchd/install privileges and
 passwordless permission for the fixed `/sbin/shutdown -h now` command. Keep SSH
 credentials in root-readable files and the pool data root private (0700).
+
+The debloated Sequoia base also needs its matching OVMF NVRAM seed. It stores
+the authenticated-root setting required to boot the modified system snapshot.
+Set `nvram_seed` to the seed file documented in `BASE-20260924.md`; the pool
+copies it into each runner directory so guests never share writable NVRAM.
 
 Build the approved Docker-OSX wrapper with label
 `nomercy.appliance_boot_cleanup=true` and entrypoint
@@ -36,7 +46,8 @@ Only `/dev/kvm` is passed through; privileged mode is not used.
 The approved image runs as `arch` (UID/GID1000). Explicit `image_uid`/`image_gid`
 are trusted worker settings: only each overlay is chowned to that identity with
 mode0600. Host metadata remains root-owned and private. Both read-only base
-files must be readable by the image user (the prepared base uses mode0644).
+files must be readable by the image user. The prepared OS base is owned by
+UID/GID 1000 with mode0600; the shared recovery image is world-readable.
 
 The immutable base is mounted read-only at its same absolute path so the qcow2
 backing reference resolves inside the guest host unit. The writable overlay is
@@ -60,6 +71,7 @@ Example fragment, alongside the existing `guest`, `tools`, mTLS and host identit
     "image": "sha256:REPLACE_WITH_64_HEX_IMAGE_ID",
     "base_disk": "/var/lib/runner-appliances/base/macos.qcow2",
     "base_system": "/var/lib/runner-appliances/base/BaseSystem.img",
+    "nvram_seed": "/var/lib/runner-appliances/base/OVMF_VARS-sequoia-debloated-20260924.fd",
     "data_root": "/var/lib/runner-appliances/instances",
     "templates": [
       "actions-runner-v2.336.0-macos-r20260921",
@@ -78,8 +90,10 @@ Example fragment, alongside the existing `guest`, `tools`, mTLS and host identit
 The image placeholder intentionally fails validation until replaced. Pool
 defaults are 4 vCPUs and 8 GiB guest RAM, with 2 GiB additional bounded QEMU
 overhead per instance. Docker CPU quota equals vCPU count; `RAM`, `SMP`, `CORES`
-are set explicitly. Host memory and total RAM+swap are both capped at guest RAM
-plus overhead, so the host allocation cannot grow through swap. Placement must
+and `NOPICKER=true` are set explicitly. `NOPICKER=true` removes the installer
+media from the QEMU launch so the installed macOS disk can boot. Host memory
+and total RAM+swap are both capped at guest RAM plus overhead, so the host
+allocation cannot grow through swap. Placement must
 reserve the advertised `per_runner_memory_overhead_bytes` in addition to guest
 RAM. Pool config defaults to a 24 GiB host budget and two runners.
 

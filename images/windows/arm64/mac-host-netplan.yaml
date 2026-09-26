@@ -1,0 +1,10 @@
+# Static management NIC for the Ubuntu host shared by macOS and Windows QEMU.
+network:
+  version: 2
+  ethernets:
+    rnr-mgmt:
+      match:
+        macaddress: "00:15:5d:77:28:0a"
+      dhcp4: false
+      addresses:
+        - 10.77.0.40/24

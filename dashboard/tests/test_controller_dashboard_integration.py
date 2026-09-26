@@ -57,8 +57,8 @@ def test_liveness_expires_without_a_heartbeat(client, plane):
 
 def test_maintenance_blocks_runner_changes_but_allows_defaults(client, plane):
     assert client.post('/api/v2/maintenance', json={'enabled': True}).status_code == 200
-    response = client.post('/api/v2/fleets/github-linux-x64/capacity',
-                           json={'desired': 3}, headers={'Idempotency-Key': 'capacity'})
+    response = client.post('/api/v2/fleets/github-linux-x64/runners',
+                           json={}, headers={'Idempotency-Key': 'add'})
     assert response.status_code == 409
     assert client.post('/api/v2/settings/github-linux-x64', json={
         'memory_limit': 8 * 1024**3, 'cpu_limit': '4', 'labels': ['linux', 'build'],
@@ -98,9 +98,9 @@ def test_agent_logs_store_identity_and_do_not_close_a_newer_job_on_replay(plane)
     assert len(history.get_run(runs[0]['id'])['samples_data']) == 1
 
 
-def test_controller_settings_page_has_six_fleets_and_never_env_editor(client, plane):
+def test_controller_settings_page_has_eight_fleets_and_never_env_editor(client, plane):
     assert b'Defaults for every fleet' in client.get('/settings').data
-    assert len(client.get('/api/v2/settings').json['fleets']) == 6
+    assert len(client.get('/api/v2/settings').json['fleets']) == 8
     # The .env editor and the by-name runner controls are gone (T-8), not
     # merely refused: a route that no longer exists cannot be reached by an
     # old bookmark or a stale tab.

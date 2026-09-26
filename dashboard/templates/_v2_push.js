@@ -19,10 +19,12 @@ async function watchOperation(id, report) {
     const data=await response.json();if(!response.ok)throw new Error(data.error||('HTTP '+response.status));
     const op=data.operation;
     let result=op.result;try{if(typeof result==='string')result=JSON.parse(result);}catch(e){}
-    const detail=result?JSON.stringify(result):'';
-    report(op.verb+': '+op.state+(op.error?' · '+op.error:'')+(detail?' · '+detail:''),op.state==='failed');
+    const freed = result && Number.isFinite(Number(result.total_bytes)) && Number(result.total_bytes) > 0
+      ? ' · freed ' + (Number(result.total_bytes) / 1e9).toFixed(1) + ' GB' : '';
+    report(op.verb.replaceAll('_',' ') + ' · ' + op.state +
+      (op.error ? ' · ' + op.error : '') + freed, op.state === 'failed', op);
     if(['succeeded','failed','cancelled'].includes(op.state))return op;
     await new Promise(resolve=>setTimeout(resolve,3000));
   }
-  report('Operation '+id+' is still pending; view its runner for progress.',false);
+  report('Still in progress; view its runner for details.',false,{state:'running'});
 }

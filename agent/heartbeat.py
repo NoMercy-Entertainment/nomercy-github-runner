@@ -127,31 +127,40 @@ def build(agent, server=None, deep=False):
         "sent_at": _stamp(),
     }
     beat["measured_at"] = beat["sent_at"]
-    try:
-        beat["capabilities"] = dict(agent.runtime.capabilities() or {})
-    except Exception:                       # noqa: BLE001
-        beat["capabilities_error"] = True
-    try:
-        instances = []
-        for observed in agent.runtime.instances():
-            unit = {"runner_id": observed["runner_id"],
-                    "state": observed.get("state") if observed.get("state") in
-                    ("running", "stopped", "absent") else "unknown"}
-            proof = observed.get("resource_enforcement")
-            if isinstance(proof, dict):
-                unit["resource_enforcement"] = dict(proof)
-            instances.append(unit)
-        beat["instances"] = instances
-    except Exception:                       # noqa: BLE001
-        # Not an empty list: that would say "I run nothing".
-        beat["instances_error"] = True
-    else:
+    # These are independent reads. On a remote macOS appliance each read
+    # crosses an emulated guest SSH connection; serial reads took longer
+    # than the dashboard's three-heartbeat freshness window.
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        capabilities = pool.submit(agent.runtime.capabilities)
+        observed_instances = pool.submit(agent.runtime.instances)
+        try:
+            beat["capabilities"] = dict(capabilities.result() or {})
+        except Exception:                   # noqa: BLE001
+            beat["capabilities_error"] = True
+        try:
+            instances = []
+            for observed in observed_instances.result():
+                unit = {"runner_id": observed["runner_id"],
+                        "state": observed.get("state") if observed.get("state") in
+                        ("running", "stopped", "absent") else "unknown"}
+                proof = observed.get("resource_enforcement")
+                if isinstance(proof, dict):
+                    unit["resource_enforcement"] = dict(proof)
+                instances.append(unit)
+            beat["instances"] = instances
+        except Exception:                   # noqa: BLE001
+            # Not an empty list: that would say "I run nothing".
+            beat["instances_error"] = True
+    if "instances" in beat:
         # What each unit uses (T-1803): CPU and memory every beat for the
         # running ones, storage and cache on a deep beat for every one.
         running = [u["runner_id"] for u in beat["instances"]
                    if u["state"] == "running"]
-        used = _telemetry(agent.runtime, running)
-        jobs = _jobs(agent.runtime, running)
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            used_future = pool.submit(_telemetry, agent.runtime, running)
+            jobs_future = pool.submit(_jobs, agent.runtime, running)
+            used = used_future.result()
+            jobs = jobs_future.result()
         for unit in beat["instances"]:
             t = {k: v for k, v in (used.get(unit["runner_id"]) or {}).items()
                  if k in ("cpu_percent", "cpu_cores", "host_cores",
@@ -190,6 +199,7 @@ class HeartbeatSender:
         #: (monotonic, payload) of the last measurement that finished.
         self._measured = None
         self._stop = threading.Event()
+        self._sample_ready = threading.Event()
         self._thread = None
         self._measuring = None
         self._deep_thread = None
@@ -213,6 +223,7 @@ class HeartbeatSender:
                 unit.setdefault("telemetry", {}).update(depth)
         self.measured += 1
         self._measured = (started, built)
+        self._sample_ready.set()
         return built
 
     def measure_depth_once(self):
@@ -270,15 +281,17 @@ class HeartbeatSender:
                 # controller recreated under it cost nine minutes of
                 # silence that way (2026-09-20).
                 self.failed += 1
-            self._stop.wait(self.interval)
+            self._sample_ready.wait(self.interval)
+            self._sample_ready.clear()
 
     def _measure_loop(self):
         while not self._stop.is_set():
+            started = time.monotonic()
             try:
                 self.measure_once()
             except Exception:               # noqa: BLE001 - as above: the
                 pass                        # next measurement may do better
-            self._stop.wait(self.interval)
+            self._stop.wait(max(0, self.interval - (time.monotonic() - started)))
 
     def start(self):
         self._thread = threading.Thread(target=self._loop,
@@ -296,6 +309,7 @@ class HeartbeatSender:
 
     def stop(self):
         self._stop.set()
+        self._sample_ready.set()
         if self._thread:
             self._thread.join(timeout=self.timeout + 1)
         if self._measuring:

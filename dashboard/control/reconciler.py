@@ -965,6 +965,7 @@ class Reconciler:
             report.errors.append((spec["runner_id"], str(e)))
             return
         self.service.operations.succeed(operation["operation_id"], freed)
+        self.service.inventory.invalidate_cache(spec["runner_id"])
         self._clear_operation(spec)
         report.did("clear_cache", spec["runner_id"])
 

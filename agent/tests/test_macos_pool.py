@@ -137,6 +137,7 @@ def test_two_guests_have_distinct_disk_port_and_guest_commands(pool, host):
     assert len(creates) == 2
     assert all(a[-1] == IMAGE and "--privileged" not in a for a in creates)
     assert all(a[a.index("--memory") + 1] == str(10 * GIB) for a in creates)
+    assert all("NOPICKER=true" in a for a in creates)
     assert all(any("readonly" in v and "BaseSystem" in v for v in a) for a in creates)
     assert str(pool._directory(RID) / "disk.qcow2") in " ".join(creates[0])
     assert str(pool._directory(OTHER) / "disk.qcow2") not in " ".join(creates[0])
@@ -144,6 +145,30 @@ def test_two_guests_have_distinct_disk_port_and_guest_commands(pool, host):
     assert pool.status(RID)["running"] is True
     assert len(pool.instances()) == 2
     assert host.guests[RID] is not host.guests[OTHER]
+
+
+def test_debloated_guests_keep_independent_nvram(tmp_path, host):
+    disk, system, seed = (tmp_path / name for name in ("base.qcow2", "BaseSystem.img", "seed.fd"))
+    disk.write_bytes(b"immutable base")
+    system.write_bytes(b"system")
+    seed.write_bytes(b"authenticated root disabled")
+    runtime = MacAppliancePoolRuntime(
+        image=IMAGE, base_disk=str(disk), base_system=str(system), nvram_seed=str(seed),
+        data_root=str(tmp_path / "instances"), templates=[TEMPLATE],
+        base_guests_disabled=True, guest={"user": "runner"}, tools=TOOLS,
+        image_uid=os.getuid() if hasattr(os, "getuid") else 1000,
+        image_gid=os.getgid() if hasattr(os, "getgid") else 1000,
+        run=host, guest_factory=host.guest, port_free=lambda p: True,
+        sleep=host.sleep, clock=lambda: host.now,
+    )
+    runtime.create(RID, SPEC)
+    runtime.create(OTHER, SPEC)
+    first = runtime._directory(RID) / "nvram.fd"
+    second = runtime._directory(OTHER) / "nvram.fd"
+    assert first.read_bytes() == second.read_bytes() == seed.read_bytes()
+    first.write_bytes(b"guest-specific boot state")
+    assert second.read_bytes() == seed.read_bytes()
+    assert any(str(first) in " ".join(call) for call in host.calls if call[:2] == ["docker", "create"])
 
 
 def test_recreate_preserves_overlay_cache_and_logs_but_clears_registration_work(pool, host):

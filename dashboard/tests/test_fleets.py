@@ -1,4 +1,4 @@
-"""The six fleets: seeding them, and what may be asked of them.
+"""The fleets: seeding them, and what may be asked of them.
 
 Two properties carry the weight. Seeding must be safe to run on every start,
 because it will be - so it may create what is missing and refresh what is
@@ -29,11 +29,11 @@ BUILT = {
 
 
 class TestSeeding:
-    def test_there_are_six(self, fleets):
+    def test_there_are_eight(self, fleets):
         fleets.seed()
-        assert len(fleets.list()) == 6
+        assert len(fleets.list()) == 8
 
-    def test_the_six_are_the_cells_of_the_matrix(self, fleets):
+    def test_seeded_fleets_are_the_declared_cells(self, fleets):
         fleets.seed()
         seen = {(f["provider"], f["platform"], f["architecture"])
                 for f in fleets.list()}
@@ -61,6 +61,14 @@ class TestSeeding:
 
 
 class TestAvailabilityComesFromTheProvider:
+    def test_windows_arm_forgejo_requires_its_own_binary(self, fleets):
+        fleets.seed(BUILT)
+        arm = fleets.get("forgejo-windows-arm64")
+        assert arm["available"] is False
+        assert "FORGEJO_RUNNER_ARTIFACT_WINDOWS_ARM64" in arm["unavailable_reason"]
+        fleets.seed(dict(BUILT, FORGEJO_RUNNER_ARTIFACT_WINDOWS_ARM64="forgejo-arm.exe"))
+        assert fleets.get("forgejo-windows-arm64")["available"] is True
+
     def test_the_github_cells_are_available(self, fleets):
         fleets.seed()
         for platform in providers.PLATFORMS:
@@ -192,7 +200,7 @@ class TestAddingASeventhCellNeedsNoCode:
                 "INSERT INTO fleets (fleet_id, provider, platform,"
                 " architecture, available) VALUES"
                 " ('github-linux-arm64', 'github', 'linux', 'arm64', 1)")
-        assert len(fleets.list()) == 7
+        assert len(fleets.list()) == 9
         fleets.set_capacity("github-linux-arm64", 2)
         assert fleets.get("github-linux-arm64")["desired_capacity"] == 2
 

@@ -1,10 +1,4 @@
-"""T-1403 and T-1404: the fleets, operable, and rows rather than code.
-
-Capacity, add, recreate and clear-cache per fleet, each an operation with an
-idempotency key; scale up and scale down are the same capacity call. The
-fleets themselves come from the table - six by seeding, and a seventh the
-moment it is a row - and a fleet that cannot exist says why.
-"""
+"""Fleet actions and rows, including explicit runner additions and removal."""
 import pytest
 
 import api_v2
@@ -46,45 +40,10 @@ def desired(service, fid=GH):
     return service.fleets.get(fid)["desired_capacity"]
 
 
-class TestCapacity:
-    def test_up_and_down_are_one_call(self, client, plane):
-        service, _ = plane
-        assert post(client, f"/api/v2/fleets/{GH}/capacity", "a",
-                    {"desired": 3}).status_code == 202
-        assert desired(service) == 3
-        assert post(client, f"/api/v2/fleets/{GH}/capacity", "b",
-                    {"desired": 1}).status_code == 202
-        assert desired(service) == 1
-
-    def test_a_repeat_does_not_undo_a_change_made_since(self, client, plane):
-        service, _ = plane
-        post(client, f"/api/v2/fleets/{GH}/capacity", "first", {"desired": 3})
-        post(client, f"/api/v2/fleets/{GH}/capacity", "second",
-             {"desired": 5})
-        again = post(client, f"/api/v2/fleets/{GH}/capacity", "first",
-                     {"desired": 3})
-        assert again.status_code == 202
-        assert desired(service) == 5
-
-    @pytest.mark.parametrize("bad", [-1, "3", 1.5, True, None])
-    def test_a_number_that_is_not_one_is_refused(self, client, plane, bad):
-        r = post(client, f"/api/v2/fleets/{GH}/capacity", body={"desired": bad})
-        assert r.status_code == 400
-
-    def test_a_fleet_that_cannot_exist_is_refused_with_its_reason(
-            self, client, tmp_path, monkeypatch):
-        path = str(tmp_path / "bare.db")
-        schema.init(path)
-        FleetStore(path).seed({})          # no self-built artefacts
-        monkeypatch.setattr(api_v2, "_db_path", lambda: path)
-        r = post(client, "/api/v2/fleets/forgejo-windows-x64/capacity",
-                 body={"desired": 1})
-        assert r.status_code == 409
-        assert "FORGEJO_RUNNER_ARTIFACT_WINDOWS" in r.get_json()["error"]
-
-    def test_an_unknown_fleet(self, client, plane):
-        r = post(client, "/api/v2/fleets/nope/capacity", body={"desired": 1})
-        assert r.status_code == 404
+class TestNoCapacityAction:
+    def test_capacity_route_is_gone(self, client, plane):
+        assert post(client, f"/api/v2/fleets/{GH}/capacity",
+                    body={"desired": 3}).status_code == 404
 
 
 class TestAddARunner:
@@ -103,6 +62,21 @@ class TestAddARunner:
         post(client, f"/api/v2/fleets/{GH}/runners", "add-once")
         assert desired(service) == before + 1
 
+
+@pytest.mark.parametrize("fid", [GH, "forgejo-linux-x64"])
+def test_explicit_add_and_remove_survive_controller_restart(plane, fid):
+    service, path = plane
+    service.create(fid, requested_by="test", idempotency_key=f"{fid}:add:1")
+    service.create(fid, requested_by="test", idempotency_key=f"{fid}:add:2")
+    runner_ids = service.planned_ids(service.plan(fid, 2, env=BUILT))
+    first, second = runner_ids
+    service.retire(first, idempotency_key=f"{fid}:remove:1")
+    service.retire(first, idempotency_key=f"{fid}:remove:1")
+    restarted = RunnerService(path, runtimes=dict(ALL_CELLS))
+    assert restarted.fleets.get(fid)["desired_capacity"] == 1
+    restarted.retire(second, idempotency_key=f"{fid}:remove:2")
+    restarted_again = RunnerService(path, runtimes=dict(ALL_CELLS))
+    assert restarted_again.fleets.get(fid)["desired_capacity"] == 0
 
 def with_runners(service, states_):
     rids = service.planned_ids(service.plan(GH, len(states_), env=BUILT))
@@ -163,7 +137,7 @@ class TestTheFleetsAreRows:
                             lambda: str(tmp_path / "none.db"))
         monkeypatch.setitem(api_v2._status, "fn", lambda: {})
         fleets = client.get("/api/v2/fleets").get_json()["fleets"]
-        assert len(fleets) == 6
+        assert len(fleets) == 8
         win = next(f for f in fleets if f["fleet_id"] == "forgejo-windows-x64")
         assert win["available"] is False
         assert "FORGEJO_RUNNER_ARTIFACT_WINDOWS" in win["reason"]
@@ -178,7 +152,7 @@ class TestTheFleetsAreRows:
                       " 'arm64', 0, '[]', 1)")
         fleets = client.get("/api/v2/fleets").get_json()["fleets"]
         ids = [f["fleet_id"] for f in fleets]
-        assert "github-linux-arm64" in ids and len(ids) == 7
+        assert "github-linux-arm64" in ids and len(ids) == 9
         arm = next(f for f in fleets if f["fleet_id"] == "github-linux-arm64")
         assert arm["title"] == "GitHub · Linux · arm64"
         assert any(a["enabled"] for a in arm["actions"])
@@ -217,8 +191,8 @@ class TestAFleetListsItsLabels:
                                        "beast-unit"]
 
 
-class TestThePageOffersCapacity:
-    """Desired capacity is an explicit controller action with a numeric body."""
+class TestThePageOffersRunnerActions:
+    """Runner count changes through add and remove actions only."""
 
     def verbs(self, client):
         return {f["fleet_id"]: [a["verb"] for a in f["actions"]]
@@ -226,7 +200,8 @@ class TestThePageOffersCapacity:
 
     def test_with_the_control_plane(self, client, plane):
         for fid, verbs in self.verbs(client).items():
-            assert "capacity" in verbs, fid
+            assert "capacity" not in verbs, fid
+            assert "add" in verbs, fid
 
     def test_and_on_the_fleets_v1_still_serves(self, client, tmp_path,
                                                monkeypatch):
@@ -242,13 +217,14 @@ class TestThePageOffersCapacity:
         for fid, verbs in self.verbs(client).items():
             assert verbs == list(api_v2.FLEET_ACTIONS), fid
 
-    def test_the_page_submits_the_entered_capacity(self):
+    def test_the_page_has_no_capacity_editor(self):
         import os
         page = os.path.join(os.path.dirname(os.path.dirname(
             os.path.abspath(__file__))), "templates", "fleet_v2.html")
         with open(page, encoding="utf-8") as fh:
             page = fh.read()
-        assert 'body={desired:Number(value)}' in page
+        assert 'body={desired:Number(value)}' not in page
+        assert 'Set capacity' not in page
 
 
 class TestACellSaysWhatItsWorkersCanBuild:
