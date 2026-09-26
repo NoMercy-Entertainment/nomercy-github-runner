@@ -33,9 +33,11 @@ function pctClass(p) { return p >= 90 ? 'crit' : p >= 70 ? 'warn' : ''; }
 
 function meter(key, label, text, pct) {
   const p = Math.max(0, Math.min(100, Number(pct) || 0));
+  const [value, detail] = text.split(/\s+·\s+/);
   return `<div class="meter" data-m="${esc(key)}">` +
     `<div class="mrow"><span>${esc(label)}</span>` +
-    `<span class="mval">${esc(text)}</span></div>` +
+    `<span class="mval">${esc(value)}</span></div>` +
+    `<div class="mdetail">${esc(detail || '')}</div>` +
     `<div class="track"><div class="fill ${pctClass(p)}" ` +
     `style="width:${p.toFixed(1)}%"></div></div></div>`;
 }
@@ -89,7 +91,7 @@ function meters(c) {
 function actionButton(a, i) {
   if (!a.visible) return '';
   const title = a.enabled ? '' : ` title="${esc(a.reason)}"`;
-  return `<button data-action="${i}" class="${esc(a.tone)}"` +
+  return `<button data-action="${i}" data-verb="${esc(a.verb)}" class="${esc(a.tone)}"` +
     (a.enabled ? '' : ' disabled aria-disabled="true"') + title + `>` +
     esc(a.label) + `</button>`;
 }
@@ -119,9 +121,9 @@ function cardHTML(c) {
             : (c.job || 'no active job');
   const seen = c.reachable === false ? 'not reachable'
              : c.reachable == null ? 'reachability unknown' : 'reachable';
-  const status = `<div class="creg cstatus">${esc(seen)}` +
-    (c.last_seen_at ? ` · seen ${esc(String(c.last_seen_at).replace('T', ' ').replace('Z', ' UTC'))}` : '') +
-    (c.current_operation ? ` · operation ${esc(c.current_operation)}` : '') +
+  const status = `<div class="creg cstatus"><span>${esc(seen)}</span>` +
+    (c.last_seen_at ? `<span>seen ${esc(String(c.last_seen_at).replace('T', ' ').replace('Z', ' UTC'))}</span>` : '') +
+    (c.current_operation ? `<span>operation ${esc(c.current_operation)}</span>` : '') +
     `</div>`;
   const error = c.last_error ? `<div class="cerr">${esc(c.last_error)}</div>` : '';
   // A note is something true that is not a failure - a runner registered
@@ -129,17 +131,22 @@ function cardHTML(c) {
   // colour that means something is broken. When the note is registration
   // drift, the warning above already says it - the note does not repeat it.
   const note = (c.last_note && !c.label_drift) ? `<div class="cnote">${esc(c.last_note)}</div>` : '';
-  const buttons = (c.actions || []).map(actionButton).join('');
-  const metadata = `<details class="card-meta"><summary>Labels and details</summary>` +
-    labels + (notes ? `<div class="annots">${notes}</div>` : '') + `</details>`;
+  const actions = c.actions || [];
+  const logs = actions.map((a, i) => a.verb === 'logs' ? actionButton(a, i) : '').join('');
+  // Keep the original index: click handlers look up actions in the payload.
+  const order = ['drain', 'cancel_drain', 'start', 'stop', 'restart', 'clear_cache', 'recreate', 'remove'];
+  const buttons = actions.map((a, i) => ({a, i})).filter(({a}) => a.verb !== 'logs')
+    .sort((x, y) => order.indexOf(x.a.verb) - order.indexOf(y.a.verb))
+    .map(({a, i}) => actionButton(a, i)).join('');
+  const metadata = `<div class="card-meta" aria-label="Runner labels and capabilities">` +
+    labels + (notes ? `<div class="annots">${notes}</div>` : '') + `</div>`;
   return `<div class="chead">${name}<span class="badge ${esc(c.state)}">` +
     `${esc(c.state)}</span></div>` +
     `<div class="creg">${esc(where)}</div>` +
     `<div class="cjob${c.job ? '' : ' none'}">${esc(job)}</div>` +
-    `<div class="metrics">${meters(c)}</div>` + status + drift + note + error +
-    metadata +
-    (buttons ? `<details class="card-manage"><summary>Manage runner</summary>` +
-      `<div class="actions">${buttons}</div></details>` : '');
+    `<div class="metrics">${meters(c)}</div>` + metadata + drift + note + error +
+    `<div class="card-footer">${status}${logs}</div>` +
+    (buttons ? `<div class="actions" role="group" aria-label="Manage runner">${buttons}</div>` : '');
 }
 
 function fleetHeadHTML(f) {

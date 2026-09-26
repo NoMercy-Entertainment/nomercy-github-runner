@@ -12,7 +12,7 @@
 .fleet-actions .primary{background:var(--bg-panel);border-color:var(--rule-hot);color:var(--text)}
 .fleet-actions .primary:hover:not(:disabled){background:var(--bg-inset);border-color:var(--accent);filter:none}
 .unavailable{margin-top:var(--space-3)}
-.grid{display:grid;align-items:start;gap:var(--space-4);grid-template-columns:repeat(auto-fill,minmax(min(100%,360px),1fr))}
+.grid{display:grid;align-items:stretch;gap:var(--space-4);grid-template-columns:repeat(auto-fill,minmax(min(100%,360px),1fr))}
 {% include "_card.css" %}
 .plane{display:inline-flex;align-items:center;gap:8px;font-size:var(--type-small);color:var(--text-faint);margin-bottom:var(--space-5)}
 .plane::before{content:"";width:7px;height:7px;border-radius:50%;background:var(--signal)}

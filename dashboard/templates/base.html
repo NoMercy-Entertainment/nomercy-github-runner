@@ -129,28 +129,6 @@ button.danger:hover:not(:disabled){border-color:var(--alert);color:var(--alert)}
 button.primary{border-color:var(--accent);background:var(--accent);color:var(--bg)}
 button.primary:hover:not(:disabled){filter:brightness(1.08)}
 :where(a,button,input,select,summary):focus-visible{outline:2px solid var(--accent);outline-offset:3px}
-.card-meta,.card-manage{margin-top:10px;border:1px solid var(--rule);
-  border-radius:var(--card-inner-radius,var(--radius-small));background:var(--bg-inset)}
-.card-meta summary,.card-manage summary{
-  display:flex;align-items:center;justify-content:space-between;gap:12px;
-  width:100%;min-height:44px;padding:10px 12px;border-radius:inherit;
-  background:transparent;border:0;
-  color:var(--text-dim);font-size:var(--type-small);font-weight:600;cursor:pointer;list-style:none;
-}
-.card-meta summary::-webkit-details-marker,.card-manage summary::-webkit-details-marker{display:none}
-.card-meta:hover,.card-manage:hover,.card-meta[open],.card-manage[open]{border-color:var(--rule-hot)}
-.card-meta summary:hover,.card-manage summary:hover,.card-meta[open] summary,.card-manage[open] summary{color:var(--text)}
-.card-meta summary::after,.card-manage summary::after{
-  content:"";width:7px;height:7px;flex:none;margin-right:3px;
-  border-right:1.5px solid currentColor;border-bottom:1.5px solid currentColor;
-  transform:rotate(45deg);transition:transform .15s ease-out;
-}
-.card-meta[open] summary::after,.card-manage[open] summary::after{transform:rotate(225deg)}
-.card-meta:has(summary:focus-visible),.card-manage:has(summary:focus-visible){outline:2px solid var(--accent);outline-offset:3px}
-.card-meta summary:focus-visible,.card-manage summary:focus-visible{outline:none}
-.card-meta .clabels,.card-meta .annots,.card-manage .actions{margin:0;padding:0 12px 12px}
-.card-meta .clabels{display:flex;align-items:center;flex-wrap:wrap;gap:6px}
-.card-meta .chip{margin:0}
 .toast{position:fixed;right:16px;bottom:16px;max-width:min(380px,calc(100vw - 32px));
   background:var(--bg-panel);border:1px solid var(--rule-hot);border-left:3px solid var(--accent);
   border-radius:var(--radius-small);padding:16px;font-size:var(--type-body);display:none;z-index:10}
