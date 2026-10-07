@@ -205,6 +205,14 @@ def render(fn, payload):
 
 @pytest.mark.skipif(NODE is None, reason="node is not installed")
 class TestTheRenderer:
+    def test_draining_is_shown_without_claiming_a_job(self):
+        card = dict(spec_cards()[0], lifecycle_state="draining", state="unknown",
+                    job=None)
+        html = render("cardHTML", [card])[0]
+        assert '>draining</div>' in html
+        assert "running a job" not in html
+        assert "no active job" not in html
+
     def test_generated_runner_number_is_hidden_on_the_card(self):
         card = dict(spec_cards()[0], display_name="github-linux-x64-2")
         html = render("cardHTML", [card])[0]

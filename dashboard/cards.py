@@ -378,6 +378,8 @@ def readiness(spec, now=None):
 def _shown_state(lifecycle, ready):
     """What the card's badge says: the lifecycle state when the runner is
     confirmed ready, and otherwise the honest word for why it is not."""
+    if lifecycle == "draining":
+        return "draining"
     if lifecycle not in SERVING or ready["ready"]:
         return _SPEC_STATES.get(lifecycle, lifecycle)
     if ready["forge"] == "offline":
@@ -451,7 +453,7 @@ def _job(lifecycle, telemetry):
     named = (telemetry or {}).get("job")
     if isinstance(named, str) and named:
         return named
-    if lifecycle in ("busy", "draining"):
+    if lifecycle == "busy":
         return "running a job - the forge does not say which"
     return None
 

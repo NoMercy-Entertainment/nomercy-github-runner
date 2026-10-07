@@ -50,6 +50,7 @@ from pathlib import Path
 
 from .. import cpu, naming
 from ..jobs import current_job
+from ..windows_timeouts import registration_limits
 from .localfs import LocalFs
 from .windows_storage import WindowsStorage
 
@@ -172,6 +173,29 @@ class WindowsProcessRuntime:
 
     # ---- lifecycle -----------------------------------------------------------
 
+    def _service_command(self, runner_id, action):
+        result = self._nssm(action, naming.unit_name(runner_id),
+                            timeout=STOP_TIMEOUT + 30)
+        if result[0]:
+            return
+        pending = {"start": "starting", "stop": "stopping"}[action]
+        marker = f"SERVICE_{action.upper()}_PENDING"
+        if marker not in result[1] + result[2]:
+            self._check(result)
+        # NSSM can return a failure while SCM is still completing the
+        # requested transition, especially under ARM emulation. Confirm the
+        # final state before treating the operation as failed or complete.
+        deadline = time.monotonic() + STOP_TIMEOUT + 30
+        while True:
+            state = self.status(runner_id)
+            if state.get("exists") is True and state.get("running") is (action == "start"):
+                return
+            if state.get("state") != pending:
+                raise RuntimeError(f"service {action} was not confirmed: {state.get('state')}")
+            if time.monotonic() >= deadline:
+                raise RuntimeError(f"service {action} is still {pending}; final state was not confirmed")
+            time.sleep(1)
+
     def create(self, runner_id, spec):
         rid = naming.check(runner_id)
         name = naming.unit_name(rid)
@@ -215,6 +239,10 @@ class WindowsProcessRuntime:
 
         # 3. Storage, locked to this runner before anything is in it.
         self._acl(p["root"], name)
+        if self._tools.get("short_workspaces"):
+            from ..windows_workspace import ensure_alias
+            ensure_alias(self._tools["short_workspaces"], rid, p["work"],
+                         self._run, self._tools["icacls"], self._tools["powershell"])
         # Configure the account/startup policy before creating executable
         # runner files: a host reboot during create must not launch a ready
         # unit under NSSM's initial LocalSystem account.
@@ -235,7 +263,7 @@ class WindowsProcessRuntime:
         if running is None:
             raise RuntimeError("service state is unknown; start is held")
         if running is False:
-            self._check(self._nssm("start", name, timeout=STOP_TIMEOUT + 30))
+            self._service_command(rid, "start")
         return name
 
     def _unit(self, rid, spec, p):
@@ -243,9 +271,25 @@ class WindowsProcessRuntime:
         for area, key in LAYOUT_ENV_KEYS.items():
             env[key] = p[area]
         env["TEMP"] = env["TMP"] = p["tmp"]
-        if self._storage:
-            env["HOME"] = env["USERPROFILE"] = p["work"]
-            env["APPDATA"] = env["LOCALAPPDATA"] = p["cache"]
+        # These profiles belong to the runner for both storage backends.
+        # Plain directory workers (including QEMU ARM guests) must not put
+        # job caches in a service profile outside clear_cache's scopes.
+        env["HOME"] = env["USERPROFILE"] = p["work"]
+        env["APPDATA"] = env["LOCALAPPDATA"] = p["cache"]
+        # In particular, the machine's CARGO_HOME holds the installed shims;
+        # jobs need their own writable Cargo cache. RUSTUP_HOME still points
+        # to the shared, preinstalled compiler toolchains.
+        for variable, directory in {
+            "CARGO_HOME": "cargo", "DOTNET_CLI_HOME": "dotnet",
+            "NUGET_PACKAGES": "nuget", "NUGET_HTTP_CACHE_PATH": "nuget-http",
+            "NUGET_SCRATCH": "nuget-scratch", "GRADLE_USER_HOME": "gradle",
+            "NPM_CONFIG_CACHE": "npm", "PIP_CACHE_DIR": "pip",
+            "GOCACHE": "go-build", "GOMODCACHE": "go-mod",
+        }.items():
+            env[variable] = ntpath.join(p["cache"], directory)
+        if self._tools.get("short_workspaces"):
+            from ..windows_workspace import alias_path
+            env["RUNNER_JOB_WORK_DIR"] = alias_path(self._tools["short_workspaces"], rid)
         cpus = str(spec.get("cpus") or "").strip()
         return {"runner_id": rid, "env": env,
                 "memory_bytes": size_bytes(spec.get("memory")),
@@ -297,7 +341,8 @@ class WindowsProcessRuntime:
         script = str(Path(__file__).resolve().parents[1] / "registration_keys.ps1")
         self._check(self._run([self._tools["powershell"], "-NoProfile", "-NonInteractive",
                               "-ExecutionPolicy", "Bypass", "-File", script,
-                              "-RunnerId", naming.check(rid), "-Action", action], timeout=30))
+                              "-RunnerId", naming.check(rid), "-Action", action],
+                              timeout=registration_limits()["key_setup"]))
 
     def start(self, runner_id):
         """Started, and in service. What a drain leaves behind is undone
@@ -317,7 +362,7 @@ class WindowsProcessRuntime:
         if running is None:
             raise RuntimeError("service state is unknown; start is held")
         if running is False:
-            self._check(self._nssm("start", name, timeout=STOP_TIMEOUT + 30))
+            self._service_command(runner_id, "start")
 
     def stop(self, runner_id):
         """Ctrl+C to the runner, then the grace a deregistration needs. A
@@ -335,8 +380,7 @@ class WindowsProcessRuntime:
                              "start=", "demand"))
         if not state.get("running"):
             return
-        self._check(self._nssm("stop", naming.unit_name(runner_id),
-                               timeout=STOP_TIMEOUT + 30))
+        self._service_command(runner_id, "stop")
 
     def restart(self, runner_id):
         self.stop(runner_id)
@@ -392,6 +436,9 @@ class WindowsProcessRuntime:
             if not ok and not _absent(out + err):
                 raise RuntimeError(err or out or "nssm remove failed")
         p = self.paths(rid)
+        if not keep_data and self._tools.get("short_workspaces"):
+            from ..windows_workspace import remove_alias
+            remove_alias(self._tools["short_workspaces"], rid, p["work"])
         if self._storage and not keep_data:
             self._storage.remove(rid)
             self._registration_key(rid, "remove")
@@ -673,7 +720,7 @@ class WindowsRegistrar:
             raise RuntimeError("the unit has no registration entry point")
         ok, out, err = self._run([self._tools["python"], "-m", "agent.windows_registration",
                                   "--runner-id", naming.check(runner_id)],
-                                 input=json.dumps(plan), timeout=140)
+                                 input=json.dumps(plan), timeout=registration_limits()["client"])
         if not ok:
             raise RuntimeError(err or "registration failed")
         try:

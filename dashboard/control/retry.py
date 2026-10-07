@@ -49,12 +49,25 @@ class Policy:
 
 
 AGENT_FAST = Policy("agent-fast", 10, 2, (1, 3))
+AGENT_WINDOWS_X64 = Policy("agent-fast-windows-x64", 45, 0)
+AGENT_WINDOWS_ARM64 = Policy("agent-fast-windows-arm64", 120, 0)
 AGENT_SLOW = Policy("agent-slow", 1800, 0)
 FORGE_REGISTRATION = Policy("forge-registration", 20, 2, (2, 6))
 FORGE_STATUS = Policy("forge-status", 20, 0)
 FORGE_DELETE = Policy("forge-delete", 20, 0)
 FORGE_DRAIN = Policy("forge-drain", 20, 0)
 HEARTBEAT = Policy("heartbeat", 5, 0)
+
+
+def agent_fast_for(target):
+    """Allow emulated Windows service reads without overlapping retries."""
+    target = target or {}
+    windows = target.get("platform") == "windows" or target.get("kind") == "windows-process"
+    if windows and str(target.get("architecture", "")).lower() in ("arm64", "aarch64"):
+        return AGENT_WINDOWS_ARM64
+    if windows:
+        return AGENT_WINDOWS_X64
+    return AGENT_FAST
 
 #: Keyed by the "Call" column of the design's table, so the test can line each
 #: row up with its policy.

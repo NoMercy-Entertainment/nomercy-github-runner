@@ -1,0 +1,46 @@
+NoMercy Windows ARM64 - voorbereiden op Stoney's Mac mini M4 (16 GB)
+
+1. Pak het hele .tar-bestand uit op de interne SSD, buiten iCloud/Dropbox.
+   Houd bij voorkeur 100 GB vrij naast het uitgepakte pakket.
+2. Dubbelklik Start.command. Houd het Terminal-venster open.
+   Alleen de eerste keer kan macOS/Homebrew toestemming of een wachtwoord vragen.
+   Als macOS het script blokkeert: rechtsklik > Open. Schakel Gatekeeper niet uit.
+3. Wacht op "Beide service-account bouwtests geslaagd" en het retourbestand.
+4. Stuur de aangemaakte *-retour-*.tar en .tar.sha256 terug aan Phillippe.
+
+Start installeert zo nodig Homebrew, QEMU, swtpm en Python op de Mac.
+De VM gebruikt Apple HVF-hardwareversnelling, 8 vCPU en 8 GB RAM.
+Er wordt niet teruggevallen op trage software-emulatie.
+Windows hoeft niet aangemeld te worden om de voorbereiding uit te voeren.
+De taken installeren MSVC/Windows SDK, native Java 21 en Android SDK 35.
+Daarna worden de aanwezige tools getest met echte builds, onder afzonderlijke
+NT SERVICE-accounts voor de GitHub- en Forgejo-test. Ook de runnerprogramma's
+worden gestart met --version. Er worden geen echte forge-jobs geregistreerd.
+Test-workspaces/caches worden na een geslaagde test verwijderd.
+De bestaande Windows-installatie en debloatinstellingen worden behouden.
+
+Tijdens het werk:
+- Status.command: huidige fase tonen.
+- Scherm.command: Windows-scherm openen (optioneel).
+- Stop.command: Windows netjes afsluiten; geen geforceerde stop.
+- Retour.command: handmatig een gecontroleerde retourkopie maken.
+
+Bij een fout stopt de automatische voorbereiding en blijft Windows bereikbaar.
+Lees de fout in Terminal en stuur logs/guest-reports.zip en logs/qemu.log terug.
+Een fout wordt niet als succes gemeld. Start.command herstart een stilstaande VM;
+de voorbereiding hervat bij een nieuwe Windows-start en slaat aanwezige tools over.
+
+De pakket-SSH-sleutel geeft admin-toegang tot deze VM via localhost. Deel dit
+pakket alleen tussen jullie. De oorspronkelijke controller-private-key wordt
+niet meegestuurd; de worker is tijdens deze overdracht uitgeschakeld.
+Na terugkomst koppelen we de VM opnieuw aan de controller en voeren echte jobs
+op GitHub en Forgejo uit. Dit pakket belooft dus geen al geregistreerde runners.
+
+De QEMU-schijven zijn zelfstandig; er zijn geen achtergebleven backing-file
+verwijzingen naar Phillippe's host. UEFI-code, UEFI-variabelen en TPM-status
+reizen mee. Het retourscript controleert de schijfkopie voordat het archiveert.
+Start de oorspronkelijke en teruggestuurde VM niet tegelijk onder dezelfde
+workeridentiteit. De overige runners/VM's worden door dit pakket niet gewijzigd.
+
+Het pakket en de scripts worden op de oorspronkelijke host gecontroleerd.
+De daadwerkelijke HVF-boot en builds op de M4 moeten daar nog plaatsvinden.

@@ -29,7 +29,7 @@ if (-not $plan.url) { [Console]::Error.WriteLine('the plan names no forge'); exi
 
 $env:ACTIONS_RUNNER_INPUT_TOKEN = $plan.token
 $env:ACTIONS_RUNNER_INPUT_URL = $plan.url
-$env:ACTIONS_RUNNER_INPUT_WORK = $env:RUNNER_WORK_DIR
+$env:ACTIONS_RUNNER_INPUT_WORK = if ($env:RUNNER_JOB_WORK_DIR) { $env:RUNNER_JOB_WORK_DIR } else { $env:RUNNER_WORK_DIR }
 # Only what the plan names: an empty group or label list set as an empty
 # input is not the same as none.
 if ($plan.name)         { $env:ACTIONS_RUNNER_INPUT_NAME = $plan.name }

@@ -47,7 +47,7 @@ import providers
 from . import cpusets, placement, retry
 from .service import Refused, forget_adoption
 from .redact import redact
-from .retry import (AGENT_FAST, AGENT_SLOW, FORGE_DELETE, FORGE_DRAIN,
+from .retry import (AGENT_SLOW, FORGE_DELETE, FORGE_DRAIN,
                     FORGE_REGISTRATION, FORGE_STATUS)
 
 #: The flow's own steps, in order. Asserted by test.
@@ -254,7 +254,7 @@ class ProvisioningFlow:
         name = storage.unit_name(spec["runner_id"])
         ref = self._ref(spec, handle=name)
         try:
-            existing = retry.call(AGENT_FAST, runtime.status, ref)
+            existing = retry.call(retry.agent_fast_for(spec), runtime.status, ref)
         except Exception as error:
             raise RollbackHeld("create_unit", f"worker status is unknown; preserving registration and storage: {error}", retry_preflight=True) from None
         exists = getattr(existing, "exists", None)
@@ -339,13 +339,18 @@ class ProvisioningFlow:
             state["registration"] = {
                 "registration_id": str(spec.get("registration_id") or ""),
                 "registration_uuid": spec.get("registration_uuid")}
-            existing = retry.call(AGENT_FAST, self._runtime(spec).status, self._ref(spec))
+            existing = retry.call(retry.agent_fast_for(spec), self._runtime(spec).status, self._ref(spec))
             if getattr(existing, "exists", None) is True and getattr(existing, "running", None) is False:
                 # A failed registration can retain a deliberately stopped
                 # unit. Repair must resume that unit before waiting for its
                 # existing forge identity, without registering it twice.
                 self.start(spec)
             steps = ("verify_online",)
+        else:
+            # The forge was successfully read and no longer has this ID.
+            # Retained unit credentials must be replaced; presenting the old
+            # spec ID to the provider would make its plan reuse a deleted one.
+            spec = dict(spec, registration_id=None, registration_uuid=None)
         return self._run(spec, steps, state,
                          lambda: dict(state["registration"]), hooks)
 
@@ -438,7 +443,7 @@ class ProvisioningFlow:
         probe = dict(spec, **state["registration"])
         waited = 0
         while True:
-            if self._ready(state["host_id"], state["ref"]):
+            if self._ready(state["host_id"], state["ref"], spec):
                 # Asked afresh every time round: this loop is waiting for
                 # the forge to change its mind, and a remembered answer
                 # would make it wait for something it could never see.
@@ -463,11 +468,11 @@ class ProvisioningFlow:
             self.sleep(self.verify_interval)
             waited += self.verify_interval
 
-    def _ready(self, host_id, ref):
+    def _ready(self, host_id, ref, spec=None):
         """The agent's answer, or False when it could not give one. An agent
         that did not answer has not said the runner is ready."""
         try:
-            return bool(retry.call(AGENT_FAST, self.agent.ready, host_id,
+            return bool(retry.call(retry.agent_fast_for(spec), self.agent.ready, host_id,
                                    ref))
         except Exception:               # noqa: BLE001
             return False
@@ -786,7 +791,7 @@ class ProvisioningFlow:
                 return None
             if seen not in (providers.IDLE, providers.BUSY):
                 return None
-            ready = self._ready(spec.get("host_id"), self._ref(spec))
+            ready = self._ready(spec.get("host_id"), self._ref(spec), spec)
             return "idle" if ready else None
         if actual == "draining":
             return "drained" if self._drained(spec, provider, seen) else None
@@ -813,7 +818,7 @@ class ProvisioningFlow:
                 or seen != providers.OFFLINE):
             return False
         try:
-            unit = retry.call(AGENT_FAST, self._runtime(spec).status, self._ref(spec))
+            unit = retry.call(retry.agent_fast_for(spec), self._runtime(spec).status, self._ref(spec))
         except Exception:
             return False
         return unit.exists is True and unit.running is False
@@ -842,7 +847,7 @@ class ProvisioningFlow:
         ref = self._ref(spec, handle=spec.get("exec_unit_ref") or
                         storage.unit_name(spec["runner_id"]))
         try:
-            return retry.call(AGENT_FAST, self.agent.running,
+            return retry.call(retry.agent_fast_for(spec), self.agent.running,
                               spec["host_id"], ref) is False
         except Exception:
             return False
@@ -864,7 +869,7 @@ class ProvisioningFlow:
         if provider.drain_plan(spec).via_forge:
             retry.call(FORGE_DRAIN, self.forges.drain, provider, spec)
         else:
-            retry.call(AGENT_FAST, self.agent.drain, spec.get("host_id"),
+            retry.call(retry.agent_fast_for(spec), self.agent.drain, spec.get("host_id"),
                        self._ref(spec))
         seen = provider.job_state(spec, self._records(provider, fresh=True))
         if provider.drain_plan(spec).via_forge and seen == providers.IDLE:
@@ -886,7 +891,7 @@ class ProvisioningFlow:
         if seen not in (providers.IDLE, providers.OFFLINE):
             return False
         try:
-            running = retry.call(AGENT_FAST, self.agent.running,
+            running = retry.call(retry.agent_fast_for(spec), self.agent.running,
                                  spec.get("host_id"), self._ref(spec))
         except Exception:               # noqa: BLE001 - unknown is not down
             return False

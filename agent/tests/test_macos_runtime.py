@@ -60,6 +60,21 @@ def launchctl(guest, verb=None):
             if c[0] == TOOLS["launchctl"] and (verb is None or c[1] == verb)]
 
 
+def test_runner_profiles_do_not_share_dotnet_or_package_caches(runtime):
+    runtime._tools["runner_user"] = "user"
+    envs = [plistlib.loads(runtime._plist(rid, SPEC, runtime.paths(rid)).encode())["EnvironmentVariables"]
+            for rid in (RID, OTHER)]
+    for rid, env in zip((RID, OTHER), envs):
+        paths = runtime.paths(rid)
+        assert env["HOME"] == posixpath.join(paths["work"], ".home")
+        for key in ("CARGO_HOME", "DOTNET_CLI_HOME", "NUGET_PACKAGES", "NUGET_SCRATCH",
+                    "NPM_CONFIG_CACHE", "GOCACHE", "XDG_DATA_HOME"):
+            assert posixpath.commonpath([env[key], paths["cache"]]) == paths["cache"]
+        assert env["RUSTUP_HOME"] == "/Users/user/.rustup"
+        assert env["ANDROID_HOME"] == "/Users/user/Library/Android/sdk"
+    assert envs[0]["DOTNET_CLI_HOME"] != envs[1]["DOTNET_CLI_HOME"]
+
+
 class TestTheVocabulary:
     """CON-7: a VM or QEMU guest is never called a container. The one
     exception is the capability key `job_containers`, which is the protocol's

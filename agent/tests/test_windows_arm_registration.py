@@ -1,0 +1,73 @@
+import json
+from pathlib import Path
+import re
+import subprocess
+
+import pytest
+
+from agent import windows_registration as registration
+from agent import windows_timeouts
+from agent.runtimes.windows_process import WindowsProcessRuntime, WindowsRegistrar
+
+RID = '3f2504e0-4f89-41d3-9a0c-0305e82c3301'
+
+
+@pytest.mark.parametrize('architecture', ['ARM64', 'aarch64'])
+def test_emulated_arm_registration_keeps_outer_waits_longer_than_children(monkeypatch, tmp_path, architecture):
+    monkeypatch.setattr(windows_timeouts.platform, 'machine', lambda: architecture)
+    calls = []
+
+    def run(args, **kwargs):
+        calls.append((args, kwargs))
+        return subprocess.CompletedProcess(args, 0, '{}', '')
+
+    registration.execute_registration('D:/owned', {'plan': {'token': 'secret'}}, {}, run=run)
+    script_timeout = calls[-1][1]['timeout']
+    assert script_timeout > 230, 'Observed ARM PowerShell startup already exceeds the former script bound'
+    assert 'secret' not in ' '.join(calls[-1][0])
+
+    class Connection:
+        def __enter__(self): return self
+        def __exit__(self, *args): pass
+        def send_bytes(self, data): pass
+        def poll(self, timeout): return True
+        def recv_bytes(self, maximum):
+            return json.dumps({'ok': True, 'out': '{}', 'error': ''}).encode()
+
+    pipe_timeouts = []
+    def connect(*args, **kwargs):
+        pipe_timeouts.append(kwargs['timeout'])
+        return Connection()
+
+    key = tmp_path / 'registration.key'
+    key.write_bytes(b'k' * 32)
+    monkeypatch.setattr(registration, 'key_path', lambda _: key)
+    registration.request_registration(RID, {}, connect=connect)
+    assert pipe_timeouts[-1] > script_timeout
+    registration.request_registration(RID, {}, timeout=0.2, connect=connect)
+    assert pipe_timeouts[-1] == 0.2, 'Explicit caller deadlines remain enforced'
+
+    def runtime_run(args, **kwargs):
+        calls.append((args, kwargs))
+        return True, '{"registration_id":"test"}', ''
+
+    WindowsProcessRuntime(run=runtime_run)._registration_key(RID, 'ensure')
+    assert calls[-1][1]['timeout'] >= 300
+    class Files:
+        def exists(self, path): return True
+    WindowsRegistrar(run=runtime_run, fs=Files()).register(RID, {})
+    assert calls[-1][1]['timeout'] > windows_timeouts.registration_limits()['pipe']
+
+
+def test_arm_template_children_fit_inside_handler_budget():
+    root = Path(__file__).resolve().parents[2] / 'infra/windows/templates'
+    for template in ('actions-runner-v2.336.0-windows-arm64', 'forgejo-runner-v13.1.0-windows-arm64'):
+        source = (root / template / 'register.ps1').read_text(encoding='utf-8-sig')
+        milliseconds = int(re.search(r'WaitForExit\((\d+)\)', source)[1])
+        assert milliseconds / 1000 + 230 < windows_timeouts.registration_limits('arm64')['script']
+
+
+def test_x64_registration_bounds_are_preserved():
+    assert windows_timeouts.registration_limits('AMD64') == {
+        'key_setup': 30, 'script': 105, 'pipe': 115, 'client': 140,
+    }

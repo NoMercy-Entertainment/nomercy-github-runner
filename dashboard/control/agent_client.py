@@ -203,8 +203,13 @@ class AgentClient:
             if health != "healthy":
                 self._refuse(host_id, verb, WORKER_NOT_HEALTHY,
                              f"the worker is {health}")
+        from .retry import agent_fast_for
+        # The socket must outlive a Windows ARM service read, but release
+        # before the controller's outer deadline expires.
+        default_timeout = max(self.timeout,
+                              agent_fast_for(worker.get("capabilities")).timeout - 5)
         conn = self._connect(host_id, verb, worker, endpoint,
-                             timeout or self.timeout)
+                             timeout or default_timeout)
         payload = json.dumps(body or {}).encode()
         headers = {"Content-Type": "application/json",
                    "X-Protocol-Version": str(PROTOCOL_MAJOR),

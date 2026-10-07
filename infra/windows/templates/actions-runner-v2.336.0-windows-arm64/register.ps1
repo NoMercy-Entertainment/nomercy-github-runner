@@ -38,7 +38,8 @@ if ($plan.runner_group) { $env:ACTIONS_RUNNER_INPUT_RUNNERGROUP = $plan.runner_g
 
 try {
     # Bounded and judged by its exit code, like the Forgejo template's: the
-    # agent gives up on this script after 120 s, and a config.cmd still
+    # ARM agent allows 900 s for this script, including slow shell startup.
+    # A config.cmd still
     # talking to an unreachable GitHub would be left behind outside any Job
     # Object.
     $run = Start-Process -FilePath (Join-Path $agent 'config.cmd') `
@@ -49,9 +50,9 @@ try {
     # Without the handle Windows PowerShell loses the exit code, and a failed
     # config.cmd read as $null - which `exit` turns into 0 (2026-09-22).
     $null = $run.Handle
-    if (-not $run.WaitForExit(90000)) {
+    if (-not $run.WaitForExit(600000)) {
         $run.Kill()
-        [Console]::Error.WriteLine('config.cmd did not finish within 90s')
+        [Console]::Error.WriteLine('config.cmd did not finish within 600s')
         exit 124
     }
     foreach ($f in 'rnr-config.out', 'rnr-config.err') {

@@ -63,7 +63,7 @@ param(
     [ValidateSet('x64', 'arm64')] [string] $Architecture = 'x64',
     [string] $RunnerTemplate,
     [string] $RunnerSha256,
-    [string] $FirewallRemoteAddress,
+    [string[]] $FirewallRemoteAddress,
     [int] $MaxRunners,
     [int] $RunnerMemGB
 )
@@ -122,12 +122,22 @@ foreach ($d in $agentDir, $appDir, $tlsDir, $binDir, $templates) {
 
 # --- Python --------------------------------------------------------------------
 $python = Join-Path $pythonDir 'python.exe'
+$pythonSettings = if ($Architecture -eq 'arm64') { $s.WindowsArm } else { $w }
 if (-not (Test-Path $python)) {
     $zip = Join-Path $env:TEMP 'rnr-python-embed.zip'
-    Invoke-WebRequest -UseBasicParsing -Uri $w.PythonUrl -OutFile $zip
-    Assert-Hash $zip $w.PythonSha256
+    Invoke-WebRequest -UseBasicParsing -Uri $pythonSettings.PythonUrl -OutFile $zip
+    Assert-Hash $zip $pythonSettings.PythonSha256
     Expand-Archive -LiteralPath $zip -DestinationPath $pythonDir -Force
     Remove-Item $zip
+}
+if ($Architecture -eq 'arm64') {
+    # Reject an earlier x64 agent installation instead of silently running
+    # its Python through Windows' additional x64 emulation layer.
+    $pythonBytes = [IO.File]::ReadAllBytes($python)
+    $peOffset = [BitConverter]::ToInt32($pythonBytes, 0x3c)
+    if ([BitConverter]::ToUInt16($pythonBytes, $peOffset + 4) -ne 0xaa64) {
+        throw "The ARM64 worker requires native ARM64 Python: $python"
+    }
 }
 # The embeddable package reads its search path from its ._pth file and
 # ignores PYTHONPATH and the working directory; the agent's code is added there.
@@ -237,7 +247,7 @@ $config = [ordered]@{
     controller = "https://${cp}:$($s.ReceiverPort)"
     tls        = @{ cert = (Join-Path $tlsDir 'agent.crt'); key = (Join-Path $tlsDir 'agent.key')
                     ca = (Join-Path $tlsDir 'ca.pem') }
-    tools      = @{ nssm = $nssm; python = $python; templates = $templates }
+    tools      = @{ nssm = $nssm; python = $python; templates = $templates; short_workspaces = 'D:\w' }
     capacity   = @{ max_runners = $MaxRunners; memory_bytes = [int64]$RunnerMemGB * $MaxRunners * 1GB
                     architecture = $Architecture }
     version    = $version

@@ -23,6 +23,10 @@ def refused(match, **changes):
 
 
 class TestAGoodOne:
+    def test_windows_short_workspace_option_is_accepted(self):
+        config = ok(runtime="windows-process", tools={"short_workspaces": r"D:\w"})
+        assert config.tools["short_workspaces"] == r"D:\w"
+
     def test_it_parses(self):
         c = ok()
         assert (c.host_id, c.runtime, c.listen, c.controller) == (

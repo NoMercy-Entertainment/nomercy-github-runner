@@ -73,6 +73,21 @@ class TestReachingTheGuest:
         assert "ControlPath=" in options
         assert "ControlPersist=" in options
 
+    def test_forwarded_guests_and_users_have_separate_connections(self):
+        mac = GuestExec("127.0.0.1", "user", port=50922)
+        arm = GuestExec("127.0.0.1", "user", port=52222)
+        other_user = GuestExec("127.0.0.1", "admin", port=50922)
+        assert len({mac._control, arm._control, other_user._control}) == 3
+        assert mac._control == GuestExec("127.0.0.1", "user", port=50922)._control
+
+    def test_refusing_master_is_retired_without_replaying_the_command(self, run):
+        run.answers = {"/usr/bin/true": (0, "done", "mux_client_request_session: session request failed: Session open refused by peer")}
+        got = GuestExec(**GUEST, runner=run)(["/usr/bin/true"])
+        assert got[:2] == (True, "done")
+        assert len(run.calls) == 2
+        assert run.calls[1]["argv"][-3:-1] == ["-O", "stop"]
+        assert "/usr/bin/true" not in run.calls[1]["argv"]
+
     def test_it_never_asks_a_human_anything(self, exec_, run):
         exec_(["/usr/bin/true"])
         options = " ".join(run.calls[-1]["argv"])

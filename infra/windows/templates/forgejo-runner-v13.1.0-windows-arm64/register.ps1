@@ -24,8 +24,8 @@ if (-not $plan.url) { [Console]::Error.WriteLine('the plan names no forge'); exi
 $runner = Join-Path $PSScriptRoot 'forgejo-runner.exe'
 # Bounded, and judged by its exit code alone:
 # - forgejo-runner's `register` pings an unreachable instance for ever, and the
-#   agent gives up on this script after 120 s - leaving the runner behind,
-#   outside any Job Object. So it gets 90 s and is then stopped.
+#   ARM agent allows 900 s including slow shell startup. The child gets
+#   600 s, so it is stopped before its service-side handler times out.
 # - forgejo-runner v13 always warns on stderr that `register` is deprecated;
 #   stderr is read, never taken as failure.
 $logOut = Join-Path $PSScriptRoot 'register.out'
@@ -35,7 +35,7 @@ $p = Start-Process -FilePath $runner -WorkingDirectory $PSScriptRoot -NoNewWindo
         'register', '--no-interactive', '--instance', $plan.url, '--token', $plan.token,
         '--name', $plan.name, '--labels', $plan.labels)
 $null = $p.Handle       # without it Windows PowerShell may lose the exit code
-if (-not $p.WaitForExit(90000)) {
+if (-not $p.WaitForExit(600000)) {
     $p.Kill(); $p.WaitForExit()
     $code = 124
 } else {
@@ -44,7 +44,7 @@ if (-not $p.WaitForExit(90000)) {
 $out = (Get-Content -Raw -LiteralPath $logOut, $logErr -ErrorAction SilentlyContinue) -join "`n"
 Remove-Item -LiteralPath $logOut, $logErr -ErrorAction SilentlyContinue
 if ($code -ne 0) {
-    $why = if ($code -eq 124) { 'the forge did not answer within 90 s' } else { "exit $code" }
+    $why = if ($code -eq 124) { 'the forge did not answer within 600 s' } else { "exit $code" }
     [Console]::Error.WriteLine("register failed ($why): " + ($out -replace [regex]::Escape([string]$plan.token), '***'))
     exit $code
 }

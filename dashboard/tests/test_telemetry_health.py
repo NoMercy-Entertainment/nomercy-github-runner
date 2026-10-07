@@ -229,6 +229,20 @@ class TestTheReconcilerRecordsWhatTheForgeSaid:
 
 
 class TestTheJobField:
+    @pytest.mark.parametrize("forge_state", ["idle", "busy", "offline", "unknown"])
+    def test_draining_does_not_claim_an_unnamed_job(self, forge_state):
+        card = cards.from_spec(spec(actual_state="draining",
+                                    forge_state=forge_state), now=NOW)
+        assert card["state"] == "draining"
+        assert card["job"] is None
+        assert card["readiness"]["ready"] is (forge_state in ("idle", "busy"))
+
+    def test_draining_preserves_a_reported_job_name(self):
+        card = cards.from_spec(spec(actual_state="draining", forge_state="busy"),
+                               telemetry={"job": "build (NoMercy/app)"}, now=NOW)
+        assert card["state"] == "draining"
+        assert card["job"] == "build (NoMercy/app)"
+
     def test_a_busy_runner_never_says_no_active_job(self):
         card = cards.from_spec(spec(actual_state="busy", forge_state="busy"),
                                now=NOW)

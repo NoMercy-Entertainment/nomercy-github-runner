@@ -45,7 +45,7 @@ POOL_FIELDS = frozenset({"image", "base_disk", "base_system", "nvram_seed", "dat
                          "boot_timeout", "shutdown_timeout", "image_uid", "image_gid"})
 TOOLS_FIELDS = {
     "linux-container": frozenset(),
-    "windows-process": frozenset({"nssm", "sc", "icacls", "powershell", "python", "templates"}),
+    "windows-process": frozenset({"nssm", "sc", "icacls", "powershell", "python", "templates", "short_workspaces"}),
     "macos-appliance": frozenset({"launchctl", "ps", "df", "templates", "launch_agents", "domain", "runner_user"}),
 }
 #: What a worker may declare it can hold. Placement reads these and never

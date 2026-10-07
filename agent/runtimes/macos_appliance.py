@@ -299,6 +299,26 @@ class MacApplianceRuntime:
         for area, key in LAYOUT_ENV_KEYS.items():
             env[key] = p[area]
         env["TMPDIR"] = p["tmp"] + "/"
+        env["HOME"] = posixpath.join(p["work"], ".home")
+        shared_home = ("/Users/" + self._tools["runner_user"]
+                       if self._tools.get("runner_user") else os.path.expanduser("~"))
+        for key, directory in {
+            "CARGO_HOME": "cargo", "DOTNET_CLI_HOME": "dotnet",
+            "NUGET_PACKAGES": "nuget", "NUGET_HTTP_CACHE_PATH": "nuget-http",
+            "NUGET_SCRATCH": "nuget-scratch", "GRADLE_USER_HOME": "gradle",
+            "NPM_CONFIG_CACHE": "npm", "PIP_CACHE_DIR": "pip",
+            "GOCACHE": "go-build", "GOMODCACHE": "go-mod", "GOPATH": "go",
+            "XDG_DATA_HOME": "xdg-data", "XDG_CONFIG_HOME": "xdg-config",
+        }.items():
+            env[key] = posixpath.join(p["cache"], directory)
+        for key, directory in {
+            "RUSTUP_HOME": ".rustup", "PYENV_ROOT": ".pyenv",
+            "RBENV_ROOT": ".rbenv", "ANDROID_HOME": "Library/Android/sdk",
+            "ANDROID_SDK_ROOT": "Library/Android/sdk",
+        }.items():
+            env.setdefault(key, posixpath.join(shared_home, directory))
+        env["DOTNET_CLI_TELEMETRY_OPTOUT"] = "1"
+        env["DOTNET_GENERATE_ASPNET_CERTIFICATE"] = "false"
         log = posixpath.join(p["logs"], "runner.log")
         job = {"Label": self.label(rid),
                "ProgramArguments": [posixpath.join(p["reg"], "run")],

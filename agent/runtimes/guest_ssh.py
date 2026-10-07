@@ -24,6 +24,7 @@ Two rules this module keeps:
 Nothing here decides where anything goes: the runtime derives every path.
 """
 import os
+import hashlib
 import shlex
 import subprocess
 import tempfile
@@ -54,8 +55,10 @@ class GuestExec:
         self._password = password
         self._ssh = ssh
         self._sshpass = sshpass
+        identity = "%s@%s:%d" % (user, host, self.port)
+        digest = hashlib.sha256(identity.encode("utf-8")).hexdigest()[:24]
         self._control = control_dir or os.path.join(
-            tempfile.gettempdir(), "agent-guest-%s.sock" % host)
+            tempfile.gettempdir(), "agent-guest-%s.sock" % digest)
         self._runner = runner or _run
 
     def __repr__(self):
@@ -95,6 +98,15 @@ class GuestExec:
             return False, "", "no answer from the guest within %ss" % timeout
         except OSError as e:
             return False, "", str(e)
+        if "mux_client_request_session: session request failed" in err:
+            # SSH has already executed the command through its fallback.
+            # Retire the refusing master without closing its active sessions
+            # or executing a potentially destructive command twice.
+            try:
+                self._runner([self._ssh, *self._options(), "-O", "stop",
+                              "%s@%s" % (self.user, self.host)], timeout=5)
+            except (OSError, subprocess.TimeoutExpired):
+                pass
         return code == 0, out, err
 
 

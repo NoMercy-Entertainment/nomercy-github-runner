@@ -11,6 +11,9 @@ rem No --once: the runner stays, takes job after job, and a drain is the
 rem Ctrl+Break the job host passes on - which this runner answers by
 rem finishing the job it has and then exiting (design 12.6).
 setlocal
+rem ARM emulation can take more than the default 30 seconds to start Worker.
+rem This is GitHub's supported runner/worker IPC deadline (maximum 300s).
+set "GITHUB_ACTIONS_RUNNER_CHANNEL_TIMEOUT=300"
 cd /d "%~dp0agent"
 
 :wait

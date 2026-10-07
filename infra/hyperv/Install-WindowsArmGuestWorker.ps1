@@ -124,7 +124,7 @@ Copy-Item -LiteralPath (Join-Path (Split-Path `$payload) 'nssm.exe') -Destinatio
     -TlsBundle `$bundle -NssmSource (Join-Path `$sourceRoot 'nssm.exe') `
     -RunnerBinary (Join-Path `$sourceRoot 'forgejo-runner.exe') `
     -RunnerTemplate '$($arm.ForgejoTemplate)' -RunnerSha256 '$($arm.ForgejoSha256)' `
-    -Architecture arm64 -FirewallRemoteAddress '10.0.2.2' `
+    -Architecture arm64 -FirewallRemoteAddress @('10.0.2.2', '$cp') `
     -MaxRunners $($arm.MaxRunners) -RunnerMemGB $($arm.RunnerMemGB)
 "@
     Invoke-ArmGuest $install | Write-Host

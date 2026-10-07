@@ -64,7 +64,27 @@ try {
         )
         if ($Architecture -eq 'arm64') { $arguments += @('--add', $component) }
         Write-Result 'installing' 'Installing the C++ desktop workload and recommended compiler and SDK components.'
-        $process = Start-Process -FilePath $bootstrapper -ArgumentList $arguments -Wait -PassThru
+        $process = Start-Process -FilePath $bootstrapper -ArgumentList $arguments -WindowStyle Hidden -Wait -PassThru
+        if ($process.ExitCode -eq 5008) {
+            # An older product bootstrapper can acquire an installer below the
+            # minimum version required by Microsoft's current installer feed.
+            Write-Result 'updating-installer' 'Updating the shared Visual Studio Installer before retrying Build Tools 2022.'
+            $installerBootstrapper = Join-Path $env:ProgramData 'nomercy\vs_installer_latest.exe'
+            Invoke-WebRequest -Uri 'https://aka.ms/vs/stable/vs_buildtools.exe' -OutFile $installerBootstrapper
+            $installerSignature = Get-AuthenticodeSignature -LiteralPath $installerBootstrapper
+            if ($installerSignature.Status -ne 'Valid' -or
+                $installerSignature.SignerCertificate.Subject -notmatch 'Microsoft Corporation') {
+                throw 'The latest installer bootstrapper does not have a valid Microsoft signature.'
+            }
+            $installerProcess = Start-Process -FilePath $installerBootstrapper `
+                -ArgumentList @('--installerOnly', '--quiet', '--wait', '--norestart') `
+                -WindowStyle Hidden -Wait -PassThru
+            if ($installerProcess.ExitCode -notin @(0, 3010)) {
+                throw "Updating Visual Studio Installer exited with $($installerProcess.ExitCode)."
+            }
+            Write-Result 'installing' 'Retrying Build Tools 2022 with the updated Visual Studio Installer.'
+            $process = Start-Process -FilePath $bootstrapper -ArgumentList $arguments -WindowStyle Hidden -Wait -PassThru
+        }
         if ($process.ExitCode -notin @(0, 3010)) {
             throw "Visual Studio Build Tools installer exited with $($process.ExitCode)."
         }

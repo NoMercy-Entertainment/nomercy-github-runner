@@ -18,6 +18,7 @@ import threading
 import time
 
 from . import naming
+from .windows_timeouts import registration_limits
 
 KEY_ROOT = r"C:\ProgramData\nomercy\runner-keys"
 MAX_MESSAGE = 64 * 1024
@@ -107,7 +108,8 @@ def execute_registration(root, request, env, run=subprocess.run):
     script = os.path.join(root, "reg", "register.ps1")
     result = run([POWERSHELL, "-NoProfile", "-NonInteractive", "-ExecutionPolicy",
                   "Bypass", "-File", script], input=json.dumps(request["plan"]),
-                 capture_output=True, text=True, timeout=105, cwd=os.path.join(root, "reg"), env=env)
+                 capture_output=True, text=True, timeout=registration_limits()["script"],
+                 cwd=os.path.join(root, "reg"), env=env)
     token = str(request["plan"].get("token") or "")
     out, error = result.stdout[-MAX_MESSAGE // 3:], result.stderr[-MAX_MESSAGE // 3:]
     if token:
@@ -161,7 +163,9 @@ def start_server(runner_id, root, env, handler=None):
         lambda request: execute_registration(root, request, env)))
 
 
-def request_registration(runner_id, plan, timeout=115, connect=None):
+def request_registration(runner_id, plan, timeout=None, connect=None):
+    if timeout is None:
+        timeout = registration_limits()["pipe"]
     with open(key_path(runner_id), "rb") as stream:
         key = stream.read()
     if len(key) != 32:

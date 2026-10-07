@@ -104,6 +104,25 @@ def provisioned(service, flow, spec):
 
 
 class TestTheStepOrder:
+    def test_missing_forge_record_replaces_retained_unit_credentials(self, platform):
+        service, flow, agent, forges = platform
+        spec = provisioned(service, flow, a_planned(service))
+        registration = flow.register(spec)
+        service.specs.update(spec["runner_id"], spec["spec_version"], **registration)
+        spec = service.specs.get(spec["runner_id"])
+        forges.forget(registration["registration_id"])
+        flow._forge_read_at.clear()
+        original = agent.register
+        replacement = []
+
+        def capture(host, ref, plan):
+            replacement.append(plan.replace)
+            return original(host, ref, plan)
+
+        agent.register = capture
+        flow.register(spec)
+        assert replacement == [True]
+
     def test_the_five_steps_run_in_the_designs_order(self, platform):
         service, flow, agent, forges = platform
         spec = provisioned(service, flow, a_planned(service))

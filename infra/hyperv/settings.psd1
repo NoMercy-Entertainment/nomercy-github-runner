@@ -204,6 +204,8 @@
 
     WindowsArm = @{
         HostId = 'windows-arm64-1'
+        PythonUrl = 'https://www.python.org/ftp/python/3.13.14/python-3.13.14-embed-arm64.zip'
+        PythonSha256 = '8b5bfc935a24b55c17410aa0b21016ebeee225c96addf008d1d3cd83ff52eb43'
         Endpoint = 'https://10.77.0.40:8445'
         GuestAddress = '10.0.2.15'
         MaxRunners = 2

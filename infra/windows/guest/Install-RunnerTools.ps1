@@ -85,6 +85,13 @@ $Tools = [ordered]@{
     '7z'     = @{ Package = '7zip.7zip';            Dir = 'C:\Program Files\7-Zip' }
 }
 
+# The latest Temurin 21 WinGet entry currently selects x64 on Windows ARM.
+# Microsoft's JDK 21 distribution also provides a native Windows ARM64 JDK.
+if ($Architecture -eq 'arm64') {
+    $Tools['java'] = @{ Package = 'Microsoft.OpenJDK.21'
+                       DirGlob = 'C:\Program Files\Microsoft\jdk-21*\bin' }
+}
+
 $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
 if (-not ([Security.Principal.WindowsPrincipal]$identity).IsInRole(
         [Security.Principal.WindowsBuiltInRole]::Administrator)) {
@@ -170,12 +177,30 @@ foreach ($command in $Tools.Keys) {
     if ($found) { $report[$command] = $found; continue }
 
     Write-Host ('installing    : {0} ({1}), for the machine' -f $command, $spec.Package)
+    $installerOptions = @()
+    if ($command -eq 'cargo') {
+        $rustHost = if ($Architecture -eq 'arm64') { 'aarch64-pc-windows-msvc' } else { 'x86_64-pc-windows-msvc' }
+        $rustArguments = '-y --default-host ' + $rustHost +
+            ' --default-toolchain stable --profile minimal --component clippy --component rustfmt --no-modify-path'
+        $installerOptions = @('--override', $rustArguments)
+    }
     $out = (& winget install --exact --id $spec.Package --source winget --silent --scope machine --force `
-                --accept-source-agreements --accept-package-agreements 2>&1 | Out-String)
-    if ($LASTEXITCODE -ne 0) {
-        Write-Host ('  machine scope refused ({0}); installing without it' -f $LASTEXITCODE)
+                --accept-source-agreements --accept-package-agreements --disable-interactivity @installerOptions 2>&1 | Out-String)
+    $installExit = $LASTEXITCODE
+    # Only a scope/installer selection failure justifies dropping --scope.
+    # An aborted WinGet can leave its installer running, or can return after
+    # a successful install when App Installer itself updates. Retrying every
+    # failure with --force started a second Git install on ARM (2026-10-02).
+    # APPINSTALLER_CLI_ERROR_NO_APPLICABLE_INSTALLER = 0x8A150010.
+    if ($installExit -eq -1978335216) {
+        Write-Host ('  no installer for machine scope ({0}); trying the package default' -f $installExit)
         $out = (& winget install --exact --id $spec.Package --source winget --silent --force `
-                    --accept-source-agreements --accept-package-agreements 2>&1 | Out-String)
+                    --accept-source-agreements --accept-package-agreements --disable-interactivity @installerOptions 2>&1 | Out-String)
+        $installExit = $LASTEXITCODE
+    }
+    if ($installExit -ne 0) {
+        $detail = ($out -split "`r?`n" | Where-Object { $_.Trim() } | Select-Object -Last 8) -join ' | '
+        throw "Installing $($spec.Package) exited with $installExit. Check its installer before resuming; no automatic reinstall was started. $detail"
     }
     foreach ($dir in (Get-ToolDirs $spec)) { [void](Add-ToMachinePath $dir) }
     $found = Resolve-ForService $command

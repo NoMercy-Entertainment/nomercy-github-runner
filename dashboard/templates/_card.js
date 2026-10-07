@@ -117,8 +117,8 @@ function cardHTML(c) {
   const drift = c.label_drift ? `<div class="cwarn">${esc(c.label_drift)}</div>` : '';
   const notes = (c.annotations || []).map(
     t => `<span class="annot">${esc(t)}</span>`).join('');
-  const job = c.state === 'draining' && !c.job ? 'draining - waiting for idle'
-            : (c.job || 'no active job');
+  const draining = c.lifecycle_state === 'draining' || c.state === 'draining';
+  const job = c.job || (draining ? 'draining' : 'no active job');
   const seen = c.reachable === false ? 'not reachable'
              : c.reachable == null ? 'reachability unknown' : 'reachable';
   const status = `<div class="creg cstatus"><span>${esc(seen)}</span>` +

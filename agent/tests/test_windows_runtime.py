@@ -56,6 +56,39 @@ def test_transitional_service_is_not_proof_of_quiescence(service_state):
     assert runtime.status(RID)["running"] is None
 
 
+@pytest.mark.parametrize("action", ["start", "stop"])
+def test_nssm_pending_exit_waits_for_confirmed_final_state(runtime, monkeypatch, action):
+    pending = "starting" if action == "start" else "stopping"
+    observations = iter([
+        {"exists": True, "running": None, "state": pending},
+        {"exists": True, "running": action == "start", "state": "running" if action == "start" else "exited"},
+    ])
+    monkeypatch.setattr(runtime, "_nssm", lambda *a, **kw: (False, f"SERVICE_{action.upper()}_PENDING", ""))
+    monkeypatch.setattr(runtime, "status", lambda rid: next(observations))
+    monkeypatch.setattr("agent.runtimes.windows_process.time.sleep", lambda delay: None)
+    runtime._service_command(RID, action)
+    assert list(observations) == []
+
+
+@pytest.mark.parametrize("action", ["start", "stop"])
+def test_nssm_pending_exit_does_not_accept_unknown_state(runtime, monkeypatch, action):
+    monkeypatch.setattr(runtime, "_nssm", lambda *a, **kw: (False, f"SERVICE_{action.upper()}_PENDING", ""))
+    monkeypatch.setattr(runtime, "status", lambda rid: {"exists": None, "running": None, "state": "unknown"})
+    with pytest.raises(RuntimeError, match="was not confirmed: unknown"):
+        runtime._service_command(RID, action)
+
+
+@pytest.mark.parametrize("action", ["start", "stop"])
+def test_nssm_pending_exit_has_a_bounded_wait(runtime, monkeypatch, action):
+    pending = "starting" if action == "start" else "stopping"
+    ticks = iter([0, 1000])
+    monkeypatch.setattr("agent.runtimes.windows_process.time.monotonic", lambda: next(ticks))
+    monkeypatch.setattr(runtime, "_nssm", lambda *a, **kw: (False, f"SERVICE_{action.upper()}_PENDING", ""))
+    monkeypatch.setattr(runtime, "status", lambda rid: {"exists": True, "running": None, "state": pending})
+    with pytest.raises(RuntimeError, match="final state was not confirmed"):
+        runtime._service_command(RID, action)
+
+
 @pytest.fixture
 def registrar(host):
     return WindowsRegistrar(run=host, fs=host, tools=TOOLS)
@@ -124,7 +157,7 @@ class TestIsolation:
     def test_the_tree_is_locked_to_this_runner_alone(self, runtime, host):
         runtime.create(RID, SPEC)
         root = runtime.paths(RID)["root"]
-        acl = host.acls[os.path.normcase(root).replace("/", "\\")]
+        acl = host.acls[ntpath.normcase(root)]
         assert acl["inheritance"] == "r", "nothing inherited from above"
         sids = sorted(g.split(":")[0].lstrip("*") for g in acl["grants"])
         assert sids == sorted([SYSTEM_SID, ADMINISTRATORS_SID,
@@ -133,7 +166,7 @@ class TestIsolation:
     def test_another_runners_account_is_not_in_it(self, runtime, host):
         runtime.create(RID, SPEC)
         runtime.create(OTHER, SPEC)
-        mine = host.acls[os.path.normcase(runtime.paths(RID)["root"])]
+        mine = host.acls[ntpath.normcase(runtime.paths(RID)["root"])]
         assert not any(service_sid(f"rnr-{OTHER}") in g
                        for g in mine["grants"])
 
@@ -171,6 +204,34 @@ class TestIsolation:
         assert unit["env"]["SOME_TOKEN"] == SECRET
         assert unit["env"]["RUNNER_WORK_DIR"] == p["work"]
         assert unit["env"]["TEMP"] == unit["env"]["TMP"] == p["tmp"]
+
+    def test_directory_worker_profiles_and_tool_caches_are_cleared_together(self, runtime, host):
+        assert runtime._storage is None
+        runtime.create(RID, SPEC)
+        runtime.create(OTHER, SPEC)
+        p = runtime.paths(RID)
+        unit = json.loads(host.read_text(ntpath.join(p["reg"], "unit.json")))
+        env = unit["env"]
+        assert env["HOME"] == env["USERPROFILE"] == p["work"]
+        assert env["APPDATA"] == env["LOCALAPPDATA"] == p["cache"]
+        variables = ("HOME", "LOCALAPPDATA", "CARGO_HOME", "DOTNET_CLI_HOME",
+                     "NUGET_PACKAGES", "GRADLE_USER_HOME", "NPM_CONFIG_CACHE",
+                     "PIP_CACHE_DIR", "GOCACHE", "GOMODCACHE")
+        job_files = [ntpath.join(env[key], key + ".cache") for key in variables]
+        for path in job_files:
+            host.put(path, 100)
+        other_file = ntpath.join(runtime.paths(OTHER)["cache"], "other.cache")
+        shared_tool = r"C:\Rust\cargo\bin\rustup.exe"
+        host.put(other_file, 100)
+        host.put(shared_tool, 100)
+        runtime.stop(RID)
+        result = runtime.clear_cache(RID, {"scopes": ["workspace", "toolcache", "temp"]})
+        assert not result["errors"]
+        assert result["total_bytes"] == 100 * len(job_files)
+        assert all(not host.exists(path) for path in job_files)
+        assert host.exists(other_file)
+        assert host.exists(shared_tool)
+        assert host.exists(ntpath.join(p["reg"], "unit.json"))
 
     def test_no_environment_value_is_ever_on_a_command_line(self, runtime,
                                                            host):
