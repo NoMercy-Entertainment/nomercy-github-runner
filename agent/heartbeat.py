@@ -74,21 +74,52 @@ def _jobs(runtime, runner_ids):
         return {}
 
 
+#: What a unit's telemetry may say on every beat. The machine's cores and
+#: memory and the volume a unit's tree is on are what a meter is a share of
+#: when the unit has no limit of its own.
+LIGHT_KEYS = ("cpu_percent", "cpu_cores", "host_cores", "host_mem_bytes",
+              "mem_used_bytes", "mem_limit_bytes", "mem_swap_limit_bytes",
+              "storage_volume_used_bytes", "storage_volume_total_bytes")
+
+#: Each deep probe, the key its own figure goes out as, and the prefix its
+#: shared volume's figures do.
+PROBES = (("disk_usage", "storage"), ("cache_size", "cache"))
+
+
 def _depth(runtime, runner_id):
-    """Storage and cache of one unit, from the closed probe set."""
+    """Storage and cache of one unit, from the closed probe set: what the
+    unit uses, and what bounds it - its own disk's size or its cache's cap
+    where it has one, the volume it shares where a probe reported that."""
     out = {}
-    for probe, key in (("disk_usage", "storage_bytes"),
-                       ("cache_size", "cache_bytes")):
+    for probe, name in PROBES:
         try:
             got = runtime.probe(runner_id, probe) or {}
         except Exception:                   # noqa: BLE001
             continue
-        if got.get("ok") and isinstance(got.get("value"), int):
-            out[key] = got["value"]
-            out["storage_at" if key == "storage_bytes" else "cache_at"] = _stamp()
-            if key == "cache_bytes" and got.get("cap_bytes") is not None:
-                out["cache_cap_bytes"] = got["cap_bytes"]
+        if not (got.get("ok") and isinstance(got.get("value"), int)):
+            continue
+        stamp = _stamp()
+        out[f"{name}_bytes"] = got["value"]
+        out[f"{name}_at"] = stamp
+        if name == "storage" and got.get("total_bytes") is not None:
+            out["storage_total_bytes"] = got["total_bytes"]
+        if name == "cache" and got.get("cap_bytes") is not None:
+            out["cache_cap_bytes"] = got["cap_bytes"]
+        if "volume_total_bytes" in got or "volume_used_bytes" in got:
+            out[f"{name}_volume_used_bytes"] = got.get("volume_used_bytes")
+            out[f"{name}_volume_total_bytes"] = got.get("volume_total_bytes")
+            out[f"{name}_volume_at"] = stamp
     return out
+
+
+def _with_depth(telemetry, depth):
+    """A light measurement with the last deep one added. A figure both
+    carry - the volume an appliance runner shares, read every beat and on
+    the deep one too - keeps the fresher, light reading when it has one."""
+    for key, value in depth.items():
+        if telemetry.get(key) is None:
+            telemetry[key] = value
+    return telemetry
 
 
 def _stamp():
@@ -163,14 +194,13 @@ def build(agent, server=None, deep=False):
             jobs = jobs_future.result()
         for unit in beat["instances"]:
             t = {k: v for k, v in (used.get(unit["runner_id"]) or {}).items()
-                 if k in ("cpu_percent", "cpu_cores", "host_cores",
-                          "mem_used_bytes", "mem_limit_bytes",
-                          "mem_swap_limit_bytes",
-                          "root_disk_used_bytes", "root_disk_total_bytes")}
+                 if k in LIGHT_KEYS}
+            if t.get("storage_volume_total_bytes") is not None:
+                t["storage_volume_at"] = beat["sent_at"]
             if jobs.get(unit["runner_id"]):
                 t["job"] = jobs[unit["runner_id"]]
             if deep:
-                t.update(_depth(agent.runtime, unit["runner_id"]))
+                _with_depth(t, _depth(agent.runtime, unit["runner_id"]))
             if t:
                 t["at"] = beat["sent_at"]
                 unit["telemetry"] = t
@@ -220,7 +250,7 @@ class HeartbeatSender:
         for unit in built.get("instances", []):
             depth = self._depths.get(unit["runner_id"])
             if depth:
-                unit.setdefault("telemetry", {}).update(depth)
+                _with_depth(unit.setdefault("telemetry", {}), depth)
         self.measured += 1
         self._measured = (started, built)
         self._sample_ready.set()

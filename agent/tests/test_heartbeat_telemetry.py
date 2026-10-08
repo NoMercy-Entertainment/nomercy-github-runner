@@ -110,6 +110,109 @@ class TestWhichJob:
         assert "job" not in t and t["cpu_percent"] == 1.5
 
 
+class Bounded:
+    """A runtime reporting what bounds a unit: the machine's memory and the
+    volume its tree is on every beat, its own disk and the volumes it
+    shares on a deep one. The shapes the three runtimes return."""
+
+    def __init__(self, light=None, probes=None):
+        self.light = dict(light or {})
+        self.probes = dict(probes or {})
+
+    def capabilities(self):
+        return {}
+
+    def instances(self):
+        return [{"runner_id": RUNNING, "state": "running"}]
+
+    def telemetry(self, rid):
+        return dict(self.light)
+
+    def probe(self, rid, probe):
+        return dict(self.probes.get(probe) or {"ok": False})
+
+
+def bounded_agent(**kwargs):
+    from agent.runtimes.linux_container import LinuxRegistrar
+    return Agent("w-1", Bounded(**kwargs), LinuxRegistrar(run=FakeDocker()))
+
+
+class TestWhatBoundsAUnit:
+    """Every meter on a card is a share of something: the unit's own limit,
+    or the machine or volume it shares. The beat carries both halves."""
+
+    OWN_DISK = {"disk_usage": {"ok": True, "value": 800, "total_bytes": 1000},
+                "cache_size": {"ok": True, "value": 70, "cap_bytes": None,
+                               "volume_used_bytes": 800,
+                               "volume_total_bytes": 1000}}
+    SHARED = {"disk_usage": {"ok": True, "value": 5,
+                             "volume_used_bytes": 150,
+                             "volume_total_bytes": 400},
+              "cache_size": {"ok": True, "value": 2, "cap_bytes": 20,
+                             "volume_used_bytes": None,
+                             "volume_total_bytes": None}}
+
+    def test_a_deep_beat_carries_the_size_of_a_units_own_disk(self):
+        d = hb._depth(Bounded(probes=self.OWN_DISK), RUNNING)
+        assert d["storage_bytes"] == 800
+        assert d["storage_total_bytes"] == 1000
+        assert "storage_volume_total_bytes" not in d
+        assert d["cache_bytes"] == 70
+        assert d["cache_volume_used_bytes"] == 800
+        assert d["cache_volume_total_bytes"] == 1000
+        assert d["cache_volume_at"] == d["cache_at"]
+
+    def test_a_deep_beat_carries_the_volume_a_unit_shares(self):
+        d = hb._depth(Bounded(probes=self.SHARED), RUNNING)
+        assert d["storage_bytes"] == 5
+        assert "storage_total_bytes" not in d
+        assert d["storage_volume_used_bytes"] == 150
+        assert d["storage_volume_total_bytes"] == 400
+        assert d["storage_volume_at"] == d["storage_at"]
+        assert d["cache_cap_bytes"] == 20
+        assert d["cache_volume_total_bytes"] is None
+
+    def test_a_failed_probe_carries_no_boundary_either(self):
+        d = hb._depth(Bounded(probes={"disk_usage": {
+            "ok": False, "volume_total_bytes": 400}}), RUNNING)
+        assert d == {}
+
+    def test_every_beat_carries_the_machines_memory_and_the_volume(self):
+        agent = bounded_agent(light={
+            "cpu_percent": 3.0, "host_cores": 6, "host_mem_bytes": 16 * 2 ** 30,
+            "storage_volume_used_bytes": 150, "storage_volume_total_bytes": 400,
+            "root_disk_used_bytes": 9, "root_disk_total_bytes": 10})
+        beat = hb.build(agent)
+        t = units(beat)[RUNNING]["telemetry"]
+        assert t["host_mem_bytes"] == 16 * 2 ** 30
+        assert t["storage_volume_total_bytes"] == 400
+        assert t["storage_volume_at"] == beat["sent_at"]
+        # `/` on the appliance is the sealed system volume: never carried.
+        assert "root_disk_total_bytes" not in t
+
+    def test_a_volume_the_beat_could_not_read_carries_no_time(self):
+        agent = bounded_agent(light={"cpu_percent": 3.0,
+                                     "storage_volume_used_bytes": None,
+                                     "storage_volume_total_bytes": None})
+        t = units(hb.build(agent))[RUNNING]["telemetry"]
+        assert "storage_volume_at" not in t
+
+    def test_a_deep_reading_does_not_hide_a_fresher_light_one(self):
+        agent = bounded_agent(
+            light={"cpu_percent": 3.0, "storage_volume_used_bytes": 160,
+                   "storage_volume_total_bytes": 400},
+            probes=self.SHARED)
+        sender = hb.HeartbeatSender(agent, "https://control:8444/beat",
+                                    ssl_context=None)
+        sender.measure_once()
+        sender.measure_depth_once()
+        built = sender.measure_once()
+        t = units(built)[RUNNING]["telemetry"]
+        assert t["storage_volume_used_bytes"] == 160
+        assert t["storage_volume_at"] == built["sent_at"]
+        assert t["storage_bytes"] == 5
+
+
 class TestWhatCannotBeRead:
     def test_a_runtime_that_fails_to_measure_reports_nothing(self):
         agent, _ = agent_with_two_units()
