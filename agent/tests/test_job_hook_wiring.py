@@ -49,12 +49,32 @@ class TestWindows:
         reg = runtime.paths(RID)["reg"]
         return json.loads(host.read_text(ntpath.join(reg, "unit.json")))["env"]
 
-    def test_a_github_runner_gets_both_hooks_from_the_agents_own_copy(self, runtime, host):
+    def test_a_github_runner_gets_both_hooks_in_its_own_tree(self, runtime, host):
+        """Not the agent's live folder: a redeploy swaps that folder away,
+        and a job starting then, or after a deploy that died midway, would
+        not find its hook and fail."""
         env = self.env(runtime, host, "github")
-        assert env["ACTIONS_RUNNER_HOOK_JOB_STARTED"] == str(AGENT / "hooks" / "windows" / "job-started.js")
-        assert env["ACTIONS_RUNNER_HOOK_JOB_COMPLETED"] == str(AGENT / "hooks" / "windows" / "job-completed.js")
+        hooks = ntpath.join(runtime.paths(RID)["reg"], "hooks")
+        assert env["ACTIONS_RUNNER_HOOK_JOB_STARTED"] == ntpath.join(hooks, "job-started.js")
+        assert env["ACTIONS_RUNNER_HOOK_JOB_COMPLETED"] == ntpath.join(hooks, "job-completed.js")
         for key in HOOK_KEYS:
-            assert env[key].endswith(".js") and Path(env[key]).is_file(), key
+            assert env[key].endswith(".js") and host.exists(env[key]), key
+
+    def test_the_hooks_are_the_agents_own_copy(self, runtime, host):
+        self.env(runtime, host, "github")
+        hooks = ntpath.join(runtime.paths(RID)["reg"], "hooks")
+        for name in windows_process.HOOK_FILES:
+            source = (AGENT / "hooks" / "windows" / name).read_text(encoding="utf-8")
+            assert host.read_text(ntpath.join(hooks, name)) == source, name
+        assert "runner_disk.py" in windows_process.HOOK_FILES
+        assert "run_hook.js" in windows_process.HOOK_FILES
+
+    def test_a_create_driven_again_puts_the_current_hooks_back(self, runtime, host):
+        self.env(runtime, host, "github")
+        started = ntpath.join(runtime.paths(RID)["reg"], "hooks", "job-started.js")
+        host.write_text(started, "process.exitCode = 1;")
+        runtime.create(RID, spec("github", WINDOWS_TEMPLATE))
+        assert "run_hook.js" in host.read_text(started)
 
     def test_the_hooks_run_with_the_python_the_job_host_runs(self, runtime, host):
         env = self.env(runtime, host, "github")
@@ -64,6 +84,7 @@ class TestWindows:
     def test_a_runner_that_is_not_githubs_gets_no_hooks(self, runtime, host, provider):
         env = self.env(runtime, host, provider)
         assert not any(key in env for key in (*HOOK_KEYS, "RUNNER_HOOK_PYTHON"))
+        assert not host.exists(ntpath.join(runtime.paths(RID)["reg"], "hooks"))
 
     def test_a_spec_cannot_point_the_hooks_elsewhere(self, runtime, host):
         unit = spec("github", WINDOWS_TEMPLATE)
@@ -71,12 +92,12 @@ class TestWindows:
         runtime.create(RID, unit)
         reg = runtime.paths(RID)["reg"]
         env = json.loads(host.read_text(ntpath.join(reg, "unit.json")))["env"]
-        assert env["ACTIONS_RUNNER_HOOK_JOB_STARTED"].startswith(str(AGENT))
+        assert env["ACTIONS_RUNNER_HOOK_JOB_STARTED"].startswith(reg)
 
     def test_every_hook_is_a_script_the_runner_accepts(self):
         for key in HOOK_KEYS:
-            path = windows_process.HOOK_SCRIPTS[key]
-            assert path.endswith(".js") and Path(path).is_file(), path
+            name = windows_process.HOOK_SCRIPTS[key]
+            assert name.endswith(".js") and (AGENT / "hooks" / "windows" / name).is_file(), name
 
 
 class TestMacOS:

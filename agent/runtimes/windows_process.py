@@ -67,13 +67,17 @@ LAYOUT_ENV_KEYS = {"work": "RUNNER_WORK_DIR", "cache": "RUNNER_CACHE_DIR",
 
 TEMPLATE_FILES = ("run.cmd", "register.ps1", "deregister.ps1")
 
-#: GitHub's job hooks (#7), from the agent's installed copy, so a redeployed
-#: agent and a recreated runner are all a change to them needs. Derived from
-#: where this module runs, as the job host's launcher is. GitHub runs a hook
-#: only when its path ends in .ps1, .sh or .js. Forgejo has no hooks.
-_HOOKS = Path(__file__).resolve().parents[1] / "hooks" / "windows"
-HOOK_SCRIPTS = {"ACTIONS_RUNNER_HOOK_JOB_STARTED": str(_HOOKS / "job-started.js"),
-                "ACTIONS_RUNNER_HOOK_JOB_COMPLETED": str(_HOOKS / "job-completed.js")}
+#: GitHub's job hooks (#7): each variable and the script it names, in the
+#: runner's reg directory under `hooks\`. Every create copies the agent's own
+#: copy there, `run_hook.js` and `runner_disk.py` beside them, so a
+#: redeployed agent and a recreated runner are all a change to them needs -
+#: and a deploy, which swaps the agent's folder away, never leaves a job
+#: without its hook. GitHub runs a hook only when its path ends in .js, .sh or
+#: .ps1. Forgejo has no hooks.
+HOOK_SOURCE = Path(__file__).resolve().parents[1] / "hooks" / "windows"
+HOOK_SCRIPTS = {"ACTIONS_RUNNER_HOOK_JOB_STARTED": "job-started.js",
+                "ACTIONS_RUNNER_HOOK_JOB_COMPLETED": "job-completed.js"}
+HOOK_FILES = ("run_hook.js", "runner_disk.py", *HOOK_SCRIPTS.values())
 
 #: The file that asks the job host to drain the runner (see agent/jobhost.py).
 DRAIN_REQUEST = "drain.request"
@@ -267,6 +271,15 @@ class WindowsProcessRuntime:
             self._fs.copytree(template, p["reg"])
             self._fs.write_text(marker, image)
 
+        # 4b. GitHub's job hooks, before the unit file that points at them,
+        #     and on every create, so a redeployed agent's copy is the one used.
+        if _serves_github(spec):
+            hooks = ntpath.join(p["reg"], "hooks")
+            self._fs.makedirs(hooks)
+            for hook in HOOK_FILES:
+                self._fs.write_text(ntpath.join(hooks, hook),
+                                    (HOOK_SOURCE / hook).read_text(encoding="utf-8"))
+
         # 5. What the job host reads: limits and environment, never argv.
         self._fs.write_text(ntpath.join(p["reg"], "unit.json"),
                             json.dumps(self._unit(rid, spec, p)))
@@ -302,10 +315,13 @@ class WindowsProcessRuntime:
         if self._tools.get("short_workspaces"):
             from ..windows_workspace import alias_path
             env["RUNNER_JOB_WORK_DIR"] = alias_path(self._tools["short_workspaces"], rid)
-        if (spec.get("labels") or {}).get("nomercy.provider") == "github":
+        if _serves_github(spec):
+            hooks = ntpath.join(p["reg"], "hooks")
+            for key, hook in HOOK_SCRIPTS.items():
+                env[key] = ntpath.join(hooks, hook)
             # The .js hooks hand their work to the Python the job host runs
-            # under, which the runner's account can already execute.
-            env.update(HOOK_SCRIPTS)
+            # under, which the runner's account can already execute and a
+            # code deploy does not move.
             env["RUNNER_HOOK_PYTHON"] = self._tools["python"]
         cpus = str(spec.get("cpus") or "").strip()
         return {"runner_id": rid, "env": env,
@@ -813,6 +829,11 @@ class WindowsRegistrar:
         # service needs to be restarted merely to repeat this same answer.
         raise RuntimeError("Windows runners cannot remove their forge record; "
                            "the controller must delete it by its registration id")
+
+
+def _serves_github(spec):
+    """Whether the controller made this unit for GitHub, by its label."""
+    return ((spec or {}).get("labels") or {}).get("nomercy.provider") == "github"
 
 
 def _readable(text):
