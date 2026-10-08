@@ -16,6 +16,10 @@ pre.logs{background:var(--bg-inset);border:1px solid var(--rule);border-radius:v
 #toast{position:fixed;right:18px;bottom:18px;max-width:380px;background:var(--bg-panel);
   border:1px solid var(--rule);border-left:3px solid var(--signal);padding:11px 14px;font-size:11.5px;display:none}
 #toast.show{display:block} #toast.bad{border-left-color:var(--alert);color:var(--alert)}
+.limits-form{display:grid;grid-template-columns:repeat(2,minmax(0,1fr)) auto;align-items:end;gap:12px;margin-top:16px}
+.limits-form .field{margin:0;min-width:0}
+td.pending{color:var(--busy)}
+@media(max-width:640px){.limits-form{grid-template-columns:1fr}}
 @media(max-width:640px){.metrics{grid-template-columns:1fr}.wrap{overflow-x:auto}}
 {% endblock %}
 
@@ -29,6 +33,19 @@ pre.logs{background:var(--bg-inset);border:1px solid var(--rule);border-radius:v
 <div class="wrap">
   <article class="card" id="card"><div class="creg">Loading</div></article>
   <p class="hint" id="resource-notice"></p>
+
+  <h2 class="sec">Resources</h2>
+  <table class="kv" id="limits"></table>
+  {% if g.role == 'admin' %}
+  <form id="limits-form" class="limits-form" aria-label="This runner's own limits">
+    <div class="field"><label for="limit-cpu">CPU cores, this runner only</label>
+      <input id="limit-cpu" name="cpu" type="number" min="0.01" step="any"></div>
+    <div class="field"><label for="limit-memory">Memory (GiB), this runner only</label>
+      <input id="limit-memory" name="memory" type="number" min="0.01" step="any"></div>
+    <button type="submit">Save and recreate</button>
+  </form>
+  <p class="hint">Limits set here outrank the fleet's and the deployment's and are kept across every recreate. Empty clears one, and the runner takes its fleet's again. Saving recreates the runner the usual way - a busy runner finishes its job first - or, when that cannot start now, waits as a pending recreate.</p>
+  {% endif %}
 
   <h2 class="sec">Capabilities</h2>
   <table class="kv" id="caps"></table>
@@ -85,6 +102,36 @@ function capsHTML(caps) {
   }).join('');
 }
 
+const GIB = 1073741824;
+function gib(b) { const v = b / GIB; return (Number.isInteger(v) ? v : v.toFixed(1)) + ' GiB'; }
+
+// What this runner has, where each value comes from, and the most its own
+// host could hold (api_v2.runner_detail `limits`).
+function limitsHTML(l) {
+  if (!l) return '<tr><td class="creg">unavailable</td></tr>';
+  const cpu = l.cpu.value == null ? 'none'
+    : (l.cpu.cores != null ? l.cpu.cores + ' cores' : esc(l.cpu.value)) +
+      (/[-,]/.test(String(l.cpu.value)) ? ' (cores ' + l.cpu.value + ')' : '');
+  const memory = l.memory.value == null ? 'none' : gib(l.memory.value);
+  const source = (s, extra) => s ? s + (extra ? ': ' + extra : '') : 'not set';
+  const m = l.max || {};
+  const max = (m.cpus ? m.cpus + ' cores' : 'cores unknown') + ' · ' +
+    (m.memory_bytes ? gib(m.memory_bytes) + (m.memory_source === 'declared budget' ? ' (declared budget)' : '') : 'memory unknown') +
+    (m.host_id ? ' (' + m.host_id + ')' : ' (not placed)');
+  return `<tr><th>CPU</th><td>${esc(cpu)}</td><td>${esc(source(l.cpu.source))}</td></tr>` +
+    `<tr><th>Memory</th><td>${esc(memory)}</td><td>${esc(source(l.memory.source, l.memory.inherited && 'inherited from deployment ' + l.memory.inherited))}</td></tr>` +
+    `<tr><th>Host max</th><td colspan="2">${esc(max)}</td></tr>` +
+    (l.pending ? `<tr><th>Override</th><td class="pending" colspan="2">pending recreate: the runner takes its own limits the next time it is recreated</td></tr>` : '');
+}
+
+function fillLimitsForm(l) {
+  const form = $('limits-form');
+  if (!form || !l || form.dataset.dirty) return;
+  const o = l.override || {};
+  form.elements.cpu.value = o.cpu == null ? '' : Number(o.cpu);
+  form.elements.memory.value = o.memory == null ? '' : Math.round(o.memory / GIB * 100) / 100;
+}
+
 async function load() {
   const res = await fetch('/api/v2/runners/' + encodeURIComponent(RID), {cache: 'no-store'});
   const d = await res.json().catch(() => ({}));
@@ -97,6 +144,8 @@ async function load() {
   $('card').className = 'card ' + c.state;
   $('card').innerHTML = cardHTML(c);
   $('resource-notice').textContent = d.resource_notice || '';
+  $('limits').innerHTML = limitsHTML(d.limits);
+  fillLimitsForm(d.limits);
   $('caps').innerHTML = capsHTML(c.capabilities);
   $('current').textContent = c.current_operation || 'none';
   $('ops').innerHTML = rows(d.operations, ['operation_id', 'verb', 'state', 'attempts', 'result', 'error']);
@@ -153,6 +202,36 @@ document.addEventListener('click', async ev => {
   load();
   }catch(e){toast(e.message,true);}finally{b.disabled=!a.enabled;}
 });
+
+const limitsForm = $('limits-form');
+if (limitsForm) {
+  limitsForm.addEventListener('input', () => { limitsForm.dataset.dirty = '1'; });
+  limitsForm.addEventListener('submit', async ev => {
+    ev.preventDefault();
+    const number = v => v === '' ? null : Number(v);
+    const cpu = number(limitsForm.elements.cpu.value);
+    const memory = number(limitsForm.elements.memory.value);
+    const body = {cpu, memory: memory == null ? null : Math.round(memory * GIB)};
+    if (!(await confirmDialog({title: 'Recreate this runner with its own limits?',
+        body: 'It is rebuilt the usual way: a busy runner finishes its job first.',
+        confirm: 'Save and recreate'}))) return;
+    const key = (window.crypto && crypto.randomUUID) ? crypto.randomUUID()
+              : Date.now().toString(36) + Math.random().toString(36).slice(2);
+    const button = limitsForm.querySelector('button');
+    button.disabled = true;
+    try {
+      const res = await fetch('/api/v2/runners/' + encodeURIComponent(RID) + '/limits', {
+        method: 'POST', headers: {'Content-Type': 'application/json', 'Idempotency-Key': key},
+        body: JSON.stringify(body)});
+      const d = await res.json().catch(() => ({}));
+      if (!res.ok) { toast('Runner limits refused - ' + (d.error || res.status), true); return; }
+      toast(d.note || 'Saved');
+      delete limitsForm.dataset.dirty;
+      if (d.recreate_operation_id) watchOperation(d.recreate_operation_id, toast).catch(e => toast(e.message, true));
+      load();
+    } catch (e) { toast(e.message, true); } finally { button.disabled = false; }
+  });
+}
 
 load().catch(e=>toast(e.message,true));
 subscribeFleet(()=>load().catch(e=>toast(e.message,true)),()=>load().catch(e=>toast(e.message,true)));

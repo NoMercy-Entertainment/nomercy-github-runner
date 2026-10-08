@@ -5,6 +5,11 @@ hardware the cell's workers report. What a fleet does not set itself may
 still come from the deployment (RUNNER_UNIT_MEMORY_*), which is a runtime
 fallback the page shows as inherited and never copies into the database.
 """
+import json
+import shutil
+import subprocess
+from pathlib import Path
+
 import pytest
 
 import api_v2
@@ -400,6 +405,79 @@ class TestTheRunnerPageShowsItsLimits:
         assert limits["memory"]["source"] == "deployment default"
         assert limits["memory"]["inherited"] == "8g"
         assert limits["max"]["memory_bytes"] is None
+
+
+TEMPLATES = Path(__file__).parents[1] / "templates"
+
+
+def run_page_js(page, start, end, call):
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node runs the real page JavaScript")
+    source = (TEMPLATES / page).read_text(encoding="utf-8")
+    functions = source[source.index(start):source.index(end)]
+    script = ("const esc=v=>String(v??'').replace(/[&<>\"']/g,c=>'&#'+c.charCodeAt(0)+';');\n"
+              + functions + "\nconsole.log(" + call + ");")
+    return subprocess.run([node, "-e", script], capture_output=True, text=True,
+                          encoding="utf-8", check=True).stdout
+
+
+class TestThePagesShowIt:
+    def test_settings_shows_the_maximum_and_what_is_inherited(self):
+        row = {"fleet_id": "github-windows-x64", "platform": "windows", "labels": [],
+               "cpu_limit": "16.0", "memory_limit": None,
+               "cpu_limit_supported": True, "memory_limit_supported": True,
+               "disk_quota_supported": True,
+               "limits_max": {"cpus": 16, "memory_bytes": None, "cpus_host": "rnr-windows-1",
+                              "memory_host": None, "memory_source": None},
+               "memory_inherited": {"bytes": 8 * GIB, "text": "8g"},
+               "hardware_unverified": True, "limits_problem": None}
+        html = run_page_js("settings_v2.html", "function field(", "async function load()",
+                           "fleetForm(" + json.dumps(row) + ")")
+        assert 'max="16"' in html
+        assert 'placeholder="inherited from deployment: 8g"' in html
+        assert "Max: 16 cores · memory unknown (rnr-windows-1)" in html
+        assert "Not verified" in html
+        assert "Empty limits inherit deployment defaults" not in html
+
+    def test_settings_says_why_a_fleet_cannot_add_runners(self):
+        row = {"fleet_id": "github-linux-x64", "platform": "linux", "labels": [],
+               "cpu_limit": "16.0", "memory_limit": None,
+               "cpu_limit_supported": True, "memory_limit_supported": True,
+               "disk_quota_supported": True,
+               "limits_max": {"cpus": 56, "memory_bytes": LINUX_MEMORY,
+                              "cpus_host": "rnr-linux-1", "memory_host": "rnr-linux-1",
+                              "memory_source": "measured"},
+               "memory_inherited": None, "hardware_unverified": False,
+               "limits_problem": "github-linux-x64 has no memory limit"}
+        html = run_page_js("settings_v2.html", "function field(", "async function load()",
+                           "fleetForm(" + json.dumps(row) + ")")
+        assert "github-linux-x64 has no memory limit" in html
+        assert "Max: 56 cores · 78.6 GiB (rnr-linux-1)" in html
+        assert 'max="78.6"' in html
+
+    def test_the_runner_page_shows_values_sources_max_and_pending(self):
+        limits = {"cpu": {"value": "0-15", "cores": 16, "source": "fleet setting"},
+                  "memory": {"value": 8 * GIB, "source": "deployment default",
+                             "inherited": "8g"},
+                  "override": {"cpu": None, "memory": 6 * GIB},
+                  "max": {"host_id": "rnr-windows-1", "cpus": 16, "memory_bytes": None,
+                          "memory_source": None},
+                  "pending": True}
+        html = run_page_js("runner_v2.html", "const GIB", "async function load()",
+                           "limitsHTML(" + json.dumps(limits) + ")")
+        assert "16 cores (cores 0-15)" in html
+        assert "8 GiB" in html and "inherited from deployment 8g" in html
+        assert "16 cores · memory unknown (rnr-windows-1)" in html
+        assert "pending recreate" in html
+
+    def test_only_an_admin_gets_the_runner_limits_form(self, client, plane):
+        import users
+        rid = "3f2504e0-4f89-41d3-9a0c-0305e82c3301"
+        assert b'id="limits-form"' in client.get(f"/runners/{rid}").data
+        users.approve("sub-test-admin", "operator")
+        page = client.get(f"/runners/{rid}").data
+        assert b'id="limits"' in page and b'id="limits-form"' not in page
 
 
 def test_the_rule_is_lifted_for_tests_that_are_not_about_it(plane):

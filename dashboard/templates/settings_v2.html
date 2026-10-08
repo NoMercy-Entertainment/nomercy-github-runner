@@ -40,7 +40,25 @@ async function api(url, body) {
   const data=await res.json();if(!res.ok)throw new Error(data.error||('HTTP '+res.status));return data;
 }
 function field(fid,key,label,value,type='text',disabled=false,bounds={}) {
-  return `<div class="field${['unit_template','labels'].includes(key)?' field-wide':''}"><label for="${esc(fid+'-'+key)}">${esc(label)}</label><input id="${esc(fid+'-'+key)}" name="${esc(key)}" type="${type}" value="${esc(value??'')}" ${type==='number'?`min="${bounds.min??0.01}" step="${bounds.step??'any'}" ${bounds.max?`max="${bounds.max}"`:''}`:''} ${disabled?'disabled':''}></div>`;
+  return `<div class="field${['unit_template','labels'].includes(key)?' field-wide':''}"><label for="${esc(fid+'-'+key)}">${esc(label)}</label><input id="${esc(fid+'-'+key)}" name="${esc(key)}" type="${type}" value="${esc(value??'')}" ${type==='number'?`min="${bounds.min??0.01}" step="${bounds.step??'any'}" ${bounds.max?`max="${bounds.max}"`:''}`:''}${bounds.placeholder?` placeholder="${esc(bounds.placeholder)}"`:''} ${disabled?'disabled':''}></div>`;
+}
+const GIB=1073741824;
+function gib(b) {const v=b/GIB;return (Number.isInteger(v)?v:v.toFixed(1))+' GiB';}
+// The most a fleet's CPU and memory may be: the largest host of its cell,
+// as its worker reports it (control/hardware.py). Unknown says so.
+function maxLine(f) {
+  const m=f.limits_max||{};
+  const cpus=m.cpus?`${m.cpus} cores`:'cores unknown';
+  const memory=m.memory_bytes?gib(m.memory_bytes)+(m.memory_source==='declared budget'?' (declared budget)':''):'memory unknown';
+  const hosts=[...new Set([m.cpus_host,m.memory_host].filter(Boolean))];
+  return `Max: ${cpus} · ${memory}`+(hosts.length?` (${hosts.join(', ')})`:' (no host has reported its hardware)');
+}
+function limitsWarnings(f) {
+  let out='';
+  if(f.limits_problem)out+=`<p class="notice err">${esc(f.limits_problem)}</p>`;
+  if(f.hardware_problem)out+=`<p class="notice err">The limits saved here no longer fit: ${esc(f.hardware_problem)}</p>`;
+  if(f.hardware_unverified)out+=`<p class="notice">Not verified: no host of this fleet has reported the hardware these limits are checked against.</p>`;
+  return out;
 }
 function cacheFields(f) {
   const policy=f.cache_policy||{}, fid=f.fleet_id;
@@ -67,16 +85,21 @@ function fleetDefaults(form) {
 }
 function fleetForm(f) {
   const mac=f.platform==='macos', fixedDisk=!f.disk_quota_supported&&f.guest_disk_virtual_bytes;
-  return `<form class="panel" data-fleet="${esc(f.fleet_id)}"><h2>${esc(f.fleet_id)}</h2><div class="fields">`+
+  const top=f.limits_max||{};
+  const cpuMax=mac?Math.min(64,top.cpus||64):top.cpus;
+  const memMax=top.memory_bytes?Math.floor(top.memory_bytes/GIB*10)/10:null;
+  const inherited=f.memory_inherited?`inherited from deployment: ${f.memory_inherited.text}`:'';
+  return `<form class="panel" data-fleet="${esc(f.fleet_id)}"><h2>${esc(f.fleet_id)}</h2>${limitsWarnings(f)}<div class="fields">`+
     field(f.fleet_id,'unit_template','Unit image or template override',f.unit_template)+
     field(f.fleet_id,'labels','Runner labels, separated by commas',(f.labels||[]).join(', '))+
     field(f.fleet_id,'runner_group','Runner group (GitHub)',f.runner_group)+
-    field(f.fleet_id,'cpu_limit',mac&&!f.cpu_limit_supported?'CPU cores (enforcement unverified)':'CPU cores',f.cpu_limit,'number',!f.cpu_limit_supported,mac?{min:1,max:64,step:1}:{})+
-    field(f.fleet_id,'memory_limit',mac?(f.memory_limit_supported?'Guest RAM limit (GiB)':'Memory setting (GiB, enforcement unverified)'):'Memory limit (GiB)',f.memory_limit?f.memory_limit/1073741824:null,'number',!f.memory_limit_supported,mac?{min:4,max:128,step:1}:{})+
+    field(f.fleet_id,'cpu_limit',mac&&!f.cpu_limit_supported?'CPU cores (enforcement unverified)':'CPU cores',f.cpu_limit,'number',!f.cpu_limit_supported,mac?{min:1,max:cpuMax,step:1}:{max:cpuMax})+
+    field(f.fleet_id,'memory_limit',mac?(f.memory_limit_supported?'Guest RAM limit (GiB)':'Memory setting (GiB, enforcement unverified)'):'Memory limit (GiB)',f.memory_limit?f.memory_limit/GIB:null,'number',!f.memory_limit_supported,mac?{min:4,max:Math.min(128,memMax||128),step:1}:{max:memMax,placeholder:inherited})+
+    `<p class="hint field-wide">${esc(maxLine(f))}</p>`+
     (f.platform==='linux'?field(f.fleet_id,'memory_swap_limit','RAM + swap ceiling (GiB)',f.memory_swap_limit?f.memory_swap_limit/1073741824:null,'number'):'')+
     field(f.fleet_id,'disk_limit',fixedDisk?'Guest disk size (GiB, fixed)':'Disk limit (GiB)',fixedDisk?f.guest_disk_virtual_bytes/1073741824:(f.disk_limit?f.disk_limit/1073741824:null),'number',!f.disk_quota_supported)+
     cacheFields(f)+
-    `</div>${f.resource_notice?`<p class="hint">${esc(f.resource_notice)}</p>`:''}${f.disk_quota_supported||fixedDisk?'':'<p class="hint">Per-runner disk quotas are unavailable. Storage usage and cache budgets do not enforce a disk quota.</p>'}<p class="hint">Current image or template: ${esc(f.effective_template||'not configured')}. Empty limits inherit deployment defaults. Automatic file cleanup runs at startup; GitHub also runs it after a completed job. Explicit clear actions use the selected scopes.</p><button type="submit">Save defaults</button></form>`;
+    `</div>${f.resource_notice?`<p class="hint">${esc(f.resource_notice)}</p>`:''}${f.disk_quota_supported||fixedDisk?'':'<p class="hint">Per-runner disk quotas are unavailable. Storage usage and cache budgets do not enforce a disk quota.</p>'}<p class="hint">Current image or template: ${esc(f.effective_template||'not configured')}. An empty memory limit uses the deployment's default for this fleet when it has one, shown in the field; an empty CPU limit has no default.${f.platform==='macos'?'':' Linux and Windows runners are not created until this fleet has both a CPU and a memory limit.'} An admin can still give one runner its own limits on its page. Automatic file cleanup runs at startup; GitHub also runs it after a completed job. Explicit clear actions use the selected scopes.</p><button type="submit">Save defaults</button></form>`;
 }
 async function load() {
   const d=await api('/api/v2/settings');
