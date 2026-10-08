@@ -398,10 +398,36 @@ class TestObservation:
     def test_probes(self, runtime, host):
         runtime.create(RID, SPEC)
         host.put(runtime.paths(RID)["cache"] + r"\c", 700)
-        assert runtime.probe(RID, "cache_size") == {"ok": True, "value": 700}
+        assert runtime.probe(RID, "cache_size")["value"] == 700
         assert runtime.probe(RID, "disk_usage")["value"] >= 700
         assert runtime.probe(RID, "job_state")["ok"] is False
         assert runtime.probe(RID, "nonsense")["ok"] is False
+
+    def test_a_plain_directory_reports_the_volume_it_shares(self, runtime,
+                                                            host):
+        """A runner with no disk of its own - the ARM64 guest's, or any on a
+        worker without owned storage - is stopped by the volume its tree is
+        on filling, not by its own bytes. Both are reported: its own, and
+        that volume's used and total."""
+        runtime.create(RID, SPEC)
+        host.volume = (400 * 10 ** 9, 150 * 10 ** 9)
+        disk = runtime.probe(RID, "disk_usage")
+        cache = runtime.probe(RID, "cache_size")
+        for got in (disk, cache):
+            assert got["ok"] is True
+            assert got["volume_total_bytes"] == 400 * 10 ** 9
+            assert got["volume_used_bytes"] == 150 * 10 ** 9
+            assert "total_bytes" not in got
+        assert cache.get("cap_bytes") is None
+
+    def test_a_volume_that_cannot_be_read_is_unknown_not_zero(self, runtime,
+                                                              host):
+        runtime.create(RID, SPEC)
+        host.volume = None
+        got = runtime.probe(RID, "disk_usage")
+        assert got["ok"] is True
+        assert got["volume_total_bytes"] is None
+        assert got["volume_used_bytes"] is None
 
     def test_instances_lists_runner_services_only(self, runtime, host):
         runtime.create(RID, SPEC)

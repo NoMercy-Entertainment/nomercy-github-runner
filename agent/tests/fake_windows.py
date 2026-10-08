@@ -194,6 +194,16 @@ class FakeWindows:
             return None
         return self.size_under(path)
 
+    #: (total, used) of the volume every directory here is on, or None when
+    #: the host will not say.
+    volume = (1000 * 10 ** 9, 400 * 10 ** 9)
+
+    def disk_usage(self, path):
+        if _key(path) not in self.dirs or self.volume is None:
+            return None
+        total, used = self.volume
+        return {"used_bytes": used, "total_bytes": total}
+
     # ---- the programs ----------------------------------------------------------
 
     def __call__(self, args, input=None, timeout=None):

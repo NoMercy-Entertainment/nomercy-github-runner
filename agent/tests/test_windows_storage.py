@@ -17,6 +17,7 @@ import pytest
 from agent import jobhost, naming
 from agent.runtimes.windows_process import (WindowsProcessRuntime,
                                             WindowsRegistrar, service_sid)
+from agent.runtimes import windows_storage
 from agent.runtimes.windows_storage import DEFAULT_LIMIT, WindowsStorage, verify_volume
 from .fake_windows import FakeWindows, TEMPLATE, TOOLS
 
@@ -255,7 +256,65 @@ def test_light_telemetry_never_waits_on_the_storage_lock_but_the_deep_probe_does
     probed = runtime.probe(RID, "disk_usage")
 
     assert disks.events == ["verify"]
-    assert probed == {"ok": True, "value": 800}
+    assert probed == {"ok": True, "value": 800, "total_bytes": 1000}
+
+
+def test_an_owned_disk_reports_its_size_and_the_cache_shares_it(managed):
+    """The runner's own VHD is its storage boundary: used and the disk's
+    capacity. Its cache has no cap of its own and lives on that same disk,
+    so the cache reports the disk it shares as its volume."""
+    runtime, host, disks = managed
+    runtime.create(RID, {"image": TEMPLATE})
+    host.put(runtime.paths(RID)["cache"] + r"\c", 70)
+    disk = runtime.probe(RID, "disk_usage")
+    cache = runtime.probe(RID, "cache_size")
+    assert disk == {"ok": True, "value": 800, "total_bytes": 1000}
+    assert cache["ok"] is True and cache["value"] == 70
+    assert cache["volume_used_bytes"] == 800
+    assert cache["volume_total_bytes"] == 1000
+    assert cache.get("cap_bytes") is None
+
+
+def test_a_plain_directory_on_a_storage_worker_is_measured_as_one(managed):
+    """forgejo-windows-x64-2: a runner made before its worker had owned
+    storage is a plain directory with no manifest. The helper refuses to
+    adopt it, rightly - and its storage and cache are still measured, as the
+    plain directory it is, with the volume it shares."""
+    runtime, host, disks = managed
+    p = runtime.paths(RID)
+    for area in ("work", "cache", "reg", "logs"):
+        host.makedirs(p[area])
+    host.put(p["work"] + r"\w", 300)
+    host.put(p["cache"] + r"\c", 70)
+    host.volume = (2000 * 10 ** 9, 900 * 10 ** 9)
+    disks.error = ("runner storage: " + windows_storage.UNMANAGED
+                   + "; refusing to adopt a directory/image")
+    disk = runtime.probe(RID, "disk_usage")
+    cache = runtime.probe(RID, "cache_size")
+    assert disk == {"ok": True, "value": 370,
+                    "volume_used_bytes": 900 * 10 ** 9,
+                    "volume_total_bytes": 2000 * 10 ** 9}
+    assert cache["value"] == 70
+    assert cache["volume_total_bytes"] == 2000 * 10 ** 9
+
+
+def test_an_owned_disk_that_fails_to_verify_is_still_an_error(managed):
+    """Only the missing manifest means "plain directory". A disk that is
+    there but wrong is not measured as if it were not."""
+    runtime, host, disks = managed
+    runtime.create(RID, {"image": TEMPLATE})
+    disks.error = "runner storage: Owned volume is not mounted at the runner directory"
+    with pytest.raises(RuntimeError, match="not mounted"):
+        runtime.probe(RID, "disk_usage")
+
+
+def test_the_helper_says_the_words_the_runtime_listens_for(helper):
+    """The fallback above keys on the helper's own sentence; this holds the
+    two together."""
+    invoke, request, model = helper
+    answer = invoke("verify")
+    assert answer.returncode == 1
+    assert windows_storage.UNMANAGED in answer.stderr
 
 
 def test_reading_the_job_name_never_waits_on_the_storage_lock_but_logs_does(managed):

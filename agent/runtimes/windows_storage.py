@@ -16,6 +16,10 @@ from .. import naming
 DEFAULT_LIMIT = 100 * 1024 ** 3
 DEFAULT_RESERVE = 20 * 1024 ** 3
 MIN_LIMIT = 1024 ** 3
+#: What the helper says when a runner has no owned disk at all - a plain
+#: directory it will not adopt. The runtime measures such a runner as the
+#: plain directory it is; any other refusal stays an error.
+UNMANAGED = "No owned storage manifest"
 _VOLUME = re.compile(r"^\\\\\?\\Volume\{[0-9a-f-]{36}\}\\$", re.I)
 
 

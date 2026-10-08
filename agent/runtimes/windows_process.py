@@ -52,7 +52,7 @@ from .. import cpu, hardware, naming
 from ..jobs import current_job
 from ..windows_timeouts import registration_limits
 from .localfs import LocalFs
-from .windows_storage import WindowsStorage
+from .windows_storage import UNMANAGED, WindowsStorage
 
 #: Areas created per runner. `docker` is None on Windows: no nested engine.
 AREAS = tuple(a for a in naming.AREAS if a != "docker")
@@ -567,16 +567,45 @@ class WindowsProcessRuntime:
         except OSError:
             return ""
 
+    def _owned_disk(self, runner_id):
+        """The runner's own disk as the storage helper verified it, or None
+        when it has none: no storage on this worker, or a plain directory
+        the helper has no manifest for (a runner made before its worker had
+        owned storage). Any other failure to verify is raised - a disk that
+        is there but wrong is not measured as if it were not."""
+        if not self._storage:
+            return None
+        try:
+            return self._storage.verify(runner_id)
+        except RuntimeError as exc:
+            if UNMANAGED in str(exc):
+                return None
+            raise
+
+    def _volume(self, path, disk):
+        """The volume `path` is on: the runner's own disk when it has one,
+        else whatever the worker's filesystem says holds it."""
+        if disk is not None:
+            used = disk["capacity_bytes"] - disk["free_bytes"]
+            return {"volume_used_bytes": used,
+                    "volume_total_bytes": disk["capacity_bytes"]}
+        usage = self._fs.disk_usage(path) or {}
+        return {"volume_used_bytes": usage.get("used_bytes"),
+                "volume_total_bytes": usage.get("total_bytes")}
+
     def probe(self, runner_id, probe):
-        if self._storage:
-            disk = self._storage.verify(runner_id)
-            if probe == "disk_usage":
-                return {"ok": True, "value": disk["capacity_bytes"] - disk["free_bytes"]}
+        disk = self._owned_disk(runner_id)
+        if disk is not None and probe == "disk_usage":
+            return {"ok": True, "value": disk["capacity_bytes"] - disk["free_bytes"],
+                    "total_bytes": disk["capacity_bytes"]}
         p = self.paths(runner_id)
+        volume = {}
         if probe == "disk_usage":
             value = self._fs.du(p["root"])
+            volume = self._volume(p["root"], disk)
         elif probe == "cache_size":
             value = self._fs.du(p["cache"])
+            volume = self._volume(p["cache"], disk)
         elif probe == "agent_version":
             try:
                 value = self._fs.read_text(
@@ -590,7 +619,7 @@ class WindowsProcessRuntime:
             return {"ok": False, "error": "unknown probe"}
         if value is None:
             return {"ok": False, "error": "could not be measured"}
-        return {"ok": True, "value": value}
+        return {"ok": True, "value": value, **volume}
 
     def instances(self):
         """Every runner service on this worker, and its state. Raises when
