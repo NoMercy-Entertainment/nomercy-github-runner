@@ -28,9 +28,11 @@ comes from (`/var/tmp/opencore-image-ng.sh-*` after a hard stop, design
 9.3.1) before booting. When none is attached, the agent answering at all is
 the proof the guest is up. The concrete host side is T-0803's.
 
-**Telemetry includes the guest's root disk**, because a full one is the other
-recorded failure - the runner reads offline while the hypervisor side looks
-healthy - and the guest is the only place that sees it.
+**Telemetry includes the volume the runners live on**, because a full one is
+the other recorded failure - the runner reads offline while the hypervisor
+side looks healthy - and the guest is the only place that sees it. It is the
+Data volume holding the runner's tree, never `/`: on APFS that is the sealed
+system volume, whose figures say nothing about the disk that fills.
 
 **The runner's software is a template**, a directory named by the spec's
 `image` under `/Users/runner/templates/`, copied into `reg` at create: `run`,
@@ -469,14 +471,22 @@ class MacApplianceRuntime:
             return None
 
     def telemetry(self, runner_id):
-        """This instance's processes, and the guest's root disk."""
+        """This instance's processes; the guest's cores and memory, which is
+        what an appliance runner - bound by no limit of its own - shares;
+        and the volume its tree is on. That is the Data volume, read where
+        the runner lives: `/` on APFS is the sealed system volume, and its
+        figures say nothing about the disk that fills."""
         result = {"cpu_percent": None, "mem_used_bytes": None,
-                  "mem_limit_bytes": None, "root_disk_used_bytes": None,
-                  "root_disk_total_bytes": None, "cpu_cores": None,
-                  "host_cores": None}
-        ok, out, _ = self._run(["/usr/sbin/sysctl", "-n", "hw.logicalcpu"], timeout=5)
-        if ok:
-            result["host_cores"] = _int(out.strip())
+                  "mem_limit_bytes": None, "cpu_cores": None,
+                  "host_cores": None, "host_mem_bytes": None,
+                  "storage_volume_used_bytes": None,
+                  "storage_volume_total_bytes": None}
+        ok, out, _ = self._run(["/usr/sbin/sysctl", "-n", "hw.logicalcpu",
+                                "hw.memsize"], timeout=5)
+        values = out.split() if ok else []
+        if len(values) == 2:
+            result["host_cores"] = _int(values[0])
+            result["host_mem_bytes"] = _int(values[1])
         pid = self.status(runner_id).get("pid")
         if pid:
             ok, out, _ = self._run([self._tools["ps"], "-A", "-o",
@@ -501,16 +511,19 @@ class MacApplianceRuntime:
                 if measured:
                     result["cpu_percent"] = round(sum(p[2] for p in measured), 2)
                     result["mem_used_bytes"] = sum(p[3] for p in measured)
-        ok, out, _ = self._run([self._tools["df"], "-k", "/"], timeout=15)
-        lines = out.splitlines() if ok else []
-        if len(lines) >= 2:
-            parts = lines[-1].split()
-            try:
-                result["root_disk_total_bytes"] = int(parts[1]) * 1024
-                result["root_disk_used_bytes"] = int(parts[2]) * 1024
-            except (IndexError, ValueError):
-                pass
+        volume = self._volume(self.paths(runner_id)["root"])
+        result["storage_volume_used_bytes"] = volume["volume_used_bytes"]
+        result["storage_volume_total_bytes"] = volume["volume_total_bytes"]
         return result
+
+    def _volume(self, path):
+        """The volume `path` is on, which every appliance runner shares."""
+        try:
+            usage = self._fs.disk_usage(path) or {}
+        except OSError:
+            usage = {}
+        return {"volume_used_bytes": usage.get("used_bytes"),
+                "volume_total_bytes": usage.get("total_bytes")}
 
     def jobs(self, runner_ids):
         return {rid: current_job(self.logs(rid, 86400)) for rid in runner_ids}
@@ -542,10 +555,13 @@ class MacApplianceRuntime:
 
     def probe(self, runner_id, probe):
         p = self.paths(runner_id)
+        volume = {}
         if probe == "disk_usage":
             value = self._fs.du(p["root"])
+            volume = self._volume(p["root"])
         elif probe == "cache_size":
             value = self._fs.du(p["cache"])
+            volume = self._volume(p["cache"])
         elif probe == "agent_version":
             try:
                 value = self._fs.read_text(
@@ -559,7 +575,7 @@ class MacApplianceRuntime:
             return {"ok": False, "error": "unknown probe"}
         if value is None:
             return {"ok": False, "error": "could not be measured"}
-        return {"ok": True, "value": value}
+        return {"ok": True, "value": value, **volume}
 
     def instances(self):
         """Every runner instance in this appliance, and its state.

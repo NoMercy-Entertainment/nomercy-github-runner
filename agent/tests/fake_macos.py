@@ -1,7 +1,8 @@
-"""A stand-in for the macOS appliance: the guest's launchd, ps, df and disk,
-and the hypervisor side that boots it.
+"""A stand-in for the macOS appliance: the guest's launchd, ps, sysctl and
+disk, and the hypervisor side that boots it.
 
-The macOS runtime builds argument lists for `launchctl`, `ps` and `df`, runs
+The macOS runtime builds argument lists for `launchctl`, `ps` and `sysctl`,
+asks the disk for the volume a path is on, runs
 its template's `register` and `deregister`, and reads and writes files. This
 interprets all of that against an in-memory guest, strict where launchd is:
 
@@ -75,7 +76,13 @@ class FakeMac:
         self.disabled = set()
         self.calls = []
         self.inputs = []
-        self.root_disk = (100 * 1024 ** 3, 60 * 1024 ** 3)
+        #: (total, used) of the Data volume the runners' trees are on, or
+        #: None when df cannot read it.
+        self.volume = (274 * 10 ** 9, 160 * 10 ** 9)
+        #: Every path whose volume was asked for, in order.
+        self.volume_reads = []
+        #: What `sysctl -n` answers per name, or None when it fails.
+        self.sysctl = {"hw.logicalcpu": "6", "hw.memsize": str(16 * 1024 ** 3)}
         self.appliance = appliance or FakeAppliance()
         self.forge = forge or FakeForge()
         self.forge.unit_running = self._unit_running
@@ -188,6 +195,13 @@ class FakeMac:
             return None
         return self.size_under(path)
 
+    def disk_usage(self, path):
+        self.volume_reads.append(path)
+        if path not in self.dirs or self.volume is None:
+            return None
+        total, used = self.volume
+        return {"used_bytes": used, "total_bytes": total}
+
     # ---- the programs ----------------------------------------------------------
 
     def __call__(self, args, input=None, timeout=None):
@@ -208,12 +222,10 @@ class FakeMac:
             return True, "\n".join(
                 f"{j['pid']:>5} 1 {j['pid']} 2.5 102400" for j in self.jobs.values()
                 if j["state"] == "running"), ""
-        if tool == TOOLS["df"]:
-            total, used = self.root_disk
-            return True, ("Filesystem 1024-blocks Used Available Capacity "
-                          "Mounted on\n"
-                          f"/dev/disk3s1s1 {total // 1024} {used // 1024} "
-                          f"{(total - used) // 1024} 60% /"), ""
+        if tool == "/usr/sbin/sysctl":
+            if self.sysctl is None:
+                return False, "", "sysctl: unknown oid"
+            return True, "\n".join(self.sysctl[name] for name in args[2:]), ""
         return self._entry(args, input)
 
     def _launchctl(self, args):

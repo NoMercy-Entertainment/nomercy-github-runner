@@ -126,14 +126,39 @@ class TestTheAppliance:
         rt.create(RID, SPEC)
         assert rt.status(RID)["running"] is True
 
-    def test_telemetry_reports_the_guests_root_disk(self, runtime, guest):
-        """The other recorded failure: a full root disk reads as the runner
-        being offline while the hypervisor side looks fine."""
+    def test_telemetry_reports_the_volume_the_runner_lives_on(self, runtime,
+                                                              guest):
+        """The other recorded failure: a full disk reads as the runner being
+        offline while the hypervisor side looks fine. The disk that fills is
+        the Data volume holding the runner's tree - `/` on APFS is the
+        sealed system volume, whose figures say nothing about it."""
         runtime.create(RID, SPEC)
-        guest.root_disk = (100 * 1024 ** 3, 99 * 1024 ** 3)
+        guest.volume = (274 * 10 ** 9, 270 * 10 ** 9)
         t = runtime.telemetry(RID)
-        assert t["root_disk_total_bytes"] == 100 * 1024 ** 3
-        assert t["root_disk_used_bytes"] == 99 * 1024 ** 3
+        assert t["storage_volume_total_bytes"] == 274 * 10 ** 9
+        assert t["storage_volume_used_bytes"] == 270 * 10 ** 9
+        assert guest.volume_reads == [runtime.paths(RID)["root"]]
+        assert "root_disk_total_bytes" not in t
+
+    def test_telemetry_reports_the_guests_cores_and_memory_in_one_call(
+            self, runtime, guest):
+        """No limit binds an appliance runner, so the guest itself is what
+        its CPU and memory are shares of."""
+        runtime.create(RID, SPEC)
+        guest.calls.clear()
+        t = runtime.telemetry(RID)
+        assert t["host_cores"] == 6
+        assert t["host_mem_bytes"] == 16 * 1024 ** 3
+        assert len([c for c in guest.calls if c[0] == "/usr/sbin/sysctl"]) == 1
+
+    def test_a_guest_that_does_not_say_its_size_is_unknown(self, runtime,
+                                                           guest):
+        runtime.create(RID, SPEC)
+        guest.sysctl = None
+        guest.volume = None
+        t = runtime.telemetry(RID)
+        assert t["host_cores"] is None and t["host_mem_bytes"] is None
+        assert t["storage_volume_total_bytes"] is None
 
     def test_telemetry_reports_the_instances_processes(self, runtime):
         runtime.create(RID, SPEC)
@@ -298,8 +323,21 @@ class TestObservation:
     def test_probes(self, runtime, guest):
         runtime.create(RID, SPEC)
         guest.put(runtime.paths(RID)["cache"] + "/c", 700)
-        assert runtime.probe(RID, "cache_size") == {"ok": True, "value": 700}
+        assert runtime.probe(RID, "cache_size")["value"] == 700
         assert runtime.probe(RID, "job_state")["ok"] is False
+
+    def test_storage_and_cache_report_the_volume_they_share(self, runtime,
+                                                            guest):
+        """An appliance runner has no disk of its own: its own bytes, and the
+        Data volume it shares, used and total."""
+        runtime.create(RID, SPEC)
+        guest.volume = (274 * 10 ** 9, 120 * 10 ** 9)
+        for probe in ("disk_usage", "cache_size"):
+            got = runtime.probe(RID, probe)
+            assert got["ok"] is True
+            assert got["volume_total_bytes"] == 274 * 10 ** 9
+            assert got["volume_used_bytes"] == 120 * 10 ** 9
+            assert "total_bytes" not in got
 
     def test_logs(self, runtime, guest):
         runtime.create(RID, SPEC)
@@ -475,7 +513,7 @@ class TestAdoptingARunnerThatIsAlreadyThere:
 
     def test_telemetry_reads_the_adopted_process(self, runtime, legacy):
         runtime.create(RID, self.ADOPT)
-        assert runtime.telemetry(RID)["root_disk_total_bytes"]
+        assert runtime.telemetry(RID)["storage_volume_total_bytes"]
 
 
 class TestWhatTheHeartbeatSeesInTheAppliance:

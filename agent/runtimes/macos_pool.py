@@ -530,8 +530,8 @@ class MacAppliancePoolRuntime:
     def telemetry(self, runner_id):
         rid = naming.check(runner_id)
         result = dict(cpu_percent=None, mem_used_bytes=None, mem_limit_bytes=None,
-                      root_disk_used_bytes=None, root_disk_total_bytes=None,
-                      cpu_cores=None, host_cores=None)
+                      storage_volume_used_bytes=None, storage_volume_total_bytes=None,
+                      cpu_cores=None, host_cores=None, host_mem_bytes=None)
         try:
             record = self._read(rid)
             inner = self._online(rid)
