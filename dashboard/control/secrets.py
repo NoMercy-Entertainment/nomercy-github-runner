@@ -33,6 +33,18 @@ class SecretRefused(ValueError):
     pass
 
 
+def http_url(value):
+    """Whether a webhook URL is one alarms may be sent to: http or https,
+    with a host. Nothing else - not file:, not a bare host - is a place to
+    POST an alarm."""
+    from urllib.parse import urlsplit
+    try:
+        parts = urlsplit(str(value or "").strip())
+    except ValueError:
+        return False
+    return parts.scheme.lower() in ("http", "https") and bool(parts.hostname)
+
+
 def _now():
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
@@ -82,6 +94,8 @@ class SecretStore:
         value = value.strip()
         if any(c in value for c in "\r\n\x00") or len(value) > 512:
             raise SecretRefused("a token is one short line")
+        if name == "ALARM_WEBHOOK_URL" and not http_url(value):
+            raise SecretRefused("the alarm webhook must be an http:// or https:// URL")
         sealed = self._fernet(create=True).encrypt(value.encode())
         with schema.connect(self.path) as c:
             c.execute(

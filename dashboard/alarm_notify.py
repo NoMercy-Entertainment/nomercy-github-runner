@@ -24,6 +24,7 @@ import urllib.error
 import urllib.request
 
 import alarms
+from control.secrets import http_url
 from store import schema
 
 FORMATS = ("ntfy", "discord", "slack", "json")
@@ -95,7 +96,10 @@ def render(fmt, event):
         # "@everyone" in one must not page a whole server.
         body = {"content": text[:1990], "allowed_mentions": {"parse": []}}
     elif fmt == "slack":
-        body = {"text": text}
+        # Slack's own escaping: with &, < and > as entities, no <!channel>,
+        # <!here> or <@user> in a job or runner name can mention anyone.
+        body = {"text": text.replace("&", "&amp;").replace("<", "&lt;")
+                .replace(">", "&gt;")}
     else:
         body = {"event": event["event"],
                 "alarm": {k: event.get(k) for k in (
@@ -154,6 +158,15 @@ def deliver_due(path, env, now, post=None):
         if not url:
             c.executemany("UPDATE alarm_outbox SET state='skipped', done_at=? WHERE id=?",
                           [(stamp, r["id"]) for r in rows])
+            return []
+        if not http_url(url):
+            # Set in the environment, where nothing checked it. Said once
+            # per row, without the value.
+            c.executemany("UPDATE alarm_outbox SET state='skipped', done_at=?,"
+                          " last_error='ALARM_WEBHOOK_URL is not an http(s) URL'"
+                          " WHERE id=?", [(stamp, r["id"]) for r in rows])
+            if rows:
+                print("[alarms] not sent: ALARM_WEBHOOK_URL is not an http(s) URL")
             return []
     fmt = format_of(env, url)
     sent = []

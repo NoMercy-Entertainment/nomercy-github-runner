@@ -95,6 +95,14 @@ class TestFormats:
         assert json.loads(alarm_notify.render("slack", EVENT)[0]) == {
             "text": "ALARM: " + EVENT["message"]}
 
+    @pytest.mark.parametrize("mention", ["<!channel>", "<!here>", "<!everyone>",
+                                         "<@U024BE7LH>", "<!subteam^SAZ94GDB8>"])
+    def test_slack_mentions_are_text(self, mention):
+        event = dict(EVENT, message=f"runner {mention} & co has been offline")
+        text = json.loads(alarm_notify.render("slack", event)[0])["text"]
+        assert "<" not in text and ">" not in text
+        assert "&lt;" in text and "&amp; co" in text
+
     def test_json_carries_the_whole_alarm(self):
         data = json.loads(alarm_notify.render("json", EVENT)[0])
         assert data["event"] == "raised"
@@ -251,6 +259,25 @@ class TestTheSecret:
         store.set("ALARM_WEBHOOK_URL", HOOK, "admin")
         assert store.overlay({})["ALARM_WEBHOOK_URL"] == HOOK
         assert [s for s in store.status() if s["name"] == "ALARM_WEBHOOK_URL"][0]["set"]
+
+    @pytest.mark.parametrize("url", ["file:///etc/passwd", "ftp://example.com/x",
+                                     "javascript:alert(1)", "ntfy.sh/topic", "https://"])
+    def test_only_an_http_url_is_saved(self, path, url):
+        from control.secrets import SecretRefused
+        with pytest.raises(SecretRefused):
+            SecretStore(path).set("ALARM_WEBHOOK_URL", url, "admin")
+
+    def test_only_an_http_url_is_sent_to(self, path, monkeypatch, capsys):
+        import urllib.request
+        opened = []
+        monkeypatch.setattr(urllib.request, "urlopen", lambda *a, **k: opened.append(a))
+        alarm_notify.enqueue(path, EVENT, now=T0)
+        alarm_notify.deliver_due(path, {"ALARM_WEBHOOK_URL": "file:///etc/secret-hook"}, T0)
+        assert opened == []
+        with schema.connect(path) as c:
+            row = c.execute("SELECT state, last_error FROM alarm_outbox").fetchone()
+        assert row["state"] == "skipped" and "http" in row["last_error"]
+        assert "secret-hook" not in capsys.readouterr().out
 
     def test_its_value_is_masked_like_a_token(self):
         from control import redact
