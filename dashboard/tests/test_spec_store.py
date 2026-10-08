@@ -222,6 +222,8 @@ class TestTheSchemaMatchesTheDesign:
         # Added in W2b, and to the design's table with them: what the forge's
         # own record lists as the runner's labels, and when it last said so.
         "forge_labels": "TEXT", "forge_labels_at": "TEXT",
+        # GitHub #5: an admin's own CPU and memory for this one runner.
+        "cpu_override": "TEXT", "memory_override": "INTEGER",
     }
 
     def columns(self, store, table="runner_specs"):
@@ -373,3 +375,42 @@ class TestADatabaseFromBeforeAdoption:
                      adopt_unit={"label": "org.forgejo.runner"})
         assert store.get(runner_id)["adopt_unit"] == {
             "label": "org.forgejo.runner"}
+
+
+class TestADatabaseFromBeforeOverrides:
+    """cpu_override and memory_override arrived with GitHub #5: an admin's
+    own CPU and memory for one runner, which outrank its fleet and the
+    deployment across every recreate. The live control.db predates them."""
+
+    def old_shape(self, tmp_path):
+        """A runner_specs table exactly as deployed before the change."""
+        path = str(tmp_path / "control.db")
+        schema.init(path)
+        store = SpecStore(path)
+        runner_id = store.create(**a_spec(), cpu_limit="0-15",
+                                 memory_limit=8 * 1024**3)
+        with schema.connect(path) as c:
+            c.execute("ALTER TABLE runner_specs DROP COLUMN cpu_override")
+            c.execute("ALTER TABLE runner_specs DROP COLUMN memory_override")
+        return path, store, runner_id
+
+    def test_init_adds_both_columns_and_keeps_the_specs(self, tmp_path):
+        path, store, runner_id = self.old_shape(tmp_path)
+        schema.init(path)
+        with schema.connect(path) as c:
+            columns = {r["name"]: r["type"] for r in c.execute(
+                "PRAGMA table_info(runner_specs)")}
+        assert columns["cpu_override"] == "TEXT"
+        assert columns["memory_override"] == "INTEGER"
+        spec = store.get(runner_id)
+        assert spec["cpu_override"] is None and spec["memory_override"] is None
+        assert spec["cpu_limit"] == "0-15" and spec["memory_limit"] == 8 * 1024**3
+
+    def test_an_override_can_be_written_on_a_migrated_database(self, tmp_path):
+        path, store, runner_id = self.old_shape(tmp_path)
+        schema.init(path)
+        spec = store.get(runner_id)
+        store.update(runner_id, spec["spec_version"], cpu_override="8.0",
+                     memory_override=4 * 1024**3)
+        spec = store.get(runner_id)
+        assert spec["cpu_override"] == "8.0" and spec["memory_override"] == 4 * 1024**3

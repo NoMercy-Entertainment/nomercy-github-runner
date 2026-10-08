@@ -133,6 +133,12 @@ CREATE TABLE IF NOT EXISTS runner_specs (
   -- the worker's own terms (a launchd label and the directory it runs from).
   -- Null for every runner this controller made, which is nearly all of them.
   adopt_unit       TEXT,
+  -- GitHub #5: an admin's own CPU and memory for this one runner. They
+  -- outrank the fleet's setting and the deployment's, and survive every
+  -- recreate; cpu_limit and memory_limit stay the values actually resolved
+  -- (on a pinned platform cpu_limit is the cpuset cut for this width).
+  cpu_override     TEXT,
+  memory_override  INTEGER,
   -- Soft delete. History keeps a referent, so a run from a runner that no
   -- longer exists still resolves to something that says what it was.
   deleted_at       TEXT
@@ -282,6 +288,10 @@ def _migrate(c):
         # anything. Null until observed, which is not any value.
         if column not in have:
             c.execute(f"ALTER TABLE runner_specs ADD COLUMN {column} TEXT")
+    for column, kind in (("cpu_override", "TEXT"), ("memory_override", "INTEGER")):
+        # GitHub #5. Nullable: a runner nobody overrode takes its fleet's.
+        if column not in have:
+            c.execute(f"ALTER TABLE runner_specs ADD COLUMN {column} {kind}")
 
 
 def init(path=None):

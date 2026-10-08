@@ -55,6 +55,7 @@ WRITABLE = (
     "desired_state", "actual_state", "registration_id", "registration_uuid",
     "last_seen_at", "current_operation", "last_error", "capabilities",
     "exec_unit_ref", "fleet_id", "adopt_unit", "last_note",
+    "cpu_override", "memory_override",
 )
 
 #: Stored as JSON text, decoded on the way out so callers never parse.
