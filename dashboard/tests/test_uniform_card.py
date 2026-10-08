@@ -372,6 +372,64 @@ class TestTheSameCardEverywhere:
         assert arm["storage"] == ("unknown", "unknown / unknown shared", 0.0)
 
 
+# ---------------------------------------------------------------------------
+# every source of a card: today's containers and forge-only runners too
+# ---------------------------------------------------------------------------
+
+LEGACY = generic.SNAPSHOT["runners"][0]
+UNMANAGED = generic.SNAPSHOT["elsewhere"][0]
+
+
+def legacy_card():
+    return cards.from_legacy(LEGACY, generic.SNAPSHOT["host"],
+                             generic.SNAPSHOT["generated"])
+
+
+def unmanaged_card():
+    return cards.from_unmanaged(UNMANAGED, generic.SNAPSHOT["generated"])
+
+
+class TestEverySourceHasTheSameMeters:
+    def test_each_meter_has_the_same_keys_whatever_made_the_card(self):
+        every = [card(s) for s in EVERY.values()] + generic.every_card()
+        for meter in METERS:
+            shapes = {tuple(sorted(c[meter])) for c in every}
+            assert len(shapes) == 1, (meter, shapes)
+
+    def test_a_legacy_container_is_bounded_by_its_own_limits(self):
+        c = legacy_card()
+        assert c["cpu"]["total_cores"] == 16 and c["cpu"]["shared"] is False
+        assert c["memory"]["total_bytes"] == 32 * GIB
+        assert c["cache"]["total_bytes"] == cards.CACHE_CAP_BYTES
+        assert c["cache"]["shared"] is False
+
+    def test_a_forge_only_runner_shares_the_disk_its_exporter_reads(self):
+        c = unmanaged_card()
+        assert c["cpu"]["total_cores"] == 56
+        assert c["memory"]["used_bytes"] == 2 * GB
+        assert c["memory"]["shared"] is True
+        assert c["storage"] == {"used_bytes": None,
+                                "total_bytes": 1000 * GB, "shared": True,
+                                "volume_used_bytes": 600 * GB,
+                                "volume_total_bytes": 1000 * GB}
+
+    @pytest.mark.skipif(NODE is None, reason="node is not installed")
+    def test_the_renderer_draws_what_they_know(self):
+        legacy, unmanaged = render("cardHTML", [legacy_card(),
+                                                unmanaged_card()])
+        got = {m[0]: m[1:] for m in _meters(legacy)}
+        assert [m[0] for m in _meters(legacy)] == list(METERS)
+        assert got["cpu"] == ("50.8%", "8.1 / 16 cores", 50.8)
+        assert got["memory"][1] == "12 GB / 34 GB"
+        assert got["cache"] == ("31.3%", "13 GB / 40 GB", 31.3)
+        got = {m[0]: m[1:] for m in _meters(unmanaged)}
+        assert [m[0] for m in _meters(unmanaged)] == list(METERS)
+        assert got["cpu"][1] == "0.0 / 56 cores"
+        assert got["storage"] == ("60.0%",
+                                  "unknown own · 600 GB / 1000 GB shared",
+                                  60.0)
+
+
 def test_the_page_gives_each_card_its_workers_hardware(tmp_path):
     """A runner whose beats name no limit and no machine is a share of the
     worker it is placed on, as that worker declared its hardware."""

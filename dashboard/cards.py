@@ -218,10 +218,18 @@ def from_legacy(runner, host=None, generated=None):
         actions.append(_action(verb, visible=visible[verb], url=url,
                                body=body, confirm=_confirm(verb, who, forge)))
 
-    cores = runner.get("cpu_cores")
-    mem_used = to_bytes(runner.get("mem_used"))
-    mem_limit = to_bytes(runner.get("mem_limit"))
     stopped = state == "stopped"
+    # The same four meters a controller runner's card has, from the same
+    # function: the snapshot read as the telemetry it is.
+    cpu, memory, storage, cache = _measured({}, {
+        "cpu_percent": None if stopped else runner.get("cpu_percent"),
+        "cpu_cores": runner.get("cpu_cores"),
+        "mem_used_bytes": None if stopped else to_bytes(runner.get("mem_used")),
+        "mem_limit_bytes": to_bytes(runner.get("mem_limit")),
+        "cache_bytes": None if stopped else to_bytes(runner.get("build_cache")),
+        "cache_cap_bytes": CACHE_CAP_BYTES,
+    }, None, {"cpus": host.get("ncpu"),
+              "memory_bytes": host.get("mem_total_bytes")})
     return _card(
         runner_id=None,
         display_name=display_name(name, provider),
@@ -234,15 +242,10 @@ def from_legacy(runner, host=None, generated=None):
         runtime="linux-container",
         state=state,
         job=runner.get("job") or None,
-        cpu={"percent": None if stopped else runner.get("cpu_percent"),
-             "cores": cores or None,
-             "host_cores": host.get("ncpu") or None},
-        memory={"used_bytes": None if stopped else mem_used,
-                "limit_bytes": mem_limit},
-        storage=None,
-        cache={"used_bytes": None if stopped else
-               to_bytes(runner.get("build_cache")),
-               "cap_bytes": CACHE_CAP_BYTES},
+        cpu=cpu,
+        memory=memory,
+        storage=storage,
+        cache=cache,
         reachable=not stopped,
         last_seen_at=generated,
         current_operation=None,
@@ -279,8 +282,20 @@ def from_unmanaged(entry, generated=None):
     caps = dict(UNMANAGED_CAPABILITIES.get(platform,
                                            UNMANAGED_CAPABILITIES[None]))
     t = entry.get("telemetry") or None
-    disk = (t or {}).get("disk") or None
+    disk = (t or {}).get("disk") or {}
     state = FORGE_STATES.get(entry.get("status") or "", "unknown")
+    # The same four meters as every other card. The exporter reads the
+    # machine's disk, not the runner's own share of it: that is the volume
+    # the runner shares.
+    cpu, memory, storage, cache = _measured({}, {
+        "cpu_percent": (t or {}).get("cpu_percent"),
+        "cpu_cores": (t or {}).get("cpu_cores"),
+        "mem_used_bytes": (t or {}).get("mem_used_bytes"),
+        "mem_limit_bytes": (t or {}).get("mem_limit_bytes"),
+        "storage_volume_used_bytes": disk.get("used_bytes"),
+        "storage_volume_total_bytes": disk.get("total_bytes"),
+        "cache_cap_bytes": None,
+    }, None)
     return _card(
         runner_id=None,
         display_name=entry.get("name") or "-",
@@ -291,14 +306,10 @@ def from_unmanaged(entry, generated=None):
         runtime=caps.get("kind"),
         state=state,
         job=(t or {}).get("job") if state == "busy" else None,
-        cpu={"percent": (t or {}).get("cpu_percent"),
-             "cores": (t or {}).get("cpu_cores") or None,
-             "host_cores": None},
-        memory={"used_bytes": (t or {}).get("mem_used_bytes"),
-                "limit_bytes": (t or {}).get("mem_limit_bytes") or None},
-        storage=({"used_bytes": disk.get("used_bytes"),
-                  "total_bytes": disk.get("total_bytes")} if disk else None),
-        cache=None,
+        cpu=cpu,
+        memory=memory,
+        storage=storage,
+        cache=cache,
         reachable=t is not None,
         last_seen_at=generated if t is not None else None,
         current_operation=None,
