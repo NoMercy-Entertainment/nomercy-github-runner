@@ -8,6 +8,30 @@ anything goes.
 """
 import os
 import shutil
+import stat
+import sys
+
+
+def _make_writable_and_retry(func, path, *_):
+    """git leaves .git/objects read-only, and Windows will not delete a
+    read-only file: clear the bit and try once more. Anything else - a file
+    another process holds, a real permission - fails as it would have."""
+    os.chmod(path, stat.S_IWRITE | stat.S_IREAD | stat.S_IEXEC)
+    func(path)
+
+
+def _rmtree(path):
+    if sys.version_info >= (3, 12):
+        shutil.rmtree(path, onexc=_make_writable_and_retry)
+    else:
+        shutil.rmtree(path, onerror=_make_writable_and_retry)
+
+
+def _unlink(path):
+    try:
+        os.unlink(path)
+    except PermissionError:
+        _make_writable_and_retry(os.unlink, path)
 
 
 def df_figures(text):
@@ -79,7 +103,7 @@ class LocalFs:
 
     def rmtree(self, path):
         if os.path.exists(path):
-            shutil.rmtree(path)
+            _rmtree(path)
 
     def clear_dir(self, path):
         """Delete what is inside `path`, keeping `path`. Continues past what
@@ -89,9 +113,9 @@ class LocalFs:
             full = os.path.join(path, name)
             try:
                 if os.path.isdir(full) and not os.path.islink(full):
-                    shutil.rmtree(full)
+                    _rmtree(full)
                 else:
-                    os.unlink(full)
+                    _unlink(full)
             except OSError as e:
                 failed.append(f"{name}: {e.strerror}")
         if failed:
