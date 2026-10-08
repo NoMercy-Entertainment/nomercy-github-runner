@@ -60,7 +60,7 @@ Host rnr-arm-guest
 function Invoke-ArmGuest([string] $Command) {
     $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($Command))
     $output = & $ssh -F $sshConfig -o BatchMode=yes rnr-arm-guest `
-        powershell.exe -NoLogo -NoProfile -NonInteractive -EncodedCommand $encoded 2>&1
+        powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand $encoded 2>&1
     if ($LASTEXITCODE -ne 0) { throw "ARM guest command failed: $($output | Out-String)" }
     return $output
 }
