@@ -32,12 +32,16 @@ def test_an_existing_directory_cannot_be_replaced_with_a_workspace_alias(tmp_pat
 
 
 @pytest.mark.parametrize("architecture,least", [("arm64", 300), ("amd64", 30)])
-def test_the_alias_waits_as_long_as_the_machine_needs_to_start_a_shell(tmp_path, architecture, least):
+def test_the_alias_waits_as_long_as_the_machine_needs_to_start_a_shell(tmp_path, monkeypatch, architecture, least):
     """An emulated ARM64 guest takes minutes to start PowerShell, so a 30 s
     bound timed the alias out and failed github-windows-arm64-1's recreate
     with "create_unit: timed out after 30s" (2026-10-08)."""
     root, target = tmp_path / "aliases", tmp_path / "work"
     target.mkdir()
+    # The bound is what is under test, not the drive-letter rule, which
+    # refuses the POSIX tmp_path the Linux CI runner hands out.
+    from agent import windows_workspace
+    monkeypatch.setattr(windows_workspace, "alias_path", lambda base, rid: str(root / "alias"))
     seen = []
 
     def run(args, timeout):
