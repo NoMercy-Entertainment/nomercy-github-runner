@@ -17,7 +17,8 @@ def test_old_storage_does_not_look_fresh_because_cpu_keeps_arriving():
                  "cache_bytes": 99, "storage_at": at(900), "cache_at": at(900)}
     card = cards.from_spec(spec(telemetry=telemetry), now=NOW)
     assert card["cpu"]["percent"] == 100
-    assert card["storage"] is None and card["cache"] is None
+    assert card["storage"]["used_bytes"] is None
+    assert card["cache"]["used_bytes"] is None
 
 
 def test_card_uses_measured_cache_cap_not_github_default():
@@ -60,7 +61,9 @@ def test_a_runner_with_a_disk_limit_reports_its_share_of_it():
     card = cards.from_spec(spec(disk_limit=100 * 10 ** 9, telemetry=telemetry),
                            now=NOW)
     assert card["storage"] == {"used_bytes": 12 * 10 ** 7,
-                               "total_bytes": 100 * 10 ** 9}
+                               "total_bytes": 100 * 10 ** 9, "shared": False,
+                               "volume_used_bytes": None,
+                               "volume_total_bytes": None}
 
 
 def test_a_measured_disk_limit_is_preferred_over_the_configured_one():
@@ -73,9 +76,12 @@ def test_a_measured_disk_limit_is_preferred_over_the_configured_one():
     assert card["storage"]["total_bytes"] == 99 * 10 ** 9
 
 
-def test_a_runner_without_a_disk_of_its_own_keeps_todays_behaviour():
-    """No `disk_limit` on the spec and no `disk_limit_bytes` on the beat: a
-    used figure, and no total - exactly as before this fix."""
+def test_a_runner_without_a_disk_of_its_own_shares_one():
+    """No `disk_limit` on the spec and no disk size on the beat: the runner
+    shares a volume, and until a beat has said which, its total is unknown -
+    not missing, and not its own."""
     telemetry = {"at": at(1), "storage_bytes": 12 * 10 ** 7, "storage_at": at(1)}
     card = cards.from_spec(spec(telemetry=telemetry), now=NOW)
-    assert card["storage"] == {"used_bytes": 12 * 10 ** 7, "total_bytes": None}
+    assert card["storage"] == {"used_bytes": 12 * 10 ** 7, "total_bytes": None,
+                               "shared": True, "volume_used_bytes": None,
+                               "volume_total_bytes": None}

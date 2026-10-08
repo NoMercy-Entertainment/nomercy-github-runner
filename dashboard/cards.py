@@ -389,48 +389,90 @@ def _shown_state(lifecycle, ready):
     return "unknown"
 
 
-def _measured(spec, override, now):
-    """What the unit last used, from heartbeats - None where it was not
-    reported, or not recently: unknown, never zero."""
+def _amount(value):
+    """A positive number, or None: zero, a boolean or text is no limit."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return value if value > 0 else None
+
+
+def _first(*values):
+    return next((v for v in map(_amount, values) if v is not None), None)
+
+
+def _measured(spec, override, now, host=None):
+    """The card's four meters - CPU, memory, storage and cache - always all
+    four, each with what the unit uses and what that is a share of.
+
+    The total is the runner's own limit where it has one: its cores, its
+    memory limit, its own disk, its cache cap. Without one it is the real
+    boundary the runner shares, and the meter says `shared`: the machine's
+    cores and memory (from the beat, else from what the worker declared -
+    `host`, from control/hardware.py), and the volume its directory or its
+    cache is on. A shared storage or cache meter also carries that volume's
+    used figure, because the volume filling is what stops the runner.
+
+    Usage comes from heartbeats and is None - unknown, never zero - where
+    it was not reported, or not recently. Nothing here asks which platform
+    the runner is on: every runtime reports the same keys."""
     from datetime import datetime, timezone
     now = now or datetime.now(timezone.utc)
+    host = host or {}
     t = dict(spec.get("telemetry") or {})
     t.update(override or {})
     age = _age(t.get("at"), now)
     live = override is not None or (age is not None and
                                     0 <= age <= HEARTBEAT_FRESH)
+
+    def recent(*stamps):
+        if override is not None:
+            return True
+        seen = _age(next((t[s] for s in stamps if t.get(s)), None), now)
+        return seen is not None and 0 <= seen <= STORAGE_FRESH
+
+    own_cores = _amount(t.get("cpu_cores"))
+    host_cores = _first(t.get("host_cores"), host.get("cpus"))
     cpu = {"percent": t.get("cpu_percent") if live else None,
-           "cores": t.get("cpu_cores"), "host_cores": t.get("host_cores")}
+           "cores": own_cores, "host_cores": host_cores,
+           "total_cores": own_cores or host_cores,
+           "shared": own_cores is None}
+
+    own_memory = _amount(t.get("mem_limit_bytes"))
+    host_memory = None if own_memory else _first(t.get("host_mem_bytes"),
+                                                 host.get("memory_bytes"))
     memory = {"used_bytes": t.get("mem_used_bytes") if live else None,
-              "limit_bytes": t.get("mem_limit_bytes")}
-    storage_age = _age(t.get("storage_at") or t.get("deep_at"), now)
-    cache_age = _age(t.get("cache_at") or t.get("deep_at"), now)
-    if t.get("root_disk_total_bytes") and live:
-        # The appliance's own root disk: the recorded "offline, but the
-        # hypervisor side looks fine" failure is this filling up.
-        storage = {"used_bytes": t.get("root_disk_used_bytes"),
-                   "total_bytes": t.get("root_disk_total_bytes")}
-    elif t.get("storage_bytes") is not None and (override is not None or
-            storage_age is not None and 0 <= storage_age <= STORAGE_FRESH):
-        # A runner with a disk of its own (T-27): the total is what the
-        # agent measured, when a beat has carried it, else what the
-        # controller itself told this runner's disk to be - the same number,
-        # known since before create and so before any heartbeat about it
-        # ever could arrive. Neither changes what "used" means here; a
-        # runner with no disk of its own has neither and keeps today's
-        # used-figure-with-no-total exactly.
-        total = t.get("disk_limit_bytes")
-        if total is None:
-            total = spec.get("disk_limit")
-        storage = {"used_bytes": t.get("storage_bytes"), "total_bytes": total}
-    else:
-        storage = None
+              "limit_bytes": own_memory, "host_bytes": host_memory,
+              "total_bytes": own_memory or host_memory,
+              "shared": own_memory is None}
+
+    def bounded(used, own, volume, stamp):
+        """A storage-like meter: the unit's own boundary, else the volume it
+        shares, as long as that volume was read recently."""
+        if own:
+            return {"used_bytes": used, "total_bytes": own, "shared": False,
+                    "volume_used_bytes": None, "volume_total_bytes": None}
+        fresh = recent(stamp)
+        total = _amount(t.get(f"{volume}_total_bytes")) if fresh else None
+        return {"used_bytes": used, "total_bytes": total, "shared": True,
+                "volume_used_bytes": t.get(f"{volume}_used_bytes")
+                if fresh else None,
+                "volume_total_bytes": total}
+
+    # A runner's own disk (T-27): its size as the agent measured it, else
+    # what the controller told it to be - the same number, known since
+    # before create and so before any heartbeat about it could arrive.
+    storage = bounded(
+        t.get("storage_bytes") if recent("storage_at", "deep_at") else None,
+        _first(t.get("storage_total_bytes"), t.get("disk_limit_bytes"),
+               spec.get("disk_limit")),
+        "storage_volume", "storage_volume_at")
     policy = spec.get("cache_policy") or {}
-    cache = ({"used_bytes": t.get("cache_bytes"),
-              "cap_bytes": t.get("cache_cap_bytes") or policy.get("max_bytes")}
-             if t.get("cache_bytes") is not None and (override is not None or
-                 cache_age is not None and 0 <= cache_age <= STORAGE_FRESH)
-             else None)
+    cap = _first(t.get("cache_cap_bytes"), policy.get("max_bytes"))
+    shared_cache = bounded(
+        t.get("cache_bytes") if recent("cache_at", "deep_at") else None,
+        cap, "cache_volume", "cache_volume_at")
+    cache = {"used_bytes": shared_cache.pop("used_bytes"), "cap_bytes": cap,
+             **shared_cache}
     return cpu, memory, storage, cache
 
 
@@ -458,8 +500,12 @@ def _job(lifecycle, telemetry):
     return None
 
 
-def from_spec(spec, telemetry=None, worker_reachable=None, now=None):
-    """A card for a runner the controller manages, from its RunnerSpec."""
+def from_spec(spec, telemetry=None, worker_reachable=None, now=None,
+              host=None):
+    """A card for a runner the controller manages, from its RunnerSpec.
+    `host` is the hardware its worker declared ({"cpus", "memory_bytes"},
+    control/hardware.py): what a runner with no limit of its own shares,
+    when its heartbeat does not say."""
     rid = spec["runner_id"]
     caps = dict(spec.get("capabilities") or {})
     state = spec.get("actual_state") or "unknown"
@@ -488,7 +534,7 @@ def from_spec(spec, telemetry=None, worker_reachable=None, now=None):
             verb, visible=visible[verb],
             url=f"/api/v2/runners/{rid}/actions/{verb}", body={},
             confirm=_confirm(verb, who, forge), idempotent=True))
-    cpu, memory, storage, cache = _measured(spec, telemetry, now)
+    cpu, memory, storage, cache = _measured(spec, telemetry, now, host)
     reachable = None if worker_reachable is None else         bool(worker_reachable) and ready["process"] == "up"
     return _card(
         runner_id=rid,

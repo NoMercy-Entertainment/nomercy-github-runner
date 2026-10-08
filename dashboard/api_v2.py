@@ -178,13 +178,37 @@ def _controller_cards(service):
         healthy = {w["host_id"] for w in service.inventory.healthy()}
     except Exception:   # noqa: BLE001
         pass
+    # Each worker's hardware, read once for the page rather than once per
+    # card: what a runner with no limit of its own shares.
+    from control import hardware
+    try:
+        hosts = {w["host_id"]: hardware.of_worker(w)
+                 for w in service.inventory.list()}
+    except Exception:   # noqa: BLE001
+        hosts = {}
     return [_runner_card(service, s, s.get("host_id") in healthy
-                         if s.get("host_id") else None)
+                         if s.get("host_id") else None,
+                         host=hosts.get(s.get("host_id")) or {})
             for s in specs if s.get("actual_state") != "absent"]
 
 
-def _runner_card(service, spec, reachable):
-    card = cards.from_spec(spec, worker_reachable=reachable)
+def _host_of(service, spec):
+    """The hardware of the worker a runner is placed on, or {} unknown."""
+    if not spec.get("host_id"):
+        return {}
+    from control import hardware
+    try:
+        return hardware.of_host(service.inventory, service.specs,
+                                spec.get("platform"), spec["host_id"],
+                                healthy_only=False)
+    except Exception:   # noqa: BLE001
+        return {}
+
+
+def _runner_card(service, spec, reachable, host=None):
+    card = cards.from_spec(spec, worker_reachable=reachable,
+                           host=_host_of(service, spec) if host is None
+                           else host)
     if spec.get("provider") == "forgejo" and spec.get("actual_state") in ("busy", "draining"):
         card["job"] = _named_forgejo_job(service, card.get("job"))
     from control import states

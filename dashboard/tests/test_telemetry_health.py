@@ -108,7 +108,10 @@ class TestTheCardShowsWhatTheUnitUses:
         card = cards.from_spec(service.specs.get(rid), worker_reachable=True)
         assert card["cpu"]["percent"] == 312.5
         assert card["memory"] == {"used_bytes": 7 * 2 ** 30,
-                                  "limit_bytes": 32 * 2 ** 30}
+                                  "limit_bytes": 32 * 2 ** 30,
+                                  "host_bytes": None,
+                                  "total_bytes": 32 * 2 ** 30,
+                                  "shared": False}
         assert card["storage"]["used_bytes"] == 90 * 10 ** 9
         assert card["cache"]["used_bytes"] == 12 * 10 ** 9
         assert card["last_seen_at"] == service.specs.get(rid)["last_seen_at"]
@@ -136,7 +139,8 @@ class TestTheCardShowsWhatTheUnitUses:
                                  "host_cores": 64})
         card = cards.from_spec(service.specs.get(rid), worker_reachable=True)
         assert card["cpu"] == {"percent": 1180.0, "cores": 16,
-                               "host_cores": 64}
+                               "host_cores": 64, "total_cores": 16,
+                               "shared": False}
 
     def test_the_job_a_unit_names_is_kept_and_then_let_go(self, placed):
         """Reported every beat, so a job that is no longer named is no
