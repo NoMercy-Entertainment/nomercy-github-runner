@@ -26,7 +26,7 @@ import providers
 from store.fleets import FleetStore
 from store.specs import SpecStore
 
-from . import cpusets, placement, retry, states
+from . import cpusets, hardware, placement, retry, states
 from .inventory import Inventory
 from .operations import OperationStore
 
@@ -334,25 +334,11 @@ class RunnerService:
         not a pooled number pretending to answer for a host that has not
         been chosen.
         """
-        kind = placement.WORKER_KIND[platform]
-        workers = [w for w in self.inventory.healthy(kind=kind)
-                   if w["host_id"] == host_id]
-        counts = []
-        for worker in workers:
-            value = placement.declared(worker, "host_cores")
-            if isinstance(value, int) and value > 0:
-                counts.append(value)
-        if not counts:
-            for spec in self.specs.list():
-                if spec.get("platform") != platform or spec.get("host_id") != host_id:
-                    continue
-                value = (spec.get("telemetry") or {}).get("host_cores")
-                if isinstance(value, int) and value > 0:
-                    counts.append(value)
-        if not counts:
+        cpus = hardware.of_host(self.inventory, self.specs, platform, host_id)["cpus"]
+        if cpus is None:
             raise Refused(f"cannot pin a CPU window: host {host_id!r} has "
                           f"not said how many cores it has yet")
-        return min(counts)
+        return cpus
 
     def _cpu_window(self, platform, width, host_id, exclude=()):
         """A window of `width` cores on `host_id`'s own numbering that
