@@ -250,8 +250,12 @@ class WindowsProcessRuntime:
 
         # 4. The runner's software, once. A re-driven create must not copy
         #    over a registered runner's files while its service holds them.
+        #    Until it is registered nothing holds them, so a copy a failed undo
+        #    half deleted - the marker kept, the software gone - is made whole.
         marker = ntpath.join(p["reg"], TEMPLATE_MARKER)
-        if not self._fs.exists(marker):
+        if not self._fs.exists(marker) or (
+                not self._registered(p["reg"])
+                and self._incomplete_copy(template, p["reg"])):
             self._fs.copytree(template, p["reg"])
             self._fs.write_text(marker, image)
 
@@ -317,6 +321,24 @@ class WindowsProcessRuntime:
         if disk:
             args.extend(["--volume-guid", disk["volume_guid"]])
         return args
+
+    def _registered(self, reg):
+        """A registration file in the place either forge's template keeps it:
+        the GitHub runner's beside its binaries, Forgejo's beside the
+        entry points."""
+        return any(self._fs.exists(ntpath.join(reg, *where))
+                   for where in ((".runner",), ("agent", ".runner")))
+
+    def _incomplete_copy(self, template, reg):
+        """Something the template has at its top level is missing here, or a
+        directory that is full there is empty here."""
+        for name in self._fs.listdir(template):
+            here = ntpath.join(reg, name)
+            if not self._fs.exists(here):
+                return True
+            if self._fs.listdir(ntpath.join(template, name)) and not self._fs.listdir(here):
+                return True
+        return False
 
     def _configure(self, name, p, spec):
         self._check(self._sc("config", name, "obj=", f"NT SERVICE\\{name}",

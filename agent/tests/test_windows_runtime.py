@@ -291,6 +291,29 @@ class TestCreate:
         runtime.create(RID, SPEC)
         assert len(copies) == 1
 
+    def test_a_half_removed_unregistered_copy_is_made_whole_again(self, runtime, host):
+        """A failed undo can delete a runner's software and leave the marker
+        that says it was copied. github-windows-arm64-1 then got an empty
+        agent directory on every retry: "config.cmd ... cannot find the file
+        specified" (2026-10-08). Nothing is registered yet, so nothing holds
+        those files, and the copy is made again."""
+        runtime.create(RID, SPEC)
+        reg = runtime.paths(RID)["reg"]
+        host.remove(reg + "\\register.ps1")
+        runtime.create(RID, SPEC)
+        assert host.exists(reg + "\\register.ps1")
+
+    def test_a_registered_runner_is_never_copied_over(self, runtime, host):
+        copies = []
+        runtime.create(RID, SPEC)
+        reg = runtime.paths(RID)["reg"]
+        host.write_text(reg + "\\.runner", "{}")
+        host.remove(reg + "\\register.ps1")
+        real = host.copytree
+        host.copytree = lambda s, d: (copies.append(d), real(s, d))
+        runtime.create(RID, SPEC)
+        assert copies == []
+
     @pytest.mark.parametrize("step", ["install", "config", "sidtype", "set"])
     def test_a_create_cut_off_anywhere_converges(self, runtime, host, step):
         from .fake_docker import Crash
