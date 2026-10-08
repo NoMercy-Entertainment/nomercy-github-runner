@@ -8,6 +8,12 @@ pipe client and its parent must outlive the service-side handler.
 import platform
 
 
+def service_identity_timeout(architecture=None):
+    """Keep identity verification mandatory while allowing ARM emulation startup."""
+    architecture = (architecture or platform.machine()).lower()
+    return 60 if architecture in ("arm64", "aarch64") else 10
+
+
 def registration_limits(architecture=None):
     architecture = (architecture or platform.machine()).lower()
     if architecture in ("arm64", "aarch64"):

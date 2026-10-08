@@ -71,3 +71,21 @@ def test_x64_registration_bounds_are_preserved():
     assert windows_timeouts.registration_limits('AMD64') == {
         'key_setup': 30, 'script': 105, 'pipe': 115, 'client': 140,
     }
+
+
+@pytest.mark.parametrize('architecture,timeout', [('ARM64', 60), ('aarch64', 60), ('AMD64', 10)])
+def test_service_identity_remains_required_with_architecture_deadline(monkeypatch, architecture, timeout):
+    from agent.runtimes import windows_process
+    monkeypatch.setattr(windows_timeouts.platform, 'machine', lambda: architecture)
+    monkeypatch.setattr(windows_process, 'service_sid', lambda _: 'S-1-5-80-123')
+
+    def correct_identity(args, **kwargs):
+        assert kwargs['timeout'] == timeout
+        return subprocess.CompletedProcess(args, 0, '"runner","S-1-5-80-123"', '')
+
+    monkeypatch.setattr(registration.subprocess, 'run', correct_identity)
+    registration.require_service_identity(RID)
+    monkeypatch.setattr(registration.subprocess, 'run', lambda *a, **k:
+                        subprocess.CompletedProcess(a[0], 0, '"SYSTEM","S-1-5-18"', ''))
+    with pytest.raises(RuntimeError, match='own service virtual account'):
+        registration.require_service_identity(RID)

@@ -18,7 +18,7 @@ import threading
 import time
 
 from . import naming
-from .windows_timeouts import registration_limits
+from .windows_timeouts import registration_limits, service_identity_timeout
 
 KEY_ROOT = r"C:\ProgramData\nomercy\runner-keys"
 MAX_MESSAGE = 64 * 1024
@@ -95,7 +95,7 @@ def require_service_identity(runner_id):
     """A misconfigured LocalSystem service must never host this endpoint."""
     from .runtimes.windows_process import service_sid
     result = subprocess.run([WHOAMI, "/user", "/fo", "csv", "/nh"],
-                            capture_output=True, text=True, timeout=10)
+                            capture_output=True, text=True, timeout=service_identity_timeout())
     rows = list(csv.reader(io.StringIO(result.stdout)))
     expected = service_sid(naming.unit_name(runner_id))
     if result.returncode or len(rows) != 1 or len(rows[0]) != 2 or rows[0][1] != expected:
