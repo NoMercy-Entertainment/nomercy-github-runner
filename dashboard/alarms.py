@@ -593,17 +593,14 @@ def duration(seconds):
 
 MONITOR = Monitor()
 
-#: Called after every minute pass with (path, env, now) - the webhook's
-#: delivery of what is due.
-TICK_LISTENERS = []
-
 
 def snapshot(now=None):
     return MONITOR.view(now)
 
 
 def run_forever(get_plane, monitor=None, sleep=time.sleep, clock=time.time):
-    """The minute thread: runners, rechecks, notifications. `get_plane`
+    """The minute thread: runners and rechecks - never a webhook send,
+    which has its own thread (alarm_notify.run_forever). `get_plane`
     answers (path, env, specs), or None while the control plane has not run;
     asked every pass, so a token set in Settings is used without a restart."""
     monitor = monitor or MONITOR
@@ -618,8 +615,6 @@ def run_forever(get_plane, monitor=None, sleep=time.sleep, clock=time.time):
                 path, env, specs = plane
                 cfg = settings(env)
                 monitor.tick(path, env, specs, clock())
-                for listener in list(TICK_LISTENERS):
-                    listener(path, env, clock())
         except Exception as e:  # noqa: BLE001 - a pass never stops the loop
             monitor.note = f"the last check failed: {type(e).__name__}"
             print(f"[alarms] {type(e).__name__}: {e}")

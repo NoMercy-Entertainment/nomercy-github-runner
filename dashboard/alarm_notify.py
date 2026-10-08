@@ -116,12 +116,31 @@ def _post(url, body, headers):
         return False, type(e).__name__
 
 
+#: How often the delivery thread looks for what is due.
+DELIVERY_SECONDS = 15
+
+
+def run_forever(get_plane, sleep=time.sleep, clock=time.time):
+    """The delivery thread, apart from the runner checks: a receiver that
+    hangs for every send of a pass delays only other sends. `get_plane`
+    answers (path, env, specs) or None, like the monitor's."""
+    while True:
+        try:
+            plane = get_plane()
+            if plane is not None:
+                path, env, _ = plane
+                deliver_due(path, env, clock())
+        except Exception as e:  # noqa: BLE001 - a pass never stops the loop
+            print(f"[alarms] delivery: {type(e).__name__}")
+        sleep(DELIVERY_SECONDS)
+
+
 def backoff(attempts):
     return min(30 * 2 ** (attempts - 1), 1800)
 
 
 def deliver_due(path, env, now, post=None):
-    """Send every outbox row that is due. Called after each minute pass."""
+    """Send every outbox row that is due. Called by the delivery thread."""
     post = post or _post
     url = str((env or {}).get("ALARM_WEBHOOK_URL") or "").strip()
     stamp = alarms.iso(now)

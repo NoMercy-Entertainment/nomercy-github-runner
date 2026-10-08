@@ -891,8 +891,11 @@ if __name__ == "__main__":
     import alarm_notify
     import alarms
     alarms.LISTENERS.append(alarm_notify.enqueue)
-    alarms.TICK_LISTENERS.append(alarm_notify.deliver_due)
     threading.Thread(target=alarms.run_forever, args=(_alarm_plane,),
+                     daemon=True).start()
+    # Sends on a thread of its own: a hanging receiver must not delay a
+    # runner check.
+    threading.Thread(target=alarm_notify.run_forever, args=(_alarm_plane,),
                      daemon=True).start()
     threading.Thread(target=alarms.run_queue_forever, args=(_alarm_plane,),
                      daemon=True).start()

@@ -190,6 +190,51 @@ class TestRetry:
                 c.execute("SELECT last_error FROM alarm_outbox").fetchone()[0])
 
 
+class TestDeliveryHasItsOwnThread:
+    """Up to fifty sends of ten seconds each must never sit between two
+    runner checks - nor trip "the monitor has stopped checking"."""
+
+    def test_the_runner_thread_sends_nothing(self, path, monkeypatch):
+        assert not hasattr(alarms, "TICK_LISTENERS")
+        called = []
+        monkeypatch.setattr(alarm_notify, "deliver_due", lambda *a, **k: called.append(a))
+        m = alarms.Monitor(clients=lambda forge, env: None)
+        slept = []
+
+        def sleep(seconds):
+            slept.append(seconds)
+            raise SystemExit
+        with pytest.raises(SystemExit):
+            alarms.run_forever(lambda: (path, {}, []), monitor=m, sleep=sleep,
+                               clock=lambda: T0)
+        assert called == [] and m.checked_at == T0
+
+    def test_the_delivery_loop_sends_and_survives_a_failure(self, path, monkeypatch):
+        calls = []
+
+        def deliver(p, env, now, post=None):
+            calls.append((p, env, now))
+            if len(calls) == 1:
+                raise RuntimeError("receiver hung up")
+        monkeypatch.setattr(alarm_notify, "deliver_due", deliver)
+        slept = []
+
+        def sleep(seconds):
+            slept.append(seconds)
+            if len(slept) == 2:
+                raise SystemExit
+        env = {"ALARM_WEBHOOK_URL": HOOK}
+        with pytest.raises(SystemExit):
+            alarm_notify.run_forever(lambda: (path, env, []), sleep=sleep, clock=lambda: T0)
+        assert calls == [(path, env, T0), (path, env, T0)]
+        assert slept == [alarm_notify.DELIVERY_SECONDS] * 2
+
+    def test_the_dashboard_starts_it(self):
+        from pathlib import Path
+        source = (Path(alarm_notify.__file__).parent / "app.py").read_text(encoding="utf-8")
+        assert "target=alarm_notify.run_forever" in source
+
+
 class TestUnsetIsBannerOnly:
     def test_nothing_is_sent_and_nothing_waits_to_be(self, path):
         post = Post()
