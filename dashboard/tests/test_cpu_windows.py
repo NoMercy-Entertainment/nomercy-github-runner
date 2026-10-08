@@ -357,6 +357,32 @@ class TestOverrides:
         assert replacement["memory_limit"] == 8 * G
         assert replacement["memory_swap_limit"] == 24 * G
 
+    def test_a_cleared_cpu_override_on_a_fleet_with_no_cpu_goes_back_to_none(self, tmp_path):
+        """What a cleared quota left behind is not a default: a fleet with no
+        CPU limit gives a new runner none, and so does the recreate."""
+        service = _service(tmp_path)
+        spec = _placed_with(service, "2.5")
+        assert service.limits_of(spec)["pending"] is True
+        assert service.replacement_spec(spec)["cpu_limit"] is None
+
+    def test_a_window_survives_on_a_fleet_with_no_cpu(self, tmp_path):
+        service = _service(tmp_path)
+        spec = _placed_with(service, "4-19")
+        assert service.replacement_spec(spec)["cpu_limit"] == "4-19"
+        assert service.limits_of(spec)["pending"] is False
+
+    def test_a_cleared_memory_override_follows_the_fleet_and_keeps_its_headroom(self, tmp_path):
+        service = _service(tmp_path)
+        service.fleets.set_defaults("github-linux-x64", {"memory_limit": 32 * G})
+        spec = _placed_with(service, None)
+        current = service.specs.get(spec["runner_id"])
+        service.specs.update(spec["runner_id"], current["spec_version"],
+                             memory_limit=12 * G, memory_swap_limit=20 * G)
+        spec = service.specs.get(spec["runner_id"])
+        replacement = service.replacement_spec(spec)
+        assert replacement["memory_limit"] == 32 * G
+        assert replacement["memory_swap_limit"] == 40 * G
+
     def test_no_swap_stays_no_swap(self, tmp_path):
         service = _service(tmp_path)
         service.fleets.set_defaults("github-linux-x64", {"memory_limit": 32 * G})

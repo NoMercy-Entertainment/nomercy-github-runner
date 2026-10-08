@@ -121,7 +121,7 @@ function limitsHTML(l) {
   return `<tr><th>CPU</th><td>${esc(cpu)}</td><td>${esc(source(l.cpu.source))}</td></tr>` +
     `<tr><th>Memory</th><td>${esc(memory)}</td><td>${esc(source(l.memory.source, l.memory.inherited && 'inherited from deployment ' + l.memory.inherited))}</td></tr>` +
     `<tr><th>Host max</th><td colspan="2">${esc(max)}</td></tr>` +
-    (l.pending ? `<tr><th>Override</th><td class="pending" colspan="2">pending recreate: the runner takes its own limits the next time it is recreated</td></tr>` : '');
+    (l.pending ? `<tr><th>Next recreate</th><td class="pending" colspan="2">pending recreate: the values above change to what its override, fleet and deployment now say the next time it is recreated</td></tr>` : '');
 }
 
 function fillLimitsForm(l) {

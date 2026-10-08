@@ -202,8 +202,13 @@ class TestLinuxAndWindowsNeedLimits:
         fleet = service.fleets.get("github-linux-x64")
         bare = {"platform": "linux", "fleet_id": "github-linux-x64"}
         assert service.limits_problem(fleet, bare)
+        # What a recreate resolves again does not count: memory the runner
+        # had is rebuilt from override, fleet or deployment (replacement_spec).
         own = dict(bare, cpu_limit="0-15", memory_limit=8 * GIB)
-        assert service.limits_problem(fleet, own) is None
+        assert "memory" in service.limits_problem(fleet, own)
+        assert service.limits_problem(fleet, dict(own, memory_override=8 * GIB)) is None
+        quota = dict(bare, cpu_limit="2.5", memory_override=8 * GIB)
+        assert "CPU" in service.limits_problem(fleet, quota), "only a window is kept"
         rid = service.specs.create(provider="github", platform="linux",
                                    fleet_id="github-linux-x64", host_id="rnr-linux-1",
                                    actual_state="idle")

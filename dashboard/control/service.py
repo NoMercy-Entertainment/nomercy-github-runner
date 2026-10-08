@@ -316,6 +316,16 @@ class RunnerService:
             return None
         return {"bytes": value, "text": str(text).strip()} if value > 0 else None
 
+    def resolved_memory(self, fleet, spec=None):
+        """The memory a runner of this fleet is given: its own override,
+        else the fleet's setting, else the deployment's seed, else none."""
+        override = (spec or {}).get("memory_override")
+        if override:
+            return int(override)
+        if (fleet or {}).get("memory_limit") is not None:
+            return int(fleet["memory_limit"])
+        return (self.env_memory(fleet or spec or {}) or {}).get("bytes")
+
     def replacement_spec(self, spec):
         """A replacement takes current fleet defaults, preserving its identity."""
         fleet = self.fleets.get(spec.get("fleet_id"))
@@ -325,16 +335,38 @@ class RunnerService:
                       labels=fleet.get("labels") or [],
                       cache_policy=fleet.get("cache_policy"),
                       runner_group=fleet.get("runner_group"))
-        for field in ("cpu_limit", "memory_limit", "memory_swap_limit", "disk_limit"):
-            result[field] = fleet.get(field) if fleet.get(field) is not None else spec.get(field)
+        result["disk_limit"] = (fleet["disk_limit"] if fleet.get("disk_limit") is not None
+                                else spec.get("disk_limit"))
+        # CPU and memory are resolved again - override, fleet, deployment -
+        # never carried over from what the runner had: a cleared override
+        # would otherwise rebuild the runner with the value it left behind.
+        # Only a pinned window survives, as the window of its width it is.
+        own = spec.get("cpu_limit")
+        result["cpu_limit"] = (fleet["cpu_limit"] if fleet.get("cpu_limit") is not None
+                               else own if cpusets.is_cpuset(own) else None)
         memory_override = spec.get("memory_override")
         if memory_override:
             # The runner's own memory outranks the fleet's on every rebuild,
             # with the fleet's swap headroom on top (GitHub #5).
+            base_memory = (fleet["memory_limit"] if fleet.get("memory_limit") is not None
+                           else spec.get("memory_limit"))
+            base_swap = (fleet["memory_swap_limit"] if fleet.get("memory_swap_limit") is not None
+                         else spec.get("memory_swap_limit"))
             result["memory_swap_limit"] = self._swap_for(
-                fleet, result.get("memory_limit"), result.get("memory_swap_limit"),
-                int(memory_override))
+                fleet, base_memory, base_swap, int(memory_override))
             result["memory_limit"] = int(memory_override)
+        else:
+            memory = self.resolved_memory(fleet, spec)
+            result["memory_limit"] = memory
+            if fleet.get("memory_swap_limit") is not None:
+                result["memory_swap_limit"] = fleet["memory_swap_limit"]
+            elif spec.get("memory_swap_limit") is None or memory is None:
+                result["memory_swap_limit"] = None
+            else:
+                # The headroom it had, on the memory it now gets - the same
+                # ceiling when nothing changed.
+                result["memory_swap_limit"] = self._swap_for(
+                    {}, spec.get("memory_limit"), spec["memory_swap_limit"], memory)
         width = self._pinned_width(fleet, spec)
         if _overridden(spec.get("cpu_override")) and width is None:
             # A quota, or a platform that does not pin.
@@ -490,11 +522,12 @@ class RunnerService:
         if not fleet or fleet.get("platform") not in REQUIRE_LIMITS:
             return None
         spec = spec or {}
-        cpu = next((v for v in (spec.get("cpu_override"), fleet.get("cpu_limit"),
-                                spec.get("cpu_limit")) if v not in (None, "")), None)
-        memory = (spec.get("memory_override") or fleet.get("memory_limit")
-                  or (self.env_memory(fleet) or {}).get("bytes")
-                  or spec.get("memory_limit"))
+        # The same resolution a recreate makes (`replacement_spec`): of what
+        # the runner already has, only a pinned window is kept.
+        own = spec.get("cpu_limit") if cpusets.is_cpuset(spec.get("cpu_limit")) else None
+        cpu = next((v for v in (spec.get("cpu_override"), fleet.get("cpu_limit"), own)
+                    if v not in (None, "")), None)
+        memory = self.resolved_memory(fleet, spec)
         missing = [name for name, value in (("CPU", cpu), ("memory", memory))
                    if not value]
         if not missing:
@@ -915,13 +948,18 @@ class RunnerService:
                 if spec.get("host_id") else
                 {"host_id": None, "cpus": None, "memory_bytes": None,
                  "cpus_source": None, "memory_source": None})
-        pending = False
-        if _overridden(spec.get("cpu_override")):
-            width = cpusets.whole_cores(spec["cpu_override"])
-            pinned = spec["platform"] in PINNED_CPU_PLATFORMS and width is not None
-            pending = (cores != width) if pinned else (
-                str(cpu_value) != str(spec["cpu_override"]))
-        if spec.get("memory_override") and spec.get("memory_limit") != spec["memory_override"]:
+        # Pending: the next recreate would give it something else - an
+        # override not yet applied, or one cleared since and not yet undone.
+        width = self._pinned_width(fleet, spec)
+        if width is not None:
+            pending = cores != width
+        elif _overridden(spec.get("cpu_override")):
+            pending = str(cpu_value) != str(spec["cpu_override"])
+        elif fleet.get("cpu_limit") is not None:
+            pending = str(cpu_value) != str(fleet["cpu_limit"])
+        else:
+            pending = bool(cpu_value) and not cpusets.is_cpuset(cpu_value)
+        if self.resolved_memory(fleet, spec) != spec.get("memory_limit"):
             pending = True
         return {"cpu": {"value": cpu_value, "cores": cores, "source": cpu_source},
                 "memory": {"value": spec.get("memory_limit"), "source": memory_source,

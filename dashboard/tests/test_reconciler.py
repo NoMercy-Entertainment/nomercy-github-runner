@@ -1188,3 +1188,100 @@ class TestOverridesSurviveRecreate:
         assert second["cpu_limit"] == first["cpu_limit"]
         assert second["memory_limit"] == 4 * G
         assert second["cpu_override"] == "8.0" and second["memory_override"] == 4 * G
+
+
+WIN = fleet_id("github", "windows", "x64")
+WIN_WORKER = "rnr-windows-1"
+G = 1024**3
+
+
+@pytest.fixture
+def windows_world(tmp_path):
+    """The live Windows shape: a fleet with a CPU limit and no memory of its
+    own, its memory coming only from the deployment's seed."""
+    path = str(tmp_path / "control.db")
+    schema.init(path)
+    FleetStore(path).seed()
+    service = RunnerService(path, runtimes=dict(ALL_CELLS),
+                            env={"RUNNER_UNIT_MEMORY_GITHUB_WINDOWS": "8g"})
+    service.inventory.register_worker(WIN_WORKER, inv.HYPERV_WINDOWS, capabilities={
+        "kind": "windows-process", "host_cores": 16})
+    service.inventory.heartbeat(WIN_WORKER)
+    service.fleets.set_defaults(WIN, {"cpu_limit": 16})
+    executor = FakeExecutor(host_id=WIN_WORKER)
+    return service, executor, Reconciler(service, executor)
+
+
+def settle(service, reconciler, passes=20):
+    for _ in range(passes):
+        service.inventory.heartbeat(WIN_WORKER)
+        report = reconciler.pass_once()
+        if not report.actions:
+            return report
+    pytest.fail(f"did not converge in {passes} passes")
+
+
+def recreated(service, reconciler, runner_id):
+    service.recreate(runner_id)
+    report = settle(service, reconciler)
+    assert not report.errors, report.errors
+    spec = service.specs.get(runner_id)
+    assert spec["actual_state"] == "idle", spec.get("last_error")
+    return spec
+
+
+class TestAClearedOverrideReturnsToTheDefaults:
+    """Clearing a runner's own limit gives it what its fleet would give a
+    new runner - the fleet's setting, else the deployment's - not the value
+    the override left behind (review of GitHub #5)."""
+
+    def test_memory_goes_back_to_the_deployment_seed(self, windows_world):
+        service, executor, reconciler = windows_world
+        service.scale_up(WIN, by=1)
+        settle(service, reconciler)
+        rid = live(service, WIN)[0]["runner_id"]
+        assert service.specs.get(rid)["memory_limit"] == 8 * G
+
+        service.set_limits(rid, {"memory": 12 * G}, idempotency_key="set")
+        settle(service, reconciler)
+        assert service.specs.get(rid)["memory_limit"] == 12 * G
+
+        service.set_limits(rid, {"memory": None}, idempotency_key="clear")
+        settle(service, reconciler)
+        spec = service.specs.get(rid)
+        assert spec["actual_state"] == "idle", spec.get("last_error")
+        assert spec["memory_override"] is None
+        assert spec["memory_limit"] == 8 * G
+        limits = service.limits_of(spec)
+        assert limits["memory"]["value"] == 8 * G
+        assert limits["memory"]["source"] == "deployment default"
+        assert limits["pending"] is False
+
+    def test_a_runner_with_nothing_changed_keeps_exactly_what_it_has(self, windows_world):
+        service, executor, reconciler = windows_world
+        service.scale_up(WIN, by=1)
+        settle(service, reconciler)
+        from control import cpusets
+        # The fake executor cuts no window at provisioning; the first
+        # recreate does, as the real flow does at creation.
+        before = recreated(service, reconciler, live(service, WIN)[0]["runner_id"])
+        assert len(cpusets.parse(before["cpu_limit"])) == 16
+        assert service.limits_of(before)["pending"] is False
+        after = recreated(service, reconciler, before["runner_id"])
+        assert after["memory_limit"] == before["memory_limit"] == 8 * G
+        assert after["cpu_limit"] == before["cpu_limit"]
+        assert after["memory_swap_limit"] == before["memory_swap_limit"]
+
+
+@pytest.mark.require_limits
+def test_a_windows_runner_with_memory_only_from_the_seed_is_recreated(windows_world):
+    """With the rule in force, the reconciler's own recreate turn and the
+    preflight before removal accept a runner whose memory only the
+    deployment gives - which is every live Windows runner."""
+    service, executor, reconciler = windows_world
+    service.scale_up(WIN, by=1)
+    settle(service, reconciler)
+    rid = live(service, WIN)[0]["runner_id"]
+    spec = recreated(service, reconciler, rid)
+    assert spec["memory_limit"] == 8 * G
+    assert spec["current_operation"] is None
