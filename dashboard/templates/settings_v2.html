@@ -6,6 +6,10 @@
 .fields .field-wide{grid-column:1/-1}
 #message{white-space:pre-wrap;margin:14px 0}button:disabled{opacity:.5}
 select{width:100%}
+#runner-groups table{border-collapse:collapse;width:100%;font-size:var(--type-body)}
+#runner-groups th,#runner-groups td{border-bottom:1px solid var(--rule);padding:8px 10px;text-align:left}
+#runner-groups th{color:var(--text-faint);font-weight:400}
+#runner-groups td.no{color:var(--alert)}
 select[multiple]{background:var(--bg-inset);color:var(--text);border:1px solid var(--rule-hot);border-radius:var(--radius-small);font:inherit;padding:10px 12px}
 input:disabled{opacity:.5}
 .panel{max-width:1040px}
@@ -28,6 +32,7 @@ input:disabled{opacity:.5}
 <section class="panel"><h2>Forge credentials</h2><p class="hint">Tokens are encrypted and never displayed. A saved token is used by the next controller operation.</p>
 <div id="secrets"></div></section>
 {% endif %}
+<section class="panel" id="runner-groups" aria-live="polite">GitHub runner groups: loading</section>
 <div id="fleets">Loading settings</div>
 </main>
 <script>
@@ -101,8 +106,21 @@ function fleetForm(f) {
     cacheFields(f)+
     `</div>${f.resource_notice?`<p class="hint">${esc(f.resource_notice)}</p>`:''}${f.disk_quota_supported||fixedDisk?'':'<p class="hint">Per-runner disk quotas are unavailable. Storage usage and cache budgets do not enforce a disk quota.</p>'}<p class="hint">Current image or template: ${esc(f.effective_template||'not configured')}. An empty memory limit uses the deployment's default for this fleet when it has one, shown in the field; an empty CPU limit has no default.${f.platform==='macos'?'':' Linux and Windows runners are not created until this fleet has both a CPU and a memory limit.'} An admin can still give one runner its own limits on its page. Automatic file cleanup runs at startup; GitHub also runs it after a completed job. Explicit clear actions use the selected scopes.</p><button type="submit">Save defaults</button></form>`;
 }
+// Read-only: who may send jobs to each GitHub runner group, as the
+// background cache last read it (runner_groups.py). Changing a group is done
+// on GitHub, never here.
+function runnerGroupsPanel(rg) {
+  rg=rg||{};
+  const when=rg.at?` Last read ${esc(String(rg.at).replace('T',' ').replace('Z',' UTC'))}; read again every ${Math.round((rg.refresh_seconds||300)/60)} minutes.`:'';
+  if(!rg.known)return `<h2>GitHub runner groups</h2><p class="notice">Unknown: ${esc(rg.error||'not read yet')}.${when}</p>`;
+  const rows=(rg.groups||[]).map(g=>`<tr><td>${esc(g.name)}${g.default?' (default)':''}</td><td>${esc(g.visibility||'unknown')}</td>`+
+    `<td class="${g.allows_public_repositories?'no':''}">${g.allows_public_repositories?'allowed':'not allowed'}</td><td>${esc((g.fleets||[]).join(', ')||'none')}</td></tr>`).join('');
+  return `<h2>GitHub runner groups</h2><p class="hint">Read only.${when} A group that allows public repositories lets a fork's pull request run on its runners.</p>`+
+    `<table class="kv"><tr><th>Group</th><th>Visibility</th><th>Public repositories</th><th>Fleets that register into it</th></tr>${rows||'<tr><td colspan="4">none</td></tr>'}</table>`;
+}
 async function load() {
   const d=await api('/api/v2/settings');
+  document.getElementById('runner-groups').innerHTML=runnerGroupsPanel(d.runner_groups);
   maintenance=d.control_plane.maintenance;
   if(admin){document.getElementById('maintenance-state').textContent=maintenance?'Reconciliation paused':'Reconciliation enabled';document.getElementById('maintenance-toggle').textContent=maintenance?'Resume reconciliation':'Pause reconciliation';}
   document.getElementById('fleets').innerHTML=d.fleets.map(fleetForm).join('');

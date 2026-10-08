@@ -164,6 +164,29 @@ class GitHub:
             {"labels": list(labels)})
         return self._label_list(data) if status == 200 else None
 
+    #: What a runner group's policy is read as: who may send it jobs.
+    GROUP_FIELDS = ("id", "name", "visibility", "allows_public_repositories",
+                    "default", "inherited")
+
+    def runner_groups(self):
+        """Every runner group of the org with its visibility and whether
+        public repositories may use it, every page of them - or None when
+        any page could not be read. Never a short list for a failure: a
+        group missing from the answer would read as one that does not exist
+        rather than one nobody could see. Read only."""
+        out, page = [], 1
+        while True:
+            data = self._get(f"/orgs/{self.org}/actions/runner-groups",
+                             params={"per_page": 100, "page": page})
+            if not isinstance(data, dict) or not isinstance(data.get("runner_groups"), list):
+                return None
+            groups = data["runner_groups"]
+            out += [{key: group.get(key) for key in self.GROUP_FIELDS}
+                    for group in groups if isinstance(group, dict)]
+            if len(groups) < 100 or page >= 100:
+                return out
+            page += 1
+
     def runner_group_id(self, name):
         """The id of the org's runner group with this name, or None."""
         data = self._get(f"/orgs/{self.org}/actions/runner-groups",

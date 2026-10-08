@@ -336,6 +336,26 @@ class TestTheRenderer:
         html = render("fleetHeadHTML", [fleet_row(limits_problem=None)])[0]
         assert "flimits" not in html
 
+    def test_a_fleet_head_always_shows_its_runner_group(self):
+        open_ = {"known": True, "group": "Default", "visibility": "all",
+                 "allows_public_repositories": True, "default": True,
+                 "source": "GitHub default group"}
+        html = render("fleetHeadHTML", [fleet_row(runner_group_policy=open_)])[0]
+        assert 'class="chip danger rgroup"' in html
+        assert "Default" in html and "public repositories allowed" in html
+        closed = dict(open_, group="Stoney", visibility="selected",
+                      allows_public_repositories=False)
+        html = render("fleetHeadHTML", [fleet_row(runner_group_policy=closed)])[0]
+        assert 'class="chip rgroup"' in html
+        assert "Stoney" in html and "no public repositories" in html
+        unknown = {"known": False, "group": None, "why": "GitHub could not be read"}
+        html = render("fleetHeadHTML", [fleet_row(runner_group_policy=unknown)])[0]
+        assert 'class="chip unknown rgroup"' in html
+        assert "runner group unknown" in html
+        assert 'title="GitHub could not be read"' in html
+        html = render("fleetHeadHTML", [fleet_row(runner_group_policy=None)])[0]
+        assert "rgroup" not in html
+
     def test_a_fleet_head_with_no_labels_says_nothing(self):
         f = fleet_row(labels=[])
         html = render("fleetHeadHTML", [f])[0]

@@ -164,6 +164,17 @@ function fleetHeadHTML(f) {
   // said on the heading too, not only in a button's tooltip.
   const limits = f.limits_problem
     ? `<div class="cwarn flimits">${esc(f.limits_problem)}</div>` : '';
+  // The runner group this fleet's runners join, always - also when public
+  // repositories may use it, which is when it matters most and is drawn in
+  // the alert colour. Grey when it could not be read, with why on hover.
+  const g = f.runner_group_policy;
+  const group = !g ? ''
+    : g.known
+      ? `<div class="flabels">runner group: <span class="chip${g.allows_public_repositories ? ' danger' : ''} rgroup">` +
+        `${esc(g.group)} · ${esc(g.visibility || 'visibility unknown')} · ` +
+        `${g.allows_public_repositories ? 'public repositories allowed' : 'no public repositories'}</span></div>`
+      : `<div class="flabels">runner group: <span class="chip unknown rgroup" title="${esc(g.why || '')}">` +
+        `${g.group ? esc(g.group) + ' · ' : ''}runner group unknown</span></div>`;
   const labels = f.labels && f.labels.length
     ? `<div class="flabels">runs-on: ${f.labels.map(l => `<span class="chip">${esc(l)}</span>`).join('')}</div>`
     : '';
@@ -173,7 +184,7 @@ function fleetHeadHTML(f) {
   return `<div class="fleet-heading"><div><h2 class="fleet-head">${esc(f.title)}</h2>` +
     `<div class="fleet-summary"><span class="fcount">${count} runner${count === 1 ? '' : 's'}</span>${running}</div>` +
     `</div><div class="fleet-actions">${buttons}</div></div>` +
-    labels + unavailable + limits;
+    labels + group + unavailable + limits;
 }
 
 if (typeof module !== 'undefined') {

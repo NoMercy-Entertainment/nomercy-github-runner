@@ -444,6 +444,14 @@ def _enricher():
         time.sleep(90)
 
 
+def _runner_group_env():
+    """The settings the runner group cache reads GitHub with: the control
+    plane's, which overlay the tokens set in Settings (SecretStore) on the
+    deployment's - GH_TOKEN may live only there - else this process's."""
+    service, _ = api_v2.control_plane()
+    return service.env if service is not None else read_env()
+
+
 def _enrich_pending(env, stale_before):
     """Run one enrichment sweep over history.pending_enrichment().
 
@@ -845,5 +853,10 @@ if __name__ == "__main__":
     # thread is losing the job history for every controller-managed runner.
     threading.Thread(target=_controller_collector, daemon=True).start()
     threading.Thread(target=_enricher, daemon=True).start()
+    # Each GitHub fleet's runner group policy, read every five minutes so no
+    # page read ever calls GitHub (runner_groups.py).
+    import runner_groups
+    threading.Thread(target=runner_groups.run_forever, args=(_runner_group_env,),
+                     daemon=True).start()
     app.permanent_session_lifetime = 60 * 60 * 24 * 14
     app.run(host="0.0.0.0", port=PORT, threaded=True)

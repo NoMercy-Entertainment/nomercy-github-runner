@@ -29,6 +29,8 @@ a.cname:hover{text-decoration:underline;text-underline-offset:3px}
 .flabels{display:flex;align-items:center;flex-wrap:wrap;gap:var(--space-2);margin-top:var(--space-3);font-size:var(--type-small);color:var(--text-faint)}
 .chip{display:inline-block;border:1px solid var(--rule);border-radius:var(--space-1);padding:var(--space-1) var(--space-2);color:var(--text-dim);font-size:var(--type-small);overflow-wrap:anywhere;max-width:100%}
 .card .chip{border-color:transparent;background:var(--bg-inset)}
+.chip.danger{border-color:var(--alert-dk);color:var(--alert)}
+.chip.unknown{color:var(--text-faint);border-style:dashed}
 .metrics{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:var(--space-5)}
 .meter{min-width:0}
 .mrow{display:flex;align-items:baseline;justify-content:space-between;flex-wrap:wrap;gap:var(--space-1) var(--space-2);font-size:var(--type-small);color:var(--text-faint)}

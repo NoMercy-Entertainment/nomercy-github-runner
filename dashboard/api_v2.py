@@ -300,6 +300,12 @@ def fleet_list(service, note, all_runner_cards):
                                      members),
         })
         out[-1]["limits_problem"] = None
+        # From the background cache only (runner_groups.py): a page read
+        # never calls GitHub.
+        import runner_groups
+        out[-1]["runner_group_policy"] = runner_groups.policy_for(
+            row or {"provider": provider_key},
+            service.env if service is not None else {})
         if service and fid in rows:
             support = service.fleets.resource_support(fid)
             out[-1]["resource_support"] = support
@@ -866,7 +872,9 @@ def settings_data():
         fleet.update(support)
         fleet["resource_notice"] = _resource_notice(fleet, support)
         fleet.update(_limits_view(service, fleet))
-    return jsonify(fleets=fleets, control_plane=controller_health())
+    import runner_groups
+    return jsonify(fleets=fleets, control_plane=controller_health(),
+                   runner_groups=runner_groups.panel(fleets, service.env))
 
 
 def _limits_view(service, fleet):
