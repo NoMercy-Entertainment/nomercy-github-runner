@@ -64,7 +64,7 @@
         # What a GitHub runner on the Windows worker is made from: a template
         # on that worker holding the runner GitHub publishes, checked against
         # the hash from its own release notes (images/windows/manifest.json).
-        WindowsTemplate    = 'actions-runner-v2.336.0-windows'
+        WindowsTemplate    = 'actions-runner-v2.338.0-windows'
         WindowsRunnerMemGB = 8
     }
 
@@ -195,7 +195,7 @@
     # host. The guest uses software emulation on this x86_64 host. These are
     # template and capacity defaults; no fleet gains capacity by seeding.
     MacOS = @{
-        GitHubTemplate = 'actions-runner-v2.336.0-macos-r20260921'
+        GitHubTemplate = 'actions-runner-v2.338.0-macos-r20261008'
         ForgejoTemplate = 'forgejo-runner-v13.1.0-macos-r20260921'
         ForgejoBinary = '/Users/runner/templates/forgejo-runner-v13.1.0-macos-r20260921/forgejo-runner'
         ForgejoSha256 = 'f9f9ed421d6d1e71436b92e9b8891fb03b44c713e87e545c6e86423be2edb07a'
@@ -213,7 +213,7 @@
         ForgejoTemplate = 'forgejo-runner-v13.1.0-windows-arm64'
         ForgejoBinary = 'D:\HyperV\runner-platform\artefacts\forgejo-runner-v13.1.0\forgejo-runner-v13.1.0-windows-arm64.exe'
         ForgejoSha256 = 'cd59d117346c32419ddb62679150ba2f11ff7f6fbbf64b7400830287c4b15b07'
-        GitHubTemplate = 'actions-runner-v2.336.0-windows-arm64'
+        GitHubTemplate = 'actions-runner-v2.338.0-windows-arm64'
         ForgejoLabels = 'windows-arm64:host'
     }
 }

@@ -410,7 +410,7 @@ class _GitHub(Provider):
         if not self.supports(platform, arch, env):
             return None
         version = (env or {}).get("RUNNER_VERSION") or os.environ.get(
-            "RUNNER_VERSION", "2.336.0")
+            "RUNNER_VERSION", "2.338.0")
         return ArtifactRef(
             source="vendor",
             reference=f"actions/runner@v{version}",

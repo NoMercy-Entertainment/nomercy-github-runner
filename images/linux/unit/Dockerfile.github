@@ -25,8 +25,8 @@ ENV RUNNER_KIND=github \
 # What the listener reports is trusted over the download having arrived: a
 # marker written on a half-finished download is what left github-runner-6 on
 # deprecated binaries for hours (scripts/start.sh, 2026-08-01).
-ARG RUNNER_VERSION=2.336.0
-ARG RUNNER_SHA256=04cf0be1aff4c3ec3554466c39124ca250e3effd8873bb7e8d68535aa9505d5d
+ARG RUNNER_VERSION=2.338.0
+ARG RUNNER_SHA256=af4b794c1bc41d73d40535e3fe092a39f9679cd8d965954c2aca25a05ca41d32
 RUN set -eu; \
     cd "$RUNNER_HOME"; \
     if [ "$(cat ./.runner_version 2>/dev/null)" != "$RUNNER_VERSION" ]; then \

@@ -25,7 +25,7 @@ try {
     if ($identity -ine "NT SERVICE\rnr-portable-$Role-test") { throw "Unexpected test identity: $identity" }
     & (Join-Path $root 'Test-RunnerBuildEnvironment.ps1') -Architecture arm64 -Workspace $work
     $listener = if ($Role -eq 'github') {
-        'C:\ProgramData\nomercy\templates\actions-runner-v2.336.0-windows-arm64\agent\bin\Runner.Listener.exe'
+        'C:\ProgramData\nomercy\templates\actions-runner-v2.338.0-windows-arm64\agent\bin\Runner.Listener.exe'
     } else {
         'C:\ProgramData\nomercy\templates\forgejo-runner-v13.1.0-windows-arm64\forgejo-runner.exe'
     }

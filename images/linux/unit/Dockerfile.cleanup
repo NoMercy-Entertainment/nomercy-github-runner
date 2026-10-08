@@ -9,6 +9,26 @@ COPY runner/cleanup runner/job-started.sh runner/run /runner/
 RUN chmod 0755 /runner/cleanup /runner/job-started.sh /runner/run \
     && chmod 0644 /runner/cleanup.py /runner/job_started.py
 
+# The runner GitHub will still talk to (#10). The toolchain base carries an
+# older one in /opt/actions-runner-image, the directory every unit copies its
+# runner from on (re)creation. Same pin and hash as Dockerfile.github; the
+# directory is replaced whole so nothing of the old release lingers.
+ARG RUNNER_VERSION=2.338.0
+ARG RUNNER_SHA256=af4b794c1bc41d73d40535e3fe092a39f9679cd8d965954c2aca25a05ca41d32
+RUN set -eu; \
+    tarball="actions-runner-linux-x64-${RUNNER_VERSION}.tar.gz"; \
+    curl -fsSL -o "/tmp/$tarball" \
+      "https://github.com/actions/runner/releases/download/v${RUNNER_VERSION}/$tarball"; \
+    echo "${RUNNER_SHA256}  /tmp/$tarball" | sha256sum -c -; \
+    rm -rf /opt/actions-runner-image.new; \
+    mkdir -p /opt/actions-runner-image.new/_diag; \
+    tar -xzf "/tmp/$tarball" -C /opt/actions-runner-image.new; \
+    rm -f "/tmp/$tarball"; \
+    /opt/actions-runner-image.new/bin/Runner.Listener --version | tr -d '\r' | grep -qx "$RUNNER_VERSION"; \
+    echo "$RUNNER_VERSION" > /opt/actions-runner-image.new/.runner_version; \
+    rm -rf /opt/actions-runner-image; \
+    mv /opt/actions-runner-image.new /opt/actions-runner-image
+
 # What /runner/job-started.sh restores the Android SDK from (#13). A real
 # copy, as in Dockerfile.github.
 RUN mkdir -p /opt/nomercy \

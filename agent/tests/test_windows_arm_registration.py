@@ -61,7 +61,7 @@ def test_emulated_arm_registration_keeps_outer_waits_longer_than_children(monkey
 
 def test_arm_template_children_fit_inside_handler_budget():
     root = Path(__file__).resolve().parents[2] / 'infra/windows/templates'
-    for template in ('actions-runner-v2.336.0-windows-arm64', 'forgejo-runner-v13.1.0-windows-arm64'):
+    for template in ('actions-runner-v2.338.0-windows-arm64', 'forgejo-runner-v13.1.0-windows-arm64'):
         source = (root / template / 'register.ps1').read_text(encoding='utf-8-sig')
         milliseconds = int(re.search(r'WaitForExit\((\d+)\)', source)[1])
         assert milliseconds / 1000 + 230 < windows_timeouts.registration_limits('arm64')['script']

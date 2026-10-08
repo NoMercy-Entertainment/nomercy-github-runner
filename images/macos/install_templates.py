@@ -8,9 +8,9 @@ import subprocess
 import tempfile
 
 ARTIFACTS = {
-    "github": ("actions-runner-osx-x64-2.336.0.tar.gz",
-               "f79c43232761ca495fc18df550bb2865aa99984b37c173c0aa1f8c09d0d548fe",
-               "actions-runner-v2.336.0-macos-r20260921"),
+    "github": ("actions-runner-osx-x64-2.338.0.tar.gz",
+               "dea7a58796ce215fc424a8b27c0fdd9b813fa5fc03d109a4a1d38131d6bfa1a3",
+               "actions-runner-v2.338.0-macos-r20261008"),
     "forgejo": ("forgejo-runner-v13.1.0-darwin-amd64",
                 "f9f9ed421d6d1e71436b92e9b8891fb03b44c713e87e545c6e86423be2edb07a",
                 "forgejo-runner-v13.1.0-macos-r20260921"),

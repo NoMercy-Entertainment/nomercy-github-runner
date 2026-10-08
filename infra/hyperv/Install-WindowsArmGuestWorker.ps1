@@ -80,7 +80,7 @@ try {
         infra/windows/guest/Install-RunnerTools.ps1 `
         infra/windows/guest/Install-CppBuildTools.ps1 `
         infra/windows/guest/Install-AndroidSdk.ps1 `
-        infra/windows/templates/actions-runner-v2.336.0-windows-arm64 `
+        infra/windows/templates/actions-runner-v2.338.0-windows-arm64 `
         infra/windows/templates/forgejo-runner-v13.1.0-windows-arm64
     if ($LASTEXITCODE -ne 0) { throw 'Could not pack the ARM worker source.' }
     Send-ArmGuest $codeTar 'code.tar'

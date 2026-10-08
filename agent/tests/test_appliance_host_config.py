@@ -19,7 +19,7 @@ BASE_DISK = "/var/lib/runner-appliances/bases/clean-base-2026-09-22.qcow2"
 BASE_SYSTEM = "/var/lib/runner-appliances/bases/BaseSystem.img"
 DATA_ROOT = "/var/lib/runner-appliances/instances"
 TEMPLATES = (
-    "actions-runner-v2.336.0-macos-r20260921",
+    "actions-runner-v2.338.0-macos-r20261008",
     "forgejo-runner-v13.1.0-macos-r20260921",
 )
 

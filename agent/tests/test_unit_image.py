@@ -201,6 +201,16 @@ class TestTheRunnerGitHubWillTalkTo:
             entry = json.load(fh)["actions-runner-linux-x64"][0]
         assert (entry["version"], entry["sha256"]) == (version, sha)
 
+    def test_the_fleet_overlay_pins_the_same_runner(self):
+        """The running fleet is refreshed with Dockerfile.cleanup rather than
+        rebuilt from Dockerfile.github, so a bump that reaches one and not
+        the other leaves the fleet on the old, soon deprecated runner (#10)."""
+        _, version, sha = self.pins()
+        overlay = read("Dockerfile.cleanup")
+        assert f"ARG RUNNER_VERSION={version}" in overlay
+        assert f"ARG RUNNER_SHA256={sha}" in overlay
+        assert "/opt/actions-runner-image" in overlay
+
 
 @pytest.mark.skipif(shutil.which("bash") is None, reason="no bash here")
 @pytest.mark.parametrize("script", ["run", "register", "deregister",

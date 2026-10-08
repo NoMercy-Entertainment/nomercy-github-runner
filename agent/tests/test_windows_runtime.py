@@ -735,9 +735,9 @@ class TestWhatThisWorkerCanBuildFrom:
         host.makedirs(ntpath.join(TOOLS["templates"],
                                   "forgejo-runner-v13.1.0-windows"))
         host.makedirs(ntpath.join(TOOLS["templates"],
-                                  "actions-runner-v2.336.0"))
+                                  "actions-runner-v2.338.0"))
         listed = runtime.capabilities()["templates"]
-        assert {"actions-runner-v2.336.0",
+        assert {"actions-runner-v2.338.0",
                 "forgejo-runner-v13.1.0-windows"} <= set(listed)
         assert listed == sorted(listed)
 

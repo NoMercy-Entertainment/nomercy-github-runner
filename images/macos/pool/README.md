@@ -16,7 +16,7 @@ Prepare a standalone qcow2 base while its source guest is cleanly powered off.
 Never use a live writable OS disk as a backing file. Install and verify both
 provider templates, each containing executable `run`, `register`, `deregister`:
 
-* `actions-runner-v2.336.0-macos-r20260921`
+* `actions-runner-v2.338.0-macos-r20261008`
 * `forgejo-runner-v13.1.0-macos-r20260921`
 
 Before freezing a new base, run `install-runner-toolchains.sh` in the guest as
@@ -74,7 +74,7 @@ Example fragment, alongside the existing `guest`, `tools`, mTLS and host identit
     "nvram_seed": "/var/lib/runner-appliances/base/OVMF_VARS-sequoia-debloated-20260924.fd",
     "data_root": "/var/lib/runner-appliances/instances",
     "templates": [
-      "actions-runner-v2.336.0-macos-r20260921",
+      "actions-runner-v2.338.0-macos-r20261008",
       "forgejo-runner-v13.1.0-macos-r20260921"
     ],
     "base_guests_disabled": true,

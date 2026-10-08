@@ -65,55 +65,55 @@
   "actions-runner-win-x64": [
     {
       "status": "published by GitHub, not yet installed",
-      "version": "2.336.0",
-      "asset": "actions-runner-win-x64-2.336.0.zip",
-      "sha256": "d59123a43003e357b0805b5d0f611d0bd2f65ab67d51bd070dd4e7a0f685c162",
-      "source": "https://github.com/actions/runner/releases/tag/v2.336.0",
-      "verified_against": "the hash GitHub publishes in that release's own notes, read from the API on 2026-09-20 - not against our own download",
+      "version": "2.338.0",
+      "asset": "actions-runner-win-x64-2.338.0.zip",
+      "sha256": "f48e0750a21812bca5f82de5f7f5aeae71abee647fab5a582f1742d07eba455f",
+      "source": "https://github.com/actions/runner/releases/tag/v2.338.0",
+      "verified_against": "the hash GitHub publishes in that release's own notes, read from the API on 2026-10-08 - not against our own download",
       "recipe": "images/windows/fetch-actions-runner.ps1"
     }
   ],
   "actions-runner-win-arm64": [
     {
       "status": "downloaded, not deployed",
-      "version": "2.336.0",
-      "asset": "actions-runner-win-arm64-2.336.0.zip",
-      "where": "D:\\HyperV\\runner-platform\\artefacts\\actions-runner-win-arm64-2.336.0.zip",
-      "sha256": "b3799e9cf754fe4dfcb3d220c9701c924829737ee815dbeb674f8bd076794504",
-      "source": "https://github.com/actions/runner/releases/tag/v2.336.0",
-      "verified_against": "SHA-256 published in GitHub's v2.336.0 release notes"
+      "version": "2.338.0",
+      "asset": "actions-runner-win-arm64-2.338.0.zip",
+      "where": "D:\\HyperV\\runner-platform\\artefacts\\actions-runner-win-arm64-2.338.0.zip",
+      "sha256": "a57a4d29c0dcf02210a16b01906ed76cb8091b26d728c41232736c0f627a557e",
+      "source": "https://github.com/actions/runner/releases/tag/v2.338.0",
+      "verified_against": "SHA-256 published in GitHub's v2.338.0 release notes"
     }
   ],
   "actions-runner-osx-x64": [
     {
       "status": "published by GitHub, not yet installed",
-      "version": "2.336.0",
-      "asset": "actions-runner-osx-x64-2.336.0.tar.gz",
-      "sha256": "f79c43232761ca495fc18df550bb2865aa99984b37c173c0aa1f8c09d0d548fe",
-      "source": "https://github.com/actions/runner/releases/tag/v2.336.0",
-      "verified_against": "the hash GitHub publishes in that release's own notes, read from the API on 2026-09-20",
+      "version": "2.338.0",
+      "asset": "actions-runner-osx-x64-2.338.0.tar.gz",
+      "sha256": "dea7a58796ce215fc424a8b27c0fdd9b813fa5fc03d109a4a1d38131d6bfa1a3",
+      "source": "https://github.com/actions/runner/releases/tag/v2.338.0",
+      "verified_against": "the hash GitHub publishes in that release's own notes, read from the API on 2026-10-08",
       "recipe": "images/macos/install-templates.md"
     }
   ],
   "actions-runner-osx-arm64": [
     {
       "status": "published by GitHub, not yet installed",
-      "version": "2.336.0",
-      "asset": "actions-runner-osx-arm64-2.336.0.tar.gz",
-      "sha256": "8e8839c49b7060b6b2154f4931f815df330c27f167d53ef2239ee3dfce28b079",
-      "source": "https://github.com/actions/runner/releases/tag/v2.336.0",
-      "verified_against": "the hash GitHub publishes in that release's own notes, read from the API on 2026-09-20",
+      "version": "2.338.0",
+      "asset": "actions-runner-osx-arm64-2.338.0.tar.gz",
+      "sha256": "df4cebda25c86a886ed204e49fee63f5c2e7cec5f447b5c98440a826bbdf9df2",
+      "source": "https://github.com/actions/runner/releases/tag/v2.338.0",
+      "verified_against": "the hash GitHub publishes in that release's own notes, read from the API on 2026-10-08",
       "recipe": "images/macos/install-templates.md"
     }
   ],
   "actions-runner-linux-x64": [
     {
       "status": "pinned in the unit image (images/linux/unit/Dockerfile.github)",
-      "version": "2.336.0",
-      "asset": "actions-runner-linux-x64-2.336.0.tar.gz",
-      "sha256": "04cf0be1aff4c3ec3554466c39124ca250e3effd8873bb7e8d68535aa9505d5d",
-      "source": "https://github.com/actions/runner/releases/tag/v2.336.0",
-      "verified_against": "the hash GitHub publishes in that release's own notes, read from the API on 2026-09-20",
+      "version": "2.338.0",
+      "asset": "actions-runner-linux-x64-2.338.0.tar.gz",
+      "sha256": "af4b794c1bc41d73d40535e3fe092a39f9679cd8d965954c2aca25a05ca41d32",
+      "source": "https://github.com/actions/runner/releases/tag/v2.338.0",
+      "verified_against": "the hash GitHub publishes in that release's own notes, read from the API on 2026-10-08",
       "recipe": "images/linux/unit/Dockerfile.github",
       "why": "GitHub refuses to deliver jobs to a deprecated runner, and the image a unit is built from shipped 2.333.1 while the fleet that was serving had replaced it at start"
     }

@@ -16,7 +16,7 @@ import json
 #: those are exposed on the command line.
 DATA_ROOT = "/var/lib/runner-appliances/instances"
 TEMPLATES = (
-    "actions-runner-v2.336.0-macos-r20260921",
+    "actions-runner-v2.338.0-macos-r20261008",
     "forgejo-runner-v13.1.0-macos-r20260921",
 )
 

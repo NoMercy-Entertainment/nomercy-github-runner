@@ -22,7 +22,7 @@
 #>
 [CmdletBinding()]
 param(
-    [string] $Version = '2.336.0',
+    [string] $Version = '2.338.0',
     [ValidateSet('x64', 'arm64')] [string] $Architecture = 'x64',
     [string] $Sha256,
     [string] $ArchivePath,
