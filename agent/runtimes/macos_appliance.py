@@ -350,8 +350,14 @@ class MacApplianceRuntime:
             for key, name in HOOK_SCRIPTS.items():
                 env[key] = posixpath.join(hooks, name)
             # The account's own home, where Xcode keeps DerivedData; the
-            # job's HOME is the runner's, under its work directory.
-            env["RUNNER_HOOK_USER_HOME"] = shared_home
+            # job's HOME is the runner's, under its work directory. From
+            # outside the guest only runner_user names it - the agent's own
+            # home is the appliance host's - and unknown, it is left unset,
+            # so the hooks leave the account's DerivedData alone.
+            if self._tools.get("runner_user"):
+                env["RUNNER_HOOK_USER_HOME"] = "/Users/" + self._tools["runner_user"]
+            elif not self._remote:
+                env["RUNNER_HOOK_USER_HOME"] = os.path.expanduser("~")
         log = posixpath.join(p["logs"], "runner.log")
         job = {"Label": self.label(rid),
                "ProgramArguments": [posixpath.join(p["reg"], "run")],

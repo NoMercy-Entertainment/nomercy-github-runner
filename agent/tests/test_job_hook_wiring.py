@@ -8,6 +8,7 @@ path fails the job's last step, and the job with it (2026-09-21, 83 of 83 on
 Linux). Each path is checked against that rule.
 """
 import json
+import os
 import ntpath
 import plistlib
 import posixpath
@@ -141,6 +142,28 @@ class TestMacOS:
         under its work directory."""
         env = self.env(runtime, guest, "github")
         assert env["RUNNER_HOOK_USER_HOME"] == "/Users/runner"
+
+    def test_an_agent_outside_the_guest_does_not_guess_the_home(self, guest):
+        """On the appliance host the agent's own home is a Linux one, not the
+        guest account's. Without a runner_user it is left unset, and the
+        hooks leave the account's DerivedData alone."""
+        remote = MacApplianceRuntime(run=guest, fs=guest, appliance=guest.appliance,
+                                     tools=dict(MAC_TOOLS, domain="gui/501"), remote=True)
+        env = self.env(remote, guest, "github")
+        assert "RUNNER_HOOK_USER_HOME" not in env
+        assert all(key in env for key in HOOK_KEYS)
+
+    def test_an_agent_outside_the_guest_names_the_runner_users_home(self, guest):
+        remote = MacApplianceRuntime(run=guest, fs=guest, appliance=guest.appliance,
+                                     tools=dict(MAC_TOOLS, domain="gui/501", runner_user="ci"),
+                                     remote=True)
+        assert self.env(remote, guest, "github")["RUNNER_HOOK_USER_HOME"] == "/Users/ci"
+
+    def test_an_agent_inside_the_guest_runs_as_the_account(self, guest):
+        local = MacApplianceRuntime(run=guest, fs=guest, appliance=guest.appliance,
+                                    tools=dict(MAC_TOOLS, domain="gui/501"))
+        home = self.env(local, guest, "github")["RUNNER_HOOK_USER_HOME"]
+        assert home == os.path.expanduser("~")
 
     def test_a_create_driven_again_puts_the_current_hooks_back(self, runtime, guest):
         self.env(runtime, guest, "github")
