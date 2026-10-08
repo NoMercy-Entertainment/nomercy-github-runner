@@ -207,8 +207,9 @@ class AlarmBook:
 
     def acknowledge(self, key, actor, now):
         """Mark one alarm acknowledged by `actor`; False when there is no
-        such alarm. Nothing more is sent about it - a raise still waiting in
-        the outbox included - and it clears when the alarm resolves."""
+        such alarm. No raise is sent for it any more - one still waiting in the
+        outbox included; its resolve still is - and it clears when the alarm
+        resolves."""
         with _WRITE, self._begin() as c:
             row = c.execute("SELECT * FROM alarm_watch WHERE alarm_key=?",
                             (key,)).fetchone()

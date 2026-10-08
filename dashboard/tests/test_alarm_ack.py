@@ -60,7 +60,9 @@ class TestTheBook:
         [row] = book.rows()
         assert row["raised_at"] and row["acked_at"] is None, "a new outage is a new alarm"
 
-    def test_nothing_more_is_sent(self, path):
+    def test_only_its_resolve_is_still_sent(self, path):
+        """The owner's choice (2026-10-08): acknowledging quiets an alarm, but
+        "it is back" is still worth hearing."""
         sent = []
 
         def post(url, body, headers):
@@ -73,7 +75,8 @@ class TestTheBook:
         book.observe_runners("github", [runner(online=True)], T0 + 30 * MIN,
                              alarms.settings({}))
         alarm_notify.deliver_due(path, env, T0 + 31 * MIN, post=post)
-        assert len(sent) == 1 and sent[0].decode().startswith("ALARM")
+        assert len(sent) == 2 and sent[0].decode().startswith("ALARM")
+        assert sent[1].decode().startswith("RESOLVED")
 
     def test_a_raise_still_waiting_to_be_sent_is_not_sent(self, path):
         sent = []

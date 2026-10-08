@@ -352,7 +352,8 @@ Where alarms show:
 days. An admin can acknowledge its alarm with the banner's Acknowledge
 button or `POST /api/v2/alarms/<key>/ack`; an operator or viewer gets 403.
 The alarm stays listed, grey and folded away with who acknowledged it and
-when. Nothing more is sent about it, and that includes the resolve. The
+when. No raise is sent for it any more; the resolve still is, so you hear
+when it is back. The
 acknowledgement goes with the alarm when it resolves, so the next outage
 is a new alarm.
 
