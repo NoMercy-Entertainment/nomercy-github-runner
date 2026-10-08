@@ -278,7 +278,8 @@ def test_the_shell_hook_end_to_end_with_an_event(tmp_path, name):
     hook = tmp_path / "runner"
     hook.mkdir()
     for f in ("job-started.sh", "job_started.py", "runner_guard.py"):
-        (hook / f).write_text((SCRIPT.parent / f).read_text(encoding="utf-8"), newline="\n")
+        (hook / f).write_text((SCRIPT.parent / f).read_text(encoding="utf-8"),
+                              encoding="utf-8", newline="\n")
     fake = tmp_path / "bin"
     fake.mkdir()
     python = Path(sys.executable).as_posix()

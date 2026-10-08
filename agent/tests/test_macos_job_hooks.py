@@ -20,6 +20,8 @@ from pathlib import Path
 
 import pytest
 
+from . import origin_cases
+
 HOOKS = Path(__file__).parents[1] / "hooks" / "macos"
 GIB_KIB = 1000 ** 3 // 1024
 
@@ -37,6 +39,9 @@ def _bash():
 
 BASH = _bash()
 pytestmark = pytest.mark.skipif(BASH is None, reason="no bash here")
+#: The runner's bundled node stands in for itself here: any node reads JSON.
+NODE = shutil.which("node")
+needs_node = pytest.mark.skipif(NODE is None, reason="no node here")
 
 
 def posix(path):
@@ -105,8 +110,13 @@ class Guest:
         df.chmod(0o755)
 
     def env(self, **extra):
-        env = dict(os.environ)
-        env.pop("GITHUB_WORKSPACE", None)
+        env = {k: v for k, v in os.environ.items()
+               if not k.startswith("GITHUB_") and k != "RUNNER_TRUSTED_AUTHORS"}
+        # Every job has an event; a push is what the disk tests run under.
+        push = origin_cases.write_event(origin_cases.by_id("push"), self.root)
+        env.update(GITHUB_EVENT_NAME="push", GITHUB_EVENT_PATH=posix(push))
+        if NODE:
+            env["RUNNER_HOOK_NODE"] = posix(NODE)
         env.update({"PATH": str(self.bin) + os.pathsep + os.environ.get("PATH", ""),
                     "RUNNER_WORK_DIR": posix(self.work),
                     "GITHUB_WORKSPACE": posix(self.work / "app" / "app"),
@@ -134,11 +144,13 @@ def test_every_hook_is_a_script_the_runner_accepts():
 
 
 class TestBeforeTheJob:
+    @needs_node
     def test_plenty_of_room_says_so_and_does_nothing(self, guest):
         result = guest.run("job-started.sh")
         assert result.returncode == 0, result.stdout + result.stderr
         assert "Disk free before the job: 80 GB" in result.stdout
         assert "::" not in result.stdout
+        assert result.stdout.startswith("Origin: push from ")
         assert (guest.work / "lib").exists() and (guest.derived / "Old-abc").exists()
 
     def test_the_volume_measured_is_the_one_holding_the_work_directory(self, guest):
@@ -268,3 +280,96 @@ class TestAfterTheJob:
         result = guest.run("job-completed.sh", RUNNER_WORK_DIR="/nonexistent/work",
                            RUNNER_HOOK_USER_HOME="/nonexistent/home")
         assert result.returncode == 0, result.stdout + result.stderr
+
+
+# ---- whose code: origin_check in lib.sh, before the disk -------------------
+
+def _msys(path):
+    """A Windows path as the bash of Git for Windows puts it in PATH."""
+    text = Path(path).as_posix()
+    if sys.platform == "win32" and len(text) > 1 and text[1] == ":":
+        return "/" + text[0].lower() + text[2:]
+    return text
+
+
+def _run(script, env):
+    result = subprocess.run([BASH, "--noprofile", "--norc", "-e", "-o", "pipefail",
+                             posix(script)], env=env, capture_output=True, timeout=120)
+    return result.returncode, result.stdout.decode("utf-8") + result.stderr.decode("utf-8")
+
+
+@needs_node
+@pytest.mark.parametrize("case", origin_cases.CASES, ids=lambda c: c["id"])
+def test_every_case(guest, tmp_path, case):
+    """The same answer and the same words as runner_guard.py, for every case."""
+    events = tmp_path / "events"
+    events.mkdir()
+    env = guest.env()
+    for key in ("GITHUB_EVENT_NAME", "GITHUB_EVENT_PATH"):
+        env.pop(key)
+    env.update({k: posix(v) if k == "GITHUB_EVENT_PATH" else v
+                for k, v in origin_cases.hook_env(case, events).items()})
+    code, out = _run(HOOKS / "job-started.sh", env)
+    assert code == (0 if case["allowed"] else 1), out
+    for line in case["out"]:
+        assert line in out, out
+    for line in case["absent"]:
+        assert line not in out, out
+    assert ("Disk free before the job" in out) == case["allowed"]
+    if not case["allowed"]:
+        assert not (guest.bin / "df.calls").exists(), "a refused job is not measured"
+
+
+def _hooks_in_a_runner(tmp_path):
+    """The hooks where a create puts them: reg/hooks, beside the runner's
+    own software, whose externals/ hold the node it runs JavaScript with."""
+    hooks = tmp_path / "reg" / "hooks"
+    shutil.copytree(HOOKS, hooks)
+    return hooks
+
+
+def _fake_node(path, body):
+    path.parent.mkdir(parents=True)
+    path.write_text("#!/bin/bash\n" + body + "\n", newline="\n")
+    path.chmod(0o755)
+
+
+@needs_node
+def test_the_runners_own_newest_node_reads_the_event(guest, tmp_path):
+    hooks = _hooks_in_a_runner(tmp_path)
+    externals = tmp_path / "reg" / "externals"
+    _fake_node(externals / "node20" / "bin" / "node", "exit 99")
+    _fake_node(externals / "node24" / "bin" / "node", 'exec "' + posix(NODE) + '" "$@"')
+    env = guest.env()
+    env.pop("RUNNER_HOOK_NODE")
+    env["PATH"] = _msys(guest.bin) + ":/usr/bin:/bin"
+    code, out = _run(hooks / "job-started.sh", env)
+    assert code == 0, out
+    assert out.startswith("Origin: push from "), out
+
+
+def test_no_node_anywhere_lets_the_job_run_and_says_so(guest, tmp_path):
+    hooks = _hooks_in_a_runner(tmp_path)
+    env = guest.env()
+    env.pop("RUNNER_HOOK_NODE", None)
+    env["PATH"] = _msys(guest.bin) + ":/usr/bin:/bin"
+    code, out = _run(hooks / "job-started.sh", env)
+    assert code == 0, out
+    assert "::warning title=Runner guard::" in out and "origin not checked" in out
+    assert "Disk free before the job" in out
+
+
+def test_the_version_is_runner_guards():
+    """What the agent reports for a macOS runner (lib.sh) and what it reads
+    from runner_guard.py elsewhere are one number."""
+    import re
+    lib = (HOOKS / "lib.sh").read_text(encoding="utf-8")
+    guard = (Path(__file__).parents[2] / "images/linux/unit/runner/runner_guard.py"
+             ).read_text(encoding="utf-8")
+    ours = re.search(r"^ORIGIN_GUARD_VERSION=(\d+)$", lib, re.M)
+    theirs = re.search(r"^GUARD_VERSION = (\d+)$", guard, re.M)
+    assert ours and theirs and ours.group(1) == theirs.group(1)
+
+
+def test_lib_parses_as_bash():
+    subprocess.run([BASH, "-n", posix(HOOKS / "lib.sh")], check=True)

@@ -13,6 +13,154 @@
 
 REFUSE=75
 
+# Where this file is: reg/hooks, beside the runner's own software.
+HOOK_DIR=$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd)
+
+# ---- whose code: before anything else, the job's origin ---------------------
+#
+# The rule and the wording are runner_guard.py's (images/linux/unit/runner),
+# and agent/tests/origin_cases.py holds the two to the same answers: a pull
+# request whose head is a fork, or a fork deleted since, is refused unless its
+# author is OWNER, MEMBER or COLLABORATOR, or a login in RUNNER_TRUSTED_AUTHORS
+# (comma-separated, without case). GitHub reports a member whose membership is
+# private as CONTRIBUTOR, which is what the list is for. Everything else runs,
+# with one line that says where it came from. An event that cannot be read, or
+# no node to read it with, is a warning, and the job runs.
+#
+# bash cannot read JSON, and a pattern over the payload can be fooled by a
+# pull request's own title or body. The runner's own node reads it - every
+# GitHub runner ships one in externals/ to run JavaScript actions - and says
+# only what the rule needs, each value already in the characters GitHub allows
+# in a login or a repository name.
+
+# What the agent reports for this runner; the same number as runner_guard.py's
+# GUARD_VERSION.
+ORIGIN_GUARD_VERSION=1
+ORIGIN_UNREAD="::warning title=Runner guard::could not read the event; origin not checked"
+
+# kind|base|head|login|association|number|repository|sender, from the event
+# file in argv[1]. kind: none, same, fork, deleted or unknown. Exit 3 when the
+# file is not a JSON object.
+ORIGIN_FACTS_JS='
+const fs = require("fs");
+let p;
+try { p = JSON.parse(fs.readFileSync(process.argv[1], "utf8")); } catch (e) { process.exit(3); }
+const obj = (v) => v !== null && typeof v === "object" && !Array.isArray(v);
+if (!obj(p)) process.exit(3);
+const get = (v, ...keys) => { for (const k of keys) { if (!obj(v)) return undefined; v = v[k]; } return v; };
+const text = (v) => (typeof v === "string" && v !== "") ? v : "";
+const shown = (v) => text(v).replace(/[^A-Za-z0-9._\/-]/gu, "?").slice(0, 100);
+let kind = "none", base = "", head = "", login = "", association = "", number = "";
+const pr = p.pull_request;
+if (obj(pr)) {
+  base = text(get(pr, "base", "repo", "full_name")) || text(get(p, "repository", "full_name"));
+  login = text(get(pr, "user", "login"));
+  association = typeof pr.author_association === "string" ? pr.author_association.toUpperCase() : "";
+  number = Number.isInteger(pr.number) && pr.number > 0 ? String(pr.number) : "";
+  const h = pr.head;
+  if (!obj(h) || !Object.prototype.hasOwnProperty.call(h, "repo")) kind = "unknown";
+  else if (h.repo === null) kind = "deleted";
+  else {
+    const name = text(get(h, "repo", "full_name"));
+    if (!name || !base) kind = "unknown";
+    else { head = name; kind = name.toLowerCase() === base.toLowerCase() ? "same" : "fork"; }
+  }
+}
+process.stdout.write([kind, shown(base), shown(head), shown(login), shown(association),
+  number, shown(get(p, "repository", "full_name")), shown(get(p, "sender", "login"))].join("|") + "\n");
+'
+
+# The runner's own node, newest first: RUNNER_HOOK_NODE when it is set, then
+# externals/node*/bin/node beside these hooks or in RUNNER_REG_DIR, then any
+# node on PATH. Nothing when there is none.
+hook_node() {
+  local found="" candidate
+  if [ -n "${RUNNER_HOOK_NODE:-}" ]; then
+    printf '%s' "$RUNNER_HOOK_NODE"
+    return 0
+  fi
+  for candidate in "${RUNNER_REG_DIR:-/nonexistent}"/externals/node*/bin/node \
+      "$HOOK_DIR"/../externals/node*/bin/node; do
+    [ -x "$candidate" ] && found=$candidate
+  done
+  [ -n "$found" ] || found=$(command -v node 2>/dev/null)
+  printf '%s' "$found"
+}
+
+# $1 as it may appear in the log - only what GitHub allows in a login or a
+# repository name - or $2 when it is empty.
+shown() {
+  local value
+  value=$(printf '%s' "$1" | LC_ALL=C tr -c 'A-Za-z0-9._/-' '?' | cut -c1-100)
+  printf '%s' "${value:-$2}"
+}
+
+# Whether login $1 is in RUNNER_TRUSTED_AUTHORS, without case.
+trusted_author() {
+  local login entry found=1
+  login=$(lower "$1")
+  [ -n "$login" ] || return 1
+  set -f
+  local IFS=','
+  for entry in ${RUNNER_TRUSTED_AUTHORS:-}; do
+    entry=$(lower "$(printf '%s' "$entry" | tr -d '[:space:]')")
+    [ -n "$entry" ] && [ "$entry" = "$login" ] && found=0
+  done
+  set +f
+  return $found
+}
+
+# 0 to let the job run, REFUSE to stop it.
+origin_check() {
+  local node facts kind base head login association number repository sender
+  local name who where org pr
+  name=$(shown "${GITHUB_EVENT_NAME:-}" "an unnamed event")
+  if [ -z "${GITHUB_EVENT_PATH:-}" ]; then
+    echo "$ORIGIN_UNREAD"
+    return 0
+  fi
+  node=$(hook_node)
+  if [ -z "$node" ]; then
+    echo "::warning title=Runner guard::no node to read the event with; origin not checked"
+    return 0
+  fi
+  if ! facts=$("$node" -e "$ORIGIN_FACTS_JS" "$GITHUB_EVENT_PATH" 2>/dev/null) || [ -z "$facts" ]; then
+    echo "$ORIGIN_UNREAD"
+    return 0
+  fi
+  IFS='|' read -r kind base head login association number repository sender <<EOF
+$facts
+EOF
+  case "$kind" in
+    none)
+      echo "Origin: $name from $(shown "${repository:-${GITHUB_REPOSITORY:-}}" "an unknown repository") by $(shown "${sender:-${GITHUB_ACTOR:-}}" "an unknown account") — allowed"
+      return 0 ;;
+    same) where=$(shown "$base" "an unknown repository") ;;
+    fork) where="fork $(shown "$head" "an unknown repository")" ;;
+    deleted) where="a deleted fork" ;;
+    *) echo "$ORIGIN_UNREAD"
+       return 0 ;;
+  esac
+  who=$(shown "$login" "an unknown account")
+  if [ "$kind" = same ]; then
+    echo "Origin: $name from $where by $who — allowed"
+    return 0
+  fi
+  case " OWNER MEMBER COLLABORATOR " in
+    *" ${association:-none} "*)
+      echo "Origin: $name from $where by $who — allowed"
+      return 0 ;;
+  esac
+  if trusted_author "$login"; then
+    echo "Origin: $name from $where by $who — allowed"
+    return 0
+  fi
+  org=$(shown "${base%%/*}" "the organisation")
+  if [ -n "$number" ]; then pr="Pull request #$number"; else pr="The pull request"; fi
+  echo "::error title=Outside code refused::Self-hosted runners only run code from $org members and known maintainers. $pr by $who ($(shown "$association" UNKNOWN)) comes from $where, so this job was stopped before any of its code ran. If $who is a maintainer whose org membership is private, add them to RUNNER_TRUSTED_AUTHORS."
+  return "$REFUSE"
+}
+
 # Bytes free on the volume holding $1 - on APFS the Data volume, which / is
 # not - or nothing when df cannot say.
 free_bytes() {
@@ -127,9 +275,12 @@ clear_gradle_build_cache() {
   return 0
 }
 
-# 0 to let the job run, REFUSE to fail it on purpose.
+# 0 to let the job run, REFUSE to fail it on purpose. Whose code it is comes
+# first: a refused job is not measured, let alone cleaned for.
 job_started() {
   local work free after clean_below warn_below fail_below
+  origin_check
+  [ $? -eq "$REFUSE" ] && return "$REFUSE"
   work=${RUNNER_WORK_DIR:-}
   [ -n "$work" ] || return 0
   clean_below=$(threshold "${RUNNER_DISK_CLEAN_BELOW_GB:-}" 15)

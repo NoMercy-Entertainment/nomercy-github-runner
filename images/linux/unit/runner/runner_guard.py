@@ -70,6 +70,10 @@ def trusted_authors(text):
     return {name.strip().lower() for name in (text or "").split(",") if name.strip()}
 
 
+def _text(value):
+    return value if isinstance(value, str) and value else None
+
+
 def _get(value, *keys):
     for key in keys:
         if not isinstance(value, dict):
@@ -87,15 +91,12 @@ def origin(payload):
              "association": None, "number": None}
     if not isinstance(pr, dict):
         return facts
-    base = _get(pr, "base", "repo", "full_name")
-    if not isinstance(base, str) or not base:
-        base = _get(payload, "repository", "full_name")
     head = pr.get("head")
-    login = _get(pr, "user", "login")
     association = pr.get("author_association")
     number = pr.get("number")
-    facts.update(base=base if isinstance(base, str) and base else None,
-                 login=login if isinstance(login, str) and login else None,
+    facts.update(base=(_text(_get(pr, "base", "repo", "full_name"))
+                       or _text(_get(payload, "repository", "full_name"))),
+                 login=_text(_get(pr, "user", "login")),
                  association=association.upper() if isinstance(association, str) else None,
                  number=number if isinstance(number, int) and not isinstance(number, bool)
                  and number > 0 else None)
@@ -104,8 +105,8 @@ def origin(payload):
     elif head["repo"] is None:
         facts["kind"] = "deleted"
     else:
-        name = _get(head, "repo", "full_name")
-        if not isinstance(name, str) or not name or not facts["base"]:
+        name = _text(_get(head, "repo", "full_name"))
+        if not name or not facts["base"]:
             facts["kind"] = "unknown"
         else:
             facts["head"] = name
@@ -120,9 +121,9 @@ def decide(event, payload, env):
     if facts["kind"] == "unknown":
         return True, UNREAD
     if facts["kind"] == "none":
-        repo = shown(_get(payload, "repository", "full_name") or env.get("GITHUB_REPOSITORY"),
-                     "an unknown repository")
-        who = shown(_get(payload, "sender", "login") or env.get("GITHUB_ACTOR"),
+        repo = shown(_text(_get(payload, "repository", "full_name"))
+                     or env.get("GITHUB_REPOSITORY"), "an unknown repository")
+        who = shown(_text(_get(payload, "sender", "login")) or env.get("GITHUB_ACTOR"),
                     "an unknown account")
         return True, f"Origin: {name} from {repo} by {who} {ALLOWED}"
     who = shown(facts["login"], "an unknown account")
