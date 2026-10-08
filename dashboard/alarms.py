@@ -268,11 +268,13 @@ class AlarmBook:
         self._watch(c, key, "job_queued", forge, subject, detail, since, threshold, now)
         return key
 
-    def observe_queue(self, forge, jobs, swept, online, now, cfg):
+    def observe_queue(self, forge, jobs, swept, online, now, cfg, listed=None):
         """One sweep of the queue: `jobs` every queued job found, each
         {"id", "repo", "workflow", "name", "labels", "since", "url"}; `swept`
         the repositories read completely; `online` the label sets of the
-        runners online now. A job alarm in a repository not swept stays."""
+        runners online now. A job alarm in a repository not swept stays -
+        unless `listed`, the org's whole repository list, no longer has the
+        repository: archived or deleted, it will never be read again."""
         threshold = cfg["queue_minutes"] * 60
         known = self.known_labels(forge)
         with _WRITE, self._begin() as c:
@@ -294,6 +296,8 @@ class AlarmBook:
                     self._resolve(c, key, now, "a runner with its labels is online")
                 elif json.loads(detail or "{}").get("repo") in swept:
                     self._resolve(c, key, now, "no longer queued")
+                elif listed is not None and                         json.loads(detail or "{}").get("repo") not in set(listed):
+                    self._resolve(c, key, now, "its repository is no longer listed")
         return self._flush()
 
     def recheck_queue(self, forge, online, now, cfg):
@@ -555,7 +559,8 @@ class Monitor:
             book.observe_queue_reader(
                 "github", "no repository's runs could be read" if blind else None,
                 now, cfg)
-        book.observe_queue("github", jobs, swept, self.online.get("github") or [], now, cfg)
+        book.observe_queue("github", jobs, swept, self.online.get("github") or [], now, cfg,
+                           listed=self.repos)
         queue.update(checked_at=iso(now), repositories=len(self.repos),
                      read=len(swept), queued=len(jobs))
         self.publish(book, cfg)

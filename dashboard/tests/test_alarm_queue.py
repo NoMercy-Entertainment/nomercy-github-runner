@@ -115,6 +115,19 @@ class TestTheQueueAlarm:
         b.observe_queue("github", [], set(), [], T0 + 15 * MIN, cfg())
         assert len([r for r in b.rows() if r["kind"] == "job_queued"]) == 1
 
+    def test_a_repository_no_longer_listed_resolves_its_alarms(self, path):
+        """Archived or deleted: its runs are never read again, so without
+        this its alarm would stay for good."""
+        seen(path, *XCODE)
+        b = alarms.AlarmBook(path)
+        b.observe_queue("github", [job()], {f"{ORG}/app"}, [], T0 + 10 * MIN, cfg(),
+                        listed=[f"{ORG}/app"])
+        b.observe_queue("github", [], set(), [], T0 + 15 * MIN, cfg(),
+                        listed=[f"{ORG}/other"])
+        assert [r for r in b.rows() if r["kind"] == "job_queued"] == []
+        assert "no longer listed" in audit.entries(path, verb="alarm",
+                                                   decision="resolved")[0]["outcome"]
+
     def test_a_runner_coming_online_resolves_it_between_sweeps(self, path):
         seen(path, *XCODE)
         b = alarms.AlarmBook(path)
@@ -266,6 +279,14 @@ class TestTheSweep:
         m.sweep_queue(path, self.ENV, T0)
         assert m.status["queue"]["paused_until"] == alarms.iso(T0 + alarms.THROTTLE_SECONDS)
         assert original
+
+    def test_the_sweep_resolves_a_repository_that_was_archived(self, path):
+        seen(path, *XCODE)
+        book = alarms.AlarmBook(path)
+        book.observe_queue("github", [job(repo=f"{ORG}/gone")], {f"{ORG}/gone"}, [],
+                           T0 + 10 * MIN, cfg())
+        self.sweep(path, FakeGitHub([f"{ORG}/app"]), T0 + 15 * MIN)
+        assert [r for r in book.rows() if r["kind"] == "job_queued"] == []
 
     def test_the_floor_is_configurable(self, path):
         client = FakeGitHub([f"{ORG}/app"], remaining=150)
