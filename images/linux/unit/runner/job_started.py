@@ -63,8 +63,18 @@ def _free_bytes(path):
     return shutil.disk_usage(path).free
 
 
+#: cleanup.py's own default, when the fleet's cache policy names none.
+CLEANUP_SCOPES = "workspace,temp,diagnostics,engine-build-cache,engine-images-unused"
+
+
 def _cleanup():
-    subprocess.run(["/runner/cleanup"], timeout=360, check=False)
+    """The completion hook's cleanup, less `temp`: when this hook runs, _temp
+    already holds the starting job's event.json and file-command files."""
+    env = dict(os.environ)
+    scopes = env.get("RUNNER_CLEANUP_SCOPES") or CLEANUP_SCOPES
+    env["RUNNER_CLEANUP_SCOPES"] = ",".join(
+        s for s in scopes.split(",") if s and s != "temp")
+    subprocess.run(["/runner/cleanup"], timeout=360, check=False, env=env)
 
 
 def check_disk(paths, env, free_bytes=_free_bytes, cleanup=_cleanup):

@@ -166,3 +166,48 @@ class TestMain:
     def test_the_refusal_is_passed_on(self, monkeypatch, tmp_path):
         monkeypatch.setattr(job_started, "check_disk", lambda *a, **k: job_started.REFUSE)
         assert job_started.main({"RUNNER_ANDROID_PRISTINE": str(tmp_path / "x")}) == job_started.REFUSE
+
+
+SHELL_HOOK = Path(__file__).parents[2] / "images/linux/unit/runner/job-started.sh"
+
+
+@pytest.mark.parametrize("python_status,hook_status", [(0, 0), (2, 0), (124, 0), (75, 1)])
+def test_only_the_refusal_fails_the_job_under_the_runners_errexit(tmp_path, python_status, hook_status):
+    """The runner runs a .sh hook as `bash -e -o pipefail`. Without guarding
+    the call, any status other than 0 ended the script at once and failed
+    the job - the refusal only by accident, a crash or timeout as well."""
+    import shutil
+    import subprocess
+    bash = shutil.which("bash")
+    if not bash or "system32" in bash.lower():
+        pytest.skip("needs a real bash")
+    fake = tmp_path / "bin"
+    fake.mkdir()
+    (fake / "timeout").write_text(f"#!/usr/bin/env bash\nexit {python_status}\n", newline="\n")
+    (fake / "timeout").chmod(0o755)
+    env = dict(os.environ, PATH=f"{fake.as_posix()}{os.pathsep}{os.environ.get('PATH', '')}")
+    if os.name == "nt":
+        env["PATH"] = "/" + fake.as_posix().replace(":", "", 1) + ":" + "/usr/bin:/bin"
+    script = tmp_path / "job-started.sh"
+    script.write_text(SHELL_HOOK.read_text(encoding="utf-8"), newline="\n")
+    done = subprocess.run([bash, "-e", "-o", "pipefail", script.as_posix()],
+                          capture_output=True, text=True, env=env)
+    assert done.returncode == hook_status, done.stdout + done.stderr
+
+
+def test_the_cleanup_before_a_job_leaves_temp_alone(monkeypatch):
+    """_temp already holds the starting job's event.json and file-command
+    files when the hook runs; clearing it there breaks that job."""
+    seen = {}
+
+    def run(args, **kwargs):
+        seen.update(kwargs.get("env") or {})
+        return None
+
+    monkeypatch.setattr(job_started.subprocess, "run", run)
+    monkeypatch.setenv("RUNNER_CLEANUP_SCOPES", "workspace,temp,engine-build-cache")
+    job_started._cleanup()
+    assert seen["RUNNER_CLEANUP_SCOPES"].split(",") == ["workspace", "engine-build-cache"]
+    monkeypatch.delenv("RUNNER_CLEANUP_SCOPES")
+    job_started._cleanup()
+    assert "temp" not in seen["RUNNER_CLEANUP_SCOPES"].split(",") and "workspace" in seen["RUNNER_CLEANUP_SCOPES"]
