@@ -246,13 +246,27 @@ else
   _wd_label='tv.nomercy.runner-watchdog'
   _health_label='tv.nomercy.autologin-health'
 
-  if [ -f "$HOME/Library/LaunchAgents/${_wd_label}.plist" ]; then
+  # The watchdog and the health daemon are machine-wide by design - the
+  # watchdog covers every actions.runner agent it finds, including ones this
+  # installer never created. So they only come off when there is nothing left
+  # for them to watch. Removing them while another installation is still here
+  # would silently take that one's reboot cover away.
+  _remaining=0
+  for _left in "$HOME"/Library/LaunchAgents/actions.runner.*.plist; do
+    [ -e "$_left" ] && _remaining=$((_remaining + 1))
+  done
+
+  if [ "$_remaining" -gt 0 ]; then
+    info_ "${_remaining} other runner agent(s) still here, so the watchdog stays."
+  elif [ -f "$HOME/Library/LaunchAgents/${_wd_label}.plist" ]; then
     launchctl bootout "gui/$(id -u)/${_wd_label}" >/dev/null 2>&1 || true
     rm -f "$HOME/Library/LaunchAgents/${_wd_label}.plist"
     ok_ 'Removed the runner watchdog'
   fi
 
-  if [ -f "/Library/LaunchDaemons/${_health_label}.plist" ]; then
+  if [ "$_remaining" -gt 0 ]; then
+    info_ 'The auto-login health daemon stays for the same reason.'
+  elif [ -f "/Library/LaunchDaemons/${_health_label}.plist" ]; then
     # The installer took a password to create this, so the uninstaller takes one
     # to remove it. Leaving a root LaunchDaemon behind on someone's machine and
     # printing two commands is not a clean uninstall.

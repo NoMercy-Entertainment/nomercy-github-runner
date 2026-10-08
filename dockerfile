@@ -217,6 +217,16 @@ RUN sed -i "s|http://archive.ubuntu.com|http://${UBUNTU_MIRROR}|g" /etc/apt/sour
         wine64 \
         # macOS pkg building on Linux
         libxml2-utils cpio && \
+    # firefox brings hunspell-en-us -> dictionaries-common -> emacsen-common, and
+    # that last postinst cannot succeed without an emacs flavour installed. dpkg
+    # then holds the chain unconfigured, and every apt call in every job on this
+    # image fails afterwards no matter what it asked for — it took the
+    # nomercy-media-server deb and rpm jobs down repeatedly. Nothing here spell
+    # checks, so the chain goes. dpkg --configure -a is deliberately not guarded:
+    # an image that would ship half-configured must fail its own build instead.
+    apt-get purge -y emacsen-common dictionaries-common hunspell-en-us \
+        libenchant-2-2 libenchant-2-dev || true && \
+    dpkg --configure -a && \
     locale-gen en_US.UTF-8 && \
     systemctl disable apache2 || true && \
     systemctl disable nginx || true && \
