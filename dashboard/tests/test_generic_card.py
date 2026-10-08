@@ -197,8 +197,11 @@ def render(fn, payload):
               "  const items = JSON.parse(s);\n"
               "  process.stdout.write(JSON.stringify(items.map(m.%s)));\n"
               "});\n") % (json.dumps(CARD_JS), fn)
+    # node writes UTF-8 whatever the platform's code page: the card's "·"
+    # read as cp1252 on Windows is not the character the page draws.
     p = subprocess.run([NODE, "-e", script], input=json.dumps(payload),
-                       capture_output=True, text=True, timeout=60)
+                       capture_output=True, text=True, encoding="utf-8",
+                       timeout=60)
     assert p.returncode == 0, p.stderr
     return json.loads(p.stdout)
 

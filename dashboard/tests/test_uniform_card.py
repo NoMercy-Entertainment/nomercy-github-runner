@@ -15,11 +15,14 @@ on that same storage-enabled worker; the ARM64 guest's 8 cores, 3.22 GB and
 no owned storage; and the macOS appliance, 6 logical CPUs, no limits, its
 runners on a 274 GB Data volume.
 """
+import re
 from datetime import datetime, timedelta, timezone
 
 import pytest
 
 import cards
+import tests.test_generic_card as generic
+from tests.test_generic_card import NODE, render
 
 NOW = datetime(2026, 10, 8, 6, 0, 0, tzinfo=timezone.utc)
 GB = 10 ** 9
@@ -235,6 +238,69 @@ class TestFreshness:
         c = card(dict(LINUX, telemetry=t))
         assert c["storage"]["used_bytes"] is None
         assert c["storage"]["total_bytes"] == 107374182400
+
+
+# ---------------------------------------------------------------------------
+# the renderer, under node: one card, drawn the same way for every runner
+# ---------------------------------------------------------------------------
+
+def _meters(html):
+    """{key: (value, detail, width)} of every meter drawn, in order."""
+    found = re.findall(
+        r'data-m="(\w+)">.*?class="mval">([^<]*)</span>.*?'
+        r'class="mdetail">([^<]*)</div>.*?style="width:([0-9.]+)%"', html)
+    return [(key, value, detail, float(width))
+            for key, value, detail, width in found]
+
+
+@pytest.mark.skipif(NODE is None, reason="node is not installed")
+class TestTheSameCardEverywhere:
+    def test_every_runner_draws_the_same_four_meters_in_one_order(self):
+        every = [card(s) for s in EVERY.values()] + [
+            card(spec("windows", telemetry={}))] + generic.every_card()
+        for c, html in zip(every, render("cardHTML", every)):
+            assert [m[0] for m in _meters(html)] == list(METERS), c["key"]
+
+    def test_the_cpu_bar_is_a_share_of_the_runners_own_cores(self):
+        """812.5% on a 16-core window is half of it - not 812.5 / 56 of the
+        host, which read as idle."""
+        html = render("cardHTML", [card(LINUX)])[0]
+        cpu = {m[0]: m[1:] for m in _meters(html)}["cpu"]
+        assert cpu == ("50.8%", "8.1 / 16 cores", 50.8)
+
+    def test_a_shared_boundary_is_drawn_as_shared_everywhere(self):
+        html = render("cardHTML", [card(MACOS), card(LINUX)])
+        mac = {m[0]: m[1:] for m in _meters(html[0])}
+        linux = {m[0]: m[1:] for m in _meters(html[1])}
+        assert mac["cpu"] == ("5.0%", "0.3 / 6 cores shared", 5.0)
+        assert mac["memory"][1] == "2.00 GB / 17 GB shared"
+        for meter in METERS:
+            assert "shared" not in linux[meter][1], meter
+
+    def test_shared_storage_shows_its_own_bytes_and_fills_with_the_volume(
+            self):
+        """The bar is how full the boundary that would stop the runner is:
+        the volume it shares. The runner's own bytes are said too."""
+        html = render("cardHTML", [card(WINDOWS_PLAIN)])[0]
+        storage = {m[0]: m[1:] for m in _meters(html)}["storage"]
+        assert storage == ("45.0%", "40 GB own · 900 GB / 2000 GB shared",
+                           45.0)
+
+    def test_an_own_disk_fills_with_the_runners_own_use(self):
+        html = render("cardHTML", [card(WINDOWS_VHD)])[0]
+        got = {m[0]: m[1:] for m in _meters(html)}
+        assert got["storage"] == ("11.2%", "12 GB / 107 GB", 11.2)
+        assert got["cache"] == ("11.2%", "3.00 GB own · 12 GB / 107 GB shared",
+                                11.2)
+
+    def test_an_unknown_figure_is_unknown_in_its_slot(self):
+        t = dict(LINUX["telemetry"], storage_at=at(3600))
+        html = render("cardHTML", [card(dict(LINUX, telemetry=t)),
+                                   card(ARM64)])
+        linux = {m[0]: m[1:] for m in _meters(html[0])}
+        arm = {m[0]: m[1:] for m in _meters(html[1])}
+        assert linux["storage"] == ("unknown", "unknown / 107 GB", 0.0)
+        assert arm["storage"] == ("unknown", "unknown / unknown shared", 0.0)
 
 
 def test_the_page_gives_each_card_its_workers_hardware(tmp_path):

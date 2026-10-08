@@ -29,63 +29,56 @@ function fmtBytes(b) {
   return (Number(b) / 1e6).toFixed(1) + ' MB';
 }
 
+function fmtCores(n) {
+  if (n == null || isNaN(Number(n))) return 'unknown';
+  return Number.isInteger(Number(n)) ? String(Number(n)) : Number(n).toFixed(1);
+}
+
 function pctClass(p) { return p >= 90 ? 'crit' : p >= 70 ? 'warn' : ''; }
 
-function meter(key, label, text, pct) {
-  const p = Math.max(0, Math.min(100, Number(pct) || 0));
-  const [value, detail] = text.split(/\s+·\s+/);
+function known(v) { return v != null && !isNaN(Number(v)); }
+
+// One meter, drawn the same way for all four measures and every runner: the
+// share of its boundary in the value slot, used / total in the detail, and a
+// bar that is how full the boundary that would stop this runner is. A shared
+// boundary says "shared"; a shared volume also gives the runner's own
+// figure, since the bar is then the volume's fill. Anything not known right
+// now reads "unknown" in its slot, never a confident zero.
+function meter(key, label, m, fmt, unit) {
+  const volume = known(m.volumeTotal);
+  const used = volume ? m.volumeUsed : m.used;
+  const total = volume ? m.volumeTotal : m.total;
+  const pct = known(used) && known(total) && Number(total) > 0
+    ? 100 * Number(used) / Number(total) : null;
+  const p = Math.max(0, Math.min(100, pct || 0));
+  const detail = (volume ? fmt(m.used) + ' own · ' : '') +
+    fmt(used) + ' / ' + fmt(total) + unit + (m.shared ? ' shared' : '');
   return `<div class="meter" data-m="${esc(key)}">` +
     `<div class="mrow"><span>${esc(label)}</span>` +
-    `<span class="mval">${esc(value)}</span></div>` +
-    `<div class="mdetail">${esc(detail || '')}</div>` +
+    `<span class="mval">${esc(pct == null ? 'unknown' : pct.toFixed(1) + '%')}</span></div>` +
+    `<div class="mdetail">${esc(detail)}</div>` +
     `<div class="track"><div class="fill ${pctClass(p)}" ` +
     `style="width:${p.toFixed(1)}%"></div></div></div>`;
 }
 
-// The four measures a card may carry. Each is null when the runner does not
-// have it or it could not be measured, and then says so rather than drawing a
-// confident zero.
+// The four meters every card has, always, in this order. A CPU percent is
+// summed over cores, so the cores in use are a hundredth of it, of the
+// runner's own cores or, when it has none, of the machine's.
 function meters(c) {
-  let out = '';
-  const cpu = c.cpu || {};
-  if (cpu.percent == null) {
-    out += meter('cpu', 'CPU', 'unknown', 0);
-  } else {
-    const cores = Number(cpu.cores) || 0, host = Number(cpu.host_cores) || 0;
-    const cap = cores || host;
-    const text = cap
-      ? Number(cpu.percent).toFixed(1) + '%  ·  ' +
-        (Number(cpu.percent) / 100).toFixed(1) + ' / ' + cap + ' cores'
-      : Number(cpu.percent).toFixed(1) + '%';
-    out += meter('cpu', 'CPU', text, host ? Number(cpu.percent) / host
-                                          : cap ? Number(cpu.percent) / cap : 0);
-  }
-  const mem = c.memory || {};
-  if (mem.used_bytes == null) {
-    out += meter('memory', 'Memory', 'unknown', 0);
-  } else if (mem.limit_bytes) {
-    const p = 100 * mem.used_bytes / mem.limit_bytes;
-    out += meter('memory', 'Memory', p.toFixed(1) + '%  ·  ' +
-                 fmtBytes(mem.used_bytes) + ' / ' + fmtBytes(mem.limit_bytes), p);
-  } else {
-    out += meter('memory', 'Memory', fmtBytes(mem.used_bytes), 0);
-  }
-  if (c.cache) {
-    const used = c.cache.used_bytes, cap = c.cache.cap_bytes;
-    out += used == null ? meter('cache', 'Cache', 'unknown', 0)
-      : meter('cache', 'Cache', (cap ? (100 * used / cap).toFixed(1) + '%  ·  ' : '') +
-              fmtBytes(used) + (cap ? ' / ' + fmtBytes(cap) : ''),
-              cap ? 100 * used / cap : 0);
-  }
-  if (c.storage) {
-    const used = c.storage.used_bytes, total = c.storage.total_bytes;
-    out += meter('storage', 'Storage',
-                 total ? (100 * used / total).toFixed(1) + '%  ·  ' +
-                         fmtBytes(used) + ' / ' + fmtBytes(total)
-                       : fmtBytes(used),
-                 total ? 100 * used / total : 0);
-  }
-  return out;
+  const cpu = c.cpu || {}, mem = c.memory || {};
+  const st = c.storage || {}, ca = c.cache || {};
+  return [
+    ['cpu', 'CPU', {used: known(cpu.percent) ? Number(cpu.percent) / 100 : null,
+                    total: cpu.total_cores, shared: cpu.shared}, fmtCores, ' cores'],
+    ['memory', 'Memory', {used: mem.used_bytes, total: mem.total_bytes,
+                          shared: mem.shared}, fmtBytes, ''],
+    ['storage', 'Storage', {used: st.used_bytes, total: st.total_bytes, shared: st.shared,
+                            volumeUsed: st.volume_used_bytes,
+                            volumeTotal: st.volume_total_bytes}, fmtBytes, ''],
+    ['cache', 'Cache', {used: ca.used_bytes, total: ca.total_bytes, shared: ca.shared,
+                        volumeUsed: ca.volume_used_bytes,
+                        volumeTotal: ca.volume_total_bytes}, fmtBytes, ''],
+  ].map(([key, label, m, fmt, unit]) => meter(key, label, m, fmt, unit)).join('');
 }
 
 function actionButton(a, i) {
