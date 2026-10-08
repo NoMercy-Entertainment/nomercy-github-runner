@@ -88,8 +88,9 @@ PROBES = (("disk_usage", "storage"), ("cache_size", "cache"))
 
 def _depth(runtime, runner_id):
     """Storage and cache of one unit, from the closed probe set: what the
-    unit uses, and what bounds it - its own disk's size or its cache's cap
-    where it has one, the volume it shares where a probe reported that."""
+    unit uses, and what bounds it - `<name>_total_bytes`, the size of a
+    disk that is the unit's alone (and for the cache its cap), and the
+    volume its tree is on, used and total."""
     out = {}
     for probe, name in PROBES:
         try:
@@ -101,14 +102,15 @@ def _depth(runtime, runner_id):
         stamp = _stamp()
         out[f"{name}_bytes"] = got["value"]
         out[f"{name}_at"] = stamp
-        if name == "storage" and got.get("total_bytes") is not None:
-            out["storage_total_bytes"] = got["total_bytes"]
-        if name == "cache" and got.get("cap_bytes") is not None:
-            out["cache_cap_bytes"] = got["cap_bytes"]
-        if "volume_total_bytes" in got or "volume_used_bytes" in got:
-            out[f"{name}_volume_used_bytes"] = got.get("volume_used_bytes")
-            out[f"{name}_volume_total_bytes"] = got.get("volume_total_bytes")
-            out[f"{name}_volume_at"] = stamp
+        # Every boundary is stated, as null when there is none: a runner
+        # recreated without its own disk or cap must not keep the old one,
+        # and the controller keeps what a beat leaves out.
+        out[f"{name}_total_bytes"] = got.get("total_bytes")
+        if name == "cache":
+            out["cache_cap_bytes"] = got.get("cap_bytes")
+        out[f"{name}_volume_used_bytes"] = got.get("volume_used_bytes")
+        out[f"{name}_volume_total_bytes"] = got.get("volume_total_bytes")
+        out[f"{name}_volume_at"] = stamp
     return out
 
 

@@ -143,6 +143,7 @@ class TestWhatBoundsAUnit:
 
     OWN_DISK = {"disk_usage": {"ok": True, "value": 800, "total_bytes": 1000},
                 "cache_size": {"ok": True, "value": 70, "cap_bytes": None,
+                               "total_bytes": 1000,
                                "volume_used_bytes": 800,
                                "volume_total_bytes": 1000}}
     SHARED = {"disk_usage": {"ok": True, "value": 5,
@@ -156,8 +157,10 @@ class TestWhatBoundsAUnit:
         d = hb._depth(Bounded(probes=self.OWN_DISK), RUNNING)
         assert d["storage_bytes"] == 800
         assert d["storage_total_bytes"] == 1000
-        assert "storage_volume_total_bytes" not in d
+        assert d["storage_volume_total_bytes"] is None
         assert d["cache_bytes"] == 70
+        assert d["cache_total_bytes"] == 1000
+        assert d["cache_cap_bytes"] is None
         assert d["cache_volume_used_bytes"] == 800
         assert d["cache_volume_total_bytes"] == 1000
         assert d["cache_volume_at"] == d["cache_at"]
@@ -165,12 +168,26 @@ class TestWhatBoundsAUnit:
     def test_a_deep_beat_carries_the_volume_a_unit_shares(self):
         d = hb._depth(Bounded(probes=self.SHARED), RUNNING)
         assert d["storage_bytes"] == 5
-        assert "storage_total_bytes" not in d
+        assert d["storage_total_bytes"] is None
         assert d["storage_volume_used_bytes"] == 150
         assert d["storage_volume_total_bytes"] == 400
         assert d["storage_volume_at"] == d["storage_at"]
         assert d["cache_cap_bytes"] == 20
+        assert d["cache_total_bytes"] is None
         assert d["cache_volume_total_bytes"] is None
+
+    def test_a_deep_beat_says_a_boundary_is_gone_rather_than_omitting_it(self):
+        """A runner recreated without its own disk or cap must not keep the
+        old one on its card: every measured probe states each boundary, as
+        null when there is none, so the controller can clear what it kept."""
+        d = hb._depth(Bounded(probes={
+            "disk_usage": {"ok": True, "value": 5},
+            "cache_size": {"ok": True, "value": 2}}), RUNNING)
+        for key in ("storage_total_bytes", "storage_volume_used_bytes",
+                    "storage_volume_total_bytes", "cache_cap_bytes",
+                    "cache_total_bytes", "cache_volume_used_bytes",
+                    "cache_volume_total_bytes"):
+            assert key in d and d[key] is None, key
 
     def test_a_failed_probe_carries_no_boundary_either(self):
         d = hb._depth(Bounded(probes={"disk_usage": {
