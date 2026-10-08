@@ -268,6 +268,9 @@ DESTROY_PATHS = (
     re.compile(r"^/api/v2/runners/[^/]+/actions/"
                r"(remove|recreate|deregister)$"),
     re.compile(r"^/api/v2/fleets/[^/]+/recreate$"),
+    # A runner's own CPU and memory outrank its fleet's and rebuild it
+    # (GitHub #5).
+    re.compile(r"^/api/v2/runners/[^/]+/limits$"),
 )
 
 
@@ -289,6 +292,9 @@ def _refuse_destroy(role, path):
                          parameters={"path": path})
     except Exception:   # noqa: BLE001 - the refusal stands either way
         pass
+    if path.endswith("/limits"):
+        return _forbid("Setting a runner's own CPU or memory limit needs the "
+                       "admin role.")
     return _forbid("Removing, recreating or deregistering needs the admin "
                    "role.")
 

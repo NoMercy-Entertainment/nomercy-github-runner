@@ -226,6 +226,182 @@ class TestLinuxAndWindowsNeedLimits:
         assert service.limits_problem(service.fleets.get("github-linux-x64"))
 
 
+def a_runner(service, state="idle", fid="github-linux-x64", host="rnr-linux-1",
+             **fields):
+    provider, platform, arch = fid.split("-")
+    return service.specs.create(provider=provider, platform=platform,
+                                architecture=arch, fleet_id=fid, host_id=host,
+                                actual_state=state, exec_unit_ref="unit-1",
+                                **fields)
+
+
+def set_limits(client, rid, body, key="limits-1"):
+    return client.post(f"/api/v2/runners/{rid}/limits", json=body,
+                       headers={"Idempotency-Key": key})
+
+
+@pytest.fixture
+def linux(client, plane):
+    service, _ = api_v2.control_plane()
+    live_workers(service)
+    service.fleets.set_defaults("github-linux-x64",
+                                {"cpu_limit": 16, "memory_limit": 32 * GIB})
+    return service
+
+
+class TestARunnersOwnLimits:
+    """An admin may give one runner its own CPU and memory. They outrank the
+    fleet and the deployment, are checked against that runner's own host, and
+    take effect through a recreate under the usual rules - or wait for one,
+    saved and marked pending, when a recreate cannot be queued now."""
+
+    def test_an_override_is_saved_and_a_recreate_queued(self, client, linux):
+        rid = a_runner(linux, cpu_limit="0-15", memory_limit=32 * GIB)
+        answer = set_limits(client, rid, {"cpu": 8, "memory": 8 * GIB})
+        assert answer.status_code == 202, answer.json
+        assert answer.json["pending"] is False
+        spec = linux.specs.get(rid)
+        assert spec["cpu_override"] == "8.0" and spec["memory_override"] == 8 * GIB
+        assert spec["cpu_limit"] == "0-15", "the resolved value changes on recreate"
+        recreate = linux.operations.get(answer.json["recreate_operation_id"])
+        assert recreate["verb"] == "recreate"
+        assert spec["current_operation"] == recreate["operation_id"]
+
+    def test_a_busy_runner_is_recreated_the_usual_way(self, client, linux):
+        """A recreate of a busy runner drains it first; the job finishes."""
+        rid = a_runner(linux, state="busy", cpu_limit="0-15", memory_limit=32 * GIB)
+        answer = set_limits(client, rid, {"memory": 8 * GIB})
+        assert answer.status_code == 202 and answer.json["pending"] is False
+        assert linux.specs.get(rid)["actual_state"] == "busy"
+
+    @pytest.mark.parametrize("state", ["draining", "provisioning"])
+    def test_when_no_recreate_can_be_queued_the_override_waits(self, client, linux, state):
+        rid = a_runner(linux, state=state, cpu_limit="0-15", memory_limit=32 * GIB)
+        answer = set_limits(client, rid, {"memory": 8 * GIB})
+        assert answer.status_code == 202, answer.json
+        assert answer.json["pending"] is True
+        assert answer.json["recreate_operation_id"] is None
+        assert "pending recreate" in answer.json["note"]
+        assert linux.specs.get(rid)["memory_override"] == 8 * GIB
+        assert client.get(f"/api/v2/runners/{rid}").json["limits"]["pending"] is True
+
+    def test_an_operation_in_flight_leaves_it_pending(self, client, linux):
+        rid = a_runner(linux, cpu_limit="0-15", memory_limit=32 * GIB)
+        linux.act(rid, "stop", idempotency_key="stop-1")
+        answer = set_limits(client, rid, {"cpu": 8})
+        assert answer.status_code == 202 and answer.json["pending"] is True
+        assert linux.specs.get(rid)["cpu_override"] == "8.0"
+
+    def test_a_repeat_is_the_same_request(self, client, linux):
+        rid = a_runner(linux, cpu_limit="0-15", memory_limit=32 * GIB)
+        first = set_limits(client, rid, {"cpu": 8})
+        again = set_limits(client, rid, {"cpu": 8})
+        assert again.status_code == 202
+        assert again.json["operation_id"] == first.json["operation_id"]
+        assert len(linux.operations.list(runner_id=rid)) == 2   # set_limits, recreate
+
+    def test_more_than_the_runners_host_has_is_a_400_naming_it(self, client, linux):
+        rid = a_runner(linux, cpu_limit="0-15", memory_limit=32 * GIB)
+        refused = set_limits(client, rid, {"memory": 96 * GIB})
+        assert refused.status_code == 400
+        assert "rnr-linux-1" in refused.json["error"] and "78.6 GiB" in refused.json["error"]
+        refused = set_limits(client, rid, {"cpu": 64}, key="limits-2")
+        assert refused.status_code == 400 and "56" in refused.json["error"]
+        spec = linux.specs.get(rid)
+        assert spec["cpu_override"] is None and spec["memory_override"] is None
+
+    def test_it_is_the_runners_own_host_that_bounds_it(self, client, linux):
+        linux.inventory.register_worker("rnr-linux-2", "hyperv-linux", capabilities={
+            "kind": "linux-container", "host_cores": 8})
+        linux.inventory.heartbeat("rnr-linux-2")
+        rid = a_runner(linux, host="rnr-linux-2", cpu_limit="0-7", memory_limit=8 * GIB)
+        refused = set_limits(client, rid, {"cpu": 16})
+        assert refused.status_code == 400
+        assert "rnr-linux-2" in refused.json["error"]
+        assert "rnr-linux-1" not in refused.json["error"]
+
+    def test_unknown_hardware_is_accepted_and_flagged(self, client, linux):
+        rid = a_runner(linux, fid="github-windows-x64", host="rnr-windows-1",
+                       cpu_limit="0-15", memory_limit=8 * GIB)
+        answer = set_limits(client, rid, {"memory": 6 * GIB})
+        assert answer.status_code == 202, answer.json
+        assert answer.json["hardware_unverified"] is True
+
+    def test_null_clears_an_override(self, client, linux):
+        rid = a_runner(linux, cpu_limit="0-15", memory_limit=32 * GIB,
+                       cpu_override="8.0", memory_override=8 * GIB)
+        answer = set_limits(client, rid, {"cpu": None})
+        assert answer.status_code == 202
+        spec = linux.specs.get(rid)
+        assert spec["cpu_override"] is None and spec["memory_override"] == 8 * GIB
+
+    @pytest.mark.parametrize("body", [{}, {"cpu": "abc"}, {"memory": "8g"},
+                                      {"memory": 0}, {"cpu": True},
+                                      {"disk": 1}, ["cpu"]])
+    def test_nonsense_is_a_400(self, client, linux, body):
+        rid = a_runner(linux, cpu_limit="0-15", memory_limit=32 * GIB)
+        assert set_limits(client, rid, body).status_code == 400
+        assert linux.specs.get(rid)["cpu_override"] is None
+
+    def test_a_key_is_required(self, client, linux):
+        rid = a_runner(linux)
+        assert client.post(f"/api/v2/runners/{rid}/limits",
+                           json={"cpu": 8}).status_code == 400
+
+    def test_an_unknown_runner_is_a_404(self, client, linux):
+        assert set_limits(client, "3f2504e0-4f89-41d3-9a0c-0305e82c3301",
+                          {"cpu": 8}).status_code == 404
+
+    def test_every_request_is_audited(self, client, linux):
+        from control import audit
+        rid = a_runner(linux, cpu_limit="0-15", memory_limit=32 * GIB)
+        set_limits(client, rid, {"cpu": 8})
+        set_limits(client, rid, {"cpu": 64}, key="limits-2")
+        rows = [r for r in audit.entries(linux.operations.path, verb="set_limits",
+                                         runner_id=rid)
+                if r["decision"] in ("accepted", "refused")]
+        assert [r["decision"] for r in rows] == ["refused", "accepted"]
+        assert "56" in rows[0]["outcome"]
+
+    def test_an_unauthenticated_caller_is_refused(self, anon_client, plane):
+        r = anon_client.post("/api/v2/runners/3f2504e0-4f89-41d3-9a0c-0305e82c3301/limits",
+                             json={"cpu": 8}, headers={"Idempotency-Key": "k"})
+        assert r.status_code == 401
+
+
+class TestTheRunnerPageShowsItsLimits:
+    def test_where_each_value_comes_from(self, client, linux, monkeypatch):
+        rid = a_runner(linux, cpu_limit="0-15", memory_limit=32 * GIB)
+        limits = client.get(f"/api/v2/runners/{rid}").json["limits"]
+        assert limits["cpu"]["value"] == "0-15" and limits["cpu"]["cores"] == 16
+        assert limits["cpu"]["source"] == "fleet setting"
+        assert limits["memory"]["value"] == 32 * GIB
+        assert limits["memory"]["source"] == "fleet setting"
+        assert limits["max"]["cpus"] == 56 and limits["max"]["memory_bytes"] == LINUX_MEMORY
+        assert limits["max"]["host_id"] == "rnr-linux-1"
+        assert limits["pending"] is False
+
+    def test_an_override_is_named_as_one(self, client, linux):
+        rid = a_runner(linux, cpu_limit="0-7", memory_limit=8 * GIB,
+                       cpu_override="8.0", memory_override=8 * GIB)
+        limits = client.get(f"/api/v2/runners/{rid}").json["limits"]
+        assert limits["cpu"]["source"] == "runner override"
+        assert limits["memory"]["source"] == "runner override"
+        assert limits["override"] == {"cpu": "8.0", "memory": 8 * GIB}
+        assert limits["pending"] is False
+
+    def test_memory_from_the_deployment_is_named_as_that(self, client, plane, monkeypatch):
+        monkeypatch.setenv("RUNNER_UNIT_MEMORY_GITHUB_WINDOWS", "8g")
+        service, _ = api_v2.control_plane()
+        live_workers(service)
+        rid = a_runner(service, fid="github-windows-x64", host="rnr-windows-1",
+                       memory_limit=8 * GIB)
+        limits = client.get(f"/api/v2/runners/{rid}").json["limits"]
+        assert limits["memory"]["source"] == "deployment default"
+        assert limits["memory"]["inherited"] == "8g"
+        assert limits["max"]["memory_bytes"] is None
+
+
 def test_the_rule_is_lifted_for_tests_that_are_not_about_it(plane):
     service, _ = api_v2.control_plane()
     assert service.limits_problem(service.fleets.get("github-linux-x64")) is None

@@ -123,6 +123,34 @@ class TestARefusedDestroyIsRecorded:
                    for o in outcomes)
 
 
+class TestARunnersOwnLimitsAreTheAdmins:
+    """A runner's own CPU and memory outrank its fleet's and rebuild it, so
+    setting them is in the destroy group (GitHub #5)."""
+
+    def test_an_operator_is_refused_and_it_is_recorded(self, client, plane):
+        as_role("operator")
+        service, rid = plane
+        r = post(client, f"/api/v2/runners/{rid}/limits", {"memory": 4 * 1024**3})
+        assert r.status_code == 403
+        assert service.specs.get(rid)["memory_override"] is None
+        refused = audit.entries(service.operations.path, decision="refused")
+        assert any("requires admin; the caller is operator" in r["outcome"]
+                   for r in refused)
+
+    def test_a_viewer_is_refused(self, client, plane):
+        as_role("viewer")
+        service, rid = plane
+        assert post(client, f"/api/v2/runners/{rid}/limits",
+                    {"memory": 4 * 1024**3}).status_code == 403
+
+    def test_an_admin_may(self, client, plane):
+        as_role("admin")
+        service, rid = plane
+        r = post(client, f"/api/v2/runners/{rid}/limits", {"memory": 4 * 1024**3})
+        assert r.status_code == 202, r.json
+        assert service.specs.get(rid)["memory_override"] == 4 * 1024**3
+
+
 def test_a_viewer_still_cannot_post_anything(client, plane):
     as_role("viewer")
     service, rid = plane

@@ -527,6 +527,47 @@ def runner_action(runner_id, verb):
     return jsonify(ok=True, operation_id=op), 202
 
 
+@bp.route(f"{RUNNER}/limits", methods=["POST"])
+def runner_limits(runner_id):
+    """An admin's own CPU and/or memory for one runner (GitHub #5): JSON
+    {"cpu": cores, "memory": bytes}, either may be left out, and null clears
+    it. Admin only - app.DESTROY_PATHS - because it rebuilds the runner.
+
+    202 with the operation, and `pending` when the recreate that applies it
+    could not be asked for now; 400 for a value no host of this runner can
+    hold, naming it; 409 for a refusal."""
+    key = _key()
+    if key is None:
+        return _refuse(400, "an Idempotency-Key header is required: it is "
+                            "what makes repeating this request safe")
+    service, err = _need_plane()
+    if err:
+        return err
+    from control.service import Refused, UnknownRunner
+    if service.specs.get(runner_id) is None:
+        return _refuse(404, f"no runner {runner_id}")
+    try:
+        result = service.set_limits(runner_id, request.get_json(silent=True),
+                                    requested_by=requested_by(),
+                                    idempotency_key=key)
+    except UnknownRunner:
+        return _refuse(404, f"no runner {runner_id}")
+    except Refused as e:
+        return _refuse(409, str(e))
+    except ValueError as e:
+        return _refuse(400, str(e))
+    if result["pending"]:
+        note = ("Saved, pending recreate: it applies the next time this runner "
+                "is recreated" + (f" ({result['why_pending']})"
+                                  if result.get("why_pending") else "") + ".")
+    else:
+        note = "Saved. The runner is recreated with these limits."
+    if result.get("hardware_unverified"):
+        note += (" This runner's host has not reported the hardware these limits "
+                 "are checked against, so they are not verified.")
+    return jsonify(ok=True, note=note, **result), 202
+
+
 @bp.route(f"{RUNNER}")
 def runner_detail(runner_id):
     service, err = _need_plane()
@@ -554,9 +595,14 @@ def runner_detail(runner_id):
         if proof:
             resource_notice += (f" Observed limits: {proof['cpu_cores']} CPUs and "
                                 f"{proof['memory_limit_bytes'] / 1024**3:g} GiB guest RAM.")
+    try:
+        limits = service.limits_of(spec)
+    except Exception:   # noqa: BLE001 - a page read never fails on this
+        limits = None
     return jsonify(card=card, spec=redact_mapping(spec),
                    operations=redact_mapping(operations),
-                   audit=_audit_tail(runner_id), resource_notice=resource_notice)
+                   audit=_audit_tail(runner_id), resource_notice=resource_notice,
+                   limits=limits)
 
 
 def _audit_tail(runner_id, limit=20):

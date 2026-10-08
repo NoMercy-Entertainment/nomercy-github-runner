@@ -757,6 +757,174 @@ class RunnerService:
         self.operations.succeed(operation["operation_id"], {"desired": state})
         return operation["operation_id"]
 
+    def set_limits(self, runner_id, changes, requested_by=None,
+                   idempotency_key=None):
+        """Give one runner its own CPU and/or memory (GitHub #5). Returns
+        {operation_id, recreate_operation_id, pending, why_pending,
+        hardware_unverified}.
+
+        `changes` names `cpu` and/or `memory`; a value sets that override and
+        None clears it, so the runner takes its fleet's again. They outrank
+        the fleet and the deployment and survive every recreate; the spec's
+        `cpu_limit` and `memory_limit` keep meaning what the runner actually
+        has until a recreate resolves them again.
+
+        Checked against this runner's own host, not the fleet's largest: a
+        limit bigger than the machine it runs on is refused (ValueError,
+        naming the host). Unknown hardware is accepted and said to be.
+
+        A recreate is asked for under the ordinary rules - a busy runner is
+        drained first, one per fleet at a time. When it cannot be asked for
+        now (an operation in flight, a state no recreate starts from), the
+        override is saved anyway and the answer says it is pending: the
+        runner takes it on its next recreate, whoever asks for that.
+
+        Audited, accepted or refused, like every verb.
+        """
+        spec = self.specs.get(runner_id) if isinstance(runner_id, str) else None
+        fleet_id = (spec or {}).get("fleet_id")
+        try:
+            result = self._set_limits(runner_id, changes, requested_by,
+                                      idempotency_key)
+        except (Refused, UnknownRunner, ValueError) as e:
+            self._audit("set_limits", "refused", requested_by,
+                        runner_id=runner_id, fleet_id=fleet_id,
+                        outcome=str(e) or f"no runner {runner_id}",
+                        parameters=changes if isinstance(changes, dict) else None)
+            raise
+        self._audit("set_limits", "accepted", requested_by, runner_id=runner_id,
+                    fleet_id=fleet_id, operation_id=result["operation_id"],
+                    parameters=dict(changes,
+                                    pending=result["pending"],
+                                    recreate=result["recreate_operation_id"]))
+        return result
+
+    def _set_limits(self, runner_id, changes, requested_by, idempotency_key):
+        from store import limits
+        if not isinstance(changes, dict) or not changes:
+            raise ValueError("name cpu and/or memory; null clears an override")
+        unknown = sorted(set(changes) - {"cpu", "memory"})
+        if unknown:
+            raise ValueError(f"only cpu and memory can be set here, not {unknown}")
+        spec = self._spec(runner_id)
+
+        if idempotency_key:
+            existing = self.operations.by_key(idempotency_key)
+            if existing:
+                if existing["verb"] != "set_limits" or existing["runner_id"] != runner_id:
+                    raise Refused(
+                        f"idempotency key {idempotency_key!r} was already used "
+                        f"for {existing['verb']} on {existing['runner_id']}")
+                import json
+                return dict(json.loads(existing["result"] or "{}"),
+                            operation_id=existing["operation_id"])
+
+        values = {}
+        if "cpu" in changes:
+            values["cpu_override"] = limits.normalize_cpu(changes["cpu"], spec["platform"])
+        if "memory" in changes:
+            values["memory_override"] = limits.normalize_memory(
+                changes["memory"], spec["platform"], key="memory")
+        cpu = values.get("cpu_override", spec.get("cpu_override"))
+        memory = values.get("memory_override", spec.get("memory_override"))
+        host = (hardware.of_host(self.inventory, self.specs, spec["platform"],
+                                 spec["host_id"], healthy_only=False)
+                if spec.get("host_id") else None)
+        verdict = hardware.check(float(cpu) if cpu is not None else None, memory,
+                                 [host] if host else [])
+        if verdict not in (None, hardware.UNVERIFIED):
+            raise ValueError(verdict)
+
+        operation, created = self.operations.open(
+            "set_limits", runner_id=runner_id, requested_by=requested_by,
+            idempotency_key=idempotency_key,
+            note=f"limits cpu={cpu} memory={memory}")
+        if not created:
+            import json
+            return dict(json.loads(operation["result"] or "{}"),
+                        operation_id=operation["operation_id"])
+        self.specs.update(runner_id, spec["spec_version"], **values)
+
+        recreate, why = None, None
+        try:
+            # `_act`, not `act`: a recreate that cannot start now is not a
+            # refused request - the override waits for one - so only the one
+            # that is queued is audited as a recreate of its own.
+            recreate = self._act(runner_id, "recreate", requested_by,
+                                 f"{idempotency_key}:recreate" if idempotency_key else None)
+        except (Refused, ValueError) as e:
+            why = str(e)
+        else:
+            self._audit("recreate", "accepted", requested_by, runner_id=runner_id,
+                        fleet_id=spec.get("fleet_id"), operation_id=recreate,
+                        parameters={"because": "set_limits"})
+        result = {"recreate_operation_id": recreate, "pending": recreate is None,
+                  "why_pending": why,
+                  "hardware_unverified": verdict == hardware.UNVERIFIED}
+        self.operations.succeed(operation["operation_id"], result)
+        return dict(result, operation_id=operation["operation_id"])
+
+    def limits_of(self, spec):
+        """What one runner's CPU and memory are, where each comes from, the
+        most its host could hold, and whether an override is still waiting
+        for a recreate - for the runner's page."""
+        fleet = self.fleets.get(spec.get("fleet_id")) or {}
+        cpu_value = spec.get("cpu_limit")
+        if _overridden(spec.get("cpu_override")):
+            cpu_source = "runner override"
+        elif fleet.get("cpu_limit") is not None:
+            cpu_source = "fleet setting"
+        elif cpu_value:
+            cpu_source = "runner spec"
+        else:
+            cpu_source = None
+        if cpusets.is_cpuset(cpu_value):
+            try:
+                cores = len(cpusets.parse(cpu_value))
+            except ValueError:
+                cores = None
+        else:
+            try:
+                cores = float(cpu_value) if cpu_value else None
+            except (TypeError, ValueError):
+                cores = None
+            cores = int(cores) if cores is not None and cores.is_integer() else cores
+        inherited = self.env_memory(fleet or spec)
+        if spec.get("memory_override"):
+            memory_source = "runner override"
+        elif fleet.get("memory_limit") is not None:
+            memory_source = "fleet setting"
+        elif inherited:
+            memory_source = "deployment default"
+        elif spec.get("memory_limit"):
+            memory_source = "runner spec"
+        else:
+            memory_source = None
+        host = (hardware.of_host(self.inventory, self.specs, spec["platform"],
+                                 spec["host_id"], healthy_only=False)
+                if spec.get("host_id") else
+                {"host_id": None, "cpus": None, "memory_bytes": None,
+                 "cpus_source": None, "memory_source": None})
+        pending = False
+        if _overridden(spec.get("cpu_override")):
+            width = cpusets.whole_cores(spec["cpu_override"])
+            pinned = spec["platform"] in PINNED_CPU_PLATFORMS and width is not None
+            pending = (cores != width) if pinned else (
+                str(cpu_value) != str(spec["cpu_override"]))
+        if spec.get("memory_override") and spec.get("memory_limit") != spec["memory_override"]:
+            pending = True
+        return {"cpu": {"value": cpu_value, "cores": cores, "source": cpu_source},
+                "memory": {"value": spec.get("memory_limit"), "source": memory_source,
+                           "inherited": (inherited or {}).get("text")
+                           if memory_source == "deployment default" else None},
+                "override": {"cpu": spec.get("cpu_override"),
+                             "memory": spec.get("memory_override")},
+                "max": {"host_id": host["host_id"], "cpus": host["cpus"],
+                        "cpus_source": host["cpus_source"],
+                        "memory_bytes": host["memory_bytes"],
+                        "memory_source": host["memory_source"]},
+                "pending": pending}
+
     # ---- verbs -------------------------------------------------------------
 
     def act(self, runner_id, verb, requested_by=None, idempotency_key=None):
