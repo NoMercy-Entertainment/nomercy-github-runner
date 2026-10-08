@@ -58,6 +58,11 @@ PINNED_CPU_PLATFORMS = frozenset({providers.LINUX, providers.WINDOWS})
 #: the same reason PINNED_CPU_PLATFORMS is one.
 REQUIRE_LIMITS = frozenset({providers.LINUX, providers.WINDOWS})
 
+#: Where a CPU or memory limit means anything only when the runner's worker
+#: confirms per-runner appliance enforcement (placement.
+#: enforces_appliance_limits) - the macOS appliance, whose VM is the limit.
+APPLIANCE_LIMIT_PLATFORMS = frozenset({providers.MACOS})
+
 #: (provider, platform) -> the runtime that executes that cell, as
 #: "module:attribute". Strings rather than imports so this stays a table of
 #: data: nothing here is loaded until a cell is actually used, and a test can
@@ -870,7 +875,7 @@ class RunnerService:
         runner's own host. ValueError when a value is not a limit or does
         not fit."""
         from store import limits
-        if spec["platform"] == providers.MACOS and any(
+        if spec["platform"] in APPLIANCE_LIMIT_PLATFORMS and any(
                 changes.get(key) is not None for key in ("cpu", "memory")):
             # The rule a fleet default has (FleetStore.set_defaults), asked
             # of this runner's own worker: saved without it, every later
