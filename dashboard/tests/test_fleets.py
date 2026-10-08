@@ -296,6 +296,24 @@ class TestLimitsAgainstHardware:
         _host(fleets, "rnr-linux-1", kind="linux-container", host_cores=16)
         assert fleets.set_defaults("github-linux-x64", {"labels": ["build"]})["labels"] == ["build"]
 
+    def test_the_whole_form_with_its_unchanged_limits_still_saves(self, fleets):
+        """Settings posts every field, the limits included. A limit posted
+        exactly as it is stored is not a change and is not checked again."""
+        fleets.seed()
+        _host(fleets, "rnr-linux-1", kind="linux-container", host_cores=56,
+              memory_total_bytes=64 * GIB)
+        fleets.set_defaults("github-linux-x64", {"cpu_limit": 32, "memory_limit": 48 * GIB})
+        _host(fleets, "rnr-linux-1", kind="linux-container", host_cores=16,
+              memory_total_bytes=32 * GIB)
+        saved = fleets.set_defaults("github-linux-x64", {
+            "cpu_limit": "32", "memory_limit": 48 * GIB, "labels": ["build"],
+            "runner_group": "Stoney", "cache_policy": {"enabled": True}})
+        assert saved["labels"] == ["build"] and saved["runner_group"] == "Stoney"
+        with pytest.raises(ValueError):
+            fleets.set_defaults("github-linux-x64", {"cpu_limit": 24})
+        with pytest.raises(ValueError):
+            fleets.set_defaults("github-linux-x64", {"memory_limit": 40 * GIB})
+
 
 class TestLimitNormalisation:
     def test_cpu_is_a_positive_number(self):

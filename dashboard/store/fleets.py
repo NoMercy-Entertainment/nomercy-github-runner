@@ -222,7 +222,11 @@ class FleetStore:
                 values[key] = limits.normalize_memory(value, fleet["platform"])
             else:
                 values[key] = limits.normalize_bytes(value, key)
-        if values.get("cpu_limit") is not None or values.get("memory_limit") is not None:
+        # Only a limit that changes is checked. Settings posts every field,
+        # and one posted exactly as stored is not a change: a host that
+        # shrank since must not stop its fleet's labels from being saved.
+        if any(values.get(key) is not None and values[key] != fleet.get(key)
+               for key in ("cpu_limit", "memory_limit")):
             self._check_hardware(fleet, values)
         if values:
             with self._conn() as c:
