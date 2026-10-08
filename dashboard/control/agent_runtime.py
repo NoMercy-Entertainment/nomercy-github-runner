@@ -73,6 +73,11 @@ class AgentWiring:
     #: like `images`. A unit with no limit can take its whole worker down,
     #: agent and all, so a deployment names one for every cell it runs.
     memory: Mapping = field(default_factory=dict)
+    #: RUNNER_TRUSTED_AUTHORS, comma-separated logins: whose pull requests
+    #: from a fork a GitHub runner's job-started hook runs although GitHub
+    #: does not call them members (a private membership reads CONTRIBUTOR).
+    #: Given to every GitHub unit; see docs/operations/runner-job-hooks.md.
+    trusted_authors: str = ""
     deadline: float = DEADLINE
 
     def call(self, host_id, verb, body=None, operation_id=None):
@@ -80,6 +85,13 @@ class AgentWiring:
             host_id, verb, body or {}, operation_id=operation_id,
             operations=self.operations if operation_id else None,
             deadline=self.deadline)
+
+
+def _names(text) -> str:
+    """A list of names, split on commas and whitespace (a login has
+    neither), as one comma-separated line: the agent refuses a value of
+    more than one line, and the hooks split on commas."""
+    return ",".join(name for name in re.split(r"[,\s]+", str(text or "")) if name)
 
 
 def runner_id_of(ref) -> str:
@@ -167,17 +179,21 @@ class AgentRuntime:
             unit["memory_swap"] = str(int(spec["memory_swap_limit"]))
         if spec.get("disk_limit"):
             unit["disk_limit"] = int(spec["disk_limit"])
+        env = {}
         policy = spec.get("cache_policy") or {}
         if spec.get("platform") == "linux" and isinstance(policy, dict):
-            env = {}
             if isinstance(policy.get("max_bytes"), int) and policy["max_bytes"] > 0:
                 env["RUNNER_BUILD_CACHE_GC"] = f"{policy['max_bytes']}B"
             if isinstance(policy.get("scopes"), list):
                 env["RUNNER_CLEANUP_SCOPES"] = ",".join(policy["scopes"])
             if policy.get("enabled") is False:
                 env["RUNNER_CLEANUP_ENABLED"] = "0"
-            if env:
-                unit["env"] = env
+        trusted = _names(getattr(self.wiring, "trusted_authors", ""))
+        if spec.get("provider") == "github" and trusted:
+            # Read by the job-started hook, which only GitHub units have.
+            env["RUNNER_TRUSTED_AUTHORS"] = trusted
+        if env:
+            unit["env"] = env
         return unit
 
     def create(self, spec: Mapping[str, Any]):

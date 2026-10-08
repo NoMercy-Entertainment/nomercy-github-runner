@@ -107,13 +107,14 @@ def control_plane():
         # is one of them, and a service without them reads every cell as
         # unbuildable (2026-09-20).
         from control import agent_runtime
-        from control.main import TLS_DIR, unit_images, unit_memory
+        from control.main import TLS_DIR, trusted_authors, unit_images, unit_memory
         from control.secrets import SecretStore
         env = SecretStore(path).overlay(os.environ)
         service = RunnerService(path, runtimes=agent_runtime.TABLE, env=env)
         service.agents = agent_runtime.AgentWiring(
             _LazyAgentClient(service.inventory, TLS_DIR, path), operations=service.operations,
-            images=unit_images(env), memory=unit_memory(env))
+            images=unit_images(env), memory=unit_memory(env),
+            trusted_authors=trusted_authors(env))
         return service, None
     except Exception:   # noqa: BLE001 - a half-made database is "not ready"
         return None, "the control database is not ready"

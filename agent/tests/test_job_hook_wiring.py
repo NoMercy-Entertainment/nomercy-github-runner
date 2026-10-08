@@ -78,6 +78,17 @@ class TestWindows:
         runtime.create(RID, spec("github", WINDOWS_TEMPLATE))
         assert "run_hook.js" in host.read_text(started)
 
+    def test_the_trusted_authors_reach_the_hooks(self, runtime, host):
+        """The controller sends RUNNER_TRUSTED_AUTHORS in the spec's env; the
+        job host gives unit.json's env to the runner, and the runner to its
+        hooks."""
+        unit = spec("github", WINDOWS_TEMPLATE)
+        unit["env"]["RUNNER_TRUSTED_AUTHORS"] = "alice,bob"
+        runtime.create(RID, unit)
+        reg = runtime.paths(RID)["reg"]
+        env = json.loads(host.read_text(ntpath.join(reg, "unit.json")))["env"]
+        assert env["RUNNER_TRUSTED_AUTHORS"] == "alice,bob"
+
     def test_the_hooks_run_with_the_python_the_job_host_runs(self, runtime, host):
         env = self.env(runtime, host, "github")
         assert env["RUNNER_HOOK_PYTHON"] == WINDOWS_TOOLS["python"]
@@ -137,6 +148,13 @@ class TestMacOS:
             assert guest.read_text(posixpath.join(hooks, name)) == source.replace("\r\n", "\n")
         assert guest.modes[posixpath.join(hooks, "job-started.sh")] == 0o700
         assert guest.modes[posixpath.join(hooks, "job-completed.sh")] == 0o700
+
+    def test_the_trusted_authors_reach_the_hooks(self, runtime, guest):
+        unit = spec("github", MAC_TEMPLATE)
+        unit["env"]["RUNNER_TRUSTED_AUTHORS"] = "alice,bob"
+        runtime.create(RID, unit)
+        plist = plistlib.loads(guest.read_text(runtime.paths(RID)["plist"]).encode())
+        assert plist["EnvironmentVariables"]["RUNNER_TRUSTED_AUTHORS"] == "alice,bob"
 
     def test_the_hooks_know_the_accounts_own_home(self, runtime, guest):
         """Where Xcode keeps DerivedData: the job's HOME is the runner's own,
