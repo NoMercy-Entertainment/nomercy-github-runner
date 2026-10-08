@@ -1150,3 +1150,41 @@ class TestRecreateRefusalAfterRemoval:
             "generic per-spec handler")
         assert current["current_operation"] is None
         assert service.operations.get(operation_id)["state"] == "failed"
+
+
+class TestOverridesSurviveRecreate:
+    """An admin's own CPU and memory for one runner (GitHub #5) are what it
+    is rebuilt with, every time - not only on the recreate that applied
+    them, and not undone by a later change to its fleet."""
+
+    def recreate(self, service, reconciler, runner_id):
+        service.recreate(runner_id)
+        converge(service, reconciler)
+        return service.specs.get(runner_id)
+
+    def test_an_override_survives_two_recreates_and_a_fleet_change(self, world):
+        from control import cpusets
+        G = 1024**3
+        service, executor, reconciler = world
+        service.inventory.register_worker(
+            WORKER, inv.HYPERV_LINUX,
+            capabilities={"kind": "linux-container", "host_cores": 56})
+        service.fleets.set_defaults(GH, {"cpu_limit": 16, "memory_limit": 16 * G})
+        service.scale_up(GH, by=1)
+        converge(service, reconciler)
+        runner = live(service)[0]
+        assert runner["actual_state"] == "idle"
+        service.specs.update(runner["runner_id"], runner["spec_version"],
+                             cpu_override="8.0", memory_override=4 * G)
+
+        first = self.recreate(service, reconciler, runner["runner_id"])
+        assert first["actual_state"] == "idle", first.get("last_error")
+        assert len(cpusets.parse(first["cpu_limit"])) == 8
+        assert first["memory_limit"] == 4 * G
+
+        service.fleets.set_defaults(GH, {"cpu_limit": 32, "memory_limit": 24 * G})
+        second = self.recreate(service, reconciler, runner["runner_id"])
+        assert second["actual_state"] == "idle", second.get("last_error")
+        assert second["cpu_limit"] == first["cpu_limit"]
+        assert second["memory_limit"] == 4 * G
+        assert second["cpu_override"] == "8.0" and second["memory_override"] == 4 * G

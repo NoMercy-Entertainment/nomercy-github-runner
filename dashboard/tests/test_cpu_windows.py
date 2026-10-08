@@ -253,6 +253,101 @@ class TestReplacement:
         assert replacement["cpu_limit"] == "4-19"
 
 
+def _placed_with(service, window, host_id="linux-1", **override):
+    spec = _planned(service, "github-linux-x64", 1)[0]
+    service.specs.update(spec["runner_id"], spec["spec_version"],
+                         cpu_limit=window, host_id=host_id, **override)
+    return service.specs.get(spec["runner_id"])
+
+
+class TestOverrides:
+    """An admin's own CPU and memory for one runner (GitHub #5) outrank the
+    fleet and the deployment. On a pinned platform the CPU override is a
+    width like the fleet's: the window is kept only while its width is
+    unchanged, and cut again on the runner's own host otherwise."""
+
+    def test_an_override_width_is_the_pinned_width(self, tmp_path):
+        service = _service(tmp_path)
+        service.fleets.set_defaults("github-linux-x64", {"cpu_limit": 16})
+        fleet = service.fleets.get("github-linux-x64")
+        assert service._pinned_width(fleet) == 16
+        assert service._pinned_width(fleet, {"cpu_override": "8.0"}) == 8
+        assert service._pinned_width(fleet, {"cpu_override": "2.5"}) is None
+
+    def test_a_new_width_cuts_a_new_window_on_the_runners_host(self, tmp_path):
+        service = _service(tmp_path)
+        service.fleets.set_defaults("github-linux-x64", {"cpu_limit": 16})
+        spec = _placed_with(service, "0-15", cpu_override="8.0")
+        replacement = service.replacement_spec(spec)
+        assert len(cpusets.parse(replacement["cpu_limit"])) == 8
+
+    def test_the_same_width_keeps_its_window(self, tmp_path):
+        service = _service(tmp_path)
+        service.fleets.set_defaults("github-linux-x64", {"cpu_limit": 16})
+        spec = _placed_with(service, "38-53", cpu_override="16.0")
+        assert service.replacement_spec(spec)["cpu_limit"] == "38-53"
+
+    def test_a_fleet_width_change_does_not_beat_the_override(self, tmp_path):
+        service = _service(tmp_path)
+        service.fleets.set_defaults("github-linux-x64", {"cpu_limit": 16})
+        spec = _placed_with(service, "4-11", cpu_override="8.0")
+        service.fleets.set_defaults("github-linux-x64", {"cpu_limit": 32})
+        assert service.replacement_spec(spec)["cpu_limit"] == "4-11"
+
+    def test_a_fraction_is_a_quota_even_on_a_pinned_fleet(self, tmp_path):
+        service = _service(tmp_path)
+        service.fleets.set_defaults("github-linux-x64", {"cpu_limit": 16})
+        spec = _placed_with(service, "0-15", cpu_override="2.5")
+        assert service.replacement_spec(spec)["cpu_limit"] == "2.5"
+
+    def test_once_placed_a_planned_runner_gets_a_window_of_its_override(self, tmp_path):
+        service = _service(tmp_path)
+        service.fleets.set_defaults("github-linux-x64", {"cpu_limit": 16})
+        spec = _planned(service, "github-linux-x64", 1)[0]
+        service.specs.update(spec["runner_id"], spec["spec_version"], cpu_override="8.0")
+        spec = service.specs.get(spec["runner_id"])
+        unit = service.effective_spec(spec, host_id="linux-1")
+        assert len(cpusets.parse(unit["cpu_limit"])) == 8
+
+    def test_a_window_of_the_wrong_width_is_never_handed_on_without_a_host(self, tmp_path):
+        service = _service(tmp_path)
+        service.fleets.set_defaults("github-linux-x64", {"cpu_limit": 16})
+        spec = _placed_with(service, "0-15", cpu_override="8.0")
+        assert service.effective_spec(spec)["cpu_limit"] is None
+        assert len(cpusets.parse(service.effective_spec(spec, host_id="linux-1")["cpu_limit"])) == 8
+
+    def test_memory_override_wins_over_the_fleet(self, tmp_path):
+        service = _service(tmp_path)
+        service.fleets.set_defaults("github-linux-x64", {"memory_limit": 32 * G})
+        spec = _placed_with(service, None, memory_override=8 * G)
+        assert service.replacement_spec(spec)["memory_limit"] == 8 * G
+        current = service.specs.get(spec["runner_id"])
+        service.specs.update(spec["runner_id"], current["spec_version"],
+                             memory_limit=32 * G)
+        assert service.effective_spec(service.specs.get(spec["runner_id"]))["memory_limit"] == 8 * G
+
+    def test_memory_override_wins_over_the_deployment(self, tmp_path):
+        service = _service(tmp_path)
+        service.env["RUNNER_UNIT_MEMORY_GITHUB_LINUX"] = "16g"
+        spec = _placed_with(service, None, memory_override=8 * G)
+        assert service.effective_spec(spec)["memory_limit"] == 8 * G
+
+    def test_a_linux_override_keeps_the_fleets_swap_headroom(self, tmp_path):
+        service = _service(tmp_path)
+        service.fleets.set_defaults("github-linux-x64", {
+            "memory_limit": 32 * G, "memory_swap_limit": 48 * G})
+        spec = _placed_with(service, None, memory_override=8 * G)
+        replacement = service.replacement_spec(spec)
+        assert replacement["memory_limit"] == 8 * G
+        assert replacement["memory_swap_limit"] == 24 * G
+
+    def test_no_swap_stays_no_swap(self, tmp_path):
+        service = _service(tmp_path)
+        service.fleets.set_defaults("github-linux-x64", {"memory_limit": 32 * G})
+        spec = _placed_with(service, None, memory_override=8 * G)
+        assert service.replacement_spec(spec)["memory_swap_limit"] is None
+
+
 class TestWindowsPlanning:
     """The same rule, on the platform that gets it next: a Windows worker's
     quota (the Job Object's CPU rate) does not change what a build sees as

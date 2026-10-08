@@ -291,7 +291,7 @@ class ProvisioningFlow:
                                       cpu_limit=unit["cpu_limit"])
             spec = self.service.specs.get(spec["runner_id"])
         fleet = self.service.fleets.get(spec.get("fleet_id")) or {}
-        if self.service._pinned_width(fleet) is not None and not cpusets.is_cpuset(unit.get("cpu_limit")):
+        if self.service._pinned_width(fleet, spec) is not None and not cpusets.is_cpuset(unit.get("cpu_limit")):
             # The backstop (2026-09-23): unreachable today - effective_spec
             # above either returns a real window or raises - but a pinned
             # platform's unit must never be created without one, whatever a

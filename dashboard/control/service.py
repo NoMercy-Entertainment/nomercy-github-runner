@@ -91,6 +91,10 @@ DESIRED_BY_VERB = {
 DESIRED_STATES = frozenset({"running", "stopped", "drained", "absent"})
 
 
+def _overridden(value):
+    return value not in (None, "")
+
+
 def _memory_bytes(value):
     """A memory size in the engine's own syntax ("6g", "512m", "8GiB") as
     bytes; ValueError when it is not one."""
@@ -224,8 +228,25 @@ class RunnerService:
         result = dict(spec)
         fleet = self.fleets.get(spec.get("fleet_id")) or {}
         cell = (spec.get("provider"), spec.get("platform"))
+        cpu_override = _overridden(spec.get("cpu_override"))
+        if cpu_override:
+            # The runner's own CPU outranks its fleet's (GitHub #5). A width
+            # keeps the window it has only while that window is this wide;
+            # otherwise a new one is cut once a host is known, and until
+            # then there is none - never a window of the wrong width.
+            width = self._pinned_width(fleet, spec)
+            own = result.get("cpu_limit")
+            if width is None:
+                result["cpu_limit"] = str(spec["cpu_override"])
+            elif not (cpusets.is_cpuset(own) and len(cpusets.parse(own)) == width):
+                result["cpu_limit"] = None if host_id is None else self._cpu_window(
+                    spec.get("platform") or fleet.get("platform"), width,
+                    host_id=host_id,
+                    exclude={result["runner_id"]} if result.get("runner_id") else ())
         for field in ("cpu_limit", "memory_limit", "memory_swap_limit", "disk_limit"):
             if result.get(field) is None and fleet.get(field) is not None:
+                if field == "cpu_limit" and cpu_override:
+                    continue
                 if field == "cpu_limit" and self._pinned_width(fleet) is not None:
                     if host_id is None:
                         # A pinned fleet's number is a window width, which
@@ -238,6 +259,14 @@ class RunnerService:
                         exclude={result["runner_id"]} if result.get("runner_id") else ())
                     continue
                 result[field] = fleet[field]
+        memory_override = spec.get("memory_override")
+        if memory_override and result.get("memory_limit") != memory_override:
+            # Not yet applied: the override outranks the fleet and the
+            # deployment, and a Linux runner keeps its swap headroom.
+            result["memory_swap_limit"] = self._swap_for(
+                fleet, result.get("memory_limit"), result.get("memory_swap_limit"),
+                int(memory_override))
+            result["memory_limit"] = int(memory_override)
         if result.get("memory_limit") is None:
             value = self._env_memory_text(result, env)
             if value:
@@ -298,7 +327,18 @@ class RunnerService:
                       runner_group=fleet.get("runner_group"))
         for field in ("cpu_limit", "memory_limit", "memory_swap_limit", "disk_limit"):
             result[field] = fleet.get(field) if fleet.get(field) is not None else spec.get(field)
-        width = self._pinned_width(fleet)
+        memory_override = spec.get("memory_override")
+        if memory_override:
+            # The runner's own memory outranks the fleet's on every rebuild,
+            # with the fleet's swap headroom on top (GitHub #5).
+            result["memory_swap_limit"] = self._swap_for(
+                fleet, result.get("memory_limit"), result.get("memory_swap_limit"),
+                int(memory_override))
+            result["memory_limit"] = int(memory_override)
+        width = self._pinned_width(fleet, spec)
+        if _overridden(spec.get("cpu_override")) and width is None:
+            # A quota, or a platform that does not pin.
+            result["cpu_limit"] = str(spec["cpu_override"])
         if width is not None:
             own = spec.get("cpu_limit")
             if cpusets.is_cpuset(own) and len(cpusets.parse(own)) == width:
@@ -313,14 +353,35 @@ class RunnerService:
 
     # ---- pinned CPU windows (Linux, Windows) -------------------------------
 
-    def _pinned_width(self, fleet):
+    def _pinned_width(self, fleet, spec=None):
         """How many cores each runner of this fleet is pinned to, or None when
         the fleet asks for no pinning. Only the platforms in
         `PINNED_CPU_PLATFORMS` pin: there a quota leaves a build's own
-        processor count at the host's, and builds size themselves by it."""
-        if (fleet or {}).get("platform") not in PINNED_CPU_PLATFORMS:
+        processor count at the host's, and builds size themselves by it.
+
+        With `spec`, that one runner's: its own CPU override, when it has
+        one, is its width instead of the fleet's - or no width at all when
+        the override is a fraction, which is a quota (GitHub #5)."""
+        platform = (fleet or {}).get("platform") or (spec or {}).get("platform")
+        if platform not in PINNED_CPU_PLATFORMS:
             return None
-        return cpusets.whole_cores(fleet.get("cpu_limit"))
+        if _overridden((spec or {}).get("cpu_override")):
+            return cpusets.whole_cores(spec["cpu_override"])
+        return cpusets.whole_cores((fleet or {}).get("cpu_limit"))
+
+    @staticmethod
+    def _swap_for(fleet, memory, swap, override):
+        """The RAM + swap ceiling for a memory override: the override plus
+        the headroom the fleet gives (its swap ceiling minus its memory),
+        else the headroom the runner had. None stays None: an override never
+        invents swap a runner did not have."""
+        if fleet.get("memory_limit") is not None and fleet.get("memory_swap_limit") is not None:
+            return override + max(0, int(fleet["memory_swap_limit"]) - int(fleet["memory_limit"]))
+        if swap is None:
+            return None
+        if memory is None:
+            return max(int(swap), override)
+        return override + max(0, int(swap) - int(memory))
 
     def _any_host_could_hold(self, platform, width):
         """Whether some healthy worker of `platform`, known today by its own
