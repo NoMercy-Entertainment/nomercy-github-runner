@@ -227,7 +227,7 @@ class TestTheMonitor:
     def test_a_forge_that_fails_is_degraded_not_alarmed(self, path):
         m = monitor(FakeForge(OSError("down")), None)
         m.tick(path, ENV, [], T0)
-        view = m.view(T0)
+        view = m.view(T0 + 3 * MIN)
         assert view["alarms"] == []
         assert [d["alarm_key"] for d in view["degraded"]] == ["monitor:github"]
         assert view["degraded"][0]["message"].startswith(
@@ -240,6 +240,18 @@ class TestTheMonitor:
         m.tick(path, ENV, specs, T0)
         m.tick(path, ENV, specs, T0 + 30 * MIN)
         assert m.view(T0 + 30 * MIN)["alarms"] == []
+
+    def test_one_failed_read_does_not_turn_every_page_red(self, path):
+        forge = FakeForge(OSError("down"))
+        m = monitor(forge, None)
+        m.tick(path, ENV, [], T0)
+        m.tick(path, ENV, [], T0 + MIN)
+        view = m.view(T0 + 2 * MIN + 59)
+        assert view["degraded"] == []
+        assert [p["alarm_key"] for p in view["pending"]] == ["monitor:github"]
+        forge.records = []
+        m.tick(path, ENV, [], T0 + 2 * MIN)
+        assert m.view(T0 + 4 * MIN)["degraded"] == [], "it recovered before it showed"
 
     @pytest.mark.parametrize("desired,actual", [
         ("drained", "drained"), ("drained", "stopping"), ("running", "draining"),

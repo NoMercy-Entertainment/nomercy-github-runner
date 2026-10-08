@@ -346,6 +346,11 @@ def hosted(labels, known):
 _IDENTITY = {"github": ("GH_TOKEN", "GITHUB_ORG"),
              "forgejo": ("FORGEJO_INSTANCE_URL", "FORGEJO_API_TOKEN")}
 
+#: How long a forge must have been unreadable before the banner says so -
+#: about three failed reads. One timeout must not turn every page red for a
+#: minute; the webhook waits the full ALARM_OFFLINE_MINUTES.
+BLIND_GRACE_SECONDS = 180
+
 #: How long the org's repository list is used before it is read again.
 REPOS_SECONDS = 3600
 
@@ -545,7 +550,13 @@ class Monitor:
         for row in rows:
             row["for"] = duration(now - (epoch(row["since"]) or now))
         active = [r for r in rows if r["raised_at"] and r["kind"] != "monitor"]
-        degraded = [r for r in rows if r["kind"] == "monitor"]
+
+        def shown(r):
+            started = epoch(r["since"])
+            return r["raised_at"] or (started is not None
+                                      and now - started >= BLIND_GRACE_SECONDS)
+        degraded = [r for r in rows if r["kind"] == "monitor" and shown(r)]
+        young = [r for r in rows if r["kind"] == "monitor" and not shown(r)]
         if self.started_at is not None:
             last = self.checked_at or self.started_at
             if now - last > 3 * cfg["poll_seconds"] + 60:
@@ -559,7 +570,7 @@ class Monitor:
                                             f"{since}: {why}"})
         return {"alarms": active, "degraded": degraded,
                 "pending": [r for r in rows
-                            if not r["raised_at"] and r["kind"] != "monitor"],
+                            if not r["raised_at"] and r["kind"] != "monitor"] + young,
                 "monitor": {"started_at": iso(self.started_at) if self.started_at else None,
                             "checked_at": iso(self.checked_at) if self.checked_at else None,
                             "note": self.note,
