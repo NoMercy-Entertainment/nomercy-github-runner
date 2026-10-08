@@ -165,6 +165,44 @@ class TestTheCardShowsWhatTheUnitUses:
         assert "evil" not in t and t["cpu_percent"] is None
         assert t["mem_used_bytes"] == 5
 
+    def test_what_bounds_a_unit_is_kept_until_it_is_measured_again(self,
+                                                                   placed):
+        """A deep beat's disk size and shared volumes, each with when it was
+        read, stay until the next one - a light beat that did not measure
+        them again does not blank them. The machine's memory is replaced
+        every beat, like its cores."""
+        service, rid = placed
+        self.beat(service, rid, {
+            "cpu_percent": 1.0, "host_mem_bytes": 84 * 10 ** 9,
+            "storage_bytes": 5, "storage_at": "2026-10-08T05:00:00Z",
+            "storage_total_bytes": 107 * 10 ** 9,
+            "storage_volume_used_bytes": 150 * 10 ** 9,
+            "storage_volume_total_bytes": 400 * 10 ** 9,
+            "storage_volume_at": "2026-10-08T05:00:00Z",
+            "cache_bytes": 2, "cache_at": "2026-10-08T05:00:00Z",
+            "cache_volume_used_bytes": 150 * 10 ** 9,
+            "cache_volume_total_bytes": 400 * 10 ** 9,
+            "cache_volume_at": "2026-10-08T05:00:00Z"})
+        self.beat(service, rid, {"cpu_percent": 2.0})
+        t = service.specs.get(rid)["telemetry"]
+        assert t["storage_total_bytes"] == 107 * 10 ** 9
+        assert t["storage_volume_total_bytes"] == 400 * 10 ** 9
+        assert t["storage_volume_used_bytes"] == 150 * 10 ** 9
+        assert t["storage_volume_at"] == "2026-10-08T05:00:00Z"
+        assert t["cache_volume_total_bytes"] == 400 * 10 ** 9
+        assert t["cache_volume_at"] == "2026-10-08T05:00:00Z"
+        assert t["host_mem_bytes"] is None
+
+    def test_the_appliances_system_volume_is_not_kept(self, placed):
+        """An older appliance agent still sends `/`, the sealed system
+        volume; it is not what fills, so it is not taken."""
+        service, rid = placed
+        self.beat(service, rid, {"cpu_percent": 1.0,
+                                 "root_disk_used_bytes": 9,
+                                 "root_disk_total_bytes": 10})
+        t = service.specs.get(rid)["telemetry"]
+        assert "root_disk_total_bytes" not in t
+
     def test_a_runners_own_disk_figures_are_kept(self, placed):
         """T-27: the figures a Windows or Linux runner's own disk reports
         (agent/runtimes/windows_process.py, .../linux_container.py) used to

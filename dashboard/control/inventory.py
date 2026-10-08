@@ -147,12 +147,34 @@ def _decode(row):
 #: from a second flag that would need to agree with it - so it is left out
 #: rather than given the special-cased handling `job` and the timestamps
 #: below already need.
-TELEMETRY_KEYS = ("cpu_percent", "cpu_cores", "host_cores", "mem_used_bytes", "mem_limit_bytes",
+#:
+#: What bounds a unit comes too: `host_mem_bytes` beside `host_cores`, the
+#: machine a unit with no limit of its own shares; `storage_total_bytes`, the
+#: size of a unit's own disk as its agent measured it; and the used and total
+#: of the volume a unit's storage or cache shares when it has no disk or cap
+#: of its own (`storage_volume_*`, `cache_volume_*`). The appliance's
+#: `root_disk_*` - `/`, its sealed system volume - is not taken: it is not
+#: the volume that fills.
+TELEMETRY_KEYS = ("cpu_percent", "cpu_cores", "host_cores", "host_mem_bytes",
+                  "mem_used_bytes", "mem_limit_bytes",
                   "mem_swap_limit_bytes",
-                  "root_disk_used_bytes", "root_disk_total_bytes",
-                  "storage_bytes", "cache_bytes", "cache_cap_bytes",
+                  "storage_bytes", "storage_total_bytes",
+                  "storage_volume_used_bytes", "storage_volume_total_bytes",
+                  "cache_bytes", "cache_cap_bytes",
+                  "cache_volume_used_bytes", "cache_volume_total_bytes",
                   "disk_limit_bytes", "disk_used_bytes", "disk_free_bytes",
                   "disk_virtual_bytes", "disk_usable_bytes")
+
+#: Figures a beat may leave out without meaning they are gone: each group is
+#: replaced when a beat carries it and kept otherwise, with the time it was
+#: read.
+_KEPT = ((("storage_bytes",), "storage_at"),
+         (("cache_bytes",), "cache_at"),
+         (("storage_volume_used_bytes", "storage_volume_total_bytes"),
+          "storage_volume_at"),
+         (("cache_volume_used_bytes", "cache_volume_total_bytes"),
+          "cache_volume_at"))
+_STAMPS = ("at",) + tuple(stamp for _, stamp in _KEPT)
 
 
 def _telemetry(value):
@@ -169,7 +191,7 @@ def _telemetry(value):
     job = value.get("job")
     if isinstance(job, str):
         result["job"] = " ".join(job.split())[:200] or None
-    for key in ("at", "storage_at", "cache_at"):
+    for key in _STAMPS:
         if isinstance(value.get(key), str) and _parse(value[key]):
             result[key] = value[key]
     return result
@@ -357,21 +379,23 @@ class Inventory:
             current = {}
         current["resource_enforcement"] = enforcement
         current["resource_enforcement_at"] = observed_at if enforcement else None
-        for key in ("cpu_percent", "cpu_cores", "host_cores", "job",
+        for key in ("cpu_percent", "cpu_cores", "host_cores",
+                    "host_mem_bytes", "job",
                     "mem_used_bytes", "mem_limit_bytes",
-                    "mem_swap_limit_bytes",
-                    "root_disk_used_bytes", "root_disk_total_bytes"):
+                    "mem_swap_limit_bytes"):
             current[key] = fresh.get(key)
+        for key in ("root_disk_used_bytes", "root_disk_total_bytes"):
+            current.pop(key, None)
         current["at"] = min(fresh.get("at", at), at)
-        for key, stamp in (("storage_bytes", "storage_at"),
-                           ("cache_bytes", "cache_at")):
-            if key in fresh:
-                current[key] = fresh[key]
+        for keys, stamp in _KEPT:
+            if any(key in fresh for key in keys):
+                for key in keys:
+                    current[key] = fresh.get(key)
                 current[stamp] = min(fresh.get(stamp, at), at)
-                current["deep_at"] = current[stamp]
-        if "cache_cap_bytes" in fresh:
-            current["cache_cap_bytes"] = fresh["cache_cap_bytes"]
-        for key in ("disk_limit_bytes", "disk_used_bytes", "disk_free_bytes",
+                if stamp in ("storage_at", "cache_at"):
+                    current["deep_at"] = current[stamp]
+        for key in ("cache_cap_bytes", "storage_total_bytes",
+                    "disk_limit_bytes", "disk_used_bytes", "disk_free_bytes",
                     "disk_virtual_bytes", "disk_usable_bytes"):
             if key in fresh:
                 current[key] = fresh[key]
