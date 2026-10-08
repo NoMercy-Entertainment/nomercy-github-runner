@@ -59,7 +59,10 @@ WINDOWS_VHD = spec("windows", telemetry={
     "mem_used_bytes": 2 * GB, "mem_limit_bytes": 8589934592,
     "storage_bytes": 12 * GB, "storage_total_bytes": 107374182400,
     "storage_at": at(100),
-    "cache_bytes": 3 * GB, "cache_at": at(100),
+    "storage_volume_used_bytes": None, "storage_volume_total_bytes": None,
+    "storage_volume_at": at(100),
+    "cache_bytes": 3 * GB, "cache_at": at(100), "cache_cap_bytes": None,
+    "cache_total_bytes": 107374182400,
     "cache_volume_used_bytes": 12 * GB,
     "cache_volume_total_bytes": 107374182400, "cache_volume_at": at(100)})
 
@@ -89,8 +92,24 @@ MACOS = spec("macos", telemetry={
     "cache_volume_used_bytes": 160 * GB,
     "cache_volume_total_bytes": 274 * GB, "cache_volume_at": at(100)})
 
+#: A runner of the macOS appliance pool: a guest, and a guest disk, of its
+#: own - 4 cores and 8 GiB it is held to, and a 100 GB disk nobody shares.
+MACOS_POOL = spec("macos", telemetry={
+    "at": at(3), "cpu_percent": 120.0, "cpu_cores": 4, "host_cores": 4,
+    "host_mem_bytes": 8 * GIB, "mem_used_bytes": 3 * GB,
+    "mem_limit_bytes": 8 * GIB,
+    "storage_volume_used_bytes": 30 * GB,
+    "storage_volume_total_bytes": 100 * GB, "storage_volume_at": at(3),
+    "storage_bytes": 12 * GB, "storage_at": at(100),
+    "storage_total_bytes": 100 * GB,
+    "cache_bytes": 1 * GB, "cache_at": at(100), "cache_cap_bytes": None,
+    "cache_total_bytes": 100 * GB,
+    "cache_volume_used_bytes": 30 * GB,
+    "cache_volume_total_bytes": 100 * GB, "cache_volume_at": at(100)})
+
 EVERY = {"linux": LINUX, "windows-vhd": WINDOWS_VHD,
-         "windows-plain": WINDOWS_PLAIN, "arm64": ARM64, "macos": MACOS}
+         "windows-plain": WINDOWS_PLAIN, "arm64": ARM64, "macos": MACOS,
+         "macos-pool": MACOS_POOL}
 
 METERS = ("cpu", "memory", "storage", "cache")
 
@@ -145,17 +164,31 @@ class TestOwnLimits:
         assert c["cache"]["total_bytes"] == 20 * GB
         assert c["cache"]["shared"] is False
 
-    def test_a_windows_vhd_is_its_storage_and_the_volume_its_cache_shares(
-            self):
+    def test_a_windows_vhd_bounds_its_storage_and_the_cache_on_it(self):
+        """No cap, but the cache is on the runner's own VHD: the VHD, its
+        alone, is the cache's boundary - own, not shared - and its fill is
+        the bar."""
         c = card(WINDOWS_VHD)
         assert c["cpu"]["total_cores"] == 16 and c["cpu"]["shared"] is False
         assert c["memory"]["total_bytes"] == 8589934592
-        assert c["storage"]["total_bytes"] == 107374182400
-        assert c["storage"]["shared"] is False
+        assert c["storage"] == {"used_bytes": 12 * GB,
+                                "total_bytes": 107374182400, "shared": False,
+                                "volume_used_bytes": None,
+                                "volume_total_bytes": None}
         assert c["cache"] == {"used_bytes": 3 * GB, "cap_bytes": None,
-                              "total_bytes": 107374182400, "shared": True,
+                              "total_bytes": 107374182400, "shared": False,
                               "volume_used_bytes": 12 * GB,
                               "volume_total_bytes": 107374182400}
+
+    def test_a_pool_runners_guest_disk_is_its_own(self):
+        c = card(MACOS_POOL)
+        assert c["cpu"]["shared"] is False and c["memory"]["shared"] is False
+        assert c["storage"] == {"used_bytes": 12 * GB,
+                                "total_bytes": 100 * GB, "shared": False,
+                                "volume_used_bytes": 30 * GB,
+                                "volume_total_bytes": 100 * GB}
+        assert c["cache"]["shared"] is False
+        assert c["cache"]["total_bytes"] == 100 * GB
 
     def test_the_measured_disk_size_wins_over_the_configured_one(self):
         c = card(dict(WINDOWS_VHD, disk_limit=100 * GIB))
@@ -318,8 +351,16 @@ class TestTheSameCardEverywhere:
         html = render("cardHTML", [card(WINDOWS_VHD)])[0]
         got = {m[0]: m[1:] for m in _meters(html)}
         assert got["storage"] == ("11.2%", "12 GB / 107 GB", 11.2)
-        assert got["cache"] == ("11.2%", "3.00 GB own · 12 GB / 107 GB shared",
+        assert got["cache"] == ("11.2%", "3.00 GB own · 12 GB / 107 GB",
                                 11.2)
+
+    def test_an_own_guest_disk_fills_with_the_disk_and_is_not_shared(self):
+        html = render("cardHTML", [card(MACOS_POOL)])[0]
+        got = {m[0]: m[1:] for m in _meters(html)}
+        assert got["storage"] == ("30.0%", "12 GB own · 30 GB / 100 GB",
+                                  30.0)
+        for meter in METERS:
+            assert "shared" not in got[meter][1], meter
 
     def test_an_unknown_figure_is_unknown_in_its_slot(self):
         t = dict(LINUX["telemetry"], storage_at=at(3600))
