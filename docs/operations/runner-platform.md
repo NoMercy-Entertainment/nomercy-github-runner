@@ -207,8 +207,9 @@ six minutes.
 | macOS runner | inside the QEMU guest of VM `macos-runner`, `/Users/runner/templates/` |
 | SSH to the VMs | `rnr-admin@10.77.0.10` / `.20` with `D:\HyperV\runner-platform\ssh\id_ed25519` |
 
-Forge tokens are read from the environment files; the secret store
-(`POST /api/v2/secrets/...`, admin) overrides them once a token is set there.
+Forge tokens and the alarm webhook (section 8) are read from the
+environment files; the secret store (`POST /api/v2/secrets/...`, admin)
+overrides them once a value is set there.
 
 ## 5. Runbooks (design 22)
 
@@ -292,9 +293,102 @@ to watch. So at each release:
 | --- | --- |
 | viewer | read everything; post nothing |
 | operator | start, stop, restart, drain, cancel drain, clear cache, add runners |
-| admin | as operator, and remove, recreate, deregister, recreate a fleet, manage access, set the forge tokens |
+| admin | as operator, and remove, recreate, deregister, recreate a fleet, manage access, set the forge tokens and the alarm webhook |
 
 Every request to the controller is audited, accepted or refused, with the
 actor and the reason, and how each operation ended: `GET /api/v2/audit`,
 filtered by `runner_id`, `fleet_id`, `verb` or `decision`. The audit table
 refuses updates and deletes.
+
+## 8. Alarms
+
+GitHub #11. On 2026-09-30 the org runner `nomercy-mac-mini`, the only one
+with the `xcode` label and a machine this platform does not manage, was
+offline for more than two hours and nobody noticed. The dashboard now
+raises an alarm for:
+
+- **A runner offline for ten minutes.** This covers every self-hosted
+  runner in the GitHub org NoMercy-Entertainment and every Forgejo runner
+  the token's user can see, managed by this platform or not. The clock
+  starts at the first poll that sees the runner offline. That time is
+  kept in `control.db` (`alarm_watch`), so a restart neither forgets an
+  outage nor starts the clock again. The alarm is resolved when the runner
+  is online again or removed from the forge. A platform runner whose
+  desired state is `stopped` or `absent` is offline on purpose and raises
+  nothing.
+- **A job queued for ten minutes that no online runner can take**, on
+  GitHub. "Can take" is GitHub's own rule: every label the job asks for is
+  on one runner, without regard to case. Labels that no self-hosted runner
+  has ever carried (`ubuntu-latest`, a larger runner's name) mark a
+  GitHub-hosted job, which is skipped. A job that asks for `self-hosted` is
+  never skipped. The alarm names the repository, workflow, job and labels,
+  and links to the job.
+- **The monitor itself.** When a forge cannot be read, the banner says
+  "alarm monitor cannot reach GitHub since ..." and no runner alarm is
+  raised or resolved from a list that was not read. After the same ten
+  minutes that becomes an alarm of its own. So does a monitor thread that
+  has stopped checking.
+
+Where alarms show:
+
+- A red banner at the top of every page while any alarm is active. It has
+  no close button: it goes away when the condition does.
+- `GET /api/v2/alarms`. Anyone signed in may read it, viewers included. It
+  returns `alarms` (raised), `degraded` (the monitor), `pending` (watched,
+  not yet at the threshold), the monitor's state and the thresholds in
+  force.
+- The audit log: `GET /api/v2/audit?verb=alarm`. Actor `alarm-monitor`,
+  decision `raised` or `resolved`, with the reason it ended.
+- The webhook, if one is set (below).
+
+Pages never call a forge. Two threads in the dashboard do: one reads both
+forges' runners every minute, and one sweeps the GitHub queue.
+
+### Settings
+
+Read from the dashboard's environment (`dashboard.env`) on every pass, so a
+change needs no restart. `ALARM_WEBHOOK_URL` can also be set in Settings,
+where it is sealed in the secret store like the forge tokens and overrides
+the environment.
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `ALARM_OFFLINE_MINUTES` | 10 | How long a runner, or the monitor's view of a forge, may be offline before it is an alarm |
+| `ALARM_QUEUE_MINUTES` | 10 | How long a job may wait, by GitHub's own clock, with no online runner that has its labels |
+| `ALARM_POLL_SECONDS` | 60 | How often both forges' runners are read (at least 15) |
+| `ALARM_QUEUE_POLL_SECONDS` | 300 | How often the GitHub queue is swept (at least 60) |
+| `ALARM_RATE_LIMIT_FLOOR` | 1000 | The sweep stops when GitHub says fewer calls than this are left in the hour, and resumes at the reset |
+| `ALARM_WEBHOOK_URL` | unset | Where raises and resolves are sent. Unset means the banner only. It is a credential: never logged, and masked like a token |
+| `ALARM_WEBHOOK_FORMAT` | from the URL | `ntfy` (text, with Title, Priority and Tags headers), `discord` (`content`, no mentions), `slack` (`text`) or `json` (`{"event", "alarm": {...}}`). When unset: a Discord or Slack webhook URL, or an ntfy host, picks its own format, and anything else gets `json` |
+
+Each raise and each resolve is sent once. `alarm_outbox` is unique on
+alarm, event and raise time, so a retry or a restart cannot send it twice.
+A failed send is retried after 30 s, then twice as long each time up to
+30 min, and given up after 8 attempts. An alarm raised while no URL was set
+is not sent late when one is.
+
+### What the queue sweep costs
+
+Per sweep: one call per hundred repositories for the org's repository
+list, which is kept for an hour. Then two calls per repository (its queued
+and its in-progress runs), and one per run old enough to cross the
+threshold before the next sweep (its jobs). In-progress runs are read
+because a job waiting for a self-hosted runner after a hosted job has
+finished sits in an in-progress run. Every one of these is a conditional
+request with the last ETag. An unchanged answer is a 304, and GitHub does
+not count a 304 against the rate limit, so a quiet org costs little. The
+runner reading is one call per hundred runners a minute: 60 an hour.
+
+### What is not covered
+
+- **Forgejo's queue.** Forgejo's API lists a repository's tasks, and a task
+  exists only once a runner has picked up the job. A job no runner can
+  take never becomes one, so it cannot be seen without reading every
+  repository of the instance. Forgejo runners going offline are covered.
+- **Forgejo runners outside the token's user.** The monitor reads
+  `/api/v1/user/actions/runners`, the scope this platform registers in.
+  Runners registered to another user, an organisation, a repository or the
+  whole instance are not listed there.
+- **Runner groups.** A job is matched on labels alone. A runner with the
+  right labels in a group the repository may not use still counts as able
+  to take the job.
