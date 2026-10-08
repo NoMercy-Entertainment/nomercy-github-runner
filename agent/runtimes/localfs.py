@@ -13,19 +13,24 @@ import shutil
 def df_figures(text):
     """{"used_bytes", "total_bytes"} of the volume `df -k` (BSD) or `df -Pk`
     (GNU) described, from its last line - or None when it said nothing a
-    size can be read from. Both print 1024-byte blocks in the second and
-    third columns, whatever follows them."""
+    size can be read from. Both print 1024-byte blocks: total, Used and
+    Available in the second to fourth columns, whatever follows them.
+
+    Used is total less Available - everything a runner can no longer write
+    to - not df's Used column, which leaves out ext4's reserved blocks and,
+    on APFS, everything the Data volume's sibling volumes hold in the
+    container they share. `LocalFs.disk_usage` reads it the same way."""
     lines = [line for line in str(text or "").splitlines() if line.strip()]
     if len(lines) < 2:
         return None
     parts = lines[-1].split()
     try:
-        total, used = int(parts[1]) * 1024, int(parts[2]) * 1024
+        total, available = int(parts[1]) * 1024, int(parts[3]) * 1024
     except (IndexError, ValueError):
         return None
-    if total <= 0 or used < 0:
+    if total <= 0 or not 0 <= available <= total:
         return None
-    return {"used_bytes": used, "total_bytes": total}
+    return {"used_bytes": total - available, "total_bytes": total}
 
 
 class LocalFs:
@@ -108,13 +113,15 @@ class LocalFs:
 
     def disk_usage(self, path):
         """The volume holding `path`: {"used_bytes", "total_bytes"}, or None
-        when it cannot be read - never 0."""
+        when it cannot be read - never 0. Used is total less what may still
+        be written, as `df_figures` reads it."""
         if not os.path.exists(path):
             return None
         try:
             usage = shutil.disk_usage(path)
         except OSError:
             return None
-        if usage.total <= 0:
+        if usage.total <= 0 or not 0 <= usage.free <= usage.total:
             return None
-        return {"used_bytes": usage.used, "total_bytes": usage.total}
+        return {"used_bytes": usage.total - usage.free,
+                "total_bytes": usage.total}

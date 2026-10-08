@@ -271,7 +271,8 @@ class TestTheDiskInsideTheGuest:
     def test_disk_usage_is_the_volume_holding_the_path(self, fs, run):
         run.answers = {"df -k": (0, self.DF_DATA, "")}
         assert fs.disk_usage("/Users/runner/runners/r") == {
-            "used_bytes": 160234560 * 1024, "total_bytes": 267893016 * 1024}
+            "used_bytes": (267893016 - 95012344) * 1024,
+            "total_bytes": 267893016 * 1024}
         assert "/Users/runner/runners/r" in run.remote
 
     def test_disk_usage_that_cannot_be_read_is_none_never_zero(self, fs, run):

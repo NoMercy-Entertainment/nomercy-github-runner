@@ -20,13 +20,25 @@ BSD = ("Filesystem     1024-blocks      Used Available Capacity iused"
 
 
 def test_gnu_df_is_read_in_bytes():
-    assert df_figures(GNU) == {"used_bytes": 12345678 * 1024,
+    """Used is everything a runner can no longer write to: total less what
+    is available. ext4's reserved blocks are in neither df's Used nor its
+    Available column, and they are not the runner's to fill."""
+    assert df_figures(GNU) == {"used_bytes": (263174212 - 237391212) * 1024,
                                "total_bytes": 263174212 * 1024}
 
 
 def test_bsd_df_is_read_in_bytes():
-    assert df_figures(BSD) == {"used_bytes": 160234560 * 1024,
+    """On APFS df's Used is the Data volume's own share of a container its
+    sibling volumes fill too; what the runner can still write is Available,
+    so used is total less that."""
+    assert df_figures(BSD) == {"used_bytes": (267893016 - 95012344) * 1024,
                                "total_bytes": 267893016 * 1024}
+
+
+def test_an_available_figure_beyond_the_total_is_not_believed():
+    text = ("Filesystem 1024-blocks Used Available Capacity Mounted on\n"
+            "/dev/x 100 10 200 10% /\n")
+    assert df_figures(text) is None
 
 
 def test_what_df_did_not_say_is_none():
@@ -37,9 +49,11 @@ def test_what_df_did_not_say_is_none():
 
 
 def test_the_local_disk_is_read_from_the_os(tmp_path, monkeypatch):
+    """The same rule as df: used is total less what the agent may still
+    write, so reserved space counts as used here too."""
     Usage = namedtuple("Usage", "total used free")
     monkeypatch.setattr(shutil, "disk_usage",
-                        lambda path: Usage(500 * 10 ** 9, 200 * 10 ** 9,
+                        lambda path: Usage(500 * 10 ** 9, 150 * 10 ** 9,
                                            300 * 10 ** 9))
     assert LocalFs().disk_usage(str(tmp_path)) == {
         "used_bytes": 200 * 10 ** 9, "total_bytes": 500 * 10 ** 9}
