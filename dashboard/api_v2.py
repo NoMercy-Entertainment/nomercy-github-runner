@@ -813,6 +813,16 @@ def fleet_clear_cache(fleet_id):
 # audit (T-1802)
 # ---------------------------------------------------------------------------
 
+@bp.route("/api/v2/alarms")
+def alarm_list():
+    """Every active alarm, the monitor's own health, and what is being
+    watched but not yet raised (GitHub #11). A read for anyone signed in,
+    viewers included, from what the monitor last published - never a call
+    to a forge."""
+    import alarms
+    return jsonify(alarms.snapshot())
+
+
 @bp.route("/api/v2/audit")
 def audit_log():
     """What was asked, by whom, and what became of it - refusals included.

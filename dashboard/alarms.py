@@ -48,6 +48,11 @@ FORGES = {"github": "GitHub", "forgejo": "Forgejo"}
 
 ACTOR = "alarm-monitor"
 
+#: One writer at a time: the minute thread and the queue thread both read a
+#: row and then change it, and two raises of one alarm would be two audit
+#: rows and two notifications.
+_WRITE = threading.Lock()
+
 #: Called with (path, event) for every raise and resolve once it is stored -
 #: the webhook's outbox (alarm_notify.enqueue).
 LISTENERS = []
@@ -159,9 +164,9 @@ class AlarmBook:
 
     def _record(self, key, kind, forge, subject, detail, since, raised_at,
                 event, reason, resolved_at=None):
-        """The audit row of a raise or a resolve. Its own connection, after
-        the watch change: an audit that cannot be written loses the record,
-        never the alarm."""
+        """A raise or a resolve, held until the watch change is committed;
+        `_flush` then writes the audit row and tells the listeners. An audit
+        that cannot be written loses the record, never the alarm."""
         text = message(kind, forge, subject, detail, since)
         if reason:
             text = f"{text}; resolved: {reason}"
@@ -210,7 +215,7 @@ class AlarmBook:
         """One reading of a forge's runners: each {"id", "name", "online",
         "labels"}, or None when the forge could not be read."""
         threshold = cfg["offline_minutes"] * 60
-        with self._begin() as c:
+        with _WRITE, self._begin() as c:
             if runners is None:
                 self._blind(c, forge, now, threshold, why or "no answer")
             else:
@@ -245,7 +250,7 @@ class AlarmBook:
 
     def observe_queue_reader(self, forge, why, now, cfg):
         """Whether the queue could be read: `why` it could not, or None."""
-        with self._begin() as c:
+        with _WRITE, self._begin() as c:
             if why:
                 self._blind(c, forge, now, cfg["offline_minutes"] * 60, why, part="queue")
             else:
@@ -270,7 +275,7 @@ class AlarmBook:
         runners online now. A job alarm in a repository not swept stays."""
         threshold = cfg["queue_minutes"] * 60
         known = self.known_labels(forge)
-        with self._begin() as c:
+        with _WRITE, self._begin() as c:
             waiting, taken = set(), set()
             for job in jobs:
                 if hosted(job.get("labels"), known):
@@ -295,7 +300,7 @@ class AlarmBook:
         """Between sweeps, against the runners online now: a job a runner
         can take is resolved, one whose wait crossed the threshold raised."""
         threshold = cfg["queue_minutes"] * 60
-        with self._begin() as c:
+        with _WRITE, self._begin() as c:
             for row in c.execute("SELECT * FROM alarm_watch WHERE kind='job_queued'"
                                  " AND forge=?", (forge,)).fetchall():
                 detail = json.loads(row["detail"] or "{}")

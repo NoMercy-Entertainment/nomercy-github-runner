@@ -217,6 +217,21 @@ def _template_role():
     return {"role": getattr(g, "role", None)}
 
 
+@app.context_processor
+def _template_alarms():
+    """The alarm banner's content for base.html (GitHub #11): what the
+    monitor last published, read from memory. Nothing for a page without a
+    signed-in caller, and nothing rather than an error if it cannot be read
+    - a banner must never be why a page fails."""
+    if getattr(g, "role", None) is None:
+        return {"alarm_view": None}
+    try:
+        import alarms
+        return {"alarm_view": alarms.snapshot()}
+    except Exception:   # noqa: BLE001
+        return {"alarm_view": None}
+
+
 def _secret_values():
     """The deployment's own secret values, for masking wherever they
     appear. Read from the environment file on each use, so a token changed
@@ -443,6 +458,17 @@ def _enricher():
         except Exception as e:  # noqa: BLE001
             print(f"[enricher] {e}")
         time.sleep(90)
+
+
+def _alarm_plane():
+    """What the alarm monitor reads with (GitHub #11): the control plane's
+    database, its settings - which overlay the tokens and the alarm webhook
+    set in Settings on the deployment's - and its runners, or None while the
+    control plane has not run."""
+    service, _ = api_v2.control_plane()
+    if service is None:
+        return None
+    return api_v2._db_path(), service.env, service.specs.list()
 
 
 def _runner_group_env():
@@ -858,6 +884,17 @@ if __name__ == "__main__":
     # page read ever calls GitHub (runner_groups.py).
     import runner_groups
     threading.Thread(target=runner_groups.run_forever, args=(_runner_group_env,),
+                     daemon=True).start()
+    # Alarms (GitHub #11): every runner of both forges each minute, the
+    # queue every five, sent to the webhook when one is set. A page reads
+    # only what these threads published.
+    import alarm_notify
+    import alarms
+    alarms.LISTENERS.append(alarm_notify.enqueue)
+    alarms.TICK_LISTENERS.append(alarm_notify.deliver_due)
+    threading.Thread(target=alarms.run_forever, args=(_alarm_plane,),
+                     daemon=True).start()
+    threading.Thread(target=alarms.run_queue_forever, args=(_alarm_plane,),
                      daemon=True).start()
     app.permanent_session_lifetime = 60 * 60 * 24 * 14
     app.run(host="0.0.0.0", port=PORT, threaded=True)
