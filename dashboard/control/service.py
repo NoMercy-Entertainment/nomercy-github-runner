@@ -829,10 +829,10 @@ class RunnerService:
         try:
             result = self._set_limits(runner_id, changes, requested_by,
                                       idempotency_key)
-        except (Refused, UnknownRunner, ValueError) as e:
+        except Exception as e:      # noqa: BLE001 - every outcome is audited
             self._audit("set_limits", "refused", requested_by,
                         runner_id=runner_id, fleet_id=fleet_id,
-                        outcome=str(e) or f"no runner {runner_id}",
+                        outcome=str(e) or f"{type(e).__name__}: no runner {runner_id}",
                         parameters=changes if isinstance(changes, dict) else None)
             raise
         self._audit("set_limits", "accepted", requested_by, runner_id=runner_id,
@@ -842,26 +842,34 @@ class RunnerService:
                                     recreate=result["recreate_operation_id"]))
         return result
 
-    def _set_limits(self, runner_id, changes, requested_by, idempotency_key):
+    def _limits_repeat(self, operation, runner_id, idempotency_key):
+        """What a repeated request is answered with: the outcome its key
+        already recorded, or a refusal saying why there is none - never an
+        empty answer that reads as a success."""
+        import json
+        if operation["verb"] != "set_limits" or operation["runner_id"] != runner_id:
+            raise Refused(
+                f"idempotency key {idempotency_key!r} was already used "
+                f"for {operation['verb']} on {operation['runner_id']}")
+        if operation["state"] == "succeeded" and operation.get("result"):
+            try:
+                return dict(json.loads(operation["result"]),
+                            operation_id=operation["operation_id"])
+            except (TypeError, ValueError):
+                pass
+        if operation["state"] in ("pending", "running"):
+            raise Refused(f"this request is already being carried out as "
+                          f"{operation['operation_id']}; wait for it")
+        raise Refused(f"this request was already made as "
+                      f"{operation['operation_id']} and did not succeed"
+                      + (f": {operation['error']}" if operation.get("error") else "")
+                      + "; send it again with a new Idempotency-Key")
+
+    def _limits_values(self, spec, changes):
+        """The override columns this request writes, checked against the
+        runner's own host. ValueError when a value is not a limit or does
+        not fit."""
         from store import limits
-        if not isinstance(changes, dict) or not changes:
-            raise ValueError("name cpu and/or memory; null clears an override")
-        unknown = sorted(set(changes) - {"cpu", "memory"})
-        if unknown:
-            raise ValueError(f"only cpu and memory can be set here, not {unknown}")
-        spec = self._spec(runner_id)
-
-        if idempotency_key:
-            existing = self.operations.by_key(idempotency_key)
-            if existing:
-                if existing["verb"] != "set_limits" or existing["runner_id"] != runner_id:
-                    raise Refused(
-                        f"idempotency key {idempotency_key!r} was already used "
-                        f"for {existing['verb']} on {existing['runner_id']}")
-                import json
-                return dict(json.loads(existing["result"] or "{}"),
-                            operation_id=existing["operation_id"])
-
         values = {}
         if "cpu" in changes:
             values["cpu_override"] = limits.normalize_cpu(changes["cpu"], spec["platform"])
@@ -877,33 +885,63 @@ class RunnerService:
                                  [host] if host else [])
         if verdict not in (None, hardware.UNVERIFIED):
             raise ValueError(verdict)
+        return values, verdict == hardware.UNVERIFIED
 
+    def _set_limits(self, runner_id, changes, requested_by, idempotency_key):
+        from store.specs import StaleSpec
+        if not isinstance(changes, dict) or not changes:
+            raise ValueError("name cpu and/or memory; null clears an override")
+        unknown = sorted(set(changes) - {"cpu", "memory"})
+        if unknown:
+            raise ValueError(f"only cpu and memory can be set here, not {unknown}")
+        spec = self._spec(runner_id)
+
+        if idempotency_key:
+            existing = self.operations.by_key(idempotency_key)
+            if existing:
+                return self._limits_repeat(existing, runner_id, idempotency_key)
+
+        values, unverified = self._limits_values(spec, changes)
         operation, created = self.operations.open(
             "set_limits", runner_id=runner_id, requested_by=requested_by,
             idempotency_key=idempotency_key,
-            note=f"limits cpu={cpu} memory={memory}")
+            note=f"limits {changes}")
         if not created:
-            import json
-            return dict(json.loads(operation["result"] or "{}"),
-                        operation_id=operation["operation_id"])
-        self.specs.update(runner_id, spec["spec_version"], **values)
-
-        recreate, why = None, None
+            return self._limits_repeat(operation, runner_id, idempotency_key)
         try:
-            # `_act`, not `act`: a recreate that cannot start now is not a
-            # refused request - the override waits for one - so only the one
-            # that is queued is audited as a recreate of its own.
-            recreate = self._act(runner_id, "recreate", requested_by,
-                                 f"{idempotency_key}:recreate" if idempotency_key else None)
-        except (Refused, ValueError) as e:
-            why = str(e)
-        else:
-            self._audit("recreate", "accepted", requested_by, runner_id=runner_id,
-                        fleet_id=spec.get("fleet_id"), operation_id=recreate,
-                        parameters={"because": "set_limits"})
-        result = {"recreate_operation_id": recreate, "pending": recreate is None,
-                  "why_pending": why,
-                  "hardware_unverified": verdict == hardware.UNVERIFIED}
+            # The reconciler writes specs too. One that moved on between the
+            # read and the write is read again and checked again, once; one
+            # that keeps moving is refused rather than written blind.
+            for attempt in (1, 2):
+                try:
+                    self.specs.update(runner_id, spec["spec_version"], **values)
+                    break
+                except StaleSpec:
+                    if attempt == 2:
+                        raise Refused("the runner changed while its limits were "
+                                      "being saved; nothing was saved - try again") from None
+                    spec = self._spec(runner_id)
+                    values, unverified = self._limits_values(spec, changes)
+
+            recreate, why = None, None
+            try:
+                # `_act`, not `act`: a recreate that cannot start now is not
+                # a refused request - the override waits for one - so only
+                # the one that is queued is audited as a recreate of its own.
+                recreate = self._act(runner_id, "recreate", requested_by,
+                                     f"{idempotency_key}:recreate" if idempotency_key else None)
+            except (Refused, ValueError, StaleSpec) as e:
+                why = str(e)
+            else:
+                self._audit("recreate", "accepted", requested_by, runner_id=runner_id,
+                            fleet_id=spec.get("fleet_id"), operation_id=recreate,
+                            parameters={"because": "set_limits"})
+            result = {"recreate_operation_id": recreate, "pending": recreate is None,
+                      "why_pending": why, "hardware_unverified": unverified}
+        except Exception as e:      # noqa: BLE001 - never leave it open
+            self.operations.fail(operation["operation_id"],
+                                 str(e) or type(e).__name__)
+            raise
         self.operations.succeed(operation["operation_id"], result)
         return dict(result, operation_id=operation["operation_id"])
 

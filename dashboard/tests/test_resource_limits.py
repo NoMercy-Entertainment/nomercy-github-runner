@@ -353,6 +353,69 @@ class TestARunnersOwnLimits:
         assert set_limits(client, rid, body).status_code == 400
         assert linux.specs.get(rid)["cpu_override"] is None
 
+    @pytest.mark.parametrize("close", [None, "fail"])
+    def test_a_repeat_of_a_request_that_never_finished_is_a_409(self, client, linux, close):
+        rid = a_runner(linux, cpu_limit="0-15", memory_limit=32 * GIB)
+        operation, _ = linux.operations.open("set_limits", runner_id=rid,
+                                             idempotency_key="limits-1")
+        if close:
+            linux.operations.fail(operation["operation_id"], "it broke")
+        answer = set_limits(client, rid, {"cpu": 8})
+        assert answer.status_code == 409, answer.json
+        assert operation["operation_id"] in answer.json["error"]
+        assert linux.specs.get(rid)["cpu_override"] is None
+
+    def test_a_key_used_for_something_else_is_a_409(self, client, linux):
+        rid = a_runner(linux, cpu_limit="0-15", memory_limit=32 * GIB)
+        linux.act(rid, "stop", idempotency_key="limits-1")
+        assert set_limits(client, rid, {"cpu": 8}).status_code == 409
+
+    def stale(self, monkeypatch, times):
+        from store.specs import SpecStore, StaleSpec
+        real = SpecStore.update
+        left = {"n": times}
+
+        def update(self, runner_id, version, **changes):
+            if "cpu_override" in changes and left["n"]:
+                left["n"] -= 1
+                raise StaleSpec(runner_id, version, version + 1)
+            return real(self, runner_id, version, **changes)
+        monkeypatch.setattr(SpecStore, "update", update)
+
+    def test_a_runner_that_moved_on_once_is_read_again(self, client, linux, monkeypatch):
+        rid = a_runner(linux, cpu_limit="0-15", memory_limit=32 * GIB)
+        self.stale(monkeypatch, 1)
+        answer = set_limits(client, rid, {"cpu": 8})
+        assert answer.status_code == 202, answer.json
+        assert linux.specs.get(rid)["cpu_override"] == "8.0"
+
+    def test_one_that_keeps_moving_is_refused_closed_and_audited(self, client, linux, monkeypatch):
+        from control import audit
+        rid = a_runner(linux, cpu_limit="0-15", memory_limit=32 * GIB)
+        self.stale(monkeypatch, 5)
+        answer = set_limits(client, rid, {"cpu": 8})
+        assert answer.status_code == 409 and "changed" in answer.json["error"]
+        assert linux.specs.get(rid)["cpu_override"] is None
+        operations = linux.operations.list(runner_id=rid)
+        assert [o["state"] for o in operations] == ["failed"]
+        rows = audit.entries(linux.operations.path, verb="set_limits", decision="refused")
+        assert rows and "changed" in rows[0]["outcome"]
+        again = set_limits(client, rid, {"cpu": 8})
+        assert again.status_code == 409, "the key's failed operation is the answer"
+
+    def test_an_unexpected_failure_still_closes_and_audits(self, linux, monkeypatch):
+        from control import audit
+        from store.specs import SpecStore
+        rid = a_runner(linux, cpu_limit="0-15", memory_limit=32 * GIB)
+
+        def broken(self, *args, **kwargs):
+            raise RuntimeError("disk I/O error")
+        monkeypatch.setattr(SpecStore, "update", broken)
+        with pytest.raises(RuntimeError):
+            linux.set_limits(rid, {"cpu": 8}, idempotency_key="k")
+        assert [o["state"] for o in linux.operations.list(runner_id=rid)] == ["failed"]
+        assert audit.entries(linux.operations.path, verb="set_limits", decision="refused")
+
     def test_a_key_is_required(self, client, linux):
         rid = a_runner(linux)
         assert client.post(f"/api/v2/runners/{rid}/limits",
