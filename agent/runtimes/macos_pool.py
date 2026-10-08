@@ -596,6 +596,15 @@ class MacAppliancePoolRuntime:
                                              else "unknown"))
             if state.get("resource_enforcement"):
                 unit["resource_enforcement"] = state["resource_enforcement"]
+            if record and unit["state"] == "running":
+                # Through the guest's own runtime, which wrote the hooks and
+                # keeps what it found; a stopped guest cannot be read.
+                try:
+                    guard = self._context(record)[1].origin_guard(rid)
+                except (OSError, ValueError, RuntimeError):
+                    guard = None
+                if guard is not None:
+                    unit["origin_guard"] = guard
             result.append(unit)
         return result
 

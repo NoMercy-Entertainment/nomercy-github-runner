@@ -246,3 +246,12 @@ def test_forgejo_registration_is_bounded():
     after 120 s and would leave it running in the unit."""
     assert re.search(r"timeout 90 \"\$FORGEJO_RUNNER_BIN\" register",
                      branch(read("runner", "register"), "forgejo"))
+
+
+def test_the_github_images_say_which_origin_guard_they_carry():
+    """The agent reads it from each unit as a container label, so the
+    dashboard can tell a runner made before the check from one made after."""
+    guard = re.search(r"^GUARD_VERSION = (\d+)$", read("runner", "runner_guard.py"), re.M)
+    for dockerfile in ("Dockerfile.github", "Dockerfile.cleanup"):
+        assert f'LABEL nomercy.origin_guard="{guard.group(1)}"' in read(dockerfile), dockerfile
+    assert "nomercy.origin_guard" not in read("Dockerfile.forgejo")

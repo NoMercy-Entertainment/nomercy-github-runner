@@ -50,6 +50,7 @@ from pathlib import Path
 
 from .. import cpu, hardware, naming
 from ..jobs import current_job
+from ..origin_guard import guard_version
 from ..windows_timeouts import registration_limits
 from .localfs import LocalFs
 from .windows_storage import UNMANAGED, WindowsStorage
@@ -700,12 +701,32 @@ class WindowsProcessRuntime:
                     current = None
                     continue
                 state = line.split()[-1]
-                found.append({"runner_id": rid,
-                              "state": {"RUNNING": "running",
-                                        "STOPPED": "stopped"}.get(state,
-                                                                 "unknown")})
+                unit = {"runner_id": rid,
+                        "state": {"RUNNING": "running",
+                                  "STOPPED": "stopped"}.get(state, "unknown")}
+                guard = self._origin_guard(rid)
+                if guard is not None:
+                    unit["origin_guard"] = guard
+                found.append(unit)
                 current = None
         return found
+
+    def _origin_guard(self, rid):
+        """Which version of the origin check this runner's own hooks carry:
+        GUARD_VERSION in its reg\\hooks\\runner_guard.py, 0 for hooks from
+        before the check, None for a runner with no hooks (not GitHub's) or
+        one that cannot be read. Its own copy, not the agent's: hooks are
+        written at create."""
+        hooks = ntpath.join(self.paths(rid)["reg"], "hooks")
+        try:
+            if not self._fs.exists(hooks):
+                return None
+            guard = ntpath.join(hooks, "runner_guard.py")
+            if not self._fs.exists(guard):
+                return 0
+            return guard_version(self._fs.read_text(guard), "GUARD_VERSION = ")
+        except (OSError, ValueError):
+            return None
 
     # ---- cache ---------------------------------------------------------------
 

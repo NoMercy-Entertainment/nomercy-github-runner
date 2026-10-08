@@ -476,6 +476,18 @@ class TestObserving:
         states = {u["runner_id"]: u["state"] for u in runtime.instances()}
         assert states == {RID: "running", OTHER: "stopped"}
 
+    def test_instances_say_which_origin_guard_each_units_image_carries(self, runtime, docker):
+        """The unit image's LABEL nomercy.origin_guard: the job-started
+        hook's check on whose code a job runs. A unit made from an image
+        before it has none, and says 0 - not unknown, not the image's
+        newer tag."""
+        docker.image_labels[SPEC["image"]] = {"nomercy.origin_guard": "1"}
+        runtime.create(RID, SPEC)
+        docker.image_labels.clear()
+        runtime.create(OTHER, SPEC)
+        guards = {u["runner_id"]: u.get("origin_guard") for u in runtime.instances()}
+        assert guards == {RID: 1, OTHER: 0}
+
     def test_instances_raises_rather_than_claiming_nothing(self):
         runtime = LinuxContainerRuntime(
             run=lambda args, **kw: (False, "", "daemon down"))

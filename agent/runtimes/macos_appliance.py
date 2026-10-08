@@ -57,6 +57,7 @@ from typing import Protocol
 
 from .. import naming
 from ..jobs import current_job
+from ..origin_guard import guard_version
 from .localfs import LocalFs
 
 #: The areas an appliance instance has: every one in naming except the
@@ -77,6 +78,8 @@ HOOK_SOURCE = Path(__file__).resolve().parents[1] / "hooks" / "macos"
 HOOK_SCRIPTS = {"ACTIONS_RUNNER_HOOK_JOB_STARTED": "job-started.sh",
                 "ACTIONS_RUNNER_HOOK_JOB_COMPLETED": "job-completed.sh"}
 HOOK_FILES = ("lib.sh", *HOOK_SCRIPTS.values())
+#: The line in lib.sh that says which origin check it carries.
+GUARD_PREFIX = "ORIGIN_GUARD_VERSION="
 #: What an adopted instance is: the launchd job and the directory that were
 #: already there when the controller took it over (MIG-4). Written by
 #: `create` when its spec carries an `adopt` block, and read by every verb
@@ -143,6 +146,10 @@ class MacApplianceRuntime:
         self._tools = dict(TOOLS, **(tools or {}))
         if self._tools["domain"] == "system" and not self._tools["runner_user"]:
             raise ValueError("system launchd jobs require an explicit runner_user")
+        #: runner_id -> the origin check its hooks carry (origin_guard), as
+        #: written by this agent or read once: every read crosses the guest's
+        #: SSH, and the hooks change only at a create, which sets it here.
+        self._guards = {}
 
     # ---- where things are ----------------------------------------------------
 
@@ -248,7 +255,7 @@ class MacApplianceRuntime:
         # 2b. GitHub's job hooks, before the job that points at them, and on
         #     every create, so a redeployed agent's copy reaches the guest.
         if _serves_github(spec):
-            self._install_hooks(p)
+            self._install_hooks(p, rid)
 
         # 3. The launchd job. Its environment can carry a token, so the file
         #    is readable by this user alone.
@@ -312,13 +319,32 @@ class MacApplianceRuntime:
                             json.dumps(record, sort_keys=True), mode=0o600)
         return naming.unit_name(rid)
 
-    def _install_hooks(self, p):
+    def _install_hooks(self, p, rid=None):
         hooks = posixpath.join(p["reg"], "hooks")
         self._fs.makedirs(hooks)
         for name in HOOK_FILES:
             text = (HOOK_SOURCE / name).read_text(encoding="utf-8").replace("\r\n", "\n")
             self._fs.write_text(posixpath.join(hooks, name), text,
                                 mode=0o700 if name in HOOK_SCRIPTS.values() else 0o600)
+            if name == "lib.sh" and rid:
+                self._guards[rid] = guard_version(text, GUARD_PREFIX)
+
+    def origin_guard(self, runner_id):
+        """Which version of the origin check this runner's own hooks carry:
+        ORIGIN_GUARD_VERSION in its reg/hooks/lib.sh, 0 for hooks from before
+        the check, None for a runner with no hooks (not GitHub's, or adopted)
+        or one that cannot be read now."""
+        rid = naming.check(runner_id)
+        if rid in self._guards:
+            return self._guards[rid]
+        lib = posixpath.join(self.paths(rid)["reg"], "hooks", "lib.sh")
+        try:
+            guard = (guard_version(self._fs.read_text(lib), GUARD_PREFIX)
+                     if self._fs.exists(lib) else None)
+        except (OSError, ValueError, RuntimeError):
+            return None
+        self._guards[rid] = guard
+        return guard
 
     def _plist(self, rid, spec, p):
         env = dict(spec.get("env") or {})
@@ -451,6 +477,7 @@ class MacApplianceRuntime:
         """Remove the job and its storage. Safe when any of it is absent."""
         rid = naming.check(runner_id)
         self.stop(rid)
+        self._guards.pop(rid, None)
         p = self.paths(rid)
         if self._domain() == "system":
             self._check(self._run(["/usr/bin/sudo", "-n", "/bin/rm", "-f",
@@ -652,9 +679,13 @@ class MacApplianceRuntime:
             if rid in seen:
                 continue
             s = self.status(rid)
-            found.append({"runner_id": rid,
-                          "state": "running" if s.get("running") is True else
-                          ("stopped" if s.get("running") is False else "unknown")})
+            unit = {"runner_id": rid,
+                    "state": "running" if s.get("running") is True else
+                    ("stopped" if s.get("running") is False else "unknown")}
+            guard = self.origin_guard(rid)
+            if guard is not None:
+                unit["origin_guard"] = guard
+            found.append(unit)
         return found
 
     # ---- cache ---------------------------------------------------------------

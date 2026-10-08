@@ -495,3 +495,16 @@ def test_a_pool_runners_guest_disk_is_its_own_boundary(pool, host):
         assert got["ok"] is True, probe
         assert got["total_bytes"] == 100 * 10 ** 9
         assert got["volume_total_bytes"] == 100 * 10 ** 9
+
+
+def test_a_running_guest_says_which_origin_guard_its_hooks_carry(pool, host):
+    """Read through the guest's own runtime, which wrote the hooks."""
+    pool.create(RID, dict(SPEC, labels={"nomercy.provider": "github"}))
+    (unit,) = pool.instances()
+    assert unit["state"] == "running" and unit["origin_guard"] >= 1
+
+
+def test_a_guest_without_hooks_says_nothing_of_a_guard(pool, host):
+    pool.create(RID, SPEC)
+    (unit,) = pool.instances()
+    assert "origin_guard" not in unit

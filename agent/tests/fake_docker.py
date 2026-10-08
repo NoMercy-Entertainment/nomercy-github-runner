@@ -86,6 +86,8 @@ class FakeDocker:
         #: (total, used) of the engine's volume every mount is on, as `df`
         #: inside a unit reads it, or None when df fails.
         self.volume = (1000 * 10 ** 9, 400 * 10 ** 9)
+        #: image -> its LABELs, which a container made from it carries too.
+        self.image_labels = {}
 
     # ---- helpers for tests --------------------------------------------------
 
@@ -209,6 +211,7 @@ class FakeDocker:
                                f'already in use by container "abc".')
         for vol in opts["mounts"]:
             self.volumes.setdefault(vol, _new_volume())
+        opts["labels"] = {**self.image_labels.get(opts.get("image"), {}), **opts["labels"]}
         self.containers[name] = {"state": "running", "restarts": 0,
                                  "tmp": {}, "draining": False, **opts}
         self.containers[name].setdefault("restart", "no")
@@ -374,11 +377,16 @@ class FakeDocker:
             "RestartCount": c["restarts"]}), ""
 
     def _ps(self, args, input):
+        import re
+        fmt = (args[args.index("--format") + 1] if "--format" in args
+               else '{{.Label "nomercy.runner_id"}}\t{{.State}}')
         lines = []
         for name, c in sorted(self.containers.items()):
             rid = c["labels"].get("nomercy.runner_id")
             if rid:
-                lines.append(f"{rid}\t{c['state']}")
+                line = re.sub(r'\{\{\.Label "([^"]+)"\}\}',
+                              lambda m: c["labels"].get(m.group(1), ""), fmt)
+                lines.append(line.replace("{{.State}}", c["state"]))
         return True, "\n".join(lines), ""
 
     def _stats(self, args, input):

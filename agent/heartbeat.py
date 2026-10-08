@@ -179,6 +179,11 @@ def build(agent, server=None, deep=False):
                 proof = observed.get("resource_enforcement")
                 if isinstance(proof, dict):
                     unit["resource_enforcement"] = dict(proof)
+                # Which origin check the unit's own job-started hook carries
+                # (agent/origin_guard.py); left out when the runtime cannot say.
+                guard = observed.get("origin_guard")
+                if isinstance(guard, int) and not isinstance(guard, bool) and guard >= 0:
+                    unit["origin_guard"] = guard
                 instances.append(unit)
             beat["instances"] = instances
         except Exception:                   # noqa: BLE001

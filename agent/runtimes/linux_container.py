@@ -76,6 +76,9 @@ LAYOUT_ENV = {"RUNNER_WORK_DIR": MOUNTS["work"],
 KEPT_ON_RECREATE = ("docker", "cache", "logs")
 
 RUNNER_LABEL = "nomercy.runner_id"
+#: The unit image's LABEL: which version of the job-started hook's check on
+#: whose code a job runs (images/linux/unit/runner/runner_guard.py) it ships.
+ORIGIN_GUARD_LABEL = "nomercy.origin_guard"
 STOP_TIMEOUT = 60
 READONLY_TMPFS = "/run:rw,nosuid,nodev,size=64m,mode=755"
 
@@ -785,16 +788,22 @@ class LinuxContainerRuntime:
         ok, out, err = self._run(["ps", "-a", "--filter",
                                   f"label={RUNNER_LABEL}", "--format",
                                   '{{.Label "' + RUNNER_LABEL + '"}}\t'
-                                  "{{.State}}"], timeout=30)
+                                  "{{.State}}\t"
+                                  '{{.Label "' + ORIGIN_GUARD_LABEL + '"}}'],
+                                 timeout=30)
         if not ok:
             raise RuntimeError(err or "docker ps failed")
         found, seen = [], set()
         for line in out.splitlines():
-            rid, _, state = line.partition("\t")
+            rid, _, rest = line.partition("\t")
+            state, _, guard = rest.partition("\t")
             if not rid:
                 continue
             seen.add(rid)
-            found.append({"runner_id": rid, "state": _state_word(state)})
+            found.append({"runner_id": rid, "state": _state_word(state),
+                          # A label of the image the unit was made from:
+                          # one made before the check has none, which is 0.
+                          "origin_guard": int(guard) if guard.strip().isdigit() else 0})
         # The adopted ones, which carry no label: a container's labels are
         # fixed when it is made, and adopting exists precisely not to make it
         # again (T-0802). Without this they are in no heartbeat, and a runner

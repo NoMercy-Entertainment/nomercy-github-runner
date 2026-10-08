@@ -62,5 +62,9 @@ ENV RUNNER_HOME=/runner/reg/actions-runner HOME=/runner/work/.home
 # writable runner home before starting the listener (runner/run).
 ENV CARGO_HOME=/root/.cargo RUSTUP_HOME=/root/.rustup
 LABEL nomercy.readonly_root="true"
+# Which version of runner_guard.py's check (GUARD_VERSION) the job-started
+# hook carries; each unit reports it, so the dashboard can tell a runner made
+# before the check from one made after.
+LABEL nomercy.origin_guard="1"
 
 ENTRYPOINT ["/runner/run"]

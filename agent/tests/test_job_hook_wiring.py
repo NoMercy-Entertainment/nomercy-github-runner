@@ -207,3 +207,80 @@ class TestMacOS:
     def test_every_hook_is_a_script_the_runner_accepts(self):
         for name in macos_appliance.HOOK_SCRIPTS.values():
             assert name.endswith(".sh") and (AGENT / "hooks" / "macos" / name).is_file(), name
+
+
+# ---- which origin guard each runner's hooks carry ---------------------------
+#
+# The dashboard shows a fleet as protected from outside pull requests only when
+# every one of its runners runs a job-started hook with the check. Hooks are
+# written at create, so an agent that has the check says nothing about a runner
+# made before it: each runner's own hook file is what is read.
+
+def _guard_version():
+    import re
+    text = (AGENT / "hooks" / "windows" / "runner_guard.py").read_text(encoding="utf-8")
+    return int(re.search(r"^GUARD_VERSION = (\d+)$", text, re.M).group(1))
+
+
+class TestWhatEachRunnerSaysOfItsGuard:
+    def test_windows_reads_the_runners_own_copy(self):
+        host = FakeWindows()
+        runtime = WindowsProcessRuntime(run=host, fs=host, tools=WINDOWS_TOOLS)
+        runtime.create(RID, spec("github", WINDOWS_TEMPLATE))
+        (unit,) = runtime.instances()
+        assert unit["origin_guard"] == _guard_version() >= 1
+        guard = ntpath.join(runtime.paths(RID)["reg"], "hooks", "runner_guard.py")
+        host.remove(guard)
+        (unit,) = runtime.instances()
+        assert unit["origin_guard"] == 0, "hooks from before the check"
+
+    @pytest.mark.parametrize("provider", ["forgejo", None])
+    def test_windows_without_hooks_says_nothing(self, provider):
+        host = FakeWindows()
+        runtime = WindowsProcessRuntime(run=host, fs=host, tools=WINDOWS_TOOLS)
+        runtime.create(RID, spec(provider, WINDOWS_TEMPLATE))
+        (unit,) = runtime.instances()
+        assert "origin_guard" not in unit
+
+    def _mac(self, guest):
+        return MacApplianceRuntime(run=guest, fs=guest, appliance=guest.appliance,
+                                   tools=dict(MAC_TOOLS, runner_user="runner"))
+
+    def test_macos_reads_the_runners_own_copy_once(self):
+        guest = FakeMac()
+        runtime = self._mac(guest)
+        runtime.create(RID, spec("github", MAC_TEMPLATE))
+        (unit,) = runtime.instances()
+        assert unit["origin_guard"] == _guard_version()
+        lib = posixpath.join(runtime.paths(RID)["reg"], "hooks", "lib.sh")
+        guest.write_text(lib, "# hooks from before the check\n")
+        # Known since this agent wrote them: no read over the guest's SSH
+        # every beat. An agent started afterwards reads the file once.
+        assert runtime.instances()[0]["origin_guard"] == _guard_version()
+        assert self._mac(guest).instances()[0]["origin_guard"] == 0
+
+    @pytest.mark.parametrize("provider", ["forgejo", None])
+    def test_macos_without_hooks_says_nothing(self, provider):
+        guest = FakeMac()
+        runtime = self._mac(guest)
+        runtime.create(RID, spec(provider, MAC_TEMPLATE))
+        (unit,) = runtime.instances()
+        assert "origin_guard" not in unit
+
+    def test_a_beat_carries_it_for_each_unit(self):
+        from agent import heartbeat
+
+        class Runtime:
+            def capabilities(self):
+                return {}
+
+            def instances(self):
+                return [{"runner_id": RID, "state": "stopped", "origin_guard": 1},
+                        {"runner_id": RID[:-1] + "2", "state": "stopped", "origin_guard": True},
+                        {"runner_id": RID[:-1] + "3", "state": "stopped"}]
+
+        class Agent:
+            host_id, version, permitted, runtime = "w-1", "1", frozenset(), Runtime()
+
+        units = heartbeat.build(Agent())["instances"]
+        assert [u.get("origin_guard") for u in units] == [1, None, None]
