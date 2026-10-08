@@ -184,3 +184,94 @@ class TestTheLabelsEverSeen:
         b.observe_runners("github", [gh(1, labels=("self-hosted", "XCode"))], T0, cfg())
         b.observe_runners("github", [], T0 + MIN, cfg())
         assert b.known_labels("github") == {"self-hosted", "xcode"}
+
+
+class FakeForge:
+    def __init__(self, records):
+        self.records = records
+        self.asked = 0
+
+    def all_runners(self):
+        self.asked += 1
+        if isinstance(self.records, Exception):
+            raise self.records
+        return self.records
+
+
+def monitor(github=None, forgejo=None):
+    return alarms.Monitor(clients=lambda forge, env: {"github": github,
+                                                      "forgejo": forgejo}[forge])
+
+
+ENV = {"GH_TOKEN": "t", "GITHUB_ORG": "NoMercy-Entertainment",
+       "FORGEJO_INSTANCE_URL": "https://git.example", "FORGEJO_API_TOKEN": "f"}
+
+
+class TestTheMonitor:
+    def test_both_forges_every_runner_managed_or_not(self, path):
+        mac = {"id": 5, "name": "nomercy-mac-mini", "status": "offline",
+               "labels": ["self-hosted", "macOS", "xcode"]}
+        fj = {"uuid": "u-1", "name": "forgejo-linux-1", "status": "offline",
+              "labels": ["docker"]}
+        m = monitor(FakeForge([mac]), FakeForge([fj, {"uuid": "u-2", "status": "idle"}]))
+        m.tick(path, ENV, [], T0)
+        m.tick(path, ENV, [], T0 + 10 * MIN)
+        view = m.view(T0 + 10 * MIN)
+        assert {a["alarm_key"] for a in view["alarms"]} == {"runner:github:5",
+                                                            "runner:forgejo:u-1"}
+        assert view["alarms"][0]["for"] == "10 min"
+        assert view["monitor"]["github"] == {"configured": True,
+                                             "checked_at": alarms.iso(T0 + 10 * MIN),
+                                             "runners": 1, "offline": 1}
+
+    def test_a_forge_that_fails_is_degraded_not_alarmed(self, path):
+        m = monitor(FakeForge(OSError("down")), None)
+        m.tick(path, ENV, [], T0)
+        view = m.view(T0)
+        assert view["alarms"] == []
+        assert [d["alarm_key"] for d in view["degraded"]] == ["monitor:github"]
+        assert view["degraded"][0]["message"].startswith(
+            "alarm monitor cannot reach GitHub since")
+        assert view["monitor"]["forgejo"] == {"configured": False}
+
+    def test_a_platform_runner_stopped_on_purpose_is_quiet(self, path):
+        m = monitor(FakeForge([{"id": 5, "name": "r", "status": "offline", "labels": []}]))
+        specs = [{"provider": "github", "registration_id": "5", "desired_state": "stopped"}]
+        m.tick(path, ENV, specs, T0)
+        m.tick(path, ENV, specs, T0 + 30 * MIN)
+        assert m.view(T0 + 30 * MIN)["alarms"] == []
+
+    def test_a_stalled_monitor_says_so(self, path):
+        m = monitor(FakeForge([]))
+        m.started_at = T0
+        m.tick(path, ENV, [], T0)
+        assert m.view(T0 + MIN)["degraded"] == []
+        stale = m.view(T0 + 10 * MIN)["degraded"]
+        assert stale[0]["message"].startswith("alarm monitor has not checked since")
+
+    def test_the_loop_survives_a_failing_pass(self, path):
+        m = monitor(FakeForge([]))
+        slept = []
+
+        def sleep(seconds):
+            slept.append(seconds)
+            if len(slept) == 2:
+                raise SystemExit
+        planes = iter([RuntimeError("db"), (path, ENV, [])])
+
+        def get_plane():
+            p = next(planes)
+            if isinstance(p, Exception):
+                raise p
+            return p
+        with pytest.raises(SystemExit):
+            alarms.run_forever(get_plane, monitor=m, sleep=sleep, clock=lambda: T0)
+        assert slept == [60, 60] and m.checked_at == T0
+
+    def test_a_page_never_reaches_a_forge(self, path):
+        forge = FakeForge([])
+        m = monitor(forge)
+        m.tick(path, ENV, [], T0)
+        m.view()
+        m.view()
+        assert forge.asked == 1
