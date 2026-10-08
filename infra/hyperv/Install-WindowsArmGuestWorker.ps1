@@ -128,13 +128,19 @@ foreach (`$pin in @(@('forgejo-runner.exe', '$($arm.ForgejoSha256)'), @('nssm.ex
 `$ErrorActionPreference = 'Stop'
 `$sourceRoot = '$sourceRoot'
 `$bundle = Join-Path `$env:USERPROFILE 'bundle.tar'
-& (Join-Path `$sourceRoot 'infra\hyperv\Install-WindowsWorker.ps1') `
-    -HostId '$($arm.HostId)' -ListenAddress '$($arm.GuestAddress)' `
-    -TlsBundle `$bundle -NssmSource (Join-Path `$sourceRoot 'nssm.exe') `
-    -RunnerBinary (Join-Path `$sourceRoot 'forgejo-runner.exe') `
-    -RunnerTemplate '$($arm.ForgejoTemplate)' -RunnerSha256 '$($arm.ForgejoSha256)' `
-    -Architecture arm64 -FirewallRemoteAddress @('10.0.2.2', '$cp') `
-    -MaxRunners $($arm.MaxRunners) -RunnerMemGB $($arm.RunnerMemGB)
+# Splatted, not continued with backticks: inside this expandable here-string
+# a backtick before a newline is an escape and is swallowed, so a continued
+# call reached the guest as a bare `& Install-WindowsWorker.ps1` with no
+# parameters at all - after the controller had already issued the new
+# certificate (2026-10-08).
+`$install = @{
+    HostId = '$($arm.HostId)'; ListenAddress = '$($arm.GuestAddress)'; TlsBundle = `$bundle
+    NssmSource = (Join-Path `$sourceRoot 'nssm.exe'); RunnerBinary = (Join-Path `$sourceRoot 'forgejo-runner.exe')
+    RunnerTemplate = '$($arm.ForgejoTemplate)'; RunnerSha256 = '$($arm.ForgejoSha256)'
+    Architecture = 'arm64'; FirewallRemoteAddress = @('10.0.2.2', '$cp')
+    MaxRunners = $($arm.MaxRunners); RunnerMemGB = $($arm.RunnerMemGB)
+}
+& (Join-Path `$sourceRoot 'infra\hyperv\Install-WindowsWorker.ps1') @install
 "@
     Invoke-ArmGuest $install | Write-Host
 
