@@ -58,7 +58,9 @@ reported as a warning.
 
 The running fleet uses the `jobhooks-20261008` overlay image, built with
 `Dockerfile.cleanup` from `github-unit:toolchain-20260925`. Forgejo has no job
-hooks: it runs the cleanup only at unit startup.
+hooks: it runs the cleanup only at unit startup. Windows and macOS GitHub
+runners get the same disk guard from the agent itself:
+`docs/operations/runner-job-hooks.md`.
 
 ## Why the entry points are written the way they are
 

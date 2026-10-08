@@ -242,6 +242,9 @@ and its runners are held, not removed: they return when it does.
    The GitHub Linux fleet clears unused nested Docker cache and old workspaces
    synchronously after every job, then again at unit startup. The cleanup
    preserves the just-finished job's workspace until the next safe start.
+   Every GitHub runner, Linux, Windows and macOS, also checks the disk
+   before each job and refuses the job under 3 GB free
+   (`docs/operations/runner-job-hooks.md`); Forgejo runners have no hooks.
 2. `POST /api/v2/fleets/<fleet_id>/clear-cache` clears the idle runners of a
    fleet and reports, per runner, what it freed or why it was skipped.
 3. If that is not enough, remove runners individually (admin): the reconciler

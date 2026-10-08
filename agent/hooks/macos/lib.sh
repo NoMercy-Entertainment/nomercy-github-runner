@@ -70,9 +70,9 @@ clear_temp() {
   return 0
 }
 
-# Xcode's per-project build products not touched for two days. Every instance
-# in a guest shares the account's DerivedData; Xcode rewrites a project's
-# info.plist each time it builds it, so an entry two days old is not in use.
+# Xcode's per-project build products whose entry has not changed for two
+# days. Every instance in a guest shares the account's DerivedData, so the
+# age is what keeps another instance's build out of reach.
 clear_stale_derived_data() {
   local home dd seen=""
   for home in "${RUNNER_HOOK_USER_HOME:-}" "${HOME:-}"; do
