@@ -214,3 +214,110 @@ class TestAddingASeventhCellNeedsNoCode:
                     "INSERT INTO fleets (fleet_id, provider, platform,"
                     " architecture) VALUES"
                     " ('another-name', 'github', 'linux', 'x64')")
+
+
+GIB = 1024**3
+
+
+def _host(fleets, host_id, worker_kind="hyperv-linux", healthy=True, **caps):
+    from control.inventory import Inventory
+    workers = Inventory(fleets.path)
+    workers.register_worker(host_id, worker_kind, capabilities=caps)
+    if healthy:
+        workers.heartbeat(host_id)
+
+
+class TestLimitsAgainstHardware:
+    """A fleet's CPU and memory defaults are bounded by the hardware its
+    workers report. Accepted when one host of the cell can hold them, refused
+    with the host and its maximum when none can, and accepted - flagged
+    elsewhere - when no host has said what it has."""
+
+    def test_a_limit_one_host_can_hold_is_saved(self, fleets):
+        fleets.seed()
+        _host(fleets, "rnr-linux-1", kind="linux-container", host_cores=56,
+              memory_total_bytes=84418977792)
+        saved = fleets.set_defaults("github-linux-x64",
+                                    {"cpu_limit": 16, "memory_limit": 32 * GIB})
+        assert saved["cpu_limit"] == "16.0" and saved["memory_limit"] == 32 * GIB
+
+    def test_more_cores_than_any_host_is_refused_naming_it(self, fleets):
+        fleets.seed()
+        _host(fleets, "rnr-linux-1", kind="linux-container", host_cores=56,
+              memory_total_bytes=84418977792)
+        with pytest.raises(ValueError) as refused:
+            fleets.set_defaults("github-linux-x64", {"cpu_limit": 64})
+        assert "rnr-linux-1" in str(refused.value) and "56" in str(refused.value)
+        assert fleets.get("github-linux-x64")["cpu_limit"] is None
+
+    def test_more_memory_than_any_host_is_refused_naming_it(self, fleets):
+        fleets.seed()
+        _host(fleets, "rnr-linux-1", kind="linux-container", host_cores=56,
+              memory_total_bytes=84418977792)
+        with pytest.raises(ValueError) as refused:
+            fleets.set_defaults("github-linux-x64", {"memory_limit": 96 * GIB})
+        assert "rnr-linux-1" in str(refused.value)
+        assert "78.6 GiB" in str(refused.value)
+
+    def test_a_degraded_host_still_counts(self, fleets):
+        """Hardware does not change because a heartbeat is late."""
+        fleets.seed()
+        _host(fleets, "rnr-linux-1", healthy=False, kind="linux-container",
+              host_cores=56)
+        assert fleets.set_defaults("github-linux-x64", {"cpu_limit": 16})["cpu_limit"] == "16.0"
+        with pytest.raises(ValueError):
+            fleets.set_defaults("github-linux-x64", {"cpu_limit": 64})
+
+    def test_another_cells_host_does_not_count(self, fleets):
+        fleets.seed()
+        _host(fleets, "rnr-linux-1", kind="linux-container", host_cores=56)
+        _host(fleets, "rnr-windows-1", "hyperv-windows", kind="windows-process",
+              host_cores=16)
+        _host(fleets, "windows-arm64-1", "hyperv-windows", kind="windows-process",
+              host_cores=8, architecture="arm64")
+        assert fleets.set_defaults("github-windows-x64", {"cpu_limit": 16})
+        with pytest.raises(ValueError) as refused:
+            fleets.set_defaults("github-windows-arm64", {"cpu_limit": 16})
+        assert "windows-arm64-1" in str(refused.value)
+
+    def test_unknown_hardware_is_accepted(self, fleets):
+        fleets.seed()
+        _host(fleets, "rnr-windows-1", "hyperv-windows", kind="windows-process",
+              host_cores=16)
+        saved = fleets.set_defaults("github-windows-x64", {"memory_limit": 512 * GIB})
+        assert saved["memory_limit"] == 512 * GIB
+
+    def test_other_settings_are_saved_whatever_the_hardware_now_is(self, fleets):
+        """A host that shrank after a limit was saved must not lock the
+        fleet's labels: only a change to a limit is checked."""
+        fleets.seed()
+        _host(fleets, "rnr-linux-1", kind="linux-container", host_cores=56)
+        fleets.set_defaults("github-linux-x64", {"cpu_limit": 32})
+        _host(fleets, "rnr-linux-1", kind="linux-container", host_cores=16)
+        assert fleets.set_defaults("github-linux-x64", {"labels": ["build"]})["labels"] == ["build"]
+
+
+class TestLimitNormalisation:
+    def test_cpu_is_a_positive_number(self):
+        from store import limits
+        assert limits.normalize_cpu("16", "linux") == "16.0"
+        assert limits.normalize_cpu(2.5, "windows") == "2.5"
+        assert limits.normalize_cpu("4.0", "macos") == "4"
+        assert limits.normalize_cpu(None, "linux") is None
+        for bad in (0, -1, True, "x", float("inf"), "0-15"):
+            with pytest.raises(ValueError):
+                limits.normalize_cpu(bad, "linux")
+        for bad in ("1.5", 65):
+            with pytest.raises(ValueError):
+                limits.normalize_cpu(bad, "macos")
+
+    def test_memory_is_positive_bytes(self):
+        from store import limits
+        assert limits.normalize_memory(8 * GIB, "linux") == 8 * GIB
+        assert limits.normalize_memory(None, "linux") is None
+        for bad in (0, -1, True, "8g", 1.5, 2**63):
+            with pytest.raises(ValueError):
+                limits.normalize_memory(bad, "linux")
+        for bad in (2 * GIB, 129 * GIB, 4 * GIB + 1):
+            with pytest.raises(ValueError):
+                limits.normalize_memory(bad, "macos")

@@ -84,6 +84,18 @@ DESIRED_BY_VERB = {
 DESIRED_STATES = frozenset({"running", "stopped", "drained", "absent"})
 
 
+def _memory_bytes(value):
+    """A memory size in the engine's own syntax ("6g", "512m", "8GiB") as
+    bytes; ValueError when it is not one."""
+    match = re.fullmatch(r"([0-9]+(?:\.[0-9]+)?)\s*([kmgtpe]?)(?:i?b)?",
+                         str(value).strip(), re.IGNORECASE)
+    if not match:
+        raise ValueError(f"not a memory size: {value!r}")
+    return int(Decimal(match[1]) *
+               (1024 ** ("kmgtpe".index(match[2].lower()) + 1)
+                if match[2] else 1))
+
+
 class Refused(Exception):
     """The request cannot be carried out, and this is why.
 
@@ -220,21 +232,12 @@ class RunnerService:
                     continue
                 result[field] = fleet[field]
         if result.get("memory_limit") is None:
-            from .main import unit_memory
-            defaults = getattr(self.agents, "memory", {}) or unit_memory(self.env if env is None else env)
-            source_env = self.env if env is None else env
-            arch_key = ("RUNNER_UNIT_MEMORY_" + result["provider"].upper() +
-                        "_" + result["platform"].upper() + "_" +
-                        result["architecture"].upper())
-            value = (source_env or {}).get(arch_key) or defaults.get(cell)
+            value = self._env_memory_text(result, env)
             if value:
-                match = re.fullmatch(r"([0-9]+(?:\.[0-9]+)?)\s*([kmgtpe]?)(?:i?b)?",
-                                     str(value).strip(), re.IGNORECASE)
-                if not match:
-                    raise Refused(f"invalid memory limit {value!r} for {cell}")
-                result["memory_limit"] = int(Decimal(match[1]) *
-                    (1024 ** ("kmgtpe".index(match[2].lower()) + 1)
-                     if match[2] else 1))
+                try:
+                    result["memory_limit"] = _memory_bytes(value)
+                except ValueError:
+                    raise Refused(f"invalid memory limit {value!r} for {cell}") from None
                 if result["memory_limit"] <= 0:
                     raise Refused("memory limit must be positive")
         if not result.get("runtime_template") or result.get("runtime_template") == fleet.get("template"):
@@ -248,6 +251,34 @@ class RunnerService:
             if not result.get("memory_limit") or int(result["memory_swap_limit"]) < int(result["memory_limit"]):
                 raise Refused("combined RAM and swap limit must be at least the RAM limit")
         return result
+
+    def _env_memory_text(self, cell, env=None):
+        """The deployment's memory default for a cell, as it was written:
+        RUNNER_UNIT_MEMORY_<PROVIDER>_<PLATFORM>_<ARCH> first, then the
+        cell's own key. `cell` is anything with provider, platform and
+        architecture - a fleet row or a spec."""
+        from .main import unit_memory
+        source_env = self.env if env is None else env
+        defaults = getattr(self.agents, "memory", {}) or unit_memory(source_env)
+        arch_key = ("RUNNER_UNIT_MEMORY_" + str(cell.get("provider")).upper() +
+                    "_" + str(cell.get("platform")).upper() + "_" +
+                    str(cell.get("architecture") or "x64").upper())
+        return ((source_env or {}).get(arch_key)
+                or defaults.get((cell.get("provider"), cell.get("platform"))))
+
+    def env_memory(self, cell, env=None):
+        """{"bytes", "text"} for the memory a cell inherits from the
+        deployment, or None. A runtime fallback: shown on the page as
+        inherited, never copied into the fleet row, so changing the
+        deployment's setting still changes what the cell gets."""
+        text = self._env_memory_text(cell, env)
+        if not text:
+            return None
+        try:
+            value = _memory_bytes(text)
+        except ValueError:
+            return None
+        return {"bytes": value, "text": str(text).strip()} if value > 0 else None
 
     def replacement_spec(self, spec):
         """A replacement takes current fleet defaults, preserving its identity."""

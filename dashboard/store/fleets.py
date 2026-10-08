@@ -31,11 +31,10 @@ concurrency, soft delete - and none of the three apply here. A `FleetStore`
 inside a module called `specs` would be a name that lies.
 """
 import json
-import math
 
 import providers
 
-from . import schema
+from . import limits, schema
 
 # The existing x64 cells plus Windows ARM64 for both forges. New rows start
 # at zero capacity; seeding does not change an operator's existing capacity.
@@ -218,25 +217,13 @@ class FleetStore:
                             raise ValueError("engine cache scopes are supported only on Linux")
                     values[key] = json.dumps(value)
             elif key == "cpu_limit":
-                if value is not None:
-                    try:
-                        number = float(value)
-                    except (TypeError, ValueError):
-                        raise ValueError("cpu_limit must be positive") from None
-                    if isinstance(value, bool) or not math.isfinite(number) or number <= 0:
-                        raise ValueError("cpu_limit must be positive")
-                    if fleet["platform"] == "macos":
-                        if not number.is_integer() or not 1 <= number <= 64:
-                            raise ValueError("macOS appliance CPU limit must be a whole count from 1 to 64")
-                        values[key] = str(int(number))
-                    else:
-                        values[key] = str(number)
-            elif value is not None and (isinstance(value, bool) or not isinstance(value, int)
-                                        or value <= 0 or value > 2**63 - 1):
-                raise ValueError(f"{key} must be positive bytes or null")
-            elif key == "memory_limit" and value is not None and fleet["platform"] == "macos":
-                if value % (1024**3) or not 4 * 1024**3 <= value <= 128 * 1024**3:
-                    raise ValueError("macOS appliance memory must be whole GiB from 4 to 128")
+                values[key] = limits.normalize_cpu(value, fleet["platform"])
+            elif key == "memory_limit":
+                values[key] = limits.normalize_memory(value, fleet["platform"])
+            else:
+                values[key] = limits.normalize_bytes(value, key)
+        if values.get("cpu_limit") is not None or values.get("memory_limit") is not None:
+            self._check_hardware(fleet, values)
         if values:
             with self._conn() as c:
                 c.execute("BEGIN IMMEDIATE")
@@ -248,6 +235,28 @@ class FleetStore:
                 c.execute("UPDATE fleets SET " + ", ".join(f"{k}=?" for k in values)
                           + " WHERE fleet_id=?", (*values.values(), fid))
         return self.get(fid)
+
+    def hardware(self, fleet):
+        """Every host of this fleet's cell with the hardware it reports
+        (control/hardware.py)."""
+        from control import hardware
+        from control.inventory import Inventory
+        return hardware.for_fleet(Inventory(self.path), fleet)
+
+    def _check_hardware(self, fleet, values):
+        """A default is accepted when at least one host of the cell can hold
+        it - cores and memory together, the combination the row will have
+        once saved - and refused with the hosts and what they have when none
+        can. Only a change to a limit is checked: a host that shrank after a
+        limit was saved must not lock the fleet's labels. Unknown hardware is
+        accepted here; the page flags it."""
+        from control import hardware
+        cpu = values["cpu_limit"] if "cpu_limit" in values else fleet.get("cpu_limit")
+        memory = values["memory_limit"] if "memory_limit" in values else fleet.get("memory_limit")
+        why = hardware.check(float(cpu) if cpu is not None else None, memory,
+                             self.hardware(fleet))
+        if why and why != hardware.UNVERIFIED:
+            raise ValueError(why)
 
     def set_capacity(self, fid, count, requested_by=None,
                      idempotency_key=None):

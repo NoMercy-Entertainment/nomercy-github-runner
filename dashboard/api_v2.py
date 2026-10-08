@@ -810,7 +810,30 @@ def settings_data():
         support = service.fleets.resource_support(fleet["fleet_id"])
         fleet.update(support)
         fleet["resource_notice"] = _resource_notice(fleet, support)
+        fleet.update(_limits_view(service, fleet))
     return jsonify(fleets=fleets, control_plane=controller_health())
+
+
+def _limits_view(service, fleet):
+    """What Settings shows beside a fleet's CPU and memory: every host of
+    its cell with the hardware it reports, the largest of them as the
+    maximum, the memory it inherits from the deployment when it sets none
+    itself, and whether the limits in effect are checked against nothing
+    (`hardware_unverified`)."""
+    from control import hardware
+    hosts = service.fleets.hardware(fleet)
+    inherited = service.env_memory(fleet)
+    memory = fleet.get("memory_limit")
+    if memory is None and inherited:
+        memory = inherited["bytes"]
+    cpu = fleet.get("cpu_limit")
+    verdict = hardware.check(float(cpu) if cpu is not None else None, memory, hosts)
+    return {"hardware": hosts, "limits_max": hardware.limits_max(hosts),
+            "memory_inherited": inherited,
+            "hardware_unverified": verdict == hardware.UNVERIFIED,
+            # A setting saved before a host shrank: still in force, and the
+            # page says it no longer fits.
+            "hardware_problem": verdict if verdict not in (None, hardware.UNVERIFIED) else None}
 
 
 def _resource_notice(fleet, support, current=False):
@@ -853,8 +876,12 @@ def settings_save(fleet_id):
         return _refuse(400, str(e))
     audit.record(_db_path(), "set_defaults", "accepted", actor=requested_by(),
                  fleet_id=fleet_id, parameters=request.get_json())
-    return jsonify(ok=True, fleet=fleet,
-                   note="Saved. Defaults apply to new runners and recreations.")
+    unverified = _limits_view(service, fleet)["hardware_unverified"]
+    note = "Saved. Defaults apply to new runners and recreations."
+    if unverified:
+        note += (" No host of this fleet has reported the hardware these limits "
+                 "are checked against, so they are not verified.")
+    return jsonify(ok=True, fleet=fleet, hardware_unverified=unverified, note=note)
 
 
 @bp.route("/api/v2/maintenance", methods=["POST"])

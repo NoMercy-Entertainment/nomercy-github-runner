@@ -194,8 +194,14 @@ class TestPlanning:
         a runner that fails after being placed (finding 1, 2026-09-23) - the
         existence check `plan()` makes across every host of the platform,
         never the pooled minimum a specific placement would use."""
-        service = _service(tmp_path, cores=8)
+        service = _service(tmp_path)
         service.fleets.set_defaults("github-linux-x64", {"cpu_limit": 16})
+        # Settings itself refuses a width no host has (store/fleets.py
+        # `_check_hardware`), so the width was saved while the host was big
+        # enough and the host is what shrank since.
+        service.inventory.register_worker("linux-1", inv.HYPERV_LINUX,
+                                          capabilities={"kind": "linux-container",
+                                                        "host_cores": 8})
         with pytest.raises(Refused) as excinfo:
             service.plan("github-linux-x64", 1)
         message = str(excinfo.value)

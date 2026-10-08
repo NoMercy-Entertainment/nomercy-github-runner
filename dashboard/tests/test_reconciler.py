@@ -37,6 +37,15 @@ FJ = fleet_id("forgejo", "linux", "x64")
 WORKER = "linux-worker-1"
 
 
+def saved_before_the_host_shrank(service, fid, cpu_limit):
+    """A pinned width no host can hold. Settings refuses to save one
+    (store/fleets.py `_check_hardware`), so it can only exist because it was
+    saved while a host was big enough - which is what these tests are about:
+    what the reconciler does with a setting the hardware no longer fits."""
+    with schema.connect(service.fleets.path) as c:
+        c.execute("UPDATE fleets SET cpu_limit=? WHERE fleet_id=?", (cpu_limit, fid))
+
+
 @pytest.fixture
 def world(tmp_path):
     path = str(tmp_path / "control.db")
@@ -1058,7 +1067,7 @@ class TestARemovalThatLostItsOperation:
         service.inventory.register_worker(
             WORKER, inv.HYPERV_LINUX,
             capabilities={"kind": "linux-container", "host_cores": 8})
-        service.fleets.set_defaults(GH, {"cpu_limit": 16})
+        saved_before_the_host_shrank(service, GH, "16.0")
         spec = self.stuck(service, "running")
 
         report = reconciler.pass_once()
@@ -1120,7 +1129,7 @@ class TestRecreateRefusalAfterRemoval:
         real_remove = executor.remove
         def remove_then_widen(spec, keep_data=False):
             result = real_remove(spec, keep_data=keep_data)
-            service.fleets.set_defaults(GH, {"cpu_limit": 999})
+            saved_before_the_host_shrank(service, GH, "999.0")
             removed["done"] = True
             return result
         executor.remove = remove_then_widen
