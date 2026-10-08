@@ -606,6 +606,10 @@ class WindowsProcessRuntime:
         elif probe == "cache_size":
             value = self._fs.du(p["cache"])
             volume = self._volume(p["cache"], disk)
+            if disk is not None:
+                # No cap, but on the runner's own disk: that disk, its alone,
+                # is what bounds the cache.
+                volume["total_bytes"] = disk["capacity_bytes"]
         elif probe == "agent_version":
             try:
                 value = self._fs.read_text(

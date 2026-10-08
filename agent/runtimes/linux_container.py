@@ -738,7 +738,9 @@ class LinuxContainerRuntime:
                 value = None
             result = {"ok": value is not None, "value": value,
                       "error": err if not ok else ""}
-            if not self._has_disk(runner_id):
+            if self._has_disk(runner_id):
+                result["total_bytes"] = self._disk_bytes(runner_id)
+            else:
                 result.update(self._volume(name, MOUNTS["work"]))
             return result
         if probe == "cache_size":
@@ -759,8 +761,11 @@ class LinuxContainerRuntime:
             result = {"ok": value is not None, "value": value, "cap_bytes": cap}
             if cap is None:
                 # No cap of its own: the nested engine's mount is the
-                # volume that stops it.
+                # volume that stops it - the runner's own filesystem, when
+                # it has one, and then that is the cache's own boundary.
                 result.update(self._volume(name, MOUNTS["docker"]))
+                if self._has_disk(runner_id):
+                    result["total_bytes"] = self._disk_bytes(runner_id)
             return result
         if probe == "agent_version":
             ok, out, err = self._run(["exec", name, "cat",
@@ -813,6 +818,12 @@ class LinuxContainerRuntime:
             return self._storage.has_disk(naming.check(runner_id))
         except (OSError, ValueError):
             return False
+
+    def _disk_bytes(self, runner_id):
+        try:
+            return self._storage.disk_bytes(naming.check(runner_id))
+        except (OSError, ValueError):
+            return None
 
     def _volume(self, name, path):
         """The volume `path` is on inside the unit, used and total, or

@@ -554,7 +554,14 @@ class MacAppliancePoolRuntime:
     def probe(self, runner_id, probe):
         rid = naming.check(runner_id)
         inner = self._online(rid)
-        return inner.probe(rid, probe) if inner else dict(ok=False, value=None, error="guest is powered off")
+        if not inner:
+            return dict(ok=False, value=None, error="guest is powered off")
+        got = inner.probe(rid, probe)
+        if got.get("ok") and probe in ("disk_usage", "cache_size"):
+            # Each runner here has a guest, and a guest disk, of its own:
+            # the volume its tree and cache are on bounds it alone.
+            got = dict(got, total_bytes=got.get("volume_total_bytes"))
+        return got
 
     def clear_cache(self, runner_id, policy):
         with self._locked(runner_id) as rid:

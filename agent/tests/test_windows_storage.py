@@ -259,10 +259,11 @@ def test_light_telemetry_never_waits_on_the_storage_lock_but_the_deep_probe_does
     assert probed == {"ok": True, "value": 800, "total_bytes": 1000}
 
 
-def test_an_owned_disk_reports_its_size_and_the_cache_shares_it(managed):
+def test_an_owned_disk_reports_its_size_and_bounds_the_cache_on_it(managed):
     """The runner's own VHD is its storage boundary: used and the disk's
-    capacity. Its cache has no cap of its own and lives on that same disk,
-    so the cache reports the disk it shares as its volume."""
+    capacity. Its cache has no cap but lives on that same disk, which is the
+    runner's alone - so the disk is the cache's own boundary too, and its
+    fill is the volume figure."""
     runtime, host, disks = managed
     runtime.create(RID, {"image": TEMPLATE})
     host.put(runtime.paths(RID)["cache"] + r"\c", 70)
@@ -272,6 +273,7 @@ def test_an_owned_disk_reports_its_size_and_the_cache_shares_it(managed):
     assert cache["ok"] is True and cache["value"] == 70
     assert cache["volume_used_bytes"] == 800
     assert cache["volume_total_bytes"] == 1000
+    assert cache["total_bytes"] == 1000
     assert cache.get("cap_bytes") is None
 
 

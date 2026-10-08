@@ -483,3 +483,15 @@ def test_it_declares_the_appliance_hosts_hardware(pool, monkeypatch):
     monkeypatch.setattr(hardware, "linux_memory", lambda path=None: 64 * GIB)
     assert pool.capabilities()["hardware"] == {"logical_cpus": os.cpu_count(),
                                                "memory_bytes": 64 * GIB}
+
+
+def test_a_pool_runners_guest_disk_is_its_own_boundary(pool, host):
+    """Each pool runner has a guest - and a guest disk - of its own, so the
+    volume its tree and cache are on bounds it alone: own, not shared."""
+    pool.create(RID, SPEC)
+    host.guests[RID].volume = (100 * 10 ** 9, 30 * 10 ** 9)
+    for probe in ("disk_usage", "cache_size"):
+        got = pool.probe(RID, probe)
+        assert got["ok"] is True, probe
+        assert got["total_bytes"] == 100 * 10 ** 9
+        assert got["volume_total_bytes"] == 100 * 10 ** 9

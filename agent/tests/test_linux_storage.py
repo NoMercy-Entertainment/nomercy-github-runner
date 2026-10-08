@@ -358,8 +358,23 @@ def test_a_runner_with_its_own_disk_keeps_its_probes_as_they_were(disk):
     assert store.has_disk(RID) is True
     docker.calls.clear()
     got = runtime.probe(RID, "disk_usage")
+    assert got["total_bytes"] == MIN_BYTES
     assert "volume_total_bytes" not in got
     assert not [c for c in docker.calls if "df" in c and "-Pk" in c]
+
+
+def test_an_uncapped_cache_on_the_runners_own_disk_is_bounded_by_it(disk):
+    """With no cap, the nested engine's cache fills the runner's own
+    filesystem - its own boundary, not a shared one - and that
+    filesystem's fill is the volume figure."""
+    store, commands = disk
+    docker = BoundDocker()
+    runtime = LinuxContainerRuntime(run=docker, storage=store)
+    runtime.create(RID, {"image": "unit:v1", "disk_limit": MIN_BYTES})
+    got = runtime.probe(RID, "cache_size")
+    assert got["cap_bytes"] is None
+    assert got["total_bytes"] == MIN_BYTES
+    assert got["volume_total_bytes"] is not None
 
 
 def test_only_a_provisioned_runner_has_a_disk(disk):

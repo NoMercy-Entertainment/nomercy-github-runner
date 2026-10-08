@@ -229,6 +229,16 @@ class LinuxStorage:
         base = self._paths(rid)[0]
         return base.exists() or base.is_symlink()
 
+    def disk_bytes(self, rid):
+        """The size this runner's own filesystem was made with, from its
+        metadata, or None when it has none or the metadata cannot be read."""
+        if not self.has_disk(rid):
+            return None
+        try:
+            return self._metadata(rid)["bytes"]
+        except (StorageError, OSError, KeyError):
+            return None
+
     def existing(self, rid):
         base, _, _, _ = self._paths(rid)
         if not base.exists() and not base.is_symlink():
