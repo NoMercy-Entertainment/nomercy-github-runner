@@ -73,6 +73,48 @@ def enforces_appliance_limits(worker):
                ("appliance_per_runner", "cpu_enforcement", "memory_enforcement"))
 
 
+def _cores_asked(spec):
+    """How many logical CPUs a runner needs: the transient `cpu_width` the
+    service hands placement for a pinned runner that has no window yet, else
+    the width of the window it has, else its quota. None when it asks for no
+    particular number."""
+    width = spec.get("cpu_width")
+    if width:
+        return float(width)
+    value = spec.get("cpu_limit")
+    text = str(value or "").strip()
+    if not text:
+        return None
+    if "-" in text or "," in text:
+        from .cpusets import parse
+        try:
+            return float(len(parse(text)))
+        except ValueError:
+            return None
+    try:
+        return float(text)
+    except ValueError:
+        return None
+
+
+def _too_big_for(spec, worker, want_memory):
+    """Why this worker's hardware cannot hold the runner at all, or None.
+    Measured hardware only - a declared budget is checked further down as
+    the budget it is - and unknown hardware never refuses (control/
+    hardware.py)."""
+    from .hardware import cores, gib, of_worker
+    have = of_worker(worker)
+    asked = _cores_asked(spec)
+    if asked and have["cpus"] and asked > have["cpus"]:
+        return (f"{worker['host_id']}: has {have['cpus']} logical CPUs, "
+                f"this runner needs {cores(asked)}")
+    if (want_memory and have["memory_source"] == "measured"
+            and want_memory > have["memory_bytes"]):
+        return (f"{worker['host_id']}: has {gib(have['memory_bytes'])} of "
+                f"physical memory, this runner needs {gib(want_memory)}")
+    return None
+
+
 def _load(host_id, placed):
     mine = [s for s in placed if s.get("host_id") == host_id]
     return len(mine), sum(int(s.get("memory_limit") or 0) for s in mine)
@@ -117,6 +159,10 @@ def choose(spec: Mapping, workers: Iterable[Mapping],
         arch = declared(w, "architecture") or providers.X64
         if arch != want_arch:
             why_not.append(f"{host}: {arch}, the runner needs {want_arch}")
+            continue
+        too_big = _too_big_for(spec, w, want_memory)
+        if too_big:
+            why_not.append(too_big)
             continue
         if declared(w, "builds_from") == "template":
             template = str(spec.get("runtime_template") or "").split(" ")[0]

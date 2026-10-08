@@ -260,6 +260,22 @@ def _placed_with(service, window, host_id="linux-1", **override):
     return service.specs.get(spec["runner_id"])
 
 
+class TestPlacementSeesTheWidth:
+    def test_a_planned_runner_is_placed_by_its_width_never_persisting_it(self, tmp_path):
+        from control import placement
+        service = _service(tmp_path)
+        service.fleets.set_defaults("github-linux-x64", {"cpu_limit": 16})
+        spec = _planned(service, "github-linux-x64", 1)[0]
+        seen = service.for_placement(spec, service.effective_spec(spec))
+        assert seen["cpu_width"] == 16 and seen["cpu_limit"] is None
+        small = {"host_id": "small", "capabilities": {"host_cores": 8}}
+        big = {"host_id": "big", "capabilities": {"host_cores": 56}}
+        assert placement.choose(seen, [small, big], [])[0] == "big"
+        assert "cpu_width" not in service.specs.get(spec["runner_id"])
+        override = dict(spec, cpu_override="8.0")
+        assert service.for_placement(override, override)["cpu_width"] == 8
+
+
 class TestOverrides:
     """An admin's own CPU and memory for one runner (GitHub #5) outrank the
     fleet and the deployment. On a pinned platform the CPU override is a

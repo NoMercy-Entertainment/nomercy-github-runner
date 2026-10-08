@@ -227,7 +227,9 @@ class ProvisioningFlow:
         hosts = {w["host_id"] for w in workers}
         placed = [self.service.reserved_spec(s) for s in self.service.specs.list()
                   if s.get("host_id") in hosts and s["actual_state"] != "absent"]
-        return placement.choose(self.service.effective_spec(spec), workers, placed)
+        return placement.choose(
+            self.service.for_placement(spec, self.service.effective_spec(spec)),
+            workers, placed)
 
     def _step_place(self, spec, state):
         """Scheduler.place(): a healthy worker of the right kind and

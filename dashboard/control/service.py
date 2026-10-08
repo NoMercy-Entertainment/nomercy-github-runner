@@ -518,6 +518,15 @@ class RunnerService:
         return (f"provision refuses: {unit.get('runner_id')} would be created "
                 f"with no {' and no '.join(missing)} limit")
 
+    def for_placement(self, spec, effective):
+        """`effective` as placement is handed it: with the transient
+        `cpu_width` a pinned runner has before its window is cut, so a host
+        with fewer logical CPUs is never chosen. Never written back - it is
+        not a column, and a spec carries a window, not a width."""
+        fleet = self.fleets.get(spec.get("fleet_id")) or {}
+        width = self._pinned_width(fleet, spec)
+        return dict(effective, cpu_width=width) if width else effective
+
     def validate_replacement(self, spec):
         fleet = self.fleets.get(spec.get("fleet_id"))
         why = self.limits_problem(fleet, spec)
@@ -537,7 +546,8 @@ class RunnerService:
         hosts = {w["host_id"] for w in workers}
         placed = [self.reserved_spec(s) for s in self.specs.list()
                   if s.get("host_id") in hosts and s["actual_state"] != "absent"]
-        host, why = placement.choose(replacement, workers, placed)
+        host, why = placement.choose(self.for_placement(spec, replacement),
+                                     workers, placed)
         if host is None:
             raise Refused(f"recreate cannot build a replacement: {why}")
         return replacement
