@@ -96,9 +96,18 @@ Remove-Item -LiteralPath (Join-Path `$env:USERPROFILE 'code.tar') -Force
 `$payload = Get-PSDrive -PSProvider FileSystem | ForEach-Object {
     Join-Path `$_.Root 'forgejo-runner-v13.1.0-windows-arm64.exe'
 } | Where-Object { Test-Path -LiteralPath `$_ } | Select-Object -First 1
-if (-not `$payload) { throw 'The ARM runner payload ISO is not attached.' }
-Copy-Item -LiteralPath `$payload -Destination (Join-Path '$sourceRoot' 'forgejo-runner.exe')
-Copy-Item -LiteralPath (Join-Path (Split-Path `$payload) 'nssm.exe') -Destination (Join-Path '$sourceRoot' 'nssm.exe')
+if (`$payload) {
+    Copy-Item -LiteralPath `$payload -Destination (Join-Path '$sourceRoot' 'forgejo-runner.exe')
+    Copy-Item -LiteralPath (Join-Path (Split-Path `$payload) 'nssm.exe') -Destination (Join-Path '$sourceRoot' 'nssm.exe')
+}
+# A redeploy needs no payload ISO: the copies an earlier run left here are
+# used when, and only when, they are still the pinned binaries.
+foreach (`$pin in @(@('forgejo-runner.exe', '$($arm.ForgejoSha256)'), @('nssm.exe', '$($s.Windows.NssmSha256)'))) {
+    `$path = Join-Path '$sourceRoot' `$pin[0]
+    if (-not (Test-Path -LiteralPath `$path)) { throw "The ARM runner payload ISO is not attached and `$path is missing." }
+    `$got = (Get-FileHash -Algorithm SHA256 -LiteralPath `$path).Hash.ToLower()
+    if (`$got -ne `$pin[1].ToLower()) { throw "`$path is not the pinned binary (`$got)." }
+}
 "@
     Invoke-ArmGuest $stageCode | Out-Null
 
