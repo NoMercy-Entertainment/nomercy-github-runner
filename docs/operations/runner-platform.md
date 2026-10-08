@@ -293,7 +293,7 @@ to watch. So at each release:
 | --- | --- |
 | viewer | read everything; post nothing |
 | operator | start, stop, restart, drain, cancel drain, clear cache, add runners |
-| admin | as operator, and remove, recreate, deregister, recreate a fleet, manage access, set the forge tokens and the alarm webhook |
+| admin | as operator, and remove, recreate, deregister, recreate a fleet, manage access, set the forge tokens and the alarm webhook, acknowledge an alarm |
 
 Every request to the controller is audited, accepted or refused, with the
 actor and the reason, and how each operation ended: `GET /api/v2/audit`,
@@ -313,43 +313,64 @@ raises an alarm for:
   starts at the first poll that sees the runner offline. That time is
   kept in `control.db` (`alarm_watch`), so a restart neither forgets an
   outage nor starts the clock again. The alarm is resolved when the runner
-  is online again or removed from the forge. A platform runner whose
-  desired state is `stopped` or `absent` is offline on purpose and raises
-  nothing.
+  is online again or removed from the forge. A platform runner that is
+  offline on purpose raises nothing: its desired state is `stopped`,
+  `drained` or `absent`, or its actual state is `draining`, `drained`,
+  `stopping`, `deregistering`, `removing` or `absent`. A drain stops the
+  runtime once the job is done. A platform runner meant to run that is
+  `stopped` or `failed` still raises the alarm.
 - **A job queued for ten minutes that no online runner can take**, on
   GitHub. "Can take" is GitHub's own rule: every label the job asks for is
   on one runner, without regard to case. Labels that no self-hosted runner
-  has ever carried (`ubuntu-latest`, a larger runner's name) mark a
-  GitHub-hosted job, which is skipped. A job that asks for `self-hosted` is
-  never skipped. The alarm names the repository, workflow, job and labels,
-  and links to the job.
-- **The monitor itself.** When a forge cannot be read, the banner says
-  "alarm monitor cannot reach GitHub since ..." and no runner alarm is
-  raised or resolved from a list that was not read. After the same ten
-  minutes that becomes an alarm of its own. So does a monitor thread that
-  has stopped checking.
+  has carried in the last 30 days (`ubuntu-latest`, a larger runner's
+  name) mark a GitHub-hosted job, which is skipped. A job that asks for
+  `self-hosted` is never skipped. The alarm names the repository, workflow,
+  job and labels, and links to the job. It is resolved when the job is no
+  longer queued, when a runner with its labels comes online, or when its
+  repository is no longer in the org's list (archived or deleted).
+- **The monitor itself.** When a forge cannot be read, no runner alarm is
+  raised or resolved from a list that was not read. After three minutes of
+  that, about three failed reads, the banner says "alarm monitor cannot
+  reach GitHub since ...". After ten minutes it becomes an alarm that is
+  also sent. A monitor thread that has stopped checking shows in the
+  banner too.
 
 Where alarms show:
 
 - A red banner at the top of every page while any alarm is active. It has
   no close button: it goes away when the condition does.
 - `GET /api/v2/alarms`. Anyone signed in may read it, viewers included. It
-  returns `alarms` (raised), `degraded` (the monitor), `pending` (watched,
-  not yet at the threshold), the monitor's state and the thresholds in
-  force.
+  returns `alarms` (raised), `degraded` (the monitor), `acknowledged`,
+  `pending` (watched, not yet at the threshold or the three minutes), the
+  monitor's state and the thresholds in force.
 - The audit log: `GET /api/v2/audit?verb=alarm`. Actor `alarm-monitor`,
-  decision `raised` or `resolved`, with the reason it ended.
+  decision `raised` or `resolved` with the reason it ended, and
+  `acknowledged` with the person.
 - The webhook, if one is set (below).
 
-Pages never call a forge. Two threads in the dashboard do: one reads both
-forges' runners every minute, and one sweeps the GitHub queue.
+**Acknowledging.** A runner nobody here manages may be off on purpose for
+days. An admin can acknowledge its alarm with the banner's Acknowledge
+button or `POST /api/v2/alarms/<key>/ack`; an operator or viewer gets 403.
+The alarm stays listed, grey and folded away with who acknowledged it and
+when. Nothing more is sent about it, and that includes the resolve. The
+acknowledgement goes with the alarm when it resolves, so the next outage
+is a new alarm.
+
+Pages never call a forge. Three threads in the dashboard do the work: one
+reads both forges' runners every minute, one sweeps the GitHub queue, and
+one sends to the webhook every 15 s. That last thread is separate so that
+a receiver that hangs cannot delay a runner check.
 
 ### Settings
 
-Read from the dashboard's environment (`dashboard.env`) on every pass, so a
-change needs no restart. `ALARM_WEBHOOK_URL` can also be set in Settings,
-where it is sealed in the secret store like the forge tokens and overrides
-the environment.
+The `ALARM_*` settings are read from the dashboard's environment
+(`dashboard.env`). The control plane reads that environment when the
+dashboard process starts, so changing one there needs
+`docker compose up -d dashboard`. Only `ALARM_WEBHOOK_URL` set in Settings
+takes effect at once: it is sealed in the secret store like the forge
+tokens, read on every pass, and wins over the environment. Settings
+accepts only an `http://` or `https://` URL with a host. One in the
+environment that is not one is never sent to.
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
@@ -359,7 +380,7 @@ the environment.
 | `ALARM_QUEUE_POLL_SECONDS` | 300 | How often the GitHub queue is swept (at least 60) |
 | `ALARM_RATE_LIMIT_FLOOR` | 1000 | The sweep stops when GitHub says fewer calls than this are left in the hour, and resumes at the reset |
 | `ALARM_WEBHOOK_URL` | unset | Where raises and resolves are sent. Unset means the banner only. It is a credential: never logged, and masked like a token |
-| `ALARM_WEBHOOK_FORMAT` | from the URL | `ntfy` (text, with Title, Priority and Tags headers), `discord` (`content`, no mentions), `slack` (`text`) or `json` (`{"event", "alarm": {...}}`). When unset: a Discord or Slack webhook URL, or an ntfy host, picks its own format, and anything else gets `json` |
+| `ALARM_WEBHOOK_FORMAT` | from the URL | `ntfy` (text, with Title, Priority and Tags headers), `discord` (`content`, no mentions), `slack` (`text`, with `&`, `<` and `>` escaped so no `<!channel>` or `<@user>` mentions anyone) or `json` (`{"event", "alarm": {...}}`). When unset: a Discord or Slack webhook URL, or an ntfy host, picks its own format, and anything else gets `json` |
 
 Each raise and each resolve is sent once. `alarm_outbox` is unique on
 alarm, event and raise time, so a retry or a restart cannot send it twice.
@@ -378,6 +399,11 @@ finished sits in an in-progress run. Every one of these is a conditional
 request with the last ETag. An unchanged answer is a 304, and GitHub does
 not count a 304 against the rate limit, so a quiet org costs little. The
 runner reading is one call per hundred runners a minute: 60 an hour.
+
+GitHub's secondary rate limit can refuse with 403 or 429 while calls are
+still left in the hour. The sweep then stops at once and keeps off for the
+Retry-After GitHub gives, or five minutes when it gives none. What was read
+before the refusal stands, and a pause is not reported as a blind monitor.
 
 ### What is not covered
 
