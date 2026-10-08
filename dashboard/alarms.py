@@ -350,7 +350,15 @@ _IDENTITY = {"github": ("GH_TOKEN", "GITHUB_ORG"),
 REPOS_SECONDS = 3600
 
 #: A platform runner in one of these desired states is offline on purpose.
-QUIET_STATES = ("stopped", "absent")
+#: `drained` too: provision.drain stops the runtime once the job is done,
+#: so a drained runner is offline at the forge for as long as it stays so.
+QUIET_STATES = ("stopped", "drained", "absent")
+
+#: And whatever the desired state says, a runner the platform is in the
+#: middle of taking down is offline on purpose. `stopped` and `failed` are
+#: not here: a runner meant to run that is stopped or broken is the alarm.
+QUIET_ACTUAL = ("draining", "drained", "stopping", "deregistering", "removing",
+                "absent")
 
 
 def _forge_client(forge, env):
@@ -377,7 +385,9 @@ def _quiet(forge, specs):
     field = "registration_uuid" if forge == "forgejo" else "registration_id"
     return {str(s.get(field)) for s in specs or []
             if s.get("provider") == forge and s.get(field)
-            and s.get("desired_state") in QUIET_STATES and not s.get("deleted_at")}
+            and not s.get("deleted_at")
+            and (s.get("desired_state") in QUIET_STATES
+                 or s.get("actual_state") in QUIET_ACTUAL)}
 
 
 class Monitor:

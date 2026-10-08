@@ -241,6 +241,29 @@ class TestTheMonitor:
         m.tick(path, ENV, specs, T0 + 30 * MIN)
         assert m.view(T0 + 30 * MIN)["alarms"] == []
 
+    @pytest.mark.parametrize("desired,actual", [
+        ("drained", "drained"), ("drained", "stopping"), ("running", "draining"),
+        ("absent", "deregistering"), ("absent", "removing"), ("stopped", "stopped"),
+        ("running", "deregistering"), ("running", "removing")])
+    def test_a_runner_the_platform_is_taking_down_is_quiet(self, path, desired, actual):
+        """provision.drain stops the runtime once the job is done, so a
+        drained runner is offline at the forge on purpose - for good."""
+        m = monitor(FakeForge([{"id": 5, "name": "r", "status": "offline", "labels": []}]))
+        specs = [{"provider": "github", "registration_id": "5",
+                  "desired_state": desired, "actual_state": actual}]
+        m.tick(path, ENV, specs, T0)
+        m.tick(path, ENV, specs, T0 + 30 * MIN)
+        assert m.view(T0 + 30 * MIN)["alarms"] == []
+
+    @pytest.mark.parametrize("actual", ["stopped", "failed", "idle"])
+    def test_a_runner_meant_to_run_still_alarms(self, path, actual):
+        m = monitor(FakeForge([{"id": 5, "name": "r", "status": "offline", "labels": []}]))
+        specs = [{"provider": "github", "registration_id": "5",
+                  "desired_state": "running", "actual_state": actual}]
+        m.tick(path, ENV, specs, T0)
+        m.tick(path, ENV, specs, T0 + 10 * MIN)
+        assert len(m.view(T0 + 10 * MIN)["alarms"]) == 1
+
     def test_a_stalled_monitor_says_so(self, path):
         m = monitor(FakeForge([]))
         m.started_at = T0
