@@ -197,6 +197,24 @@ class TestTheCardShowsWhatTheUnitUses:
         assert t["cache_volume_at"] == "2026-10-08T05:00:00Z"
         assert t["host_mem_bytes"] is None
 
+    def test_a_boundary_a_deep_beat_says_is_gone_is_cleared(self, placed):
+        """A runner recreated without its own disk or cache cap: its next
+        deep beat states both as null, and the old ones go."""
+        service, rid = placed
+        self.beat(service, rid, {"cpu_percent": 1.0, "storage_bytes": 5,
+                                 "storage_total_bytes": 107 * 10 ** 9,
+                                 "cache_bytes": 2,
+                                 "cache_cap_bytes": 40 * 10 ** 9,
+                                 "cache_total_bytes": 107 * 10 ** 9})
+        self.beat(service, rid, {"cpu_percent": 1.0, "storage_bytes": 5,
+                                 "storage_total_bytes": None,
+                                 "cache_bytes": 2, "cache_cap_bytes": None,
+                                 "cache_total_bytes": None})
+        t = service.specs.get(rid)["telemetry"]
+        for key in ("storage_total_bytes", "cache_cap_bytes",
+                    "cache_total_bytes"):
+            assert key in t and t[key] is None, key
+
     def test_the_appliances_system_volume_is_not_kept(self, placed):
         """An older appliance agent still sends `/`, the sealed system
         volume; it is not what fills, so it is not taken."""

@@ -445,34 +445,45 @@ def _measured(spec, override, now, host=None):
               "total_bytes": own_memory or host_memory,
               "shared": own_memory is None}
 
-    def bounded(used, own, volume, stamp):
-        """A storage-like meter: the unit's own boundary, else the volume it
-        shares, as long as that volume was read recently."""
-        if own:
-            return {"used_bytes": used, "total_bytes": own, "shared": False,
-                    "volume_used_bytes": None, "volume_total_bytes": None}
-        fresh = recent(stamp)
-        total = _amount(t.get(f"{volume}_total_bytes")) if fresh else None
-        return {"used_bytes": used, "total_bytes": total, "shared": True,
-                "volume_used_bytes": t.get(f"{volume}_used_bytes")
-                if fresh else None,
-                "volume_total_bytes": total}
+    def bounded(used, own, volume, stamp, filled=True):
+        """A storage-like meter. Its total is the unit's own boundary where
+        it has one, else the volume it shares. The volume's figures - what
+        the bar fills with - come when they were read recently and the
+        boundary is a disk, its own or a shared one; a cap is filled by the
+        unit's own use alone."""
+        fresh = filled and recent(stamp)
+        volume_total = _amount(t.get(f"{volume}_total_bytes")) if fresh else None
+        volume_used = t.get(f"{volume}_used_bytes") if volume_total else None
+        return {"used_bytes": used, "total_bytes": own or volume_total,
+                "shared": not own, "volume_used_bytes": volume_used,
+                "volume_total_bytes": volume_total}
 
-    # A runner's own disk (T-27): its size as the agent measured it, else
-    # what the controller told it to be - the same number, known since
-    # before create and so before any heartbeat about it could arrive.
+    # A runner's own disk (T-27): its size as the agent measured it. Once a
+    # deep beat has said - null when there is none - that is the answer;
+    # before, what the controller told the disk to be, the same number,
+    # known since before create.
+    if "storage_total_bytes" in t:
+        own_disk = _amount(t["storage_total_bytes"])
+    else:
+        own_disk = _first(t.get("disk_limit_bytes"), spec.get("disk_limit"))
     storage = bounded(
         t.get("storage_bytes") if recent("storage_at", "deep_at") else None,
-        _first(t.get("storage_total_bytes"), t.get("disk_limit_bytes"),
-               spec.get("disk_limit")),
-        "storage_volume", "storage_volume_at")
-    policy = spec.get("cache_policy") or {}
-    cap = _first(t.get("cache_cap_bytes"), policy.get("max_bytes"))
-    shared_cache = bounded(
+        own_disk, "storage_volume", "storage_volume_at")
+    # The cache's own boundary: its cap, or a disk of the unit's own it
+    # lives on. What the agent said outranks the fleet's policy, which is
+    # only the answer until it has.
+    if "cache_cap_bytes" in t or "cache_total_bytes" in t:
+        cap = _amount(t.get("cache_cap_bytes"))
+        cache_disk = _amount(t.get("cache_total_bytes"))
+    else:
+        cap = _first((spec.get("cache_policy") or {}).get("max_bytes"))
+        cache_disk = None
+    measured = bounded(
         t.get("cache_bytes") if recent("cache_at", "deep_at") else None,
-        cap, "cache_volume", "cache_volume_at")
-    cache = {"used_bytes": shared_cache.pop("used_bytes"), "cap_bytes": cap,
-             **shared_cache}
+        cap or cache_disk, "cache_volume", "cache_volume_at",
+        filled=cap is None)
+    cache = {"used_bytes": measured.pop("used_bytes"), "cap_bytes": cap,
+             **measured}
     return cpu, memory, storage, cache
 
 

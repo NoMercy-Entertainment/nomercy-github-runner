@@ -223,6 +223,34 @@ class TestSharedBoundaries:
         assert c["memory"]["total_bytes"] == 16 * GIB
 
 
+class TestABoundaryTheAgentSaysIsGone:
+    """The agent's deep beat states each boundary, null when there is none;
+    that outranks what the spec was configured with or the fleet asks for.
+    A runner that lost its own disk or cap falls back to the volume."""
+
+    def test_a_runner_without_its_disk_any_more_shares_the_volume(self):
+        t = dict(WINDOWS_PLAIN["telemetry"], storage_total_bytes=None)
+        c = card(dict(WINDOWS_PLAIN, telemetry=t, disk_limit=100 * GIB))
+        assert c["storage"]["shared"] is True
+        assert c["storage"]["total_bytes"] == 2000 * GB
+
+    def test_a_cache_without_a_cap_any_more_shares_the_volume(self):
+        t = dict(WINDOWS_PLAIN["telemetry"], cache_cap_bytes=None,
+                 cache_total_bytes=None)
+        c = card(dict(WINDOWS_PLAIN, telemetry=t,
+                      cache_policy={"max_bytes": 40 * GB}))
+        assert c["cache"]["shared"] is True
+        assert c["cache"]["cap_bytes"] is None
+        assert c["cache"]["total_bytes"] == 2000 * GB
+
+    def test_before_the_agent_has_said_the_configured_boundary_stands(self):
+        t = {k: v for k, v in LINUX["telemetry"].items()
+             if k != "cache_cap_bytes"}
+        c = card(dict(LINUX, telemetry=t))
+        assert c["cache"]["total_bytes"] == 40 * GB
+        assert c["storage"]["total_bytes"] == 107374182400
+
+
 class TestFreshness:
     def test_an_old_volume_reading_is_unknown(self):
         t = dict(WINDOWS_PLAIN["telemetry"], storage_volume_at=at(3600),

@@ -149,10 +149,12 @@ def _decode(row):
 #: below already need.
 #:
 #: What bounds a unit comes too: `host_mem_bytes` beside `host_cores`, the
-#: machine a unit with no limit of its own shares; `storage_total_bytes`, the
-#: size of a unit's own disk as its agent measured it; and the used and total
-#: of the volume a unit's storage or cache shares when it has no disk or cap
-#: of its own (`storage_volume_*`, `cache_volume_*`). The appliance's
+#: machine a unit with no limit of its own shares; `storage_total_bytes` and
+#: `cache_total_bytes`, the size of a disk that is the unit's alone and that
+#: its storage or cache is on; and the used and total of the volume each is
+#: on (`storage_volume_*`, `cache_volume_*`). A deep beat states each
+#: boundary, as null when there is none, and null clears what was kept - a
+#: runner recreated without its own disk or cap loses it here. The appliance's
 #: `root_disk_*` - `/`, its sealed system volume - is not taken: it is not
 #: the volume that fills.
 TELEMETRY_KEYS = ("cpu_percent", "cpu_cores", "host_cores", "host_mem_bytes",
@@ -160,7 +162,7 @@ TELEMETRY_KEYS = ("cpu_percent", "cpu_cores", "host_cores", "host_mem_bytes",
                   "mem_swap_limit_bytes",
                   "storage_bytes", "storage_total_bytes",
                   "storage_volume_used_bytes", "storage_volume_total_bytes",
-                  "cache_bytes", "cache_cap_bytes",
+                  "cache_bytes", "cache_cap_bytes", "cache_total_bytes",
                   "cache_volume_used_bytes", "cache_volume_total_bytes",
                   "disk_limit_bytes", "disk_used_bytes", "disk_free_bytes",
                   "disk_virtual_bytes", "disk_usable_bytes")
@@ -394,7 +396,7 @@ class Inventory:
                 current[stamp] = min(fresh.get(stamp, at), at)
                 if stamp in ("storage_at", "cache_at"):
                     current["deep_at"] = current[stamp]
-        for key in ("cache_cap_bytes", "storage_total_bytes",
+        for key in ("cache_cap_bytes", "cache_total_bytes", "storage_total_bytes",
                     "disk_limit_bytes", "disk_used_bytes", "disk_free_bytes",
                     "disk_virtual_bytes", "disk_usable_bytes"):
             if key in fresh:
