@@ -23,7 +23,7 @@
 # --- guard ---
 refuse() {
   echo "REFUSING: $0 $1" >&2
-  echo "Running it here would overwrite /etc/docker/daemon.json and kill the" >&2
+  echo "Running it here would overwrite the engine config (daemon.json) and kill the" >&2
   echo "Docker engine this machine's runners depend on." >&2
   exit 1
 }

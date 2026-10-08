@@ -15,7 +15,10 @@ engine's config, which now carries live-restore. Overwriting it and killing
 that dockerd takes the whole fleet down, and has.
 """
 import os
+import shutil
 import subprocess
+
+import pytest
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 INSTALL = os.path.join(ROOT, "scripts", "install-docker.sh")

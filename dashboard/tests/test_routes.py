@@ -45,7 +45,7 @@ class TestTheOldAddress:
 class TestWhatTheNavigationOffers:
     def test_the_fleet_page_links_itself_at_the_address_it_has(self, client):
         page = client.get("/").get_data(as_text=True)
-        assert 'href="/" class="on">Fleet<' in page
+        assert 'href="/" class="on" aria-current="page">Fleet<' in page
 
     def test_no_page_still_offers_the_old_v2_address(self, client):
         """The nav points at `/` everywhere now; `/v2` is a redirect, not a

@@ -58,11 +58,14 @@ class TestAnOperatorCannotDestroy:
         as_role("operator")
         assert post(client, f"/api/v2/fleets/{GH}/recreate").status_code == 403
 
-    def test_nor_reduce_capacity(self, client, plane):
+    def test_nor_set_capacity_which_has_no_route_any_more(self, client, plane):
+        """Runners are added and removed one at a time (f1f1c8f); a count an
+        operator could lower was a way to remove runners without the admin
+        role, so the route went rather than being guarded."""
         as_role("operator")
         service, _ = plane
         r = post(client, f"/api/v2/fleets/{GH}/capacity", {"desired": 1})
-        assert r.status_code == 403
+        assert r.status_code == 404
         assert service.fleets.get(GH)["desired_capacity"] == 2
 
     @pytest.mark.parametrize("path", ["/api/runner/remove",
@@ -86,11 +89,11 @@ class TestAnOperatorCanOperate:
         assert post(client, f"/api/v2/runners/{rid}/actions/start"
                     ).status_code == 202
 
-    def test_raise_capacity_and_add_a_runner(self, client, plane):
+    def test_add_a_runner(self, client, plane):
         as_role("operator")
-        assert post(client, f"/api/v2/fleets/{GH}/capacity",
-                    {"desired": 3}).status_code == 202
+        service, _ = plane
         assert post(client, f"/api/v2/fleets/{GH}/runners").status_code == 202
+        assert service.fleets.get(GH)["desired_capacity"] == 3
 
     def test_an_unknown_runner_is_refused_by_the_route_not_by_the_guard(
             self, client, plane):
@@ -109,25 +112,15 @@ class TestAnAdminCan:
         assert post(client, f"/api/v2/runners/{rid}/actions/remove"
                     ).status_code == 202
 
-    def test_reduce_capacity(self, client, plane):
-        as_role("admin")
-        service, _ = plane
-        assert post(client, f"/api/v2/fleets/{GH}/capacity",
-                    {"desired": 1}).status_code == 202
-        assert service.fleets.get(GH)["desired_capacity"] == 1
-
-
 class TestARefusedDestroyIsRecorded:
     def test_with_its_actor_and_why(self, client, plane):
         as_role("operator")
         service, rid = plane
         post(client, f"/api/v2/runners/{rid}/actions/remove")
-        post(client, f"/api/v2/fleets/{GH}/capacity", {"desired": 0})
         refused = audit.entries(service.operations.path, decision="refused")
         outcomes = [r["outcome"] for r in refused]
         assert any("requires admin; the caller is operator" in o
                    for o in outcomes)
-        assert any("a decrease requires admin" in o for o in outcomes)
 
 
 def test_a_viewer_still_cannot_post_anything(client, plane):
