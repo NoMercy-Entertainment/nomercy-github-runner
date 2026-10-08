@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 
 from . import naming
+from .windows_timeouts import shell_timeout
 
 
 def alias_path(base, runner_id):
@@ -19,7 +20,8 @@ def alias_path(base, runner_id):
     return ntpath.join(base, naming.check(runner_id).replace("-", ""))
 
 
-def ensure_alias(base, runner_id, workspace, run, icacls, powershell):
+def ensure_alias(base, runner_id, workspace, run, icacls, powershell, architecture=None):
+    timeout = shell_timeout(architecture)
     root, target = Path(base), Path(workspace)
     alias = Path(alias_path(base, runner_id))
     if not target.is_dir() or os.path.isjunction(target) or target.is_symlink():
@@ -29,7 +31,7 @@ def ensure_alias(base, runner_id, workspace, run, icacls, powershell):
     root.mkdir(parents=True, exist_ok=True)
     ok, out, err = run([icacls, str(root), "/inheritance:r", "/grant:r",
                        "*S-1-5-18:(OI)(CI)F", "*S-1-5-32-544:(OI)(CI)F",
-                       "*S-1-5-11:(OI)(CI)RX", "/Q"], timeout=30)
+                       "*S-1-5-11:(OI)(CI)RX", "/Q"], timeout=timeout)
     if not ok:
         raise RuntimeError(err or out or "cannot protect workspace alias root")
     if os.path.lexists(alias):
@@ -41,7 +43,7 @@ def ensure_alias(base, runner_id, workspace, run, icacls, powershell):
               + quote(alias) + " -Value " + quote(target) + " | Out-Null")
     encoded = base64.b64encode(script.encode("utf-16-le")).decode("ascii")
     ok, out, err = run([powershell, "-NoProfile", "-NonInteractive",
-                       "-EncodedCommand", encoded], timeout=30)
+                       "-EncodedCommand", encoded], timeout=timeout)
     if not ok or not os.path.isjunction(alias) or alias.resolve() != target.resolve():
         raise RuntimeError(err or out or "workspace alias was not confirmed")
     return str(alias)

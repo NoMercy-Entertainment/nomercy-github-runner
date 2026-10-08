@@ -19,3 +19,11 @@ def registration_limits(architecture=None):
     if architecture in ("arm64", "aarch64"):
         return {"key_setup": 600, "script": 900, "pipe": 915, "client": 940}
     return {"key_setup": 30, "script": 105, "pipe": 115, "client": 140}
+
+
+def shell_timeout(architecture=None):
+    """One short PowerShell or icacls call. Under TCG, PowerShell alone took
+    over two minutes to start (2026-10-02), so 30 s timed out every ARM64
+    create at its workspace alias (2026-10-08)."""
+    architecture = (architecture or platform.machine()).lower()
+    return 300 if architecture in ("arm64", "aarch64") else 30
