@@ -72,8 +72,8 @@ TEMPLATE_FILES = ("run.cmd", "register.ps1", "deregister.ps1")
 #: where this module runs, as the job host's launcher is. GitHub runs a hook
 #: only when its path ends in .ps1, .sh or .js. Forgejo has no hooks.
 _HOOKS = Path(__file__).resolve().parents[1] / "hooks" / "windows"
-HOOK_SCRIPTS = {"ACTIONS_RUNNER_HOOK_JOB_STARTED": str(_HOOKS / "job-started.ps1"),
-                "ACTIONS_RUNNER_HOOK_JOB_COMPLETED": str(_HOOKS / "job-completed.ps1")}
+HOOK_SCRIPTS = {"ACTIONS_RUNNER_HOOK_JOB_STARTED": str(_HOOKS / "job-started.js"),
+                "ACTIONS_RUNNER_HOOK_JOB_COMPLETED": str(_HOOKS / "job-completed.js")}
 
 #: The file that asks the job host to drain the runner (see agent/jobhost.py).
 DRAIN_REQUEST = "drain.request"
@@ -303,7 +303,7 @@ class WindowsProcessRuntime:
             from ..windows_workspace import alias_path
             env["RUNNER_JOB_WORK_DIR"] = alias_path(self._tools["short_workspaces"], rid)
         if (spec.get("labels") or {}).get("nomercy.provider") == "github":
-            # The .ps1 hooks hand their work to the Python the job host runs
+            # The .js hooks hand their work to the Python the job host runs
             # under, which the runner's account can already execute.
             env.update(HOOK_SCRIPTS)
             env["RUNNER_HOOK_PYTHON"] = self._tools["python"]

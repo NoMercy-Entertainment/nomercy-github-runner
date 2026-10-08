@@ -6,9 +6,10 @@ what is rebuildable, under 10 GB it warns, and under 3 GB it refuses the job
 with an `::error` before a full disk can take the runner down. Only that
 refusal fails a job. A fault in the hook itself never does.
 
-The work is in `agent/hooks/windows/runner_disk.py`; the `.ps1` files are
-what GitHub runs, because it runs nothing but `.ps1`, `.sh` and `.js`. They
-start the agent's own Python, which measures the volume under the runner's
+The work is in `agent/hooks/windows/runner_disk.py`; the `.js` files are
+what GitHub runs, under its own node, because it runs nothing but `.js`,
+`.sh` and `.ps1`, and a `.ps1` is refused by the ARM64 guest's execution
+policy. They start the agent's own Python, which measures the volume under the runner's
 work directory correctly even when that volume is the runner's own disk,
 mounted at a folder rather than a drive letter.
 """
@@ -300,93 +301,130 @@ class TestMain:
         assert "::warning" in capsys.readouterr().out
 
 
-# ---- the .ps1 files GitHub runs ---------------------------------------------
+# ---- the .js files GitHub runs ----------------------------------------------
+#
+# GitHub starts a .ps1 hook as `pwsh -command ". '<path>'"`, and the ARM64
+# guest's execution policy refuses to dot-source a script: the hook would
+# fail before any line of it ran, and every job with it. A .js hook runs
+# under the runner's own bundled node, which has no execution policy and
+# starts in seconds where PowerShell takes minutes under emulation.
 
-SHELLS = [s for s in ("pwsh", "powershell") if shutil.which(s)]
-
-
-def run_hook(shell, name, env):
-    """As the runner does it: `pwsh -command ". '<path>'"`, or Windows
-    PowerShell when there is no pwsh."""
-    path = HOOKS / name
-    full = dict(os.environ, **env)
-    return subprocess.run([shutil.which(shell), "-NoLogo", "-NoProfile", "-NonInteractive",
-                           "-Command", f". '{path}'"], env=full, capture_output=True,
-                          text=True, timeout=300)
+NODE = shutil.which("node")
 
 
-@pytest.fixture(params=SHELLS or [None])
-def shell(request):
-    if request.param is None:
-        pytest.skip("no PowerShell on this machine")
-    return request.param
+def _environment(env, python):
+    full = {k: v for k, v in os.environ.items() if not k.startswith("RUNNER_")}
+    if python is not None:
+        full["RUNNER_HOOK_PYTHON"] = str(python)
+    full.update(env)
+    return full
 
 
-class TestPowerShell:
-    def test_plenty_of_room_lets_the_job_run(self, shell, tmp_path):
+def run_hook(name, env, python=sys.executable, hooks=HOOKS):
+    """As the runner does it: its node, the script's path, nothing else."""
+    result = subprocess.run([NODE, str(hooks / name)], env=_environment(env, python),
+                            capture_output=True, timeout=300)
+    result.stdout = result.stdout.decode("utf-8")
+    result.stderr = result.stderr.decode("utf-8", errors="replace")
+    return result
+
+
+def hooks_with(tmp_path, python_source):
+    """A copy of the hooks whose runner_disk.py is `python_source`."""
+    hooks = tmp_path / "hooks"
+    shutil.copytree(HOOKS, hooks, ignore=shutil.ignore_patterns("__pycache__"))
+    (hooks / "runner_disk.py").write_text(python_source)
+    return hooks
+
+
+@pytest.mark.skipif(NODE is None, reason="no node here")
+class TestNode:
+    def test_plenty_of_room_lets_the_job_run(self, tmp_path):
         work = runner_tree(tmp_path)
-        result = run_hook(shell, "job-started.ps1", {
-            "RUNNER_HOOK_PYTHON": sys.executable, "RUNNER_WORK_DIR": str(work),
-            "GITHUB_WORKSPACE": str(work / "app" / "app"),
+        result = run_hook("job-started.js", {
+            "RUNNER_WORK_DIR": str(work), "GITHUB_WORKSPACE": str(work / "app" / "app"),
             "RUNNER_DISK_CLEAN_BELOW_GB": "0", "RUNNER_DISK_WARN_BELOW_GB": "0",
             "RUNNER_DISK_FAIL_BELOW_GB": "0"})
         assert result.returncode == 0, result.stdout + result.stderr
         assert "Disk free before the job:" in result.stdout
         assert (work / "lib").exists()
 
-    def test_a_disk_too_full_fails_the_job_with_an_error(self, shell, tmp_path):
+    def test_a_disk_too_full_fails_the_job_with_an_error(self, tmp_path):
         work = runner_tree(tmp_path)
-        result = run_hook(shell, "job-started.ps1", {
-            "RUNNER_HOOK_PYTHON": sys.executable, "RUNNER_WORK_DIR": str(work),
-            "GITHUB_WORKSPACE": str(work / "app" / "app"),
+        result = run_hook("job-started.js", {
+            "RUNNER_WORK_DIR": str(work), "GITHUB_WORKSPACE": str(work / "app" / "app"),
             "RUNNER_DISK_CLEAN_BELOW_GB": "1000000000", "RUNNER_DISK_FAIL_BELOW_GB": "1000000000"})
         assert result.returncode == 1, result.stdout + result.stderr
         assert "::error title=Runner disk full::" in result.stdout
         assert not (work / "lib").exists(), "it cleaned before it refused"
 
-    def test_low_disk_warns_and_runs(self, shell, tmp_path):
+    def test_low_disk_warns_and_runs(self, tmp_path):
         work = runner_tree(tmp_path)
-        result = run_hook(shell, "job-started.ps1", {
-            "RUNNER_HOOK_PYTHON": sys.executable, "RUNNER_WORK_DIR": str(work),
-            "GITHUB_WORKSPACE": str(work / "app" / "app"),
+        result = run_hook("job-started.js", {
+            "RUNNER_WORK_DIR": str(work), "GITHUB_WORKSPACE": str(work / "app" / "app"),
             "RUNNER_DISK_CLEAN_BELOW_GB": "0", "RUNNER_DISK_WARN_BELOW_GB": "1000000000",
             "RUNNER_DISK_FAIL_BELOW_GB": "0"})
         assert result.returncode == 0 and "::warning title=Runner disk low::" in result.stdout
 
-    @pytest.mark.parametrize("name", ["job-started.ps1", "job-completed.ps1"])
-    def test_no_python_never_fails_the_job(self, shell, name, tmp_path):
-        result = run_hook(shell, name, {"RUNNER_HOOK_PYTHON": str(tmp_path / "python.exe"),
-                                        "RUNNER_WORK_DIR": str(tmp_path)})
+    @pytest.mark.parametrize("name", ["job-started.js", "job-completed.js"])
+    def test_no_python_named_never_fails_the_job(self, name, tmp_path):
+        result = run_hook(name, {"RUNNER_WORK_DIR": str(tmp_path)}, python=None)
         assert result.returncode == 0, result.stdout + result.stderr
         assert "::warning title=Runner hook::" in result.stdout
 
-    @pytest.mark.parametrize("name", ["job-started.ps1", "job-completed.ps1"])
-    def test_a_python_that_fails_never_fails_the_job(self, shell, name, tmp_path):
-        broken = tmp_path / "broken.cmd"
-        broken.write_text("@echo off\r\necho something went wrong 1>&2\r\nexit /b 9\r\n")
-        result = run_hook(shell, name, {"RUNNER_HOOK_PYTHON": str(broken),
-                                        "RUNNER_WORK_DIR": str(tmp_path)})
+    @pytest.mark.parametrize("name", ["job-started.js", "job-completed.js"])
+    def test_a_python_that_is_not_there_never_fails_the_job(self, name, tmp_path):
+        result = run_hook(name, {"RUNNER_WORK_DIR": str(tmp_path)},
+                          python=tmp_path / "python.exe")
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert "::warning title=Runner hook::" in result.stdout
+
+    @pytest.mark.parametrize("name", ["job-started.js", "job-completed.js"])
+    def test_a_python_that_fails_never_fails_the_job(self, name, tmp_path):
+        hooks = hooks_with(tmp_path, "import sys\nprint('boom', file=sys.stderr)\nsys.exit(9)\n")
+        result = run_hook(name, {"RUNNER_WORK_DIR": str(tmp_path)}, hooks=hooks)
         assert result.returncode == 0, result.stdout + result.stderr
         assert "ended with status 9" in result.stdout
 
-    def test_a_hook_run_with_stop_on_error_still_never_fails_the_job(self, shell, tmp_path):
-        """The runner's own PowerShell steps run with ErrorActionPreference
-        Stop; a hook that inherits it must not turn a stderr line into a
-        failed job."""
-        broken = tmp_path / "broken.cmd"
-        broken.write_text("@echo off\r\necho noise 1>&2\r\nexit /b 3\r\n")
-        path = HOOKS / "job-started.ps1"
-        result = subprocess.run(
-            [shutil.which(shell), "-NoLogo", "-NoProfile", "-NonInteractive", "-Command",
-             f"$ErrorActionPreference = 'Stop'; . '{path}'"],
-            env=dict(os.environ, RUNNER_HOOK_PYTHON=str(broken), RUNNER_WORK_DIR=str(tmp_path)),
-            capture_output=True, text=True, timeout=300)
+    def test_a_missing_runner_disk_never_fails_the_job(self, tmp_path):
+        hooks = hooks_with(tmp_path, "")
+        (hooks / "runner_disk.py").unlink()
+        result = run_hook("job-started.js", {"RUNNER_WORK_DIR": str(tmp_path)}, hooks=hooks)
         assert result.returncode == 0, result.stdout + result.stderr
+        assert "::warning title=Runner hook::" in result.stdout
 
-    def test_after_a_job_the_temp_is_cleared(self, shell, tmp_path):
+    def test_75_after_a_job_is_a_fault_not_a_refusal(self, tmp_path):
+        hooks = hooks_with(tmp_path, "import sys\nsys.exit(75)\n")
+        result = run_hook("job-completed.js", {"RUNNER_WORK_DIR": str(tmp_path)}, hooks=hooks)
+        assert result.returncode == 0
+
+    def test_non_ascii_output_reaches_the_log_intact(self, tmp_path):
+        """A path can carry any character; the agent's Python writes UTF-8
+        whatever the console's code page is."""
+        work = runner_tree(tmp_path / "werkmap-é")
+        result = run_hook("job-started.js", {
+            "RUNNER_WORK_DIR": str(work), "GITHUB_WORKSPACE": str(work / "app" / "app"),
+            "RUNNER_DISK_CLEAN_BELOW_GB": "0", "RUNNER_DISK_FAIL_BELOW_GB": "0"})
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert "werkmap-é" in result.stdout
+
+    def test_after_a_job_the_temp_is_cleared(self, tmp_path):
         work = runner_tree(tmp_path)
-        result = run_hook(shell, "job-completed.ps1", {
-            "RUNNER_HOOK_PYTHON": sys.executable, "RUNNER_WORK_DIR": str(work)})
+        result = run_hook("job-completed.js", {"RUNNER_WORK_DIR": str(work)})
         assert result.returncode == 0, result.stdout + result.stderr
         assert not (work / "_temp" / "build.log").exists()
         assert (work / "_temp" / "_runner_file_commands").exists()
+
+
+def test_the_hooks_need_nothing_but_node_itself():
+    import re
+    for name in ("job-started.js", "job-completed.js", "run_hook.js"):
+        text = (HOOKS / name).read_text(encoding="utf-8")
+        required = set(re.findall(r"require\(((?:[^()]|\([^()]*\))*)\)", text))
+        assert required <= {'"child_process"', '"fs"', '"path"',
+                            'path.join(__dirname, "run_hook.js")'}, required
+
+
+def test_no_powershell_hook_is_left_to_be_wired_by_mistake():
+    assert not list(HOOKS.glob("*.ps1"))
+

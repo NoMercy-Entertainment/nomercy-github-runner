@@ -8,11 +8,12 @@ warns, and lower still it refuses the job, with a line that says why, before
 the build can take the runner down with it. The thresholds and the wording
 are the Linux unit's (images/linux/unit/runner/job_started.py).
 
-Run by `job-started.ps1` and `job-completed.ps1`, which are what GitHub runs:
-it runs nothing but `.ps1`, `.sh` and `.js` hooks. They start this with the
+Run by `job-started.js` and `job-completed.js`, which are what GitHub runs,
+under its own node: it runs nothing but `.js`, `.sh` and `.ps1` hooks, and
+the ARM64 guest's execution policy refuses a `.ps1`. They start this with the
 agent's own Python, as `runner_disk.py started` or `runner_disk.py completed`.
 Standard library only, and nothing from the agent: it runs as the runner's
-account, from the agent's installed copy.
+account.
 
 Nothing here follows a link. The runner's work folder is reached through a
 short junction alias (agent/windows_workspace.py) and pnpm fills node_modules

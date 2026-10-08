@@ -51,10 +51,10 @@ class TestWindows:
 
     def test_a_github_runner_gets_both_hooks_from_the_agents_own_copy(self, runtime, host):
         env = self.env(runtime, host, "github")
-        assert env["ACTIONS_RUNNER_HOOK_JOB_STARTED"] == str(AGENT / "hooks" / "windows" / "job-started.ps1")
-        assert env["ACTIONS_RUNNER_HOOK_JOB_COMPLETED"] == str(AGENT / "hooks" / "windows" / "job-completed.ps1")
+        assert env["ACTIONS_RUNNER_HOOK_JOB_STARTED"] == str(AGENT / "hooks" / "windows" / "job-started.js")
+        assert env["ACTIONS_RUNNER_HOOK_JOB_COMPLETED"] == str(AGENT / "hooks" / "windows" / "job-completed.js")
         for key in HOOK_KEYS:
-            assert env[key].endswith(".ps1") and Path(env[key]).is_file(), key
+            assert env[key].endswith(".js") and Path(env[key]).is_file(), key
 
     def test_the_hooks_run_with_the_python_the_job_host_runs(self, runtime, host):
         env = self.env(runtime, host, "github")
@@ -67,7 +67,7 @@ class TestWindows:
 
     def test_a_spec_cannot_point_the_hooks_elsewhere(self, runtime, host):
         unit = spec("github", WINDOWS_TEMPLATE)
-        unit["env"]["ACTIONS_RUNNER_HOOK_JOB_STARTED"] = r"C:\elsewhere\job.ps1"
+        unit["env"]["ACTIONS_RUNNER_HOOK_JOB_STARTED"] = r"C:\elsewhere\job.js"
         runtime.create(RID, unit)
         reg = runtime.paths(RID)["reg"]
         env = json.loads(host.read_text(ntpath.join(reg, "unit.json")))["env"]
@@ -76,7 +76,7 @@ class TestWindows:
     def test_every_hook_is_a_script_the_runner_accepts(self):
         for key in HOOK_KEYS:
             path = windows_process.HOOK_SCRIPTS[key]
-            assert path.endswith(".ps1") and Path(path).is_file(), path
+            assert path.endswith(".js") and Path(path).is_file(), path
 
 
 class TestMacOS:
