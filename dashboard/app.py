@@ -223,7 +223,8 @@ def _secret_values():
     in Settings is covered at once."""
     from control import redact
     env = dict(read_env())
-    for key in ("GH_TOKEN", "FORGEJO_API_TOKEN", "OIDC_CLIENT_SECRET"):
+    for key in ("GH_TOKEN", "FORGEJO_API_TOKEN", "OIDC_CLIENT_SECRET",
+                "ALARM_WEBHOOK_URL"):
         if os.environ.get(key):
             env.setdefault(key, os.environ[key])
     values = redact.secret_values(env)

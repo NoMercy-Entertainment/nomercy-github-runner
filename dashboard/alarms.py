@@ -48,7 +48,8 @@ FORGES = {"github": "GitHub", "forgejo": "Forgejo"}
 
 ACTOR = "alarm-monitor"
 
-#: Called with every raise and resolve once it is stored - the webhook.
+#: Called with (path, event) for every raise and resolve once it is stored -
+#: the webhook's outbox (alarm_notify.enqueue).
 LISTENERS = []
 
 
@@ -183,7 +184,7 @@ class AlarmBook:
                 print(f"[alarms] audit not written: {type(e).__name__}")
             for listener in list(LISTENERS):
                 try:
-                    listener(event)
+                    listener(self.path, event)
                 except Exception as e:  # noqa: BLE001
                     print(f"[alarms] listener failed: {type(e).__name__}")
         return events

@@ -29,7 +29,7 @@ input:disabled{opacity:.5}
 <section class="panel"><h2>Maintenance</h2><p id="maintenance-state"></p>
 <p class="hint">Pausing reconciliation does not stop runners or prevent already running listeners from accepting jobs.</p>
 <button id="maintenance-toggle">Loading</button></section>
-<section class="panel"><h2>Forge credentials</h2><p class="hint">Tokens are encrypted and never displayed. A saved token is used by the next controller operation.</p>
+<section class="panel"><h2>Credentials</h2><p class="hint">Tokens are encrypted and never displayed. A saved token is used by the next controller operation. ALARM_WEBHOOK_URL is where alarms are sent (ntfy, Discord, Slack or JSON); without it they show only in the banner.</p>
 <div id="secrets"></div></section>
 {% endif %}
 <section class="panel" id="runner-groups" aria-live="polite">GitHub runner groups: loading</section>

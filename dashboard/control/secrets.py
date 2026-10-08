@@ -23,8 +23,10 @@ from datetime import datetime, timezone
 
 from store import schema
 
-#: The secrets this store holds: the two forge tokens (design 18.3).
-NAMES = ("GH_TOKEN", "FORGEJO_API_TOKEN")
+#: The secrets this store holds: the two forge tokens (design 18.3), and the
+#: alarm webhook (GitHub #11) - a Discord or Slack webhook URL is all it
+#: takes to post as it, so it is kept the way a token is.
+NAMES = ("GH_TOKEN", "FORGEJO_API_TOKEN", "ALARM_WEBHOOK_URL")
 
 
 class SecretRefused(ValueError):

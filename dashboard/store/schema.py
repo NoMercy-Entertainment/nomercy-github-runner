@@ -240,6 +240,25 @@ CREATE TABLE IF NOT EXISTS alarm_labels (
   PRIMARY KEY (forge, label)
 );
 
+-- Each raise and resolve to be sent to ALARM_WEBHOOK_URL, once: the UNIQUE
+-- is the dedup, and a send that fails waits for `next_at` to try again.
+-- No column holds the URL.
+CREATE TABLE IF NOT EXISTS alarm_outbox (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  alarm_key  TEXT NOT NULL,
+  event      TEXT NOT NULL,
+  raised_at  TEXT NOT NULL,
+  payload    TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  attempts   INTEGER NOT NULL DEFAULT 0,
+  next_at    TEXT NOT NULL,
+  -- pending | sent | failed (gave up) | skipped (no webhook was set)
+  state      TEXT NOT NULL DEFAULT 'pending',
+  last_error TEXT,
+  done_at    TEXT,
+  UNIQUE (alarm_key, event, raised_at)
+);
+
 -- NFR-7: append-only, by the database rather than by convention. An
 -- operation's outcome is a row of its own, never an update to the row that
 -- accepted it.

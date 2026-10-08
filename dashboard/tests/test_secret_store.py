@@ -112,8 +112,8 @@ class TestWhatItRefuses:
         with pytest.raises(SecretRefused):
             SecretStore(plane).set("GH_TOKEN", value, "someone")
 
-    def test_it_holds_the_two_forge_tokens(self):
-        assert NAMES == ("GH_TOKEN", "FORGEJO_API_TOKEN")
+    def test_it_holds_the_two_forge_tokens_and_the_alarm_webhook(self):
+        assert NAMES == ("GH_TOKEN", "FORGEJO_API_TOKEN", "ALARM_WEBHOOK_URL")
 
 
 class TestDotEnvIsLeftAlone:

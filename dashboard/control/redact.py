@@ -69,8 +69,10 @@ def redact_mapping(value):
 # that returns a token by accident still returns it masked.
 
 #: Other deployment settings whose values are secret, beside the forge
-#: tokens in providers.REDACTED_FIELDS: the dashboard's own sign-in secret.
-EXTRA_SECRET_SETTINGS = frozenset({"OIDC_CLIENT_SECRET", "SECRET_KEY"})
+#: tokens in providers.REDACTED_FIELDS: the dashboard's own sign-in secret,
+#: and the alarm webhook, whose URL is enough to post as it (GitHub #11).
+EXTRA_SECRET_SETTINGS = frozenset({"OIDC_CLIENT_SECRET", "SECRET_KEY",
+                                   "ALARM_WEBHOOK_URL"})
 
 
 def secret_values(env):
