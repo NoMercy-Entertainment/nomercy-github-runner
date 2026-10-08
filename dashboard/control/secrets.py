@@ -114,16 +114,19 @@ class SecretStore:
 
     # ---- reading what is set, never what it is -------------------------------
 
-    def status(self):
+    def status(self, env=None):
         """Every secret this store holds, and whether it is set - without
-        its value, which no caller of this method ever needs."""
+        its value, which no caller of this method ever needs. `in_env` says
+        whether the deployment's environment supplies one too: that is what
+        is used while the store holds none."""
         with schema.connect(self.path) as c:
             rows = {r["name"]: dict(r) for r in c.execute(
                 "SELECT name, fingerprint, set_at, set_by FROM secrets")}
         return [{"name": n, "set": n in rows,
                  "fingerprint": rows.get(n, {}).get("fingerprint"),
                  "set_at": rows.get(n, {}).get("set_at"),
-                 "set_by": rows.get(n, {}).get("set_by")} for n in NAMES]
+                 "set_by": rows.get(n, {}).get("set_by"),
+                 "in_env": bool(str((env or {}).get(n) or "").strip())} for n in NAMES]
 
     # ---- for the controller's own use ----------------------------------------
 

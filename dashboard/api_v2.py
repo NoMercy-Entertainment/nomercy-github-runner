@@ -871,7 +871,7 @@ def secrets_status():
     if err:
         return err
     from control.secrets import SecretStore
-    return jsonify(secrets=SecretStore(_db_path()).status())
+    return jsonify(secrets=SecretStore(_db_path()).status(os.environ))
 
 
 @bp.route("/api/v2/secrets/<name>", methods=["POST"])

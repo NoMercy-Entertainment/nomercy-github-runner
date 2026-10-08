@@ -124,7 +124,7 @@ async function load() {
   maintenance=d.control_plane.maintenance;
   if(admin){document.getElementById('maintenance-state').textContent=maintenance?'Reconciliation paused':'Reconciliation enabled';document.getElementById('maintenance-toggle').textContent=maintenance?'Resume reconciliation':'Pause reconciliation';}
   document.getElementById('fleets').innerHTML=d.fleets.map(fleetForm).join('');
-  if(admin){const s=await api('/api/v2/secrets');document.getElementById('secrets').innerHTML=s.secrets.map(t=>`<form data-secret="${esc(t.name)}"><label for="${esc(t.name)}">${esc(t.name)} · ${t.set?'set '+esc(t.fingerprint):'not set'}</label><input id="${esc(t.name)}" type="password" autocomplete="new-password" required><button type="submit">Replace token</button></form>`).join('');}
+  if(admin){const s=await api('/api/v2/secrets');document.getElementById('secrets').innerHTML=s.secrets.map(t=>`<form data-secret="${esc(t.name)}"><label for="${esc(t.name)}">${esc(t.name)} · ${t.set?'set in Settings '+esc(t.fingerprint):t.in_env?'from the deployment environment':'not set'}</label><input id="${esc(t.name)}" type="password" autocomplete="new-password" required><button type="submit">Replace token</button></form>`).join('');}
 }
 document.addEventListener('submit',async ev=>{
   const form=ev.target;if(!form.dataset.fleet&&!form.dataset.secret)return;ev.preventDefault();

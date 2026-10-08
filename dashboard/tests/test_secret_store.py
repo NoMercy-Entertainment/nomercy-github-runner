@@ -44,7 +44,20 @@ class TestSetNeverReadBack:
         gh = next(s for s in client.get("/api/v2/secrets").get_json()[
             "secrets"] if s["name"] == "GH_TOKEN")
         assert gh["set"] is True and gh["set_at"] and gh["fingerprint"]
-        assert set(gh) == {"name", "set", "fingerprint", "set_at", "set_by"}
+        assert set(gh) == {"name", "set", "fingerprint", "set_at", "set_by", "in_env"}
+
+    def test_a_token_from_the_deployment_env_is_not_reported_missing(
+            self, client, plane, monkeypatch):
+        """The live tokens come from controller.env and dashboard.env, and the
+        panel said "not set" for both while every forge call worked
+        (2026-10-09). It says where a value comes from, never the value."""
+        monkeypatch.setenv("GH_TOKEN", "env-" + SENTINEL)
+        monkeypatch.delenv("FORGEJO_API_TOKEN", raising=False)
+        body = client.get("/api/v2/secrets").get_data(as_text=True)
+        assert SENTINEL not in body
+        status = {s["name"]: s for s in client.get("/api/v2/secrets").get_json()["secrets"]}
+        assert status["GH_TOKEN"]["in_env"] is True and status["GH_TOKEN"]["set"] is False
+        assert status["FORGEJO_API_TOKEN"]["in_env"] is False
 
     def test_no_api_answer_carries_it(self, client, plane):
         set_it(client)
