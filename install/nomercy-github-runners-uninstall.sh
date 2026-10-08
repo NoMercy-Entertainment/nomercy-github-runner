@@ -82,7 +82,12 @@ api_remove_() {
   # Not found means it is already gone - the outcome we wanted. That must be
   # distinguished from a failed lookup, which must NOT report success.
   if [ -z "$_id" ]; then
-    printf '%s' "$_json" | grep -q '"total_count"' && return 0
+    # Counted, not `grep -q`. Under pipefail, grep -q exits at the first match
+    # and printf takes SIGPIPE, so the pipeline reports 141 on a match. With a
+    # pretty-printed list of a hundred runners the payload exceeds the pipe
+    # buffer, and a perfectly good API response would have been read as a
+    # failed lookup - the exact distinction the comment above insists on.
+    [ "$(printf '%s' "$_json" | grep -c '"total_count"')" -gt 0 ] && return 0
     return 1
   fi
 
@@ -178,8 +183,11 @@ elif [ "$PLATFORM" = linux ]; then
     # -t 60 matters: Engine 29.x sets StopTimeout to 1s, which kills
     # deregistration mid-flight and orphans the registration.
     docker -H "unix://${SOCK}" stop -t 60 "$_r" >/dev/null 2>&1 || true
-    if docker -H "unix://${SOCK}" logs --tail 20 "$_r" 2>&1 |
-         grep -qE 'removal of runner .* succeeded|Runner removed successfully'; then
+    # Counted rather than `grep -qE`: on a match the pipeline reports 141 under
+    # pipefail, so a runner that HAD deregistered cleanly would fall through to
+    # the API path - and if that had no token, be reported as an orphan.
+    if [ "$(docker -H "unix://${SOCK}" logs --tail 20 "$_r" 2>&1 |
+         grep -cE 'removal of runner .* succeeded|Runner removed successfully')" -gt 0 ]; then
       ok_ "$_r ($_agent) deregistered"
     elif api_remove_ "$ORG" "${GH_TOKEN:-}" "$_agent"; then
       ok_ "$_r ($_agent) removed via the GitHub API"
@@ -228,7 +236,10 @@ if [ "$PLATFORM" = linux ]; then
   done
   docker -H "unix://${SOCK}" rm -f nomercy-runner-dashboard >/dev/null 2>&1 || true
 
-  if systemctl list-unit-files 2>/dev/null | grep -q "^${SERVICE_NAME}.service"; then
+  # Counted, not `grep -q`. This is the one that was caught in the wild: the
+  # uninstaller printed "No systemd service to remove" and left the isolated
+  # dockerd running against a data root it had just deleted.
+  if [ "$(systemctl list-unit-files 2>/dev/null | grep -c "^${SERVICE_NAME}.service")" -gt 0 ]; then
     systemctl stop "$SERVICE_NAME" >/dev/null 2>&1 || true
     systemctl disable "$SERVICE_NAME" >/dev/null 2>&1 || true
     rm -f "/etc/systemd/system/${SERVICE_NAME}.service"

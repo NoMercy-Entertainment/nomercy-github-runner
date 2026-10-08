@@ -1,0 +1,60 @@
+name: Lint installers
+
+on:
+  push:
+    paths:
+      - 'install/**'
+      - '.github/workflows/lint-installers.yml'
+  pull_request:
+    paths:
+      - 'install/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  shell:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Parse
+        run: |
+          for f in install/*.sh; do
+            bash -n "$f" || exit 1
+          done
+
+      # These scripts run with `set -o pipefail`, where `grep -q` exits at the
+      # first match, the producer takes SIGPIPE, and the pipeline reports 141.
+      # The test then reads FALSE exactly when there IS a match. It cost a
+      # uninstaller that reported "No systemd service to remove" and left the
+      # isolated dockerd running against a data root it had just deleted.
+      - name: No grep -q inside a pipeline
+        run: |
+          if grep -nE '\|[[:space:]]*grep[[:space:]]+-[A-Za-z]*q' install/*.sh; then
+            echo "::error::grep -q on the receiving end of a pipe inverts under pipefail. Use grep -c and compare."
+            exit 1
+          fi
+          echo "none found"
+
+      - name: Shellcheck
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
+          shellcheck -S error install/*.sh
+
+  powershell:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Parse
+        shell: pwsh
+        run: |
+          Get-ChildItem install/*.ps1 | ForEach-Object {
+            $errors = $null
+            [System.Management.Automation.Language.Parser]::ParseFile(
+              $_.FullName, [ref]$null, [ref]$errors) | Out-Null
+            if ($errors) { $errors | ForEach-Object { Write-Error $_ }; exit 1 }
+            Write-Host "ok $($_.Name)"
+          }
