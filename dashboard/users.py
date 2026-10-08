@@ -17,6 +17,7 @@ event to notice.
 
 import json
 import os
+import sys
 import threading
 import time
 
@@ -32,29 +33,43 @@ def _now():
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
 
+class Unreadable(Exception):
+    """The list is there but cannot be read: nothing may be granted from it,
+    and nothing may be written over it. Restore it by hand."""
+
+
 def _load():
     """The store, always with both sections present.
 
-    A missing or unreadable file reads as empty rather than raising: an empty
-    allowlist denies everyone, which is the safe direction to fail in. With no
-    admin left, the next sign-in becomes one and rebuilds the list from there.
+    Only a missing file reads as empty, which is the bootstrap: the next
+    sign-in becomes admin. A file that is there but cannot be opened, parsed
+    or understood raises Unreadable instead. It used to read as empty too,
+    and an empty list has no admin, so the next person to sign in was made
+    admin and the real list was saved over (audit AUD-9312).
     """
     try:
         with open(PATH, encoding="utf-8") as fh:
             data = json.load(fh)
-        if not isinstance(data, dict):
-            data = {}
-    except Exception:      # noqa: BLE001 - absence is not an error
+    except FileNotFoundError:
         data = {}
+    except (OSError, ValueError) as error:
+        raise Unreadable(f"{PATH}: {error}") from error
+    if not isinstance(data, dict) or not all(
+            isinstance(data.get(k, {}), dict) for k in ("users", "pending")):
+        raise Unreadable(f"{PATH}: not an allowlist")
     data.setdefault("users", {})
     data.setdefault("pending", {})
     return data
 
 
+def _refused(error):
+    print(f"[users] access refused: {error}", file=sys.stderr, flush=True)
+
+
 def _save(data):
     # Written to a sibling and renamed: a crash mid-write would otherwise
-    # leave truncated JSON, which reads as an empty allowlist and locks
-    # everyone out including the owner.
+    # leave truncated JSON, which is Unreadable and locks everyone out,
+    # the owner included, until it is restored by hand.
     tmp = PATH + ".tmp"
     with open(tmp, "w", encoding="utf-8") as fh:
         json.dump(data, fh, indent=2, sort_keys=True)
@@ -82,9 +97,16 @@ def sign_in(sub, preferred_username, display_name):
     all - and because the alternative, a seeded owner, was a setting nobody
     wanted to maintain. Once an admin exists this branch is closed until
     every admin has been revoked.
+
+    A list that is there but unreadable answers None to everyone, and is
+    left exactly as it was.
     """
     with _lock:
-        data = _load()
+        try:
+            data = _load()
+        except Unreadable as error:
+            _refused(error)
+            return None
 
         known = data["users"].get(sub)
         if known:
@@ -119,7 +141,11 @@ def role_of(sub):
     """
     if not sub:
         return None
-    return _load()["users"].get(sub, {}).get("role")
+    try:
+        return _load()["users"].get(sub, {}).get("role")
+    except Unreadable as error:
+        _refused(error)
+        return None
 
 
 def approve(sub, role):

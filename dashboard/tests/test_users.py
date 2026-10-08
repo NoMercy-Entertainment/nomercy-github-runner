@@ -123,3 +123,71 @@ def test_a_revoked_user_signing_in_again_does_not_regain_access(store):
     store.approve("sub-mate", "operator")
     store.revoke("sub-mate")
     assert store.sign_in("sub-mate", "mate", "A Mate") is None
+
+
+# ------------------------------------------------- a damaged list fails closed
+#
+# Only a missing file is an empty list. One that is there but cannot be read
+# used to read as empty too, so the next person to sign in became admin and
+# the real list was written over (audit AUD-9312).
+
+@pytest.fixture
+def damaged(store):
+    """A list with its admin, then broken; each test breaks it its own way."""
+    path = store.PATH
+
+    def damage(content):
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(content)
+        with open(path, "rb") as fh:
+            return fh.read()
+    return store, damage
+
+
+@pytest.mark.parametrize("content", [
+    '{"users": {"sub-admin": {"role": "admin"',     # truncated
+    "[]",                                            # not an object
+    '{"users": [], "pending": {}}',                  # wrong shape inside
+    "",                                              # emptied
+])
+def test_a_damaged_list_makes_nobody_admin_and_is_not_written_over(damaged, content):
+    store, damage = damaged
+    before = damage(content)
+    assert store.sign_in("sub-stranger", "stranger", "A Stranger") is None
+    assert store.role_of("sub-stranger") is None
+    with open(store.PATH, "rb") as fh:
+        assert fh.read() == before
+
+
+def test_a_damaged_list_grants_nobody_anything(damaged):
+    store, damage = damaged
+    damage('{"users": {')
+    assert store.role_of("sub-admin") is None
+
+
+def test_changes_to_a_damaged_list_are_refused(damaged):
+    store, damage = damaged
+    before = damage("{not json")
+    for change in (lambda: store.approve("sub-x", "viewer"),
+                   lambda: store.deny("sub-x"),
+                   lambda: store.revoke("sub-admin"),
+                   store.pending, store.list_users):
+        with pytest.raises(store.Unreadable):
+            change()
+    with open(store.PATH, "rb") as fh:
+        assert fh.read() == before
+
+
+def test_a_list_that_cannot_be_opened_fails_closed(fresh, tmp_path):
+    """A directory where the file should be stands in for a permission or
+    I/O error: it is there, and it cannot be read."""
+    import os
+    os.mkdir(fresh.PATH)
+    assert fresh.sign_in("sub-stranger", "stranger", "A Stranger") is None
+    assert os.path.isdir(fresh.PATH)
+
+
+def test_a_missing_list_is_still_the_bootstrap(fresh):
+    import os
+    assert not os.path.exists(fresh.PATH)
+    assert fresh.sign_in("sub-phill", "phill", "Phil") == "admin"
