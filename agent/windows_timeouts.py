@@ -17,7 +17,9 @@ def service_identity_timeout(architecture=None):
 def registration_limits(architecture=None):
     architecture = (architecture or platform.machine()).lower()
     if architecture in ("arm64", "aarch64"):
-        return {"key_setup": 600, "script": 900, "pipe": 915, "client": 940}
+        # The pipe waits for the job host to start (minutes under TCG) and
+        # then for the whole script, so it needs both (2026-10-08).
+        return {"key_setup": 600, "script": 900, "pipe": 1600, "client": 1650}
     return {"key_setup": 30, "script": 105, "pipe": 115, "client": 140}
 
 

@@ -89,3 +89,16 @@ def test_service_identity_remains_required_with_architecture_deadline(monkeypatc
                         subprocess.CompletedProcess(a[0], 0, '"SYSTEM","S-1-5-18"', ''))
     with pytest.raises(RuntimeError, match='own service virtual account'):
         registration.require_service_identity(RID)
+
+
+def test_arm_pipe_leaves_room_for_the_service_to_start_before_the_script():
+    """The pipe deadline runs from the moment the client starts waiting, so it
+    has to hold the job host's start (PowerShell alone took 230 s under TCG)
+    and then the whole script. At 915 s it did not: github-windows-arm64-1's
+    recreate on 2026-10-08 failed with "registration service did not answer"
+    as config.cmd was only starting. Everything still ends inside the
+    controller's own deadline for the verb."""
+    from .dashboard_deadline import CONTROLLER_DEADLINE
+    arm = windows_timeouts.registration_limits('arm64')
+    assert arm['pipe'] >= arm['script'] + 600
+    assert arm['pipe'] < arm['client'] < CONTROLLER_DEADLINE
