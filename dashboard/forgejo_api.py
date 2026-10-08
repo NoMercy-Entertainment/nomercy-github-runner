@@ -111,6 +111,29 @@ class Forgejo:
             return None
         return [r for r in data if isinstance(r, dict) and r.get("uuid")]
 
+    #: Forgejo's default MAX_RESPONSE_ITEMS. A larger limit is cut to it
+    #: silently, so a page is this long and asking for 100 reads 50.
+    PAGE = 50
+
+    def all_runners(self):
+        """Every runner the token's user can see, every page of them, or
+        None when any page could not be read - never a short list, which
+        would read as runners removed (GitHub #11). A server that ignores
+        the page parameter answers the first page again; that is the end."""
+        out, seen, page = [], set(), 1
+        while True:
+            data = self._get("/api/v1/user/actions/runners",
+                             {"limit": self.PAGE, "page": page})
+            if not isinstance(data, list):
+                return None
+            fresh = [r for r in data if isinstance(r, dict) and r.get("uuid")
+                     and r["uuid"] not in seen]
+            seen.update(r["uuid"] for r in fresh)
+            out += fresh
+            if len(data) < self.PAGE or not fresh or page >= 100:
+                return out
+            page += 1
+
     def runner_ids(self):
         """{uuid: id}, for deregistration. None if the call failed."""
         data = self._get("/api/v1/user/actions/runners", {"limit": 100})

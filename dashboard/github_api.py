@@ -28,22 +28,61 @@ class GitHub:
         self.org = org
         self._repo_cache = None
         self._repo_cache_at = None
+        #: What GitHub last said is left of this token's hourly budget, and
+        #: when it refills (epoch seconds) - None until an answer said so.
+        #: Every reader shares the one token, so the alarm monitor reads this
+        #: and stops before it spends what the controller needs (GitHub #11).
+        self.rate_remaining = None
+        self.rate_reset = None
+        #: url -> (etag, answer), for questions asked again and again. A 304
+        #: does not count against the rate limit.
+        self._etags = {}
 
     # ----------------------------------------------------------------- http
-    def _get(self, path, params=None):
-        url = API + path
-        if params:
-            url += "?" + urllib.parse.urlencode(params)
-        req = urllib.request.Request(url, headers={
+    def _headers(self, **extra):
+        return dict({
             "Authorization": f"Bearer {self.token}",
             "Accept": "application/vnd.github+json",
             "X-GitHub-Api-Version": "2022-11-28",
             "User-Agent": "nomercy-runner-dashboard",
-        })
+        }, **extra)
+
+    def _note_rate(self, headers):
+        """Keep what an answer - or a refusal - says of the rate limit."""
+        try:
+            remaining = headers.get("X-RateLimit-Remaining")
+            reset = headers.get("X-RateLimit-Reset")
+        except Exception:   # noqa: BLE001 - no headers is no news
+            return
+        if remaining is not None and str(remaining).strip().isdigit():
+            self.rate_remaining = int(str(remaining).strip())
+        if reset is not None and str(reset).strip().isdigit():
+            self.rate_reset = int(str(reset).strip())
+
+    def _get(self, path, params=None, conditional=False):
+        """GET and parse, or None. `conditional` sends the ETag of the last
+        answer to the same URL and takes a 304 as that answer again."""
+        url = API + path
+        if params:
+            url += "?" + urllib.parse.urlencode(params)
+        cached = self._etags.get(url) if conditional else None
+        extra = {"If-None-Match": cached[0]} if cached else {}
+        req = urllib.request.Request(url, headers=self._headers(**extra))
         try:
             with urllib.request.urlopen(req, timeout=20) as r:
-                return json.loads(r.read().decode())
+                headers = getattr(r, "headers", None) or {}
+                self._note_rate(headers)
+                data = json.loads(r.read().decode())
+                etag = headers.get("ETag")
+                if conditional and etag:
+                    if len(self._etags) >= 2000:
+                        self._etags.clear()
+                    self._etags[url] = (etag, data)
+                return data
         except urllib.error.HTTPError as e:
+            self._note_rate(e.headers or {})
+            if e.code == 304 and cached:
+                return cached[1]
             # 404 on a repo without Actions is normal, not worth logging.
             if e.code not in (404,):
                 print(f"[github] {e.code} {path}")
@@ -51,6 +90,25 @@ class GitHub:
         except Exception as e:  # noqa: BLE001
             print(f"[github] {path}: {e}")
             return None
+
+    def _pages(self, path, key=None, params=None, per_page=100, max_pages=50,
+               conditional=False):
+        """Every item of a paginated list - under `key`, or the answer itself
+        when it is a bare list - or None when any page could not be read.
+        Never a short list for a failure."""
+        out, page = [], 1
+        while True:
+            query = dict(params or {}, per_page=per_page, page=page)
+            data = (self._get(path, query, conditional=True) if conditional
+                    else self._get(path, params=query))
+            items = data if key is None else (
+                data.get(key) if isinstance(data, dict) else None)
+            if not isinstance(items, list):
+                return None
+            out += [item for item in items if isinstance(item, dict)]
+            if len(items) < per_page or page >= max_pages:
+                return out
+            page += 1
 
     def _post(self, path):
         """A POST with no body, returning the parsed answer or None.
@@ -367,9 +425,8 @@ class GitHub:
         GitHub reports it offline is the visible shape of a registration that
         broke silently.
         """
-        data = self._get(f"/orgs/{self.org}/actions/runners",
-                         params={"per_page": 100})
-        if data is None:
+        runners = self.all_runners()
+        if runners is None:
             # The runners call itself failed - distinct from "no runners
             # exist". Callers must not treat this the same as an empty org.
             return None
@@ -393,17 +450,63 @@ class GitHub:
                             if rid:
                                 runner_to_group[rid] = group_name
 
-        out = []
-        for r in data.get("runners", []):
-            rid = r.get("id")
-            out.append({
-                "id": rid,
-                "name": r.get("name", ""),
-                "status": r.get("status", ""),
-                "busy": bool(r.get("busy")),
-                "os": r.get("os", ""),
-                "version": r.get("version", ""),
-                "labels": [l.get("name", "") for l in r.get("labels", [])],
-                "runner_group": runner_to_group.get(rid, ""),
-            })
+        return [dict(r, runner_group=runner_to_group.get(r["id"], ""))
+                for r in runners]
+
+    def all_runners(self):
+        """Every self-hosted runner of the org, every page of them, without
+        their groups - or None when any page could not be read. One call per
+        hundred runners: what the alarm monitor asks every minute."""
+        data = self._pages(f"/orgs/{self.org}/actions/runners", "runners")
+        if data is None:
+            return None
+        return [{
+            "id": r.get("id"),
+            "name": r.get("name", ""),
+            "status": r.get("status", ""),
+            "busy": bool(r.get("busy")),
+            "os": r.get("os", ""),
+            "version": r.get("version", ""),
+            "labels": [l.get("name", "") for l in r.get("labels", [])
+                       if isinstance(l, dict)],
+        } for r in data]
+
+    # ------------------------------------------------------- queued work
+    def org_repos(self):
+        """Every repository of the org that can still run a workflow - not
+        archived, not disabled - by full name, or None when any page could
+        not be read."""
+        data = self._pages(f"/orgs/{self.org}/repos", None,
+                           {"type": "all", "sort": "full_name"}, conditional=True)
+        if data is None:
+            return None
+        return [r["full_name"] for r in data if r.get("full_name")
+                and not r.get("archived") and not r.get("disabled")]
+
+    #: Run states in which a job can still be waiting for a runner. A run
+    #: whose first job finished on a hosted runner is in_progress while its
+    #: next job waits for a self-hosted one - which is how a job for the only
+    #: xcode runner waits (2026-09-30).
+    WAITING_RUN_STATES = ("queued", "in_progress")
+
+    def waiting_runs(self, repo):
+        """A repository's runs that can hold a waiting job, or None when
+        either list could not be read. Asked conditionally: an unchanged
+        list costs nothing of the rate limit."""
+        out, seen = [], set()
+        for status in self.WAITING_RUN_STATES:
+            runs = self._pages(f"/repos/{repo}/actions/runs", "workflow_runs",
+                               {"status": status}, max_pages=3, conditional=True)
+            if runs is None:
+                return None
+            for run in runs:
+                if run.get("id") not in seen:
+                    seen.add(run.get("id"))
+                    out.append(run)
         return out
+
+    def run_jobs(self, repo, run_id):
+        """A run's jobs, with their status and the labels each asks for, or
+        None when they could not be read."""
+        return self._pages(f"/repos/{repo}/actions/runs/{run_id}/jobs", "jobs",
+                           max_pages=5, conditional=True)
