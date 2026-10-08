@@ -160,10 +160,10 @@ class AlarmBook:
             detail = json.loads(row["detail"]) if row["detail"] else {}
             self._record(key, row["kind"], row["forge"], row["subject"], detail,
                          row["since"], row["raised_at"], "resolved", reason,
-                         resolved_at=iso(now))
+                         resolved_at=iso(now), acked_by=row["acked_by"])
 
     def _record(self, key, kind, forge, subject, detail, since, raised_at,
-                event, reason, resolved_at=None):
+                event, reason, resolved_at=None, acked_by=None, actor=ACTOR):
         """A raise or a resolve, held until the watch change is committed;
         `_flush` then writes the audit row and tells the listeners. An audit
         that cannot be written loses the record, never the alarm."""
@@ -174,6 +174,7 @@ class AlarmBook:
                               "forge": forge, "subject": subject, "detail": detail,
                               "since": since, "raised_at": raised_at,
                               "resolved_at": resolved_at, "reason": reason,
+                              "acknowledged_by": acked_by, "actor": actor,
                               "message": text})
 
     def _flush(self):
@@ -181,7 +182,8 @@ class AlarmBook:
         for event in events:
             try:
                 from control import audit
-                audit.record(self.path, "alarm", event["event"], actor=ACTOR,
+                audit.record(self.path, "alarm", event["event"],
+                             actor=event.get("actor") or ACTOR,
                              parameters={"alarm": event["key"], "kind": event["kind"],
                                          "forge": event["forge"]},
                              outcome=event["message"])
@@ -197,6 +199,29 @@ class AlarmBook:
     def _begin(self):
         self._pending = []
         return schema.connect(self.path)
+
+    # ---- an admin's acknowledgement ---------------------------------------
+
+    def acknowledge(self, key, actor, now):
+        """Mark one alarm acknowledged by `actor`; False when there is no
+        such alarm. Nothing more is sent about it - a raise still waiting in
+        the outbox included - and it clears when the alarm resolves."""
+        with _WRITE, self._begin() as c:
+            row = c.execute("SELECT * FROM alarm_watch WHERE alarm_key=?",
+                            (key,)).fetchone()
+            if row is None:
+                return False
+            c.execute("UPDATE alarm_watch SET acked_by=?, acked_at=? WHERE alarm_key=?",
+                      (actor, iso(now), key))
+            c.execute("UPDATE alarm_outbox SET state='skipped', done_at=?, last_error="
+                      "'acknowledged' WHERE alarm_key=? AND state='pending'",
+                      (iso(now), key))
+            detail = json.loads(row["detail"]) if row["detail"] else {}
+            self._record(key, row["kind"], row["forge"], row["subject"], detail,
+                         row["since"], row["raised_at"], "acknowledged", None,
+                         acked_by=actor, actor=actor)
+        self._flush()
+        return True
 
     # ---- the monitor itself ----------------------------------------------
 
@@ -580,6 +605,8 @@ class Monitor:
             rows, cfg = [dict(r) for r in self._rows], dict(self._cfg)
         for row in rows:
             row["for"] = duration(now - (epoch(row["since"]) or now))
+        acknowledged = [r for r in rows if r.get("acked_at")]
+        rows = [r for r in rows if not r.get("acked_at")]
         active = [r for r in rows if r["raised_at"] and r["kind"] != "monitor"]
 
         def shown(r):
@@ -599,7 +626,7 @@ class Monitor:
                                  "for": duration(now - last), "detail": {"why": why},
                                  "message": f"alarm monitor has not checked since "
                                             f"{since}: {why}"})
-        return {"alarms": active, "degraded": degraded,
+        return {"alarms": active, "degraded": degraded, "acknowledged": acknowledged,
                 "pending": [r for r in rows
                             if not r["raised_at"] and r["kind"] != "monitor"] + young,
                 "monitor": {"started_at": iso(self.started_at) if self.started_at else None,

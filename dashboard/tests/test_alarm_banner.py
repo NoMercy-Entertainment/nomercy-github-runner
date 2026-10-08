@@ -72,14 +72,26 @@ class TestTheBanner:
         assert "offline since 2026-" in banner
 
     def test_it_cannot_be_dismissed(self, client, raised):
+        as_role("viewer")
         html = client.get("/").get_data(as_text=True)
         banner = html[html.index('id="alarm-banner"'):]
         banner = banner[:banner.index("</section>")]
         assert "<button" not in banner and "close" not in banner.lower()
+        assert "dismiss" not in banner.lower()
+
+    def test_only_an_admin_is_offered_acknowledge(self, client, raised):
+        html = client.get("/").get_data(as_text=True)
+        banner = html[html.index('id="alarm-banner"'):]
+        banner = banner[:banner.index("</section>")]
+        assert 'data-ack="runner:github:5">Acknowledge</button>' in banner
+        as_role("operator")
+        html = client.get("/").get_data(as_text=True)
+        banner = html[html.index('id="alarm-banner"'):]
+        assert "Acknowledge</button>" not in banner[:banner.index("</section>")]
 
     def test_hidden_when_there_is_nothing(self, client, quiet):
         html = client.get("/").get_data(as_text=True)
-        assert 'id="alarm-banner" class="alarm-banner" role="alert" aria-label="Alarms" hidden' \
+        assert 'id="alarm-banner" class="alarm-banner quiet" role="alert" aria-label="Alarms" hidden' \
             in html
 
     def test_a_viewer_sees_it_too(self, client, raised):

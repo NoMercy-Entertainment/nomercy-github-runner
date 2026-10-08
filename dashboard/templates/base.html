@@ -171,55 +171,91 @@ dialog#confirm.is-danger{border-color:var(--alert-dk)}
 dialog#confirm.is-danger .dlg-t{color:var(--alert)}
 
 /* Alarms (GitHub #11). Red, at the top of every page, and with nothing to
-   close it: an alarm leaves when its condition does. */
+   close it: an alarm leaves when its condition does. One an admin has
+   acknowledged stays listed, grey and folded away. */
 .alarm-banner{border:1px solid var(--alert);border-left:4px solid var(--alert);
   background:var(--alert-dk);color:var(--text);border-radius:var(--radius-small);
   padding:12px 16px;margin-bottom:var(--space-5);font-size:var(--type-body)}
+.alarm-banner.quiet{border-color:var(--rule-hot);background:var(--bg-panel);color:var(--text-dim)}
 .alarm-banner[hidden]{display:none}
 .alarm-banner h2{font-size:var(--type-body);font-weight:700;margin-bottom:var(--space-1)}
 .alarm-banner ul{list-style:none;display:grid;gap:var(--space-1)}
 .alarm-banner .for{color:var(--text-dim)}
 .alarm-banner a{font-weight:600}
+.alarm-banner details{color:var(--text-dim);margin-top:var(--space-1)}
+.alarm-banner details summary{cursor:pointer;font-weight:600}
+.alarm-banner button{min-height:28px;padding:3px 8px;margin-left:6px}
 
 {% block style %}{% endblock %}
 </style>
 </head>
 <body>
-{% if alarm_view %}{% set alarm_items = alarm_view.alarms + alarm_view.degraded %}
-<section id="alarm-banner" class="alarm-banner" role="alert" aria-label="Alarms"{% if not alarm_items %} hidden{% endif %}>
+{% if alarm_view %}{% set alarm_items = alarm_view.alarms + alarm_view.degraded %}{% set alarm_acked = alarm_view.acknowledged or [] %}
+<section id="alarm-banner" class="alarm-banner{% if not alarm_items %} quiet{% endif %}" role="alert" aria-label="Alarms"{% if not alarm_items and not alarm_acked %} hidden{% endif %}>
 {%- if alarm_items %}<h2>{{ alarm_items|length }} active alarm{{ '' if alarm_items|length == 1 else 's' }}</h2><ul>
 {%- for a in alarm_items %}<li><b>{{ a.subject }}</b> · {{ a.message }} <span class="for">({{ a['for'] }})</span>
-{%- if a.detail and a.detail.url and (a.detail.url.startswith('https://') or a.detail.url.startswith('http://')) %} <a href="{{ a.detail.url }}" rel="noopener" target="_blank">open</a>{% endif %}</li>
+{%- if a.detail and a.detail.url and (a.detail.url.startswith('https://') or a.detail.url.startswith('http://')) %} <a href="{{ a.detail.url }}" rel="noopener" target="_blank">open</a>{% endif %}
+{%- if role == 'admin' %}<button type="button" data-ack="{{ a.alarm_key }}">Acknowledge</button>{% endif %}</li>
 {%- endfor %}</ul>{% endif -%}
+{%- if alarm_acked %}<details><summary>{{ alarm_acked|length }} acknowledged</summary><ul>
+{%- for a in alarm_acked %}<li><b>{{ a.subject }}</b> · {{ a.message }} <span class="for">({{ a['for'] }}; acknowledged by {{ a.acked_by }} at {{ a.acked_at }})</span></li>
+{%- endfor %}</ul></details>{% endif -%}
 </section>
 <script>
 // The banner's content, drawn again from /api/v2/alarms every 30 s. The
 // same markup the server drew: what the monitor last published, escaped,
 // a link only when it is http(s).
-function alarmBanner(view) {
+function alarmBanner(view, admin = false) {
   const esc = v => String(v ?? '').replace(/[&<>"']/g, c => '&#' + c.charCodeAt(0) + ';');
   const items = [...(view.alarms || []), ...(view.degraded || [])];
-  if (!items.length) return {count: 0, html: ''};
-  const rows = items.map(a => {
-    const url = a.detail && a.detail.url;
-    const link = /^https?:\/\//.test(url || '') ? ` <a href="${esc(url)}" rel="noopener" target="_blank">open</a>` : '';
-    return `<li><b>${esc(a.subject)}</b> · ${esc(a.message)} <span class="for">(${esc(a['for'])})</span>${link}</li>`;
-  }).join('');
-  return {count: items.length,
-          html: `<h2>${items.length} active alarm${items.length === 1 ? '' : 's'}</h2><ul>${rows}</ul>`};
+  const acked = view.acknowledged || [];
+  let html = '';
+  if (items.length) {
+    const rows = items.map(a => {
+      const url = a.detail && a.detail.url;
+      const link = /^https?:\/\//.test(url || '') ? ` <a href="${esc(url)}" rel="noopener" target="_blank">open</a>` : '';
+      const ack = admin ? `<button type="button" data-ack="${esc(a.alarm_key)}">Acknowledge</button>` : '';
+      return `<li><b>${esc(a.subject)}</b> · ${esc(a.message)} <span class="for">(${esc(a['for'])})</span>${link}${ack}</li>`;
+    }).join('');
+    html += `<h2>${items.length} active alarm${items.length === 1 ? '' : 's'}</h2><ul>${rows}</ul>`;
+  }
+  if (acked.length) {
+    const rows = acked.map(a => `<li><b>${esc(a.subject)}</b> · ${esc(a.message)} <span class="for">(${esc(a['for'])}; acknowledged by ${esc(a.acked_by)} at ${esc(a.acked_at)})</span></li>`).join('');
+    html += `<details><summary>${acked.length} acknowledged</summary><ul>${rows}</ul></details>`;
+  }
+  return {count: items.length, acked: acked.length, html};
 }
 // end alarmBanner
 (function () {
   const banner = document.getElementById('alarm-banner');
+  const admin = {{ (role == 'admin')|tojson }};
+  function draw(view) {
+    const drawn = alarmBanner(view, admin);
+    const open = banner.querySelector('details')?.open;
+    banner.innerHTML = drawn.html;
+    if (open && banner.querySelector('details')) banner.querySelector('details').open = true;
+    banner.classList.toggle('quiet', drawn.count === 0);
+    banner.hidden = drawn.count === 0 && drawn.acked === 0;
+  }
   async function refresh() {
     try {
       const r = await fetch('/api/v2/alarms', {credentials: 'same-origin'});
       if (!r.ok) return;
-      const drawn = alarmBanner(await r.json());
-      banner.innerHTML = drawn.html;
-      banner.hidden = drawn.count === 0;
+      draw(await r.json());
     } catch (e) { /* keep what is shown; the next refresh tries again */ }
   }
+  banner.addEventListener('click', async ev => {
+    const key = ev.target.dataset && ev.target.dataset.ack;
+    if (!key) return;
+    const yes = await confirmDialog({title: 'Acknowledge this alarm?',
+      body: 'It stays listed, greyed, and nothing more is sent about it until it resolves.',
+      confirm: 'Acknowledge', danger: false});
+    if (!yes) return;
+    await fetch('/api/v2/alarms/' + encodeURIComponent(key).replace(/%3A/g, ':') + '/ack',
+                {method: 'POST', credentials: 'same-origin',
+                 headers: {'Content-Type': 'application/json'}, body: '{}'});
+    refresh();
+  });
   setInterval(refresh, 30000);
 })();
 </script>

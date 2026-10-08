@@ -348,6 +348,9 @@ def guard():
         return _forbid("Settings are not available with read-only access.")
     elif request.method == "POST" and role == "viewer":
         return _forbid("Your access is read-only.")
+    elif request.method == "POST" and path.startswith("/api/v2/alarms/") \
+            and role != "admin":
+        return _forbid("Acknowledging an alarm needs the admin role.")
     elif destroys(request.method, path) and role != "admin":
         return _refuse_destroy(role, path)
     return None

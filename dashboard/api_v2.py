@@ -823,6 +823,23 @@ def alarm_list():
     return jsonify(alarms.snapshot())
 
 
+@bp.route("/api/v2/alarms/<path:key>/ack", methods=["POST"])
+def alarm_ack(key):
+    """An admin acknowledges one alarm (admin only, in app.guard): it stays
+    listed, greyed, nothing more is sent, and it clears when the alarm
+    resolves. Audited with who."""
+    path = _db_path()
+    if not os.path.exists(path):
+        return _refuse(503, "the control plane has not run yet")
+    import alarms
+    book = alarms.AlarmBook(path)
+    if not book.acknowledge(key, requested_by(), time.time()):
+        return _refuse(404, "no such alarm; it may have resolved")
+    monitor = alarms.MONITOR
+    monitor.publish(book, monitor.view()["thresholds"])
+    return jsonify(ok=True)
+
+
 @bp.route("/api/v2/audit")
 def audit_log():
     """What was asked, by whom, and what became of it - refusals included.

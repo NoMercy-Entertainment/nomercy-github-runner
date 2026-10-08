@@ -37,7 +37,10 @@ def _now_of(event):
 
 
 def enqueue(path, event, now=None):
-    """One outbox row for a raise or a resolve; a second is ignored."""
+    """One outbox row for a raise or a resolve; a second is ignored. An
+    acknowledgement is not sent, and neither is anything after one."""
+    if event.get("event") not in ("raised", "resolved") or event.get("acknowledged_by"):
+        return
     now = _now_of(event) if now is None else now
     with schema.connect(path) as c:
         c.execute("INSERT OR IGNORE INTO alarm_outbox (alarm_key, event, raised_at,"

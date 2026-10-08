@@ -229,7 +229,11 @@ CREATE TABLE IF NOT EXISTS alarm_watch (
   subject    TEXT NOT NULL,
   detail     TEXT,
   since      TEXT NOT NULL,
-  raised_at  TEXT
+  raised_at  TEXT,
+  -- An admin's acknowledgement: the alarm stays listed, greyed, and nothing
+  -- more is sent. It goes with the row when the alarm resolves.
+  acked_by   TEXT,
+  acked_at   TEXT
 );
 -- Every label a self-hosted runner of a forge has ever carried. A job that
 -- asks for a label none ever had is a hosted runner's job, not ours.
@@ -309,6 +313,12 @@ def _migrate(c):
         if column not in audit:
             # T-1802, design 18.4. Nullable: rows written before had none.
             c.execute(f"ALTER TABLE audit ADD COLUMN {column} TEXT")
+
+    watch = {r[1] for r in c.execute("PRAGMA table_info(alarm_watch)")}
+    for column in ("acked_by", "acked_at"):
+        # GitHub #11. Nullable: an alarm nobody acknowledged has neither.
+        if column not in watch:
+            c.execute(f"ALTER TABLE alarm_watch ADD COLUMN {column} TEXT")
 
     have = {r[1] for r in c.execute("PRAGMA table_info(runner_specs)")}
     if "memory_swap_limit" not in have:
