@@ -69,7 +69,9 @@ function Invoke-GuestPs([string] $Command) {
 try {
     & git -C $repo archive --format=tar -o $tar HEAD agent
     if ($LASTEXITCODE -ne 0) { throw 'git archive failed' }
-    & $scp -F $sshConfig -o BatchMode=yes $tar 'guest:rnr-agent.tar'
+    # -O: the classic protocol. rnr-windows-1's sftp subsystem closes the
+    # connection, and nothing here needs sftp.
+    & $scp -O -F $sshConfig -o BatchMode=yes $tar 'guest:rnr-agent.tar'
     if ($LASTEXITCODE -ne 0) { throw "Copying the agent into $Name failed." }
 
     $swap = @"
