@@ -69,7 +69,8 @@ TEMPLATE_FILES = ("run.cmd", "register.ps1", "deregister.ps1")
 
 #: GitHub's job hooks (#7): each variable and the script it names, in the
 #: runner's reg directory under `hooks\`. Every create copies the agent's own
-#: copy there, `run_hook.js` and `runner_disk.py` beside them, so a
+#: copy there, `run_hook.js`, `runner_disk.py` and `runner_guard.py` (the
+#: Linux unit's origin check, byte for byte) beside them, so a
 #: redeployed agent and a recreated runner are all a change to them needs -
 #: and a deploy, which swaps the agent's folder away, never leaves a job
 #: without its hook. GitHub runs a hook only when its path ends in .js, .sh or
@@ -77,7 +78,7 @@ TEMPLATE_FILES = ("run.cmd", "register.ps1", "deregister.ps1")
 HOOK_SOURCE = Path(__file__).resolve().parents[1] / "hooks" / "windows"
 HOOK_SCRIPTS = {"ACTIONS_RUNNER_HOOK_JOB_STARTED": "job-started.js",
                 "ACTIONS_RUNNER_HOOK_JOB_COMPLETED": "job-completed.js"}
-HOOK_FILES = ("run_hook.js", "runner_disk.py", *HOOK_SCRIPTS.values())
+HOOK_FILES = ("run_hook.js", "runner_disk.py", "runner_guard.py", *HOOK_SCRIPTS.values())
 
 #: The file that asks the job host to drain the runner (see agent/jobhost.py).
 DRAIN_REQUEST = "drain.request"

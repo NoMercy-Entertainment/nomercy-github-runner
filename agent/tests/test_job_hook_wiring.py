@@ -69,6 +69,7 @@ class TestWindows:
             assert host.read_text(ntpath.join(hooks, name)) == source, name
         assert "runner_disk.py" in windows_process.HOOK_FILES
         assert "run_hook.js" in windows_process.HOOK_FILES
+        assert "runner_guard.py" in windows_process.HOOK_FILES
 
     def test_a_create_driven_again_puts_the_current_hooks_back(self, runtime, host):
         self.env(runtime, host, "github")

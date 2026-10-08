@@ -1,5 +1,10 @@
-"""The Windows runner's job hooks: make sure there is room for a job before it
-starts, and clear the runner's temp once it has ended.
+"""The Windows runner's job hooks: refuse code from outside the org and make
+sure there is room for a job before it starts, and clear the runner's temp
+once it has ended.
+
+First, whose code it is: runner_guard.py, beside this file and the Linux
+unit's own byte for byte, refuses a pull request from a fork whose author is
+not an org member or a trusted maintainer, before the disk is looked at.
 
 A full disk crashed a runner mid-release with nothing useful in its log
 (GitHub #7). Before each job this measures the volume under the runner's work
@@ -22,6 +27,7 @@ with junctions; a link is removed as a link, never walked into.
 Exit status: 0 to let the job run, REFUSE to fail it on purpose. A fault in
 this hook itself is reported as a warning and never fails a job.
 """
+import importlib.util
 import os
 import shutil
 import stat
@@ -41,6 +47,10 @@ KEPT_PREFIXES = ("_", ".")
 KEPT_IN_TEMP = ("_runner_file_commands",)
 
 _REPARSE_POINT = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+
+#: Loaded by path: the hook runs Python with -I, which leaves this file's own
+#: directory off sys.path.
+GUARD = os.path.join(os.path.dirname(os.path.abspath(__file__)), "runner_guard.py")
 
 
 def _free_bytes(path):
@@ -191,7 +201,23 @@ def check_disk(paths, env, free_bytes=_free_bytes, cleanup=lambda: None,
     return 0
 
 
+def check_origin(env, guard=None):
+    """runner_guard.check: 0 or REFUSE. A guard that cannot be loaded lets
+    the job run, with a warning."""
+    try:
+        spec = importlib.util.spec_from_file_location("runner_guard", guard or GUARD)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module.check(env)
+    except Exception as error:          # noqa: BLE001 - never fail a job on our fault
+        print(f"::warning title=Runner guard::the origin check could not be loaded "
+              f"({type(error).__name__}); origin not checked")
+        return 0
+
+
 def started(env):
+    if check_origin(env) == REFUSE:
+        return REFUSE
     work = env.get("RUNNER_WORK_DIR")
     if not work:
         return 0

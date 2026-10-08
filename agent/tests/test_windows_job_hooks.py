@@ -23,6 +23,8 @@ from pathlib import Path
 
 import pytest
 
+from . import origin_cases
+
 HOOKS = Path(__file__).parents[1] / "hooks" / "windows"
 spec = importlib.util.spec_from_file_location("windows_runner_disk", HOOKS / "runner_disk.py")
 runner_disk = importlib.util.module_from_spec(spec)
@@ -313,7 +315,8 @@ NODE = shutil.which("node")
 
 
 def _environment(env, python):
-    full = {k: v for k, v in os.environ.items() if not k.startswith("RUNNER_")}
+    full = {k: v for k, v in os.environ.items()
+            if not k.startswith(("RUNNER_", "GITHUB_"))}
     if python is not None:
         full["RUNNER_HOOK_PYTHON"] = str(python)
     full.update(env)
@@ -414,6 +417,64 @@ class TestNode:
         assert result.returncode == 0, result.stdout + result.stderr
         assert not (work / "_temp" / "build.log").exists()
         assert (work / "_temp" / "_runner_file_commands").exists()
+
+
+@pytest.mark.skipif(NODE is None, reason="no node here")
+@pytest.mark.parametrize("name", origin_cases.END_TO_END)
+def test_whose_code_end_to_end(tmp_path, name):
+    """job-started.js as the runner starts it, with an event file as the
+    runner writes one: the guard in runner_disk.py answers before the disk
+    is looked at, and a refusal is the hook's exit 1."""
+    case = origin_cases.by_id(name)
+    work = runner_tree(tmp_path)
+    env = origin_cases.hook_env(case, tmp_path)
+    env.update(RUNNER_WORK_DIR=str(work), GITHUB_WORKSPACE=str(work / "app" / "app"),
+               RUNNER_DISK_CLEAN_BELOW_GB="0", RUNNER_DISK_WARN_BELOW_GB="0",
+               RUNNER_DISK_FAIL_BELOW_GB="0")
+    result = run_hook("job-started.js", env)
+    assert result.returncode == (0 if case["allowed"] else 1), result.stdout + result.stderr
+    for line in case["out"]:
+        assert line in result.stdout, result.stdout
+    assert ("Disk free before the job" in result.stdout) == case["allowed"]
+
+
+class TestWhoseCode:
+    """runner_guard.py, the Linux unit's own, answers first."""
+
+    def test_it_is_the_linux_units_guard_byte_for_byte(self):
+        linux = Path(__file__).parents[2] / "images/linux/unit/runner/runner_guard.py"
+        assert (HOOKS / "runner_guard.py").read_bytes() == linux.read_bytes()
+
+    def test_a_refused_job_is_not_measured(self, tmp_path, monkeypatch, capsys):
+        measured = []
+        monkeypatch.setattr(runner_disk, "check_disk", lambda *a, **k: measured.append(a) or 0)
+        env = origin_cases.hook_env(origin_cases.by_id("fork-by-outsider"), tmp_path)
+        env["RUNNER_WORK_DIR"] = str(tmp_path)
+        assert runner_disk.main(["started"], env) == runner_disk.REFUSE
+        assert measured == []
+        assert origin_cases.REFUSED in capsys.readouterr().out
+
+    def test_without_a_work_directory_the_guard_still_answers(self, tmp_path, capsys):
+        env = origin_cases.hook_env(origin_cases.by_id("fork-by-outsider"), tmp_path)
+        assert runner_disk.main(["started"], env) == runner_disk.REFUSE
+
+    def test_after_the_job_nobody_is_asked(self, tmp_path, capsys):
+        env = origin_cases.hook_env(origin_cases.by_id("fork-by-outsider"), tmp_path)
+        env["RUNNER_WORK_DIR"] = str(runner_tree(tmp_path))
+        assert runner_disk.main(["completed"], env) == 0
+        assert "Origin" not in capsys.readouterr().out
+
+    def test_a_guard_that_cannot_be_loaded_lets_the_job_run(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.setattr(runner_disk, "GUARD", str(tmp_path / "missing.py"))
+        monkeypatch.setattr(runner_disk, "check_disk", lambda *a, **k: 0)
+        env = origin_cases.hook_env(origin_cases.by_id("fork-by-outsider"), tmp_path)
+        env["RUNNER_WORK_DIR"] = str(tmp_path)
+        assert runner_disk.main(["started"], env) == 0
+        out = capsys.readouterr().out
+        assert "::warning title=Runner guard::" in out and "origin not checked" in out
+
+    def test_the_guard_is_the_one_beside_the_hook(self):
+        assert Path(runner_disk.GUARD) == HOOKS / "runner_guard.py"
 
 
 def test_the_hooks_need_nothing_but_node_itself():
