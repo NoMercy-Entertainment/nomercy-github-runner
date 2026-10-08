@@ -79,25 +79,44 @@ clear_temp() {
   return 0
 }
 
-# Xcode's per-project build products whose entry has not changed for two
-# days. Every instance in a guest shares the account's DerivedData, so the
-# age is what keeps another instance's build out of reach.
+# Whether nothing at all under $1, itself included, changed in the last two
+# days. find must answer cleanly: a tree it could not read all of is in use
+# as far as this is concerned.
+untouched_for_two_days() {
+  local recent
+  recent=$(find "$1" -mmin -2880 -print -quit 2>/dev/null) || return 1
+  [ -z "$recent" ]
+}
+
+# Xcode's per-project build products in which nothing has changed for two
+# days. Every instance in a guest shares the account's DerivedData - the
+# appliance runs a GitHub and a Forgejo runner as the same user - and an
+# incremental build writes deep inside an entry without touching the entry's
+# own directory, so every file in it is looked at, not the entry.
 clear_stale_derived_data() {
-  local home dd seen=""
+  local home dd entry seen=""
   for home in "${RUNNER_HOOK_USER_HOME:-}" "${HOME:-}"; do
     [ -n "$home" ] || continue
     dd=${home%/}/Library/Developer/Xcode/DerivedData
     case " $seen " in *" $dd "*) continue ;; esac
     seen="$seen $dd"
-    if [ -d "$dd" ] && [ ! -L "$dd" ]; then
-      find "$dd" -mindepth 1 -maxdepth 1 -mmin +2880 -exec rm -rf {} + 2>/dev/null
+    if [ ! -d "$dd" ] || [ -L "$dd" ]; then
+      continue
     fi
+    for entry in "$dd"/*; do
+      if [ -L "$entry" ] || [ ! -d "$entry" ]; then
+        continue
+      fi
+      untouched_for_two_days "$entry" && rm -rf -- "$entry"
+    done
   done
   return 0
 }
 
-# Gradle's build cache, in this runner's own Gradle home: rebuildable, and
-# Gradle keeps it for a week on its own.
+# Gradle's build cache, in this runner's own Gradle home (GRADLE_USER_HOME is
+# under the runner's cache directory, shared with no other runner, and its
+# job has not started yet): rebuildable, and Gradle keeps it for a week on
+# its own.
 clear_gradle_build_cache() {
   local caches
   caches=${GRADLE_USER_HOME%/}/caches

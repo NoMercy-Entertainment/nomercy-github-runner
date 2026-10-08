@@ -64,11 +64,24 @@ class Guest:
                      "_temp/_runner_file_commands/set_env_1", ".home/.gitconfig"):
             (self.work / name).write_text(name)
         derived = self.home / "Library" / "Developer" / "Xcode" / "DerivedData"
-        for name, age_days in (("Old-abc", 5), ("Recent-def", 0)):
-            (derived / name).mkdir(parents=True)
+        old = time.time() - 5 * 86400
+        for name, age_days in (("Old-abc", 5), ("Recent-def", 0), ("Live-ghi", 5)):
+            objects = derived / name / "Build" / "Intermediates.noindex"
+            objects.mkdir(parents=True)
             (derived / name / "info.plist").write_text(name)
+            (objects / "main.o").write_text(name)
             stamp = time.time() - age_days * 86400
-            os.utime(derived / name, (stamp, stamp))
+            for path in (objects / "main.o", objects, objects.parent,
+                         derived / name / "info.plist", derived / name):
+                os.utime(path, (stamp, stamp))
+        # Another runner's incremental build, under the same account, is
+        # writing deep inside an entry whose own directory has not changed
+        # for days: the entry is in use.
+        live = derived / "Live-ghi" / "Build" / "Intermediates.noindex"
+        (live / "fresh.o").write_text("being built")
+        os.utime(live, (old, old))
+        os.utime(live.parent, (old, old))
+        os.utime(derived / "Live-ghi", (old, old))
         self.derived = derived
         (self.gradle / "caches" / "build-cache-1").mkdir(parents=True)
         (self.gradle / "caches" / "build-cache-1" / "entry").write_text("cached")
@@ -151,6 +164,7 @@ class TestBeforeTheJob:
             assert (work / kept).exists(), kept
         assert not (guest.derived / "Old-abc").exists()
         assert (guest.derived / "Recent-def").exists()
+        assert (guest.derived / "Live-ghi" / "Build" / "Intermediates.noindex" / "main.o").exists()
         assert not (guest.gradle / "caches" / "build-cache-1").exists()
         assert (guest.gradle / "caches" / "modules-2").exists()
 
@@ -247,6 +261,7 @@ class TestAfterTheJob:
         assert sorted(p.name for p in temp.iterdir()) == ["_runner_file_commands"]
         assert not (guest.derived / "Old-abc").exists()
         assert (guest.derived / "Recent-def").exists()
+        assert (guest.derived / "Live-ghi" / "Build" / "Intermediates.noindex" / "main.o").exists()
         assert (guest.work / "lib").exists() and (guest.work / "app").exists()
 
     def test_a_fault_never_fails_the_job(self, guest):
