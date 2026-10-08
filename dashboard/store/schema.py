@@ -216,6 +216,30 @@ CREATE TABLE IF NOT EXISTS secrets (
   set_by      TEXT
 );
 
+-- GitHub #11: what the alarm monitor is watching. One row per condition
+-- that is true now - a runner offline, a job waiting that no online runner
+-- can take, the monitor itself unable to read a forge - with when it was
+-- first seen, which is what survives a restart. `raised_at` stays null
+-- until the condition has lasted its threshold; the row is deleted when it
+-- ends, and a raised one is recorded in `audit` both times.
+CREATE TABLE IF NOT EXISTS alarm_watch (
+  alarm_key  TEXT PRIMARY KEY,
+  kind       TEXT NOT NULL,
+  forge      TEXT NOT NULL,
+  subject    TEXT NOT NULL,
+  detail     TEXT,
+  since      TEXT NOT NULL,
+  raised_at  TEXT
+);
+-- Every label a self-hosted runner of a forge has ever carried. A job that
+-- asks for a label none ever had is a hosted runner's job, not ours.
+CREATE TABLE IF NOT EXISTS alarm_labels (
+  forge         TEXT NOT NULL,
+  label         TEXT NOT NULL,
+  first_seen_at TEXT NOT NULL,
+  PRIMARY KEY (forge, label)
+);
+
 -- NFR-7: append-only, by the database rather than by convention. An
 -- operation's outcome is a row of its own, never an update to the row that
 -- accepted it.
