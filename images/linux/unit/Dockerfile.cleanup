@@ -1,7 +1,15 @@
 ARG BASE=nomercy/github-unit:toolchain-20260925
 FROM ${BASE}
 
-# Refresh the post-job cleanup without rebuilding the large toolchain layer.
-COPY runner/cleanup.py /runner/cleanup.py
-COPY runner/cleanup /runner/cleanup
-RUN chmod 0755 /runner/cleanup && chmod 0644 /runner/cleanup.py
+# Refresh the runner's hooks without rebuilding the large toolchain layer:
+# the post-job cleanup, and the job-started hook that restores the Android
+# SDK and guards the disk (#13, #7). `run` is what sets the hooks.
+COPY runner/cleanup.py runner/job_started.py /runner/
+COPY runner/cleanup runner/job-started.sh runner/run /runner/
+RUN chmod 0755 /runner/cleanup /runner/job-started.sh /runner/run \
+    && chmod 0644 /runner/cleanup.py /runner/job_started.py
+
+# What /runner/job-started.sh restores the Android SDK from (#13). A real
+# copy, as in Dockerfile.github.
+RUN mkdir -p /opt/nomercy \
+    && cp -a /usr/local/lib/android /opt/nomercy/android-sdk.pristine

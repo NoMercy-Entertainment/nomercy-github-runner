@@ -42,9 +42,15 @@ RUN set -eu; \
 
 COPY runner/ /runner/
 RUN chmod 0755 /runner/run /runner/register /runner/deregister \
-    /runner/cleanup /runner/cleanup.sh /runner/maintenance \
-    && chmod 0644 /runner/lib.sh \
+    /runner/cleanup /runner/cleanup.sh /runner/job-started.sh /runner/maintenance \
+    && chmod 0644 /runner/lib.sh /runner/job_started.py \
     && command -v jq >/dev/null
+
+# What /runner/job-started.sh restores the Android SDK from when an earlier
+# job deleted it (#13). A real copy: hard links would let a job that rewrites
+# an SDK file in place change this copy as well.
+RUN mkdir -p /opt/nomercy \
+    && cp -a /usr/local/lib/android /opt/nomercy/android-sdk.pristine
 
 RUN mkdir -p /opt/actions-runner-image \
     && cp -a /root/actions-runner/. /opt/actions-runner-image/ \

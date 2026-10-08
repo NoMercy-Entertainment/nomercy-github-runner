@@ -94,6 +94,31 @@ class TestTheDrain:
                                            os.path.basename(path)))
         assert os.path.basename(path) in read("Dockerfile.github")
 
+    def test_the_job_started_hook_is_a_script_the_runner_accepts(self):
+        """Same rule as the completion hook, and it ships in both the full
+        image and the overlay the running fleet is refreshed with (#7, #13)."""
+        hook = re.search(r"ACTIONS_RUNNER_HOOK_JOB_STARTED=(\S+)",
+                         branch(read("runner", "run"), "github"))
+        assert hook, "the github branch sets no job-started hook"
+        path = hook.group(1)
+        assert path.endswith(".sh"), path
+        assert os.path.exists(os.path.join(UNIT, "runner", os.path.basename(path)))
+        for dockerfile in ("Dockerfile.github", "Dockerfile.cleanup"):
+            text = read(dockerfile)
+            assert os.path.basename(path) in text and "job_started.py" in text, dockerfile
+
+    def test_the_android_sdk_has_a_copy_no_job_deletes(self):
+        """free-disk-space's `rm -rf /usr/local/lib/android` on a writable,
+        long-lived root took the SDK from every runner it ran on (#13). A
+        real copy, not hard links: a job rewriting an SDK file in place must
+        not be able to change the copy it is restored from."""
+        for dockerfile in ("Dockerfile.github", "Dockerfile.cleanup"):
+            text = read(dockerfile)
+            assert "cp -a /usr/local/lib/android /opt/nomercy/android-sdk.pristine" in text, dockerfile
+        hook = read("runner", "job_started.py")
+        assert "/opt/nomercy/android-sdk.pristine" in hook
+        assert "/usr/local/lib/android" in hook
+
 
 class TestTheToken:
     def test_github_takes_it_from_the_environment_not_the_command_line(
@@ -179,7 +204,7 @@ class TestTheRunnerGitHubWillTalkTo:
 @pytest.mark.skipif(shutil.which("bash") is None, reason="no bash here")
 @pytest.mark.parametrize("script", ["run", "register", "deregister",
                                     "lib.sh", "cleanup", "cleanup.sh",
-                                    "maintenance"])
+                                    "job-started.sh", "maintenance"])
 def test_every_script_parses(script):
     subprocess.run(["bash", "-n", os.path.join(UNIT, "runner", script)],
                    check=True)

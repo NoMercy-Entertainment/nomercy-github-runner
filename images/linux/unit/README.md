@@ -33,10 +33,32 @@ The controller is told which image a cell's units use by
 The GitHub unit runs `/runner/cleanup` synchronously after each job and at
 startup. It removes unused nested Docker build cache and images without an age
 limit, plus previous job workspaces, while retaining the active workspace and
-installed tools. The running fleet uses the `postjob-cleanup-20260926` overlay
-image built with `Dockerfile.cleanup` from `github-unit:toolchain-20260925`.
-Forgejo currently runs this cleanup only at unit startup; it has no GitHub
-completion hook.
+installed tools.
+
+Before each job, `/runner/job-started.sh` runs `job_started.py`, which does two
+things:
+
+1. **Restores the Android SDK.** It copies back any file missing from
+   `/usr/local/lib/android` out of `/opt/nomercy/android-sdk.pristine`, a
+   real copy made when the image is built. It never overwrites or deletes.
+   A unit's root is writable and outlives its jobs, so a workflow that runs
+   `free-disk-space` with `android: true` used to take the SDK away from
+   every later job on that runner (GitHub #13). The job is told with a
+   `::warning`. This takes about 4 s per job when nothing is missing, and
+   about 12 s after a full wipe.
+2. **Guards the disk.** It checks the lowest free space of `/runner/work` and
+   `/`:
+   - under `RUNNER_DISK_CLEAN_BELOW_GB` (15) it runs `/runner/cleanup`;
+   - under `RUNNER_DISK_WARN_BELOW_GB` (10) it prints a `::warning`;
+   - under `RUNNER_DISK_FAIL_BELOW_GB` (3) it fails the job with an
+     `::error`, before a full disk can take the runner down (GitHub #7).
+
+Only that deliberate refusal fails a job. A fault in the hook itself is
+reported as a warning.
+
+The running fleet uses the `jobhooks-20261008` overlay image, built with
+`Dockerfile.cleanup` from `github-unit:toolchain-20260925`. Forgejo has no job
+hooks: it runs the cleanup only at unit startup.
 
 ## Why the entry points are written the way they are
 

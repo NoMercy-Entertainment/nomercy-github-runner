@@ -136,6 +136,9 @@ case "$RUNNER_KIND" in
     # the listener to be killed with the unit.
     export RUNNER_MANUALLY_TRAP_SIG=1
     export ACTIONS_RUNNER_HOOK_JOB_COMPLETED=/runner/cleanup.sh
+    # Before each job: put back an Android SDK an earlier job deleted, and
+    # stop the job early when the disk is nearly full (#13, #7).
+    export ACTIONS_RUNNER_HOOK_JOB_STARTED=/runner/job-started.sh
     mkdir -p "$RUNNER_LOG_DIR/diagnostics"
     if [ ! -L "$RUNNER_HOME/_diag" ]; then
       if [ -d "$RUNNER_HOME/_diag" ]; then
