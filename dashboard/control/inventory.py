@@ -452,8 +452,18 @@ class Inventory:
     def summary(self, now=None):
         """Every worker with its health and the reason for it. Read-only, and
         nothing in it is secret."""
+        from .hardware import of_worker
+        from .placement import declared
         out = []
         for worker in self.list():
+            resources = {key: (worker.get("capabilities") or {}).get(key)
+                         for key in ("memory_bytes", "memory_total_bytes", "swap_bytes",
+                                     "swap_total_bytes", "memory_commit_bytes",
+                                     "memory_admission", "capacity_valid", "max_runners")}
+            # What a limit's maximum is read from (control/hardware.py),
+            # resolved the same way the checks resolve it.
+            resources["host_cores"] = declared(worker, "host_cores")
+            resources["hardware"] = of_worker(worker)
             out.append({
                 "host_id": worker["host_id"],
                 "kind": worker["kind"],
@@ -461,10 +471,7 @@ class Inventory:
                 "last_seen_at": worker.get("last_seen_at"),
                 "health": self._health_of(worker, now),
                 "reason": self.health_reason(worker["host_id"], now),
-                "resources": {key: (worker.get("capabilities") or {}).get(key)
-                              for key in ("memory_bytes", "memory_total_bytes", "swap_bytes",
-                                          "swap_total_bytes", "memory_commit_bytes",
-                                          "memory_admission", "capacity_valid", "max_runners")},
+                "resources": resources,
             })
         return out
 

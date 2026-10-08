@@ -197,3 +197,27 @@ class TestHeartbeatCarriesWhatChanged:
         after = workers.get("w")
         assert after["agent_version"] == "1.0"
         assert after["endpoint"] == "https://worker:9443"
+
+
+class TestSummaryHardware:
+    """The page shows each worker's hardware beside its health, so the
+    maximum a limit may be is visible where the limit is set."""
+
+    def test_the_summary_carries_cores_memory_and_the_resolved_hardware(self, workers):
+        workers.register_worker("rnr-linux-1", inv.HYPERV_LINUX, capabilities={
+            "kind": "linux-container", "host_cores": 56,
+            "memory_total_bytes": 84418977792, "memory_bytes": 24 * 1024**3})
+        workers.heartbeat("rnr-linux-1")
+        resources = workers.summary()[0]["resources"]
+        assert resources["host_cores"] == 56
+        assert resources["memory_total_bytes"] == 84418977792
+        assert resources["hardware"]["cpus"] == 56
+        assert resources["hardware"]["memory_bytes"] == 84418977792
+        assert resources["hardware"]["memory_source"] == "measured"
+
+    def test_a_worker_that_reports_nothing_reads_unknown(self, workers):
+        workers.register_worker("macos-appliance-1", inv.HYPERV_LINUX)
+        resources = workers.summary()[0]["resources"]
+        assert resources["host_cores"] is None
+        assert resources["hardware"]["cpus"] is None
+        assert resources["hardware"]["memory_bytes"] is None
