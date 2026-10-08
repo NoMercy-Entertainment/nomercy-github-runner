@@ -183,6 +183,17 @@ class TestBeforeTheJob:
         result = guest.run("job-started.sh")
         assert result.returncode == 0 and "::error" not in result.stdout
 
+    @pytest.mark.parametrize("spelling", ["APP/app", "App/app"])
+    def test_the_current_workspace_is_kept_however_its_name_is_cased(self, guest, spelling):
+        """APFS is case-insensitive: GITHUB_WORKSPACE spelled with other
+        capitals is still the current job's directory."""
+        guest.free([14, 40])
+        result = guest.run("job-started.sh",
+                           GITHUB_WORKSPACE=posix(guest.work) + "/" + spelling)
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert (guest.work / "app/app/src/main.swift").exists()
+        assert not (guest.work / "lib").exists()
+
     def test_without_a_current_workspace_no_workspace_is_removed(self, guest):
         guest.free([14, 40])
         result = guest.run("job-started.sh", GITHUB_WORKSPACE="")

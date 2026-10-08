@@ -28,6 +28,10 @@ less_than() {
   awk -v a="$1" -v b="$2" 'BEGIN { exit !(a + 0 < b + 0) }'
 }
 
+lower() {
+  printf '%s' "$1" | tr '[:upper:]' '[:lower:]'
+}
+
 gb() {
   awk -v b="$1" -v f="${2:-%.0f}" 'BEGIN { printf f, b / 1000000000 }'
 }
@@ -36,7 +40,7 @@ gb() {
 # cannot tell which one is current. _tool, _actions, _temp and the runner's
 # own dot entries (its HOME is .home) stay.
 remove_earlier_workspaces() {
-  local work current keep path name
+  local work current keep keep_lower path name
   work=${RUNNER_WORK_DIR%/}
   current=${GITHUB_WORKSPACE:-}
   if [ -z "$work" ] || [ -L "$work" ] || [ ! -d "$work" ]; then
@@ -47,10 +51,15 @@ remove_earlier_workspaces() {
     *) echo "The job's workspace is not under the runner's work directory; earlier workspaces were left alone"
        return 0 ;;
   esac
+  # APFS is case-insensitive: GITHUB_WORKSPACE may spell the current
+  # directory with other capitals, so it is matched without case, and as the
+  # same file.
+  keep_lower=$(lower "$keep")
   for path in "$work"/*; do
     name=${path##*/}
     case "$name" in _*|.*) continue ;; esac
-    if [ "$name" = "$keep" ] || [ -L "$path" ] || [ ! -d "$path" ]; then
+    if [ "$(lower "$name")" = "$keep_lower" ] || [ "$path" -ef "$work/$keep" ] \
+        || [ -L "$path" ] || [ ! -d "$path" ]; then
       continue
     fi
     rm -rf -- "$path" || echo "$name could not be removed"
