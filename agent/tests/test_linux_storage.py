@@ -348,6 +348,27 @@ def test_runtime_binds_volumes_and_recreate_preserves_work(disk):
     assert not store._paths(RID)[0].exists()
 
 
+def test_a_runner_with_its_own_disk_keeps_its_probes_as_they_were(disk):
+    """Its own filesystem is its boundary, and the card knows that disk's
+    size already - no df is run for a volume it does not share."""
+    store, commands = disk
+    docker = BoundDocker()
+    runtime = LinuxContainerRuntime(run=docker, storage=store)
+    runtime.create(RID, {"image": "unit:v1", "disk_limit": MIN_BYTES})
+    assert store.has_disk(RID) is True
+    docker.calls.clear()
+    got = runtime.probe(RID, "disk_usage")
+    assert "volume_total_bytes" not in got
+    assert not [c for c in docker.calls if "df" in c and "-Pk" in c]
+
+
+def test_only_a_provisioned_runner_has_a_disk(disk):
+    store, commands = disk
+    assert store.has_disk(RID) is False
+    provision(store)
+    assert store.has_disk(RID) is True
+
+
 def test_legacy_volume_refuses_automatic_migration(disk):
     store, commands = disk
     docker = BoundDocker()

@@ -223,6 +223,12 @@ class LinuxStorage:
             paths[area] = str(path)
         return paths
 
+    def has_disk(self, rid):
+        """Whether this runner has a filesystem of its own here - its
+        directory exists - without validating or mounting anything."""
+        base = self._paths(rid)[0]
+        return base.exists() or base.is_symlink()
+
     def existing(self, rid):
         base, _, _, _ = self._paths(rid)
         if not base.exists() and not base.is_symlink():

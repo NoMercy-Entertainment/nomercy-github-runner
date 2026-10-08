@@ -83,6 +83,9 @@ class FakeDocker:
         self.logs = {}
         #: unit -> "running" | "aborted": the job its runner has.
         self.jobs = {}
+        #: (total, used) of the engine's volume every mount is on, as `df`
+        #: inside a unit reads it, or None when df fails.
+        self.volume = (1000 * 10 ** 9, 400 * 10 ** 9)
 
     # ---- helpers for tests --------------------------------------------------
 
@@ -443,6 +446,15 @@ class FakeDocker:
             v = volume_for(path)
             files = v["files"] if v is not None else c["tmp"]
             return True, f"{sum(files.values())}\t{path}", ""
+        if cmd[0] == "df":
+            if self.volume is None:
+                return False, "", f"df: {cmd[-1]}: cannot read"
+            total, used = self.volume
+            return True, (
+                "Filesystem     1024-blocks      Used Available Capacity "
+                "Mounted on\n"
+                f"/dev/sdd {total // 1024} {used // 1024} "
+                f"{(total - used) // 1024} 5% {cmd[-1]}\n"), ""
         if cmd[0] == "find" and "-delete" in cmd:
             path = cmd[1]
             v = volume_for(path)

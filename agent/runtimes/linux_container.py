@@ -53,6 +53,7 @@ from concurrent.futures import ThreadPoolExecutor
 from .. import cpu, hardware, naming
 from ..jobs import current_job
 from .adopted import Adopted
+from .localfs import df_figures
 
 #: What a heartbeat asks of several units at once: what each may use.
 CAPS_FORMAT = ("{{.Name}}\t{{.HostConfig.CpusetCpus}}\t{{.HostConfig.NanoCpus}}"
@@ -735,8 +736,11 @@ class LinuxContainerRuntime:
                 value = sum(measured.values()) if complete else None
             except (ValueError, IndexError):
                 value = None
-            return {"ok": value is not None, "value": value,
-                    "error": err if not ok else ""}
+            result = {"ok": value is not None, "value": value,
+                      "error": err if not ok else ""}
+            if not self._has_disk(runner_id):
+                result.update(self._volume(name, MOUNTS["work"]))
+            return result
         if probe == "cache_size":
             rows = self._df(name)
             if rows is None:
@@ -752,7 +756,12 @@ class LinuxContainerRuntime:
             except (ValueError, TypeError, AttributeError):
                 pass
             value = rows.get("Build Cache")
-            return {"ok": value is not None, "value": value, "cap_bytes": cap}
+            result = {"ok": value is not None, "value": value, "cap_bytes": cap}
+            if cap is None:
+                # No cap of its own: the nested engine's mount is the
+                # volume that stops it.
+                result.update(self._volume(name, MOUNTS["docker"]))
+            return result
         if probe == "agent_version":
             ok, out, err = self._run(["exec", name, "cat",
                                       f"{MOUNTS['reg']}/agent_version"],
@@ -794,6 +803,24 @@ class LinuxContainerRuntime:
             found.append({"runner_id": rid,
                           "state": _state_word(state) if ok else "absent"})
         return found
+
+    def _has_disk(self, runner_id):
+        """Whether the runner has a filesystem of its own - its boundary,
+        whose size the controller set - rather than sharing the engine's."""
+        if not self._storage:
+            return False
+        try:
+            return self._storage.has_disk(naming.check(runner_id))
+        except (OSError, ValueError):
+            return False
+
+    def _volume(self, name, path):
+        """The volume `path` is on inside the unit, used and total, or
+        None for each when df could not say - unknown, never zero."""
+        ok, out, _ = self._run(["exec", name, "df", "-Pk", path], timeout=15)
+        usage = (df_figures(out) if ok else None) or {}
+        return {"volume_used_bytes": usage.get("used_bytes"),
+                "volume_total_bytes": usage.get("total_bytes")}
 
     def _df(self, name):
         ok, out, _ = self._run(["exec", name, "docker", "system", "df",

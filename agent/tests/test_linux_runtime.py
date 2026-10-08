@@ -524,6 +524,40 @@ class TestObserving:
         assert runtime.probe(RID, "agent_version")["value"] == "2.336.0"
         assert runtime.probe(RID, "job_state")["ok"] is False
 
+    def test_a_runner_without_its_own_disk_reports_the_volume_it_shares(
+            self, runtime, docker):
+        """With no filesystem of its own, the runner fills the engine's
+        volume along with everything else on it - so that volume, used and
+        total, goes beside the runner's own bytes. Its cache has no cap here
+        and lives on the nested engine's mount, so it reports that volume."""
+        runtime.create(RID, SPEC)
+        docker.volume = (250 * 10 ** 9, 90 * 10 ** 9)
+        disk = runtime.probe(RID, "disk_usage")
+        cache = runtime.probe(RID, "cache_size")
+        for got in (disk, cache):
+            assert got["volume_total_bytes"] == 250 * 10 ** 9
+            assert got["volume_used_bytes"] == 90 * 10 ** 9
+        assert ["exec", naming.unit_name(RID), "df", "-Pk", "/runner/work"] \
+            in docker.calls
+        assert ["exec", naming.unit_name(RID), "df", "-Pk", "/var/lib/docker"] \
+            in docker.calls
+
+    def test_a_capped_cache_does_not_ask_for_its_volume(self, runtime, docker):
+        runtime.create(RID, dict(SPEC, env={"RUNNER_BUILD_CACHE_GC": "20GB"}))
+        docker.calls.clear()
+        got = runtime.probe(RID, "cache_size")
+        assert got["cap_bytes"] == 20 * 10 ** 9
+        assert "volume_total_bytes" not in got
+        assert not [c for c in docker.calls if "df" in c and "-Pk" in c]
+
+    def test_a_volume_df_cannot_read_is_unknown_not_zero(self, runtime, docker):
+        runtime.create(RID, SPEC)
+        docker.volume = None
+        got = runtime.probe(RID, "disk_usage")
+        assert got["ok"] is True
+        assert got["volume_total_bytes"] is None
+        assert got["volume_used_bytes"] is None
+
 
 class TestClearingTheCache:
     def test_engine_scopes_report_what_they_freed(self, runtime, docker):
