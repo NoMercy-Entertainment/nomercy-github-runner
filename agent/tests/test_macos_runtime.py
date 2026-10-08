@@ -151,6 +151,21 @@ class TestTheAppliance:
         assert t["host_mem_bytes"] == 16 * 1024 ** 3
         assert len([c for c in guest.calls if c[0] == "/usr/sbin/sysctl"]) == 1
 
+    @pytest.mark.parametrize("missing", ["hw.logicalcpu", "hw.memsize"])
+    def test_one_figure_sysctl_cannot_read_does_not_lose_the_other(
+            self, runtime, guest, missing):
+        """sysctl answers the names it knows and fails the call for one it
+        does not; the one it did answer is still the guest's."""
+        runtime.create(RID, SPEC)
+        del guest.sysctl[missing]
+        t = runtime.telemetry(RID)
+        assert (t["host_cores"] is None) == (missing == "hw.logicalcpu")
+        assert (t["host_mem_bytes"] is None) == (missing == "hw.memsize")
+        if missing == "hw.memsize":
+            assert t["host_cores"] == 6
+        else:
+            assert t["host_mem_bytes"] == 16 * 1024 ** 3
+
     def test_a_guest_that_does_not_say_its_size_is_unknown(self, runtime,
                                                            guest):
         runtime.create(RID, SPEC)

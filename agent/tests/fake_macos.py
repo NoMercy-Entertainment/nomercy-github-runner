@@ -81,7 +81,7 @@ class FakeMac:
         self.volume = (274 * 10 ** 9, 160 * 10 ** 9)
         #: Every path whose volume was asked for, in order.
         self.volume_reads = []
-        #: What `sysctl -n` answers per name, or None when it fails.
+        #: What `sysctl` answers per name, or None when it knows none.
         self.sysctl = {"hw.logicalcpu": "6", "hw.memsize": str(16 * 1024 ** 3)}
         self.appliance = appliance or FakeAppliance()
         self.forge = forge or FakeForge()
@@ -223,9 +223,13 @@ class FakeMac:
                 f"{j['pid']:>5} 1 {j['pid']} 2.5 102400" for j in self.jobs.values()
                 if j["state"] == "running"), ""
         if tool == "/usr/sbin/sysctl":
-            if self.sysctl is None:
-                return False, "", "sysctl: unknown oid"
-            return True, "\n".join(self.sysctl[name] for name in args[2:]), ""
+            # As the real one: `name: value` for each name it knows, an
+            # error for each it does not, and a failed call if any failed.
+            names = [a for a in args[1:] if not a.startswith("-")]
+            known = {} if self.sysctl is None else self.sysctl
+            out = [f"{n}: {known[n]}" for n in names if n in known]
+            err = [f"sysctl: unknown oid '{n}'" for n in names if n not in known]
+            return not err, "\n".join(out), "\n".join(err)
         return self._entry(args, input)
 
     def _launchctl(self, args):

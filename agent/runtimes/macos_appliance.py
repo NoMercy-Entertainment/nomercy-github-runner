@@ -481,12 +481,18 @@ class MacApplianceRuntime:
                   "host_cores": None, "host_mem_bytes": None,
                   "storage_volume_used_bytes": None,
                   "storage_volume_total_bytes": None}
-        ok, out, _ = self._run(["/usr/sbin/sysctl", "-n", "hw.logicalcpu",
-                                "hw.memsize"], timeout=5)
-        values = out.split() if ok else []
-        if len(values) == 2:
-            result["host_cores"] = _int(values[0])
-            result["host_mem_bytes"] = _int(values[1])
+        # Named, not `-n`: sysctl answers the names it knows and fails the
+        # call for one it does not, so each figure is read by its own name
+        # whatever the exit status - one it cannot read loses only itself.
+        _, out, _ = self._run(["/usr/sbin/sysctl", "hw.logicalcpu",
+                               "hw.memsize"], timeout=5)
+        named = {}
+        for line in (out or "").splitlines():
+            name, sep, value = line.partition(":")
+            if sep:
+                named[name.strip()] = value.strip()
+        result["host_cores"] = _int(named.get("hw.logicalcpu"))
+        result["host_mem_bytes"] = _int(named.get("hw.memsize"))
         pid = self.status(runner_id).get("pid")
         if pid:
             ok, out, _ = self._run([self._tools["ps"], "-A", "-o",
