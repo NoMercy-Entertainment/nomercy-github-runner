@@ -46,6 +46,9 @@ SETTINGS = {
 
 FORGES = {"github": "GitHub", "forgejo": "Forgejo"}
 
+#: How long a label is still known after the last runner that carried it.
+LABEL_DAYS = 30
+
 ACTOR = "alarm-monitor"
 
 #: One writer at a time: the minute thread and the queue thread both read a
@@ -247,8 +250,16 @@ class AlarmBook:
                 self._sighted(c, forge, now)
                 for label in {str(l).lower() for r in runners
                               for l in r.get("labels") or [] if l}:
-                    c.execute("INSERT OR IGNORE INTO alarm_labels VALUES (?,?,?)",
-                              (forge, label, iso(now)))
+                    c.execute("INSERT INTO alarm_labels (forge, label, first_seen_at,"
+                              " last_seen_at) VALUES (?,?,?,?) ON CONFLICT(forge, label)"
+                              " DO UPDATE SET last_seen_at=excluded.last_seen_at",
+                              (forge, label, iso(now), iso(now)))
+                # A label no runner has carried for a month is forgotten, so
+                # one that has since become a hosted runner's name stops
+                # reading as ours. Only after a reading that succeeded.
+                c.execute("DELETE FROM alarm_labels WHERE forge=? AND"
+                          " COALESCE(last_seen_at, first_seen_at) < ?",
+                          (forge, iso(now - LABEL_DAYS * 86400)))
                 seen = set()
                 for runner in runners:
                     key = f"runner:{forge}:{runner['id']}"

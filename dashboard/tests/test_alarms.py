@@ -17,6 +17,7 @@ from store import schema
 
 T0 = 1_790_000_000.0
 MIN = 60.0
+DAY = 86400.0
 
 
 @pytest.fixture
@@ -184,6 +185,20 @@ class TestTheLabelsEverSeen:
         b.observe_runners("github", [gh(1, labels=("self-hosted", "XCode"))], T0, cfg())
         b.observe_runners("github", [], T0 + MIN, cfg())
         assert b.known_labels("github") == {"self-hosted", "xcode"}
+
+    def test_a_label_no_runner_carried_for_thirty_days_is_forgotten(self, path):
+        b = book(path)
+        b.observe_runners("github", [gh(1, labels=("self-hosted", "gpu"))], T0, cfg())
+        b.observe_runners("github", [gh(2, labels=("self-hosted",))], T0 + 29 * DAY, cfg())
+        assert "gpu" in b.known_labels("github")
+        b.observe_runners("github", [gh(2, labels=("self-hosted",))], T0 + 31 * DAY, cfg())
+        assert b.known_labels("github") == {"self-hosted"}, "still carried, so still known"
+
+    def test_an_unreadable_forge_forgets_nothing(self, path):
+        b = book(path)
+        b.observe_runners("github", [gh(1, labels=("gpu",))], T0, cfg())
+        b.observe_runners("github", None, T0 + 40 * DAY, cfg())
+        assert b.known_labels("github") == {"gpu"}
 
 
 class FakeForge:

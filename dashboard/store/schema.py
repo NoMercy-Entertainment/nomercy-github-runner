@@ -235,12 +235,14 @@ CREATE TABLE IF NOT EXISTS alarm_watch (
   acked_by   TEXT,
   acked_at   TEXT
 );
--- Every label a self-hosted runner of a forge has ever carried. A job that
--- asks for a label none ever had is a hosted runner's job, not ours.
+-- Every label a self-hosted runner of a forge has carried in the last 30
+-- days. A job that asks for a label none had is a hosted runner's job, not
+-- ours.
 CREATE TABLE IF NOT EXISTS alarm_labels (
   forge         TEXT NOT NULL,
   label         TEXT NOT NULL,
   first_seen_at TEXT NOT NULL,
+  last_seen_at  TEXT,
   PRIMARY KEY (forge, label)
 );
 
@@ -319,6 +321,10 @@ def _migrate(c):
         # GitHub #11. Nullable: an alarm nobody acknowledged has neither.
         if column not in watch:
             c.execute(f"ALTER TABLE alarm_watch ADD COLUMN {column} TEXT")
+    labels = {r[1] for r in c.execute("PRAGMA table_info(alarm_labels)")}
+    if "last_seen_at" not in labels:
+        # GitHub #11. Null reads as first_seen_at until the next sighting.
+        c.execute("ALTER TABLE alarm_labels ADD COLUMN last_seen_at TEXT")
 
     have = {r[1] for r in c.execute("PRAGMA table_info(runner_specs)")}
     if "memory_swap_limit" not in have:
