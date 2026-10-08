@@ -121,6 +121,56 @@ Settings the controller reads come from `/etc/runner-platform/controller.env`
 (and `dashboard.env` for the page); a fleet's own settings, on the Settings
 page, win over them.
 
+#### CPU and memory limits (GitHub #5)
+
+Which limit a runner gets, first match wins:
+
+1. The runner's own override - admin only, on the runner's page, or
+   `POST /api/v2/runners/<runner_id>/limits` with an `Idempotency-Key` and
+   `{"cpu": cores, "memory": bytes}`; either may be left out, `null`
+   clears it. Stored as `runner_specs.cpu_override` / `memory_override`
+   and kept across every recreate. Saving one asks for a recreate under the
+   usual rules (a busy runner drains first, one per fleet at a time); when
+   none can be asked for now the override is saved and shown as
+   "pending recreate" until the runner is next recreated.
+2. The fleet's setting on the Settings page - one per platform cell.
+3. Memory only: the deployment's `RUNNER_UNIT_MEMORY_<PROVIDER>_<PLATFORM>
+   [_<ARCH>]`, arch key first. A runtime fallback: Settings shows it as
+   "inherited from deployment", and it is never copied into the fleet row.
+
+On Linux and Windows a whole number of cores pins a window of that many
+cores; an override of a different width cuts a new window on the runner's
+own host at its recreate. A Linux memory override keeps the fleet's swap
+headroom: the RAM + swap ceiling becomes override + (fleet swap - fleet
+memory).
+
+A Linux or Windows runner is never created or recreated without both a CPU
+and a memory limit from one of these: `+ Add runner` is disabled with the
+reason on the fleet heading, and plan, add, recreate and the unit creation
+itself refuse. macOS is exempt (its VM is its bound), and so is adopting a
+runner that is already serving.
+
+The maximum is the hardware the worker reports (`hardware` in its
+capabilities: logical CPUs and physical memory, `agent/hardware.py`; older
+agents' `host_cores` and `memory_total_bytes` are read the same way).
+`rnr-linux-1` measures inside its VM: 56 cores, 78.6 GiB. A fleet setting is
+accepted when one host of the cell can hold it, a runner override when its
+own host can; above that the save is refused with the host and its maximum.
+Hardware nobody has reported - Windows RAM until the Windows agent is
+redeployed with `agent/hardware.py`, the macOS appliance host - is accepted
+and flagged "not verified". Placement also passes over any host with fewer
+logical CPUs than a runner's width or less physical memory than its limit.
+
+#### GitHub runner groups
+
+Every GitHub fleet's heading shows the runner group its runners register
+into - the fleet's own, else `RUNNER_GROUP`, else the org's default group -
+with its visibility and whether public repositories may use it: red when
+they may, grey "unknown" with the reason when GitHub could not be read.
+Settings lists every group read-only. The dashboard reads them on a
+background thread every 300 s, with the tokens the control plane holds;
+page reads never call GitHub, and nothing here ever changes a group.
+
 ### 3.2 Linux unit images
 
 Built on `rnr-linux-1` from `images/linux/unit` (`Dockerfile.github`,
