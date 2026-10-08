@@ -10,6 +10,24 @@ import os
 import shutil
 
 
+def df_figures(text):
+    """{"used_bytes", "total_bytes"} of the volume `df -k` (BSD) or `df -Pk`
+    (GNU) described, from its last line - or None when it said nothing a
+    size can be read from. Both print 1024-byte blocks in the second and
+    third columns, whatever follows them."""
+    lines = [line for line in str(text or "").splitlines() if line.strip()]
+    if len(lines) < 2:
+        return None
+    parts = lines[-1].split()
+    try:
+        total, used = int(parts[1]) * 1024, int(parts[2]) * 1024
+    except (IndexError, ValueError):
+        return None
+    if total <= 0 or used < 0:
+        return None
+    return {"used_bytes": used, "total_bytes": total}
+
+
 class LocalFs:
     def exists(self, path):
         return os.path.exists(path)
@@ -87,3 +105,16 @@ class LocalFs:
                 except OSError:
                     pass
         return total
+
+    def disk_usage(self, path):
+        """The volume holding `path`: {"used_bytes", "total_bytes"}, or None
+        when it cannot be read - never 0."""
+        if not os.path.exists(path):
+            return None
+        try:
+            usage = shutil.disk_usage(path)
+        except OSError:
+            return None
+        if usage.total <= 0:
+            return None
+        return {"used_bytes": usage.used, "total_bytes": usage.total}

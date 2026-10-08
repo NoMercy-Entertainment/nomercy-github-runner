@@ -29,6 +29,8 @@ import shlex
 import subprocess
 import tempfile
 
+from .localfs import df_figures
+
 #: Long enough that a sweep of a dozen calls shares one connection, short
 #: enough that a dead guest is not held open.
 CONTROL_PERSIST = "60s"
@@ -220,3 +222,10 @@ class GuestFs:
             return int(out.split()[0]) * 1024
         except (ValueError, IndexError):
             return None
+
+    def disk_usage(self, path):
+        """The volume holding `path` - on APFS the Data volume the runners
+        live on, which `/`, the sealed system volume, is not - as
+        {"used_bytes", "total_bytes"}, or None when it cannot be read."""
+        ok, out, _ = self._sh("df -k %s" % shlex.quote(path), timeout=30)
+        return df_figures(out) if ok else None

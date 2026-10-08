@@ -260,3 +260,20 @@ class TestTheDiskInsideTheGuest:
     def test_du_of_what_cannot_be_read_is_none_never_zero(self, fs, run):
         run.answers = {"du -sk": (1, "", "No such file or directory")}
         assert fs.du("/Users/runner/r/cache") is None
+
+    #: `df -k` inside the Sequoia guest: the Data volume the runners live on,
+    #: not `/`, which on APFS is the sealed system volume.
+    DF_DATA = ("Filesystem     1024-blocks      Used Available Capacity iused"
+               "      ifree %iused  Mounted on\n"
+               "/dev/disk3s5     267893016 160234560  95012344    63% 1234567"
+               " 950123440    0%   /System/Volumes/Data\n")
+
+    def test_disk_usage_is_the_volume_holding_the_path(self, fs, run):
+        run.answers = {"df -k": (0, self.DF_DATA, "")}
+        assert fs.disk_usage("/Users/runner/runners/r") == {
+            "used_bytes": 160234560 * 1024, "total_bytes": 267893016 * 1024}
+        assert "/Users/runner/runners/r" in run.remote
+
+    def test_disk_usage_that_cannot_be_read_is_none_never_zero(self, fs, run):
+        run.answers = {"df -k": (1, "", "No such file or directory")}
+        assert fs.disk_usage("/Users/runner/runners/r") is None
