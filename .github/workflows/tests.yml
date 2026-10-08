@@ -12,7 +12,8 @@ permissions:
 jobs:
   tests:
     runs-on: [self-hosted, Linux, X64, beast-unit]
-    timeout-minutes: 45
+    # GitHub's service caps self-hosted jobs at five days; omission means six hours.
+    timeout-minutes: 7200
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v5

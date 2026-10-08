@@ -29,7 +29,8 @@ def test_the_runner_runs_with_a_shutdown_timeout():
     """Unset, forgejo-runner cancels its jobs the moment it is signalled -
     and the drain's signal is the job host's Ctrl+Break."""
     run = read("run.cmd")
-    assert "shutdown_timeout: 3h" in run
+    assert "shutdown_timeout: 2562047h47m16s" in run
+    assert "timeout: 2562047h47m16s" in run
     assert re.search(r'daemon --config "%~dp0config.yaml"', run)
 
 

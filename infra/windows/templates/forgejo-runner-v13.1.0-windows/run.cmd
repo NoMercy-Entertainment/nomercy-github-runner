@@ -22,8 +22,9 @@ goto wait
 > config.yaml echo runner:
 >> config.yaml echo   file: %~dp0.runner
 >> config.yaml echo   capacity: 1
->> config.yaml echo   timeout: 3h
->> config.yaml echo   shutdown_timeout: 3h
+rem Forgejo has no unlimited duration; use the maximum it supports.
+>> config.yaml echo   timeout: 2562047h47m16s
+>> config.yaml echo   shutdown_timeout: 2562047h47m16s
 >> config.yaml echo host:
 >> config.yaml echo   workdir_parent: %RUNNER_WORK_DIR%
 "%~dp0forgejo-runner.exe" daemon --config "%~dp0config.yaml"

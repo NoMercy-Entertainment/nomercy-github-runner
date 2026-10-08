@@ -39,7 +39,7 @@ if provider == "github":
 elif provider == "forgejo":
     # JSON is valid YAML and safely quotes paths containing special characters.
     config = {"runner": {"file": str(root / ".runner"), "capacity": 1,
-                          "timeout": "3h", "shutdown_timeout": "3h"},
+                          "timeout": "2562047h47m16s", "shutdown_timeout": "2562047h47m16s"},
               "cache": {"dir": str(root.parent / "cache" / "actcache")},
               "host": {"workdir_parent": str(root.parent / "work")}}
     (root / "config.yaml").write_text(json.dumps(config))

@@ -69,7 +69,11 @@ hooks: it runs the cleanup only at unit startup.
 - **forgejo-runner gets a `shutdown_timeout`.** When it is unset or zero, the
   runner cancels its jobs the moment it is signalled. Its own
   `config.example.yaml` says so, and its poller's `Shutdown` does exactly that.
-  The unit writes a configuration with 3h, the same as the job timeout.
+  The unit uses `2562047h47m16s`, Go's largest whole-second duration, for
+  both job execution and graceful draining. Forgejo has no unlimited
+  duration: zero restores its three-hour job default or cancels draining
+  jobs immediately. The server's `actions.ENDLESS_TASK_TIMEOUT` must use
+  the same maximum. Workflows must omit shorter `timeout-minutes` values.
   `scripts/start-forgejo.sh` passes none, so a SIGTERM to the Forgejo
   containers running today cancels their job.
 - **The GitHub token is never on a command line.** `config.sh` reads each of

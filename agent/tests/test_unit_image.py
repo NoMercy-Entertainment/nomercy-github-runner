@@ -56,7 +56,8 @@ class TestTheDrain:
         """Unset, forgejo-runner cancels its jobs the moment it is
         signalled; the drain would abort the job it exists to save."""
         forgejo = branch(read("runner", "run"), "forgejo")
-        assert "shutdown_timeout: 3h" in forgejo
+        assert "shutdown_timeout: 2562047h47m16s" in forgejo
+        assert "timeout: 2562047h47m16s" in forgejo
         assert re.search(r'daemon --config "\$RUNNER_REG_DIR/config.yaml"',
                          forgejo)
 

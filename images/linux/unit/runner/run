@@ -153,14 +153,14 @@ case "$RUNNER_KIND" in
     ;;
   forgejo)
     # Unset or zero, shutdown_timeout makes forgejo-runner cancel its jobs
-    # the moment it is signalled (its config.example.yaml says so). 3h, as
-    # the job timeout is, lets a drained runner finish what it has.
+    # the moment it is signalled. There is no unlimited duration setting;
+    # use the largest whole-second Go duration for jobs and graceful drains.
     cat > "$RUNNER_REG_DIR/config.yaml" <<YAML
 runner:
   file: ${RUNNER_REG_DIR}/.runner
   capacity: 1
-  timeout: 3h
-  shutdown_timeout: 3h
+  timeout: 2562047h47m16s
+  shutdown_timeout: 2562047h47m16s
 cache:
   dir: ${RUNNER_CACHE_DIR}/actcache
 container:
