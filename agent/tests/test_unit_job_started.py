@@ -211,3 +211,96 @@ def test_the_cleanup_before_a_job_leaves_temp_alone(monkeypatch):
     monkeypatch.delenv("RUNNER_CLEANUP_SCOPES")
     job_started._cleanup()
     assert "temp" not in seen["RUNNER_CLEANUP_SCOPES"].split(",") and "workspace" in seen["RUNNER_CLEANUP_SCOPES"]
+
+
+# ---- whose code: the guard runs first (runner_guard.py) ---------------------
+
+from . import origin_cases  # noqa: E402
+
+
+class TestTheOriginGuardFirst:
+    def test_a_refused_job_touches_nothing_else(self, monkeypatch, capsys, tmp_path):
+        """Not the SDK, not the disk: an outside fork's job is stopped before
+        anything is done for it."""
+        done = []
+        monkeypatch.setattr(job_started, "restore_tree", lambda *a: done.append("sdk") or 0)
+        monkeypatch.setattr(job_started, "check_disk", lambda *a, **k: done.append("disk") or 0)
+        env = origin_cases.hook_env(origin_cases.by_id("fork-by-outsider"), tmp_path)
+        assert job_started.main(env) == job_started.REFUSE
+        assert done == []
+        assert origin_cases.REFUSED in capsys.readouterr().out
+
+    def test_an_allowed_job_goes_on_to_the_sdk_and_the_disk(self, monkeypatch, capsys, tmp_path):
+        done = []
+        monkeypatch.setattr(job_started, "restore_tree", lambda *a: done.append("sdk") or 0)
+        monkeypatch.setattr(job_started, "check_disk", lambda *a, **k: done.append("disk") or 0)
+        env = origin_cases.hook_env(origin_cases.by_id("push"), tmp_path)
+        assert job_started.main(env) == 0
+        assert done == ["sdk", "disk"]
+        assert capsys.readouterr().out.startswith("Origin: push from ")
+
+    def test_a_guard_that_cannot_be_loaded_lets_the_job_run(self, monkeypatch, capsys, tmp_path):
+        monkeypatch.setattr(job_started, "GUARD", str(tmp_path / "missing.py"))
+        monkeypatch.setattr(job_started, "check_disk", lambda *a, **k: 0)
+        env = origin_cases.hook_env(origin_cases.by_id("fork-by-outsider"), tmp_path)
+        assert job_started.main(env) == 0
+        out = capsys.readouterr().out
+        assert "::warning title=Runner guard::" in out and "origin not checked" in out
+
+    def test_the_guard_is_the_one_beside_the_hook(self):
+        assert Path(job_started.GUARD).name == "runner_guard.py"
+        assert Path(job_started.GUARD).parent == SCRIPT.parent
+
+
+def _bash():
+    import shutil
+    bash = shutil.which("bash")
+    if os.name == "nt" and (not bash or "system32" in bash.lower()):
+        # System32's bash.exe is WSL's launcher: never run a hook in a distro.
+        bash = next((p for p in (r"C:\Program Files\Git\bin\bash.exe",
+                                 r"C:\Program Files\Git\usr\bin\bash.exe")
+                     if os.path.exists(p)), None)
+    return bash
+
+
+@pytest.mark.parametrize("name", origin_cases.END_TO_END)
+def test_the_shell_hook_end_to_end_with_an_event(tmp_path, name):
+    """job-started.sh as the runner starts it - `bash -e -o pipefail` - with
+    the real job_started.py and runner_guard.py beside it, and an event file
+    as the runner writes one. A refusal is the hook's exit 1."""
+    import shutil
+    import subprocess
+    import sys
+    bash = _bash()
+    if not bash:
+        pytest.skip("needs a real bash")
+    case = origin_cases.by_id(name)
+    hook = tmp_path / "runner"
+    hook.mkdir()
+    for f in ("job-started.sh", "job_started.py", "runner_guard.py"):
+        (hook / f).write_text((SCRIPT.parent / f).read_text(encoding="utf-8"), newline="\n")
+    fake = tmp_path / "bin"
+    fake.mkdir()
+    python = Path(sys.executable).as_posix()
+    if os.name == "nt":
+        python = "/" + python.replace(":", "", 1)
+    (fake / "python3").write_text(f'#!/usr/bin/env bash\nexec "{python}" "$@"\n', newline="\n")
+    (fake / "python3").chmod(0o755)
+    env = origin_cases.hook_env(case, tmp_path, os.environ)
+    env.update(RUNNER_DISK_CLEAN_BELOW_GB="0", RUNNER_DISK_WARN_BELOW_GB="0",
+               RUNNER_DISK_FAIL_BELOW_GB="0", PYTHONIOENCODING="utf-8",
+               RUNNER_ANDROID_PRISTINE=str(tmp_path / "no-sdk"))
+    if os.name == "nt":
+        env["PATH"] = "/" + fake.as_posix().replace(":", "", 1) + ":/usr/bin:/bin"
+    else:
+        env["PATH"] = f"{fake}{os.pathsep}{os.environ.get('PATH', '')}"
+    done = subprocess.run([bash, "-e", "-o", "pipefail", (hook / "job-started.sh").as_posix()],
+                          capture_output=True, env=env, timeout=120)
+    out = done.stdout.decode("utf-8")
+    assert done.returncode == (0 if case["allowed"] else 1), out + done.stderr.decode()
+    for line in case["out"]:
+        assert line in out, out
+    if case["allowed"]:
+        assert "Disk free before the job" in out, "an allowed job still gets its disk check"
+    else:
+        assert "Disk free before the job" not in out

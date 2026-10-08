@@ -108,6 +108,15 @@ class TestTheDrain:
             text = read(dockerfile)
             assert os.path.basename(path) in text and "job_started.py" in text, dockerfile
 
+    def test_the_origin_guard_ships_beside_the_hook(self):
+        """job_started.py loads runner_guard.py from its own directory: an
+        image with one and not the other runs every job unchecked."""
+        for dockerfile in ("Dockerfile.github", "Dockerfile.cleanup"):
+            text = read(dockerfile)
+            assert "runner_guard.py" in text, dockerfile
+            assert re.search(r"chmod 0644 [^&]*runner_guard\.py", text), dockerfile
+        assert "runner_guard.py" in read("runner", "job_started.py")
+
     def test_the_android_sdk_has_a_copy_no_job_deletes(self):
         """free-disk-space's `rm -rf /usr/local/lib/android` on a writable,
         long-lived root took the SDK from every runner it ran on (#13). A

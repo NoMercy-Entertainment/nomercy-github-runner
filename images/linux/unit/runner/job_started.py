@@ -1,5 +1,9 @@
-"""The GitHub job-started hook: put back what an earlier job took, then make
-sure there is room for this one.
+"""The GitHub job-started hook: refuse code from outside the org, put back
+what an earlier job took, then make sure there is room for this one.
+
+First, whose code it is (runner_guard.py, beside this file): a pull request
+from a fork whose author is not an org member or a trusted maintainer is
+refused before anything else is done for it.
 
 A unit's root is writable and outlives its jobs, so whatever one job deletes
 from the image stays deleted for every job after it. nomercy-whisper-models
@@ -17,6 +21,7 @@ before the build can take the runner down with it.
 Exit status: 0 to let the job run, REFUSE to fail it on purpose. A fault in
 this hook itself is reported as a warning and never fails a job.
 """
+import importlib.util
 import os
 from pathlib import Path
 import shutil
@@ -27,6 +32,7 @@ REFUSE = 75
 GB = 1000 ** 3
 
 PRISTINE = "/opt/nomercy/android-sdk.pristine"
+GUARD = os.path.join(os.path.dirname(os.path.abspath(__file__)), "runner_guard.py")
 LIVE = "/usr/local/lib/android"
 DISK_PATHS = ("/runner/work", "/")
 
@@ -117,8 +123,24 @@ def check_disk(paths, env, free_bytes=_free_bytes, cleanup=_cleanup):
     return 0
 
 
+def check_origin(env, guard=None):
+    """runner_guard.check, loaded from beside this file: 0 or REFUSE. A guard
+    that cannot be loaded lets the job run, with a warning."""
+    try:
+        spec = importlib.util.spec_from_file_location("runner_guard", guard or GUARD)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module.check(env)
+    except Exception as error:          # noqa: BLE001 - never fail a job on our fault
+        print(f"::warning title=Runner guard::the origin check could not be loaded "
+              f"({type(error).__name__}); origin not checked")
+        return 0
+
+
 def main(env=None):
     env = os.environ if env is None else env
+    if check_origin(env) == REFUSE:
+        return REFUSE
     try:
         restored = restore_tree(env.get("RUNNER_ANDROID_PRISTINE", PRISTINE),
                                 env.get("RUNNER_ANDROID_LIVE", LIVE))

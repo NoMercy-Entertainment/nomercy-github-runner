@@ -2,12 +2,13 @@ ARG BASE=nomercy/github-unit:toolchain-20260925
 FROM ${BASE}
 
 # Refresh the runner's hooks without rebuilding the large toolchain layer:
-# the post-job cleanup, and the job-started hook that restores the Android
-# SDK and guards the disk (#13, #7). `run` is what sets the hooks.
-COPY runner/cleanup.py runner/job_started.py /runner/
+# the post-job cleanup, and the job-started hook that refuses a pull request
+# from an outside fork, restores the Android SDK and guards the disk (#13,
+# #7). `run` is what sets the hooks.
+COPY runner/cleanup.py runner/job_started.py runner/runner_guard.py /runner/
 COPY runner/cleanup runner/job-started.sh runner/run /runner/
 RUN chmod 0755 /runner/cleanup /runner/job-started.sh /runner/run \
-    && chmod 0644 /runner/cleanup.py /runner/job_started.py
+    && chmod 0644 /runner/cleanup.py /runner/job_started.py /runner/runner_guard.py
 
 # The runner GitHub will still talk to (#10). The toolchain base carries an
 # older one in /opt/actions-runner-image, the directory every unit copies its

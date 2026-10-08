@@ -35,10 +35,16 @@ startup. It removes unused nested Docker build cache and images without an age
 limit, plus previous job workspaces, while retaining the active workspace and
 installed tools.
 
-Before each job, `/runner/job-started.sh` runs `job_started.py`, which does two
+Before each job, `/runner/job-started.sh` runs `job_started.py`, which does three
 things:
 
-1. **Restores the Android SDK.** It copies back any file missing from
+1. **Refuses outside code.** First, before anything else, `runner_guard.py`
+   reads the job's event: a pull request from a fork whose author is not an
+   org member, owner, collaborator or a login in `RUNNER_TRUSTED_AUTHORS` is
+   failed with `::error title=Outside code refused::`. Every other job gets
+   one `Origin: ... allowed` line. An event it cannot read lets the job run
+   with a warning. See `docs/operations/runner-job-hooks.md`, "Outside code".
+2. **Restores the Android SDK.** It copies back any file missing from
    `/usr/local/lib/android` out of `/opt/nomercy/android-sdk.pristine`, a
    real copy made when the image is built. It never overwrites or deletes.
    A unit's root is writable and outlives its jobs, so a workflow that runs
@@ -46,14 +52,14 @@ things:
    every later job on that runner (GitHub #13). The job is told with a
    `::warning`. This takes about 4 s per job when nothing is missing, and
    about 12 s after a full wipe.
-2. **Guards the disk.** It checks the lowest free space of `/runner/work` and
+3. **Guards the disk.** It checks the lowest free space of `/runner/work` and
    `/`:
    - under `RUNNER_DISK_CLEAN_BELOW_GB` (15) it runs `/runner/cleanup`;
    - under `RUNNER_DISK_WARN_BELOW_GB` (10) it prints a `::warning`;
    - under `RUNNER_DISK_FAIL_BELOW_GB` (3) it fails the job with an
      `::error`, before a full disk can take the runner down (GitHub #7).
 
-Only that deliberate refusal fails a job. A fault in the hook itself is
+Only those deliberate refusals fail a job. A fault in the hook itself is
 reported as a warning.
 
 The running fleet uses the `jobhooks-20261008` overlay image, built with
