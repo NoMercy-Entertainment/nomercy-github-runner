@@ -20,14 +20,22 @@
 # in the repo, is executable, and does something plausible-looking.
 #
 # /.dockerenv is created by the engine in every container it starts, and does
-# not exist on a host.
-if [ ! -f /.dockerenv ]; then
-  echo "REFUSING: $0 is a container entrypoint, not a host script." >&2
-  echo "Running it here would overwrite /etc/docker/daemon.json and stop the" >&2
-  echo "engine every runner depends on. Start a runner instead:" >&2
-  echo "  docker compose -f docker-compose.runners.yml up -d" >&2
+# not exist on a host. A platform unit is a container too, and so is the job a
+# runner runs this repository's tests in. On 2026-10-08 a test ran this file
+# inside github-linux-x64-9 and killed the unit's own dockerd. So it refuses
+# there as well. The block between the guard markers is run on its own by
+# dashboard/tests/test_engine_restartability.py, never the whole file.
+# --- guard ---
+refuse() {
+  echo "REFUSING: $0 $1" >&2
+  echo "Running it here would overwrite /etc/docker/daemon.json and kill the" >&2
+  echo "Docker engine this machine's runners depend on." >&2
   exit 1
-fi
+}
+[ -f /.dockerenv ] || refuse "is a container entrypoint, not a host script."
+[ -e /runner/run ] && refuse "is the legacy entrypoint, and this is a platform unit (/runner/run)."
+[ -n "${GITHUB_ACTIONS:-}" ] && refuse "must never run inside a CI job."
+# --- end guard ---
 
 set -euo pipefail
 

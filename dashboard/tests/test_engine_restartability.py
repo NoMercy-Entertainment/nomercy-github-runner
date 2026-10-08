@@ -71,10 +71,45 @@ class TestTheEntrypointsStayInTheirContainers:
                     assert guard < code.index(danger), \
                         f"{path}: guard comes after {danger!r}"
 
-    def test_the_guard_actually_refuses_here(self):
-        """This test host is not a container, so the script must exit non-zero
-        and must not have written anything."""
+    @staticmethod
+    def _guard(path, tmp_path, dockerenv, unit, ci):
+        """Run only the guard block, with /.dockerenv and /runner/run pointed
+        at files this test controls. Never the whole script: on 2026-10-08
+        this test ran start.sh itself inside github-linux-x64-9, where the
+        old guard let it through, and it killed that runner's engine."""
+        code = _read(path)
+        block = code[code.index("# --- guard ---"):code.index("# --- end guard ---")]
+        envfile, runfile = tmp_path / "dockerenv", tmp_path / "run"
+        for wanted, f in ((dockerenv, envfile), (unit, runfile)):
+            if wanted:
+                f.write_text("")
+            elif f.exists():
+                f.unlink()
+        block = (block.replace("/.dockerenv", envfile.as_posix())
+                      .replace("/runner/run", runfile.as_posix()))
+        script = tmp_path / "guard.sh"
+        script.write_text(block + "\necho PASSED\n", newline="\n")
+        env = {k: v for k, v in os.environ.items() if k != "GITHUB_ACTIONS"}
+        if ci:
+            env["GITHUB_ACTIONS"] = "true"
+        return subprocess.run(["bash", script.as_posix()], capture_output=True,
+                              text=True, env=env)
+
+    @pytest.mark.skipif(shutil.which("bash") is None, reason="no bash here")
+    @pytest.mark.parametrize("dockerenv,unit,ci", [
+        (False, False, False),      # a host
+        (True, True, False),        # inside a platform unit
+        (True, False, True),        # inside a CI job's container
+    ])
+    def test_the_guard_refuses_everywhere_but_its_own_container(
+            self, tmp_path, dockerenv, unit, ci):
         for path in (START, START_FORGEJO):
-            out = subprocess.run(["bash", path], capture_output=True, text=True)
+            out = self._guard(path, tmp_path, dockerenv, unit, ci)
             assert out.returncode != 0, f"{path} did not refuse"
-            assert "REFUSING" in out.stderr, out.stderr[:200]
+            assert "REFUSING" in out.stderr and "PASSED" not in out.stdout
+
+    @pytest.mark.skipif(shutil.which("bash") is None, reason="no bash here")
+    def test_the_guard_lets_its_own_container_through(self, tmp_path):
+        for path in (START, START_FORGEJO):
+            out = self._guard(path, tmp_path, True, False, False)
+            assert out.returncode == 0 and "PASSED" in out.stdout, out.stderr

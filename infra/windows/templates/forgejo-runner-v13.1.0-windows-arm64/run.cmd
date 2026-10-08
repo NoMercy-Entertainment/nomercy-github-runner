@@ -19,11 +19,14 @@ rem wait that cannot sleep spins at full CPU (2026-09-22).
 goto wait
 
 :run
+rem Emulated ARM builds can exceed the native runner's three-hour ceiling.
+rem Keep the runner and drain limits above the four-hour build workflow;
+rem each workflow still enforces its own timeout.
 > config.yaml echo runner:
 >> config.yaml echo   file: %~dp0.runner
 >> config.yaml echo   capacity: 1
->> config.yaml echo   timeout: 3h
->> config.yaml echo   shutdown_timeout: 3h
+>> config.yaml echo   timeout: 6h
+>> config.yaml echo   shutdown_timeout: 6h
 >> config.yaml echo host:
 >> config.yaml echo   workdir_parent: %RUNNER_WORK_DIR%
 "%~dp0forgejo-runner.exe" daemon --config "%~dp0config.yaml"
