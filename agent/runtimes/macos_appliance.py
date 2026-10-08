@@ -52,6 +52,7 @@ import plistlib
 import posixpath
 import subprocess
 import time
+from pathlib import Path
 from typing import Protocol
 
 from .. import naming
@@ -66,6 +67,16 @@ KEPT_ON_RECREATE = ("cache", "logs")
 LAYOUT_ENV_KEYS = {"work": "RUNNER_WORK_DIR", "cache": "RUNNER_CACHE_DIR",
                    "reg": "RUNNER_REG_DIR", "logs": "RUNNER_LOG_DIR"}
 TEMPLATE_MARKER = ".template"
+
+#: GitHub's job hooks (#7): each variable and the script it names, in the
+#: runner's reg directory under `hooks/`. The guest has none of the agent's
+#: files, so every create puts the agent's own copy there, `lib.sh` beside
+#: them. GitHub runs a hook only when its path ends in .sh, .ps1 or .js.
+#: Forgejo has no hooks.
+HOOK_SOURCE = Path(__file__).resolve().parents[1] / "hooks" / "macos"
+HOOK_SCRIPTS = {"ACTIONS_RUNNER_HOOK_JOB_STARTED": "job-started.sh",
+                "ACTIONS_RUNNER_HOOK_JOB_COMPLETED": "job-completed.sh"}
+HOOK_FILES = ("lib.sh", *HOOK_SCRIPTS.values())
 #: What an adopted instance is: the launchd job and the directory that were
 #: already there when the controller took it over (MIG-4). Written by
 #: `create` when its spec carries an `adopt` block, and read by every verb
@@ -234,6 +245,11 @@ class MacApplianceRuntime:
             self._fs.copytree(template, p["reg"])
             self._fs.write_text(marker, image)
 
+        # 2b. GitHub's job hooks, before the job that points at them, and on
+        #     every create, so a redeployed agent's copy reaches the guest.
+        if _serves_github(spec):
+            self._install_hooks(p)
+
         # 3. The launchd job. Its environment can carry a token, so the file
         #    is readable by this user alone.
         self._fs.makedirs(self._tools["launch_agents"])
@@ -296,6 +312,14 @@ class MacApplianceRuntime:
                             json.dumps(record, sort_keys=True), mode=0o600)
         return naming.unit_name(rid)
 
+    def _install_hooks(self, p):
+        hooks = posixpath.join(p["reg"], "hooks")
+        self._fs.makedirs(hooks)
+        for name in HOOK_FILES:
+            text = (HOOK_SOURCE / name).read_text(encoding="utf-8").replace("\r\n", "\n")
+            self._fs.write_text(posixpath.join(hooks, name), text,
+                                mode=0o700 if name in HOOK_SCRIPTS.values() else 0o600)
+
     def _plist(self, rid, spec, p):
         env = dict(spec.get("env") or {})
         for area, key in LAYOUT_ENV_KEYS.items():
@@ -321,6 +345,13 @@ class MacApplianceRuntime:
             env.setdefault(key, posixpath.join(shared_home, directory))
         env["DOTNET_CLI_TELEMETRY_OPTOUT"] = "1"
         env["DOTNET_GENERATE_ASPNET_CERTIFICATE"] = "false"
+        if _serves_github(spec):
+            hooks = posixpath.join(p["reg"], "hooks")
+            for key, name in HOOK_SCRIPTS.items():
+                env[key] = posixpath.join(hooks, name)
+            # The account's own home, where Xcode keeps DerivedData; the
+            # job's HOME is the runner's, under its work directory.
+            env["RUNNER_HOOK_USER_HOME"] = shared_home
         log = posixpath.join(p["logs"], "runner.log")
         job = {"Label": self.label(rid),
                "ProgramArguments": [posixpath.join(p["reg"], "run")],
@@ -716,6 +747,11 @@ class MacRegistrar:
         ok, out, err = self._run([entry], timeout=60)
         if not ok:
             raise RuntimeError(err or out or "deregistration failed")
+
+
+def _serves_github(spec):
+    """Whether the controller made this unit for GitHub, by its label."""
+    return ((spec or {}).get("labels") or {}).get("nomercy.provider") == "github"
 
 
 def _not_found(text):
