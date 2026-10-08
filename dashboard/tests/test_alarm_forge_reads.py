@@ -187,3 +187,35 @@ class TestEveryForgejoRunner:
             return _Answer([{"uuid": f"u{n}"} for n in range(50)])
         fake(monkeypatch, route)
         assert forgejo_api.Forgejo("https://git.example", "t").all_runners() is None
+
+
+class TestASecondaryRateLimitIsKept:
+    """GitHub's secondary limit refuses with 403 or 429 while the hourly
+    budget still has calls left; Retry-After says how long to keep off."""
+
+    def refuse(self, monkeypatch, code, headers, body=b""):
+        import io
+
+        def route(path, query, h):
+            return urllib.error.HTTPError("u", code, "refused", headers, io.BytesIO(body))
+        fake(monkeypatch, route)
+
+    def test_429_with_retry_after(self, monkeypatch):
+        self.refuse(monkeypatch, 429, {"X-RateLimit-Remaining": "4000", "Retry-After": "120"})
+        gh = github_api.GitHub("t", ORG)
+        assert gh.waiting_runs(f"{ORG}/app") is None
+        assert gh.throttled == 120
+
+    def test_403_secondary_limit_without_retry_after(self, monkeypatch):
+        self.refuse(monkeypatch, 403, {"X-RateLimit-Remaining": "4000"},
+                    b'{"message": "You have exceeded a secondary rate limit."}')
+        gh = github_api.GitHub("t", ORG)
+        gh.run_jobs(f"{ORG}/app", 1)
+        assert gh.throttled == 0, "refused, for a time GitHub did not say"
+
+    def test_a_plain_403_is_not_a_limit(self, monkeypatch):
+        self.refuse(monkeypatch, 403, {"X-RateLimit-Remaining": "4000"},
+                    b'{"message": "Resource not accessible by integration"}')
+        gh = github_api.GitHub("t", ORG)
+        gh.run_jobs(f"{ORG}/app", 1)
+        assert gh.throttled is None

@@ -351,6 +351,10 @@ _IDENTITY = {"github": ("GH_TOKEN", "GITHUB_ORG"),
 #: minute; the webhook waits the full ALARM_OFFLINE_MINUTES.
 BLIND_GRACE_SECONDS = 180
 
+#: How long the queue sweep keeps off after GitHub's secondary rate limit
+#: refused a call without saying how long (Retry-After).
+THROTTLE_SECONDS = 300
+
 #: How long the org's repository list is used before it is read again.
 REPOS_SECONDS = 3600
 
@@ -457,6 +461,16 @@ class Monitor:
     # ---- every few minutes -----------------------------------------------
 
     def _low(self, client, cfg, now):
+        """Whether to stop reading now: GitHub's secondary limit refused a
+        call, or the hourly budget is below the floor."""
+        throttled = getattr(client, "throttled", None)
+        if throttled is not None:
+            client.throttled = None
+            self.paused_until = now + (throttled or THROTTLE_SECONDS)
+            self.status["queue"].update(
+                paused_until=iso(self.paused_until),
+                note="paused: GitHub's secondary rate limit refused a call")
+            return True
         left = getattr(client, "rate_remaining", None)
         if left is None or left >= cfg["rate_floor"]:
             return False
@@ -489,6 +503,8 @@ class Monitor:
         book = AlarmBook(path)
         if self.repos is None or now - self.repos_at >= REPOS_SECONDS:
             repos = client.org_repos()
+            if repos is None and self._low(client, cfg, now):
+                return
             if repos is None:
                 why = "the org's repositories could not be read"
                 book.observe_queue_reader("github", why, now, cfg)
@@ -500,8 +516,10 @@ class Monitor:
         # threshold before the next sweep, so its jobs are not asked for.
         cutoff = now - max(0, cfg["queue_minutes"] * 60 - cfg["queue_poll_seconds"])
         jobs, swept, failed = [], set(), 0
+        stopped = False
         for repo in self.repos:
             if self._low(client, cfg, now):
+                stopped = True
                 break
             runs = client.waiting_runs(repo)
             if runs is None:
@@ -512,6 +530,9 @@ class Monitor:
                 created = epoch(run.get("created_at"))
                 if created is not None and created > cutoff:
                     continue
+                if getattr(client, "throttled", None) is not None:
+                    complete = False
+                    break
                 found = client.run_jobs(repo, run.get("id"))
                 if found is None:
                     complete = False
@@ -526,9 +547,14 @@ class Monitor:
                          for j in found if j.get("status") == "queued"]
             if complete:
                 swept.add(repo)
-        blind = failed and not swept and self.repos
-        book.observe_queue_reader(
-            "github", "no repository's runs could be read" if blind else None, now, cfg)
+        stopped = stopped or self._low(client, cfg, now)
+        # A limit is a pause, not a blind monitor: what was read stands,
+        # and the monitor's own state is left as it was.
+        if not stopped:
+            blind = failed and not swept and self.repos
+            book.observe_queue_reader(
+                "github", "no repository's runs could be read" if blind else None,
+                now, cfg)
         book.observe_queue("github", jobs, swept, self.online.get("github") or [], now, cfg)
         queue.update(checked_at=iso(now), repositories=len(self.repos),
                      read=len(swept), queued=len(jobs))

@@ -227,6 +227,46 @@ class TestTheSweep:
         m.sweep_queue(path, self.ENV, T0 + 41 * MIN)
         assert len(client.calls) > before
 
+    def test_a_secondary_limit_stops_the_sweep_for_retry_after(self, path):
+        repos = [f"{ORG}/r{n}" for n in range(10)]
+        client = FakeGitHub(repos)
+        original = client.waiting_runs
+
+        def waiting_runs(repo):
+            if repo == f"{ORG}/r2":
+                client.throttled = 120
+                return None
+            return original(repo)
+        client.waiting_runs = waiting_runs
+        client.throttled = None
+        m = monitor_with(client)
+        m.tick(path, self.ENV, [], T0)
+        m.sweep_queue(path, self.ENV, T0)
+        asked = [c for c in client.calls if c[0] == "runs"]
+        assert len(asked) == 2, "nothing after the refusal"
+        assert m.status["queue"]["paused_until"] == alarms.iso(T0 + 120)
+        assert client.throttled is None, "taken note of once"
+        before = len(client.calls)
+        m.sweep_queue(path, self.ENV, T0 + 60)
+        assert len(client.calls) == before
+        assert [r for r in alarms.AlarmBook(path).rows() if r["kind"] == "monitor"] == [], \
+            "a limit is a pause, not a blind monitor"
+
+    def test_a_secondary_limit_without_retry_after_waits_minutes(self, path):
+        client = FakeGitHub([f"{ORG}/a", f"{ORG}/b"])
+        original = client.waiting_runs
+
+        def waiting_runs(repo):
+            client.throttled = 0
+            return None
+        client.waiting_runs = waiting_runs
+        client.throttled = None
+        m = monitor_with(client)
+        m.tick(path, self.ENV, [], T0)
+        m.sweep_queue(path, self.ENV, T0)
+        assert m.status["queue"]["paused_until"] == alarms.iso(T0 + alarms.THROTTLE_SECONDS)
+        assert original
+
     def test_the_floor_is_configurable(self, path):
         client = FakeGitHub([f"{ORG}/app"], remaining=150)
         env = dict(self.ENV, ALARM_RATE_LIMIT_FLOOR="100")

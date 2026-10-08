@@ -37,6 +37,11 @@ class GitHub:
         #: url -> (etag, answer), for questions asked again and again. A 304
         #: does not count against the rate limit.
         self._etags = {}
+        #: Set when GitHub's secondary limit refused a call - 403 or 429
+        #: while the hourly budget still has calls left: the seconds its
+        #: Retry-After asked for, or 0 when it did not say. The reader that
+        #: acts on it clears it.
+        self.throttled = None
 
     # ----------------------------------------------------------------- http
     def _headers(self, **extra):
@@ -58,6 +63,19 @@ class GitHub:
             self.rate_remaining = int(str(remaining).strip())
         if reset is not None and str(reset).strip().isdigit():
             self.rate_reset = int(str(reset).strip())
+
+    def _note_throttle(self, e):
+        """A 429, a refusal with Retry-After, or a 403 that says it is a
+        rate limit. A 403 for anything else - no access to a repository -
+        is not one."""
+        headers = e.headers or {}
+        retry = str(headers.get("Retry-After") or "").strip()
+        try:
+            body = (e.read() or b"").decode("utf-8", "replace").lower()
+        except Exception:   # noqa: BLE001 - no body is no news
+            body = ""
+        if e.code == 429 or retry or "rate limit" in body:
+            self.throttled = int(retry) if retry.isdigit() else 0
 
     def _get(self, path, params=None, conditional=False):
         """GET and parse, or None. `conditional` sends the ETag of the last
@@ -83,6 +101,8 @@ class GitHub:
             self._note_rate(e.headers or {})
             if e.code == 304 and cached:
                 return cached[1]
+            if e.code in (403, 429):
+                self._note_throttle(e)
             # 404 on a repo without Actions is normal, not worth logging.
             if e.code not in (404,):
                 print(f"[github] {e.code} {path}")
