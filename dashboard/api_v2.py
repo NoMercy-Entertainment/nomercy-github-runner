@@ -299,10 +299,19 @@ def fleet_list(service, note, all_runner_cards):
                                      env_configured.get(provider_key),
                                      members),
         })
+        out[-1]["limits_problem"] = None
         if service and fid in rows:
             support = service.fleets.resource_support(fid)
             out[-1]["resource_support"] = support
             out[-1]["resource_notice"] = _resource_notice(rows[fid], support)
+            problem = service.limits_problem(rows[fid])
+            out[-1]["limits_problem"] = problem
+            if problem:
+                # "+ Add runner" cannot add a runner the service refuses, and
+                # the head of the fleet says why (GitHub #5).
+                for action in out[-1]["actions"]:
+                    if action["verb"] == "add" and action.get("enabled"):
+                        action.update(enabled=False, reason=problem)
     return _action_policy(out)
 
 
@@ -830,6 +839,7 @@ def _limits_view(service, fleet):
     verdict = hardware.check(float(cpu) if cpu is not None else None, memory, hosts)
     return {"hardware": hosts, "limits_max": hardware.limits_max(hosts),
             "memory_inherited": inherited,
+            "limits_problem": service.limits_problem(fleet),
             "hardware_unverified": verdict == hardware.UNVERIFIED,
             # A setting saved before a host shrank: still in force, and the
             # page says it no longer fits.

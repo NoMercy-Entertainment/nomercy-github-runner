@@ -160,6 +160,10 @@ function fleetHeadHTML(f) {
   }).join('');
   const unavailable = f.available ? ''
     : `<div class="hint unavailable">${esc(f.reason || 'unavailable')}</div>`;
+  // Why "+ Add runner" is off when the fleet lacks a CPU or memory limit -
+  // said on the heading too, not only in a button's tooltip.
+  const limits = f.limits_problem
+    ? `<div class="cwarn flimits">${esc(f.limits_problem)}</div>` : '';
   const labels = f.labels && f.labels.length
     ? `<div class="flabels">runs-on: ${f.labels.map(l => `<span class="chip">${esc(l)}</span>`).join('')}</div>`
     : '';
@@ -169,7 +173,7 @@ function fleetHeadHTML(f) {
   return `<div class="fleet-heading"><div><h2 class="fleet-head">${esc(f.title)}</h2>` +
     `<div class="fleet-summary"><span class="fcount">${count} runner${count === 1 ? '' : 's'}</span>${running}</div>` +
     `</div><div class="fleet-actions">${buttons}</div></div>` +
-    labels + unavailable;
+    labels + unavailable + limits;
 }
 
 if (typeof module !== 'undefined') {

@@ -51,6 +51,13 @@ COMBINED_MEMORY_PLATFORMS = frozenset({providers.LINUX})
 #: instead (`placement.enforces_appliance_limits`), so it stays out of here.
 PINNED_CPU_PLATFORMS = frozenset({providers.LINUX, providers.WINDOWS})
 
+#: Where a runner is never created or recreated without both a CPU and a
+#: memory limit. Without one a Linux unit or a Windows Job Object takes the
+#: whole host, and a single build can starve every other runner on it
+#: (GitHub #5). macOS is not here: its appliance VM is its bound. A table for
+#: the same reason PINNED_CPU_PLATFORMS is one.
+REQUIRE_LIMITS = frozenset({providers.LINUX, providers.WINDOWS})
+
 #: (provider, platform) -> the runtime that executes that cell, as
 #: "module:attribute". Strings rather than imports so this stays a table of
 #: data: nothing here is loaded until a cell is actually used, and a test can
@@ -410,7 +417,51 @@ class RunnerService:
             result["memory_swap_limit"] = int(measured_swap)
         return result
 
+    def limits_problem(self, fleet, spec=None):
+        """Why a runner of this fleet cannot be created now for want of a CPU
+        or memory limit, or None.
+
+        A limit can come from the runner's own override, the fleet's
+        setting, the deployment's RUNNER_UNIT_MEMORY_* (memory only) or - for
+        a runner being rebuilt - what it already has, which is what its
+        replacement keeps when nothing above it says otherwise. Only the
+        platforms in `REQUIRE_LIMITS` ask."""
+        if not fleet or fleet.get("platform") not in REQUIRE_LIMITS:
+            return None
+        spec = spec or {}
+        cpu = next((v for v in (spec.get("cpu_override"), fleet.get("cpu_limit"),
+                                spec.get("cpu_limit")) if v not in (None, "")), None)
+        memory = (spec.get("memory_override") or fleet.get("memory_limit")
+                  or (self.env_memory(fleet) or {}).get("bytes")
+                  or spec.get("memory_limit"))
+        missing = [name for name, value in (("CPU", cpu), ("memory", memory))
+                   if not value]
+        if not missing:
+            return None
+        platform = {providers.LINUX: "Linux", providers.WINDOWS: "Windows"}.get(
+            fleet["platform"], fleet["platform"])
+        return (f"{fleet['fleet_id']} has no {' and no '.join(missing)} limit, "
+                f"and a {platform} runner is never created without one; set "
+                f"it on the Settings page")
+
+    @staticmethod
+    def unit_limits_problem(unit):
+        """The same rule, asked of the unit about to be created: what it
+        will actually be given, after every default has been resolved."""
+        if unit.get("platform") not in REQUIRE_LIMITS:
+            return None
+        missing = [name for name, key in (("CPU", "cpu_limit"), ("memory", "memory_limit"))
+                   if not unit.get(key)]
+        if not missing:
+            return None
+        return (f"provision refuses: {unit.get('runner_id')} would be created "
+                f"with no {' and no '.join(missing)} limit")
+
     def validate_replacement(self, spec):
+        fleet = self.fleets.get(spec.get("fleet_id"))
+        why = self.limits_problem(fleet, spec)
+        if why:
+            raise Refused(f"recreate cannot build a replacement: {why}")
         replacement = self.replacement_spec(spec)
         fleet = self.fleets.get(spec["fleet_id"])
         if not fleet["available"]:
@@ -520,6 +571,9 @@ class RunnerService:
         self.runtime_for(fleet["provider"], fleet["platform"])
         can, why = self.buildable(fid)
         if not can:
+            raise Refused(f"{fid} cannot be built: {why}")
+        why = self.limits_problem(fleet)
+        if why:
             raise Refused(f"{fid} cannot be built: {why}")
 
         # An impossible width is refused here, before a single spec exists -
@@ -977,6 +1031,14 @@ class RunnerService:
             raise Refused(
                 f"{fid} wants {fleet['desired_capacity']}; it cannot go "
                 f"{abs(delta)} lower")
+        if delta > 0:
+            # Refused at the click, not by every reconciler pass after it.
+            why = self.limits_problem(fleet)
+            if why:
+                self._audit("set_capacity", "refused", requested_by,
+                            fleet_id=fid, outcome=why,
+                            parameters={"desired": target})
+                raise Refused(why)
         return self.set_capacity(fid, target, requested_by, idempotency_key)
 
     # ---- reads -------------------------------------------------------------

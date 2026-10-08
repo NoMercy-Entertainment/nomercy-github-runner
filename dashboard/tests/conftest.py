@@ -48,6 +48,26 @@ def anon_client():
         yield c
 
 
+def pytest_configure(config):
+    config.addinivalue_line(
+        "markers", "require_limits: keep the rule that Linux and Windows "
+                   "runners need a CPU and a memory limit (control.service."
+                   "REQUIRE_LIMITS) in force for this test")
+
+
+@pytest.fixture(autouse=True)
+def limits_not_required(request, monkeypatch):
+    """Linux and Windows runners are refused without a CPU and a memory
+    limit (control.service.REQUIRE_LIMITS). Nearly every test here builds a
+    fleet to exercise something else and sets neither, so the rule is lifted
+    by default and held by the tests that are about it, which say so with
+    @pytest.mark.require_limits."""
+    if request.node.get_closest_marker("require_limits"):
+        return
+    from control import service
+    monkeypatch.setattr(service, "REQUIRE_LIMITS", frozenset())
+
+
 @pytest.fixture(autouse=True)
 def no_real_backoff(monkeypatch):
     """Retries pause between attempts - 1s, 3s, 6s by design 17.2. A test that

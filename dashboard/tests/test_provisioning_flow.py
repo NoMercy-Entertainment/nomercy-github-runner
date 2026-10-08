@@ -631,6 +631,36 @@ class TestTheForgeIsAskedOncePerPass:
         assert len(asked) == 2
 
 
+@pytest.mark.require_limits
+class TestTheLimitsBackstop:
+    """plan, add and recreate refuse a Linux or Windows runner with no CPU or
+    memory limit (`RunnerService.limits_problem`). The unit itself is checked
+    once more right before it is created, so a path that reaches creation
+    some other way - a spec written before the rule, a repair - still never
+    builds a runner with the whole host."""
+
+    def test_a_unit_without_a_memory_limit_is_never_created(self, platform):
+        service, flow, agent, forges = platform
+        service.fleets.set_defaults(fleet_id("github", "linux", "x64"),
+                                    {"cpu_limit": 2.5})
+        rid = service.specs.create(provider="github", platform="linux",
+                                   architecture="x64", cpu_limit="2.5",
+                                   fleet_id=fleet_id("github", "linux", "x64"),
+                                   actual_state="planned")
+        with pytest.raises(StepFailed) as caught:
+            flow.provision(service.specs.get(rid))
+        assert caught.value.step == "create_unit"
+        assert "memory" in str(caught.value)
+        assert not [c for c in UnitRuntime.log if c[0] == "create"]
+
+    def test_a_unit_with_both_is_created(self, platform):
+        service, flow, agent, forges = platform
+        service.fleets.set_defaults(fleet_id("github", "linux", "x64"),
+                                    {"cpu_limit": 2.5, "memory_limit": 4 * 1024**3})
+        spec = provisioned(service, flow, a_planned(service))
+        assert spec["exec_unit_ref"]
+
+
 class TestThePinnedWindowBackstop:
     """Finding 1 of the task 25 review (2026-09-23): a window is assigned
     only once `_step_create_unit`'s own placement has named a host, by

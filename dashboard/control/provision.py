@@ -299,6 +299,12 @@ class ProvisioningFlow:
             # the full host's cores instead of the one it was promised.
             raise Refused(f"provision refuses: {spec['platform']} pins a "
                           f"CPU window and {spec['runner_id']} has none")
+        # The same kind of backstop for GitHub #5: plan, add and recreate
+        # already refuse a Linux or Windows runner with no CPU or memory
+        # limit, and this holds for any path that reaches creation anyway.
+        why = self.service.unit_limits_problem(unit)
+        if why:
+            raise Refused(why)
         unit["name"] = name
         unit["storage"] = storage.names(spec["runner_id"], spec["platform"])
         unit["host_id"] = state["host_id"]

@@ -328,6 +328,14 @@ class TestTheRenderer:
         for label in f["labels"]:
             assert f'<span class="chip">{label}</span>' in html
 
+    def test_a_fleet_head_says_why_it_needs_limits(self):
+        why = ("github-linux-x64 has no memory limit, and a Linux runner is "
+               "never created without one; set it on the Settings page")
+        html = render("fleetHeadHTML", [fleet_row(limits_problem=why)])[0]
+        assert 'class="cwarn flimits"' in html and why in html
+        html = render("fleetHeadHTML", [fleet_row(limits_problem=None)])[0]
+        assert "flimits" not in html
+
     def test_a_fleet_head_with_no_labels_says_nothing(self):
         f = fleet_row(labels=[])
         html = render("fleetHeadHTML", [f])[0]
