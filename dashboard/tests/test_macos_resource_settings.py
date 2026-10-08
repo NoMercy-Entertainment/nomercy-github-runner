@@ -130,6 +130,36 @@ def test_fleet_notice_and_runner_notice_do_not_confuse_new_defaults_with_current
     assert "unverified" in client.get(f"/api/v2/runners/{rid}").json["resource_notice"]
 
 
+def _limits(client, rid, body, key):
+    return client.post(f"/api/v2/runners/{rid}/limits", json=body,
+                       headers={"Idempotency-Key": key})
+
+
+def test_a_runner_override_needs_its_own_worker_to_enforce_it(client, plane):
+    """The same rule as a fleet default (store/fleets.py): a macOS runner's
+    own CPU or RAM is refused unless its worker confirms per-runner
+    appliance enforcement. Saved anyway, every later recreate of that
+    runner - fleet-wide ones included - would be refused by placement."""
+    service, _ = api_v2.control_plane()
+    worker(service)
+    worker(service, "legacy", dict(CAPS, appliance_per_runner=False))
+    legacy = service.specs.create(provider="github", platform="macos", fleet_id=FID,
+                                  host_id="legacy", actual_state="idle")
+    for n, body in enumerate(({"cpu": 4}, {"memory": 8 * GIB})):
+        refused = _limits(client, legacy, body, f"legacy-{n}")
+        assert refused.status_code == 400, refused.json
+        assert "per-runner appliance enforcement" in refused.json["error"]
+    spec = service.specs.get(legacy)
+    assert spec["cpu_override"] is None and spec["memory_override"] is None
+    # Clearing one is always allowed: it asks for nothing to be enforced.
+    assert _limits(client, legacy, {"cpu": None}, "legacy-clear").status_code == 202
+    pooled = service.specs.create(provider="github", platform="macos", fleet_id=FID,
+                                  host_id="pool", actual_state="idle")
+    answer = _limits(client, pooled, {"cpu": 4, "memory": 8 * GIB}, "pool")
+    assert answer.status_code == 202, answer.json
+    assert service.specs.get(pooled)["cpu_override"] == "4"
+
+
 def test_an_available_pool_does_not_prove_limits_on_a_legacy_runner(client, plane):
     service, _ = api_v2.control_plane()
     worker(service)

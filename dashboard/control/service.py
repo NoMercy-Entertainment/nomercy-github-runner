@@ -870,6 +870,17 @@ class RunnerService:
         runner's own host. ValueError when a value is not a limit or does
         not fit."""
         from store import limits
+        if spec["platform"] == providers.MACOS and any(
+                changes.get(key) is not None for key in ("cpu", "memory")):
+            # The rule a fleet default has (FleetStore.set_defaults), asked
+            # of this runner's own worker: saved without it, every later
+            # recreate of the runner would be refused by placement.
+            support = self.fleets.resource_support(
+                spec["fleet_id"], host_id=spec.get("host_id") or None)
+            if any(changes.get(key) is not None and not support[f"{key}_limit_supported"]
+                   for key in ("cpu", "memory")):
+                raise ValueError("CPU/RAM changes require a healthy macOS worker "
+                                 "confirming per-runner appliance enforcement")
         values = {}
         if "cpu" in changes:
             values["cpu_override"] = limits.normalize_cpu(changes["cpu"], spec["platform"])
