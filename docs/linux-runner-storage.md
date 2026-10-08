@@ -8,9 +8,16 @@ size, foreign mount, or ambiguous inspection causes an explicit refusal.
 ```json
 "storage": {
   "root": "/var/lib/runner-storage",
-  "default_bytes": 107374182400
+  "default_bytes": 107374182400,
+  "readonly_root": false
 }
 ```
+
+`readonly_root` defaults to `false`. Jobs install system packages with apt,
+which needs `/var/lib/apt` writable. A read-only root fails every such job
+with `Read-only file system` (GitHub issue #14). The flag is applied when a
+unit is created, so changing it only affects units created afterwards.
+Recreate the existing ones.
 
 The agent runs as root. The root directory and its parents must not be
 symlinks; the root and control files must belong to the agent and cannot be
@@ -32,15 +39,18 @@ combined five volumes. Sparse allocation does not reserve host space: the
 worker's underlying filesystem still needs free-space monitoring and a
 capacity budget. Another runner cannot borrow this runner's unused ceiling.
 
-Managed containers require an image labelled `nomercy.readonly_root=true`.
-The runtime resolves that image to its immutable image ID before creating
-storage, uses `--read-only`, and gives `/run` a bounded 64 MiB tmpfs. The
-image must put its writable runner installation and Docker configuration
-on the owned volumes. Legacy images are refused before volume allocation.
-Stopped maintenance helpers use the same restrictions.
+With `readonly_root: true`, managed containers require an image labelled
+`nomercy.readonly_root=true`. The runtime resolves that image to its
+immutable image ID before creating storage, uses `--read-only`, and gives
+`/run` a bounded 64 MiB tmpfs. The image must put its writable runner
+installation and Docker configuration on the owned volumes. Legacy images
+are refused before volume allocation. Stopped maintenance helpers use the
+same restrictions.
 
-**Boundary:** the owned filesystem bounds persistent runner data. The
-read-only root cannot grow a writable layer. `/run` and Docker's `/dev/shm`
+**Boundary:** the owned filesystem bounds persistent runner data. With a
+writable root, the container's writable layer sits outside that ceiling and
+keeps what jobs change until the unit is recreated. With a read-only root it
+cannot grow at all. `/run` and Docker's `/dev/shm`
 are separate bounded memory filesystems; outer Docker logs remain outside
 the disk ceiling and rotate at three 10 MB files (two for maintenance).
 Privileged execution is required by the nested engine; this is resource

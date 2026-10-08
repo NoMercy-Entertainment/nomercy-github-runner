@@ -235,12 +235,15 @@ class TestDiskStorageConfig:
         assert ok().storage == {}
         assert ok(storage={"root": "/var/lib/runner-storage"}).storage == {
             "root": "/var/lib/runner-storage", "default_bytes": 100 * 1024 ** 3,
-            "readonly_root": True}
+            "readonly_root": False}
 
-    def test_readonly_root_is_explicit_and_defaults_true(self):
-        assert ok(storage={"root": "/safe"}).storage["readonly_root"] is True
-        assert ok(storage={"root": "/safe", "readonly_root": False}).storage == {
-            "root": "/safe", "default_bytes": 100 * 1024 ** 3, "readonly_root": False}
+    def test_readonly_root_defaults_false_and_true_is_still_honoured(self):
+        # Defaults to writable (#14): a hand edit that dropped the key on
+        # 2026-10-07 recreated five units read-only, and every job that ran
+        # apt on them failed with "Read-only file system".
+        assert ok(storage={"root": "/safe"}).storage["readonly_root"] is False
+        assert ok(storage={"root": "/safe", "readonly_root": True}).storage == {
+            "root": "/safe", "default_bytes": 100 * 1024 ** 3, "readonly_root": True}
 
     @pytest.mark.parametrize("storage", [{"root": "/"}, {"root": "relative"},
                                           {"root": "/safe", "default_bytes": True},

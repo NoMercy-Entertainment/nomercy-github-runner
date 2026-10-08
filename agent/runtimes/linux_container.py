@@ -232,12 +232,13 @@ class LinuxContainerRuntime:
         # LinuxStorage's own constructor, so it is read here and popped
         # before the rest of the mapping is handed to LinuxStorage - passed
         # through, it would be an unexpected keyword argument there.
+        # Writable by default, as config.py: see the note there (#14).
         if isinstance(storage, dict):
             storage = dict(storage)
-            found = storage.pop("readonly_root", True)
+            found = storage.pop("readonly_root", False)
             if readonly_root is None:
                 readonly_root = found
-        self._readonly_root = True if readonly_root is None else bool(readonly_root)
+        self._readonly_root = bool(readonly_root)
         self._storage = (storage if isinstance(storage, LinuxStorage) else
                          LinuxStorage(**storage) if storage else None)
         # Which container on this engine a runner already is, for the few

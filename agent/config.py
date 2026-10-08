@@ -274,7 +274,10 @@ def parse(data, exists=os.path.isfile):
         size = storage.get("default_bytes", 100 * 1024 ** 3)
         if type(size) is not int or not 64 * 1024 ** 2 <= size <= 2 ** 63 - 1:
             raise ConfigError("storage.default_bytes must be at least 64 MiB and fit a signed 64-bit size")
-        readonly_root = storage.get("readonly_root", True)
+        # Writable unless asked otherwise: jobs install packages with apt, and
+        # a read-only root fails every one of them (W8, and again on
+        # 2026-10-07 when a hand edit dropped this key - #14).
+        readonly_root = storage.get("readonly_root", False)
         if type(readonly_root) is not bool:
             raise ConfigError("storage.readonly_root must explicitly be true or false")
         storage = dict(storage, default_bytes=size, readonly_root=readonly_root)

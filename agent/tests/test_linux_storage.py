@@ -385,7 +385,7 @@ def test_incompatible_image_is_refused_before_allocating_storage(disk):
     store, commands = disk
     docker = BoundDocker()
     docker.readonly_compatible = False
-    runtime = LinuxContainerRuntime(run=docker, storage=store)
+    runtime = LinuxContainerRuntime(run=docker, storage=store, readonly_root=True)
     with pytest.raises(RuntimeError, match="readonly_root=true"):
         runtime.create(RID, {"image": "legacy:v1"})
     assert not docker.volumes
@@ -395,7 +395,7 @@ def test_incompatible_image_is_refused_before_allocating_storage(disk):
 def test_managed_unit_and_stopped_maintenance_have_readonly_roots(disk):
     store, commands = disk
     docker = BoundDocker()
-    runtime = LinuxContainerRuntime(run=docker, storage=store)
+    runtime = LinuxContainerRuntime(run=docker, storage=store, readonly_root=True)
     runtime.create(RID, {"image": "unit:v1", "disk_limit": MIN_BYTES})
     name = naming.unit_name(RID)
     assert docker.containers[name]["hostconfig"]["ReadonlyRootfs"]
@@ -407,7 +407,7 @@ def test_managed_unit_and_stopped_maintenance_have_readonly_roots(disk):
     assert docker.containers[name]["state"] == "exited"
 
 
-def test_readonly_root_defaults_true_and_is_read_from_a_storage_config_dict(tmp_path):
+def test_readonly_root_defaults_false_and_is_read_from_a_storage_config_dict(tmp_path):
     """Production wires a config dict (agent/config.py's `storage` mapping)
     straight into the runtime, which must pop `readonly_root` out of it
     before handing the rest to LinuxStorage - LinuxStorage takes no such
@@ -415,13 +415,14 @@ def test_readonly_root_defaults_true_and_is_read_from_a_storage_config_dict(tmp_
     root = str(tmp_path / "owned")
     default = LinuxContainerRuntime(run=FakeDocker(),
                                     storage={"root": root, "default_bytes": MIN_BYTES})
-    assert default._readonly_root is True
+    assert default._readonly_root is False
     assert default._storage.root == Path(root)
+    assert LinuxContainerRuntime(run=FakeDocker(), storage=default._storage)._readonly_root is False
 
-    writable = LinuxContainerRuntime(run=FakeDocker(), storage={
-        "root": root, "default_bytes": MIN_BYTES, "readonly_root": False})
-    assert writable._readonly_root is False
-    assert writable._storage.root == Path(root)
+    readonly = LinuxContainerRuntime(run=FakeDocker(), storage={
+        "root": root, "default_bytes": MIN_BYTES, "readonly_root": True})
+    assert readonly._readonly_root is True
+    assert readonly._storage.root == Path(root)
 
 
 def test_writable_root_create_has_no_readonly_argv_and_accepts_an_undeclared_image(disk):

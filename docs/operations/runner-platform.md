@@ -14,7 +14,7 @@ controller; nothing is started by hand.
 | Part | Where | State |
 | --- | --- | --- |
 | Control plane: controller + dashboard | VM `rnr-control` (10.77.0.10), compose `/etc/runner-platform/compose.yml` | Running. The public name reaches the dashboard through the host's portproxy |
-| GitHub Linux, 10 runners | VM `rnr-linux-1` (10.77.0.20), 80 GiB, 56 vCPU | Running. One container each, read-only root, own 100 GiB filesystem, 16-core cpuset, 32 GiB RAM + 32 GiB swap |
+| GitHub Linux, 10 runners | VM `rnr-linux-1` (10.77.0.20), 80 GiB, 56 vCPU | Running. One container each, writable root (jobs run apt), own 100 GiB filesystem, 16-core cpuset, 32 GiB RAM + 32 GiB swap |
 | Forgejo Linux, 3 runners | `rnr-linux-1` | Running, 6 GiB RAM + 6 GiB swap, labels `ubuntu-latest`, `ubuntu-22.04(-full)`, `ubuntu-24.04(-full)` |
 | Forgejo Windows, 1 runner | BEAST-UNIT itself (OPEN-2) | Running as its own service and virtual account, in a Job Object, on its own fixed 100 GiB VHDX, labels `windows-2022`, `windows-latest` |
 | GitHub Windows | BEAST-UNIT | Cell buildable; see section 1.1 |
