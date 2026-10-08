@@ -524,6 +524,23 @@ class TestCapabilities:
         (2026-09-23)."""
         assert runtime.capabilities()["host_cores"] == os.cpu_count()
 
+    def test_it_declares_its_hardware(self, runtime, monkeypatch):
+        """Logical CPUs and physical memory, measured with the Windows API:
+        the controller's maximum for every limit on this worker (GitHub #5).
+        Memory comes from GlobalMemoryStatusEx, not /proc/meminfo, which a
+        Windows guest does not have."""
+        from agent import hardware
+        from .test_hardware import Kernel32
+        monkeypatch.setattr(hardware, "_kernel32", lambda: Kernel32(12 * 1024**3))
+        assert runtime.capabilities()["hardware"] == {
+            "logical_cpus": os.cpu_count(), "memory_bytes": 12 * 1024**3}
+
+    def test_it_is_not_given_a_memory_capacity(self, runtime):
+        """Declared.capabilities() turns a runtime's memory_capacity into a
+        capacity check this runtime has never had; hardware is reported on
+        its own key instead, so placement on Windows is unchanged."""
+        assert not hasattr(runtime, "memory_capacity")
+
 
 class TestTheJobHostsArithmetic:
     @pytest.mark.parametrize("cpus,count,rate", [

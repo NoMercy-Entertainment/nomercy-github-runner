@@ -48,7 +48,7 @@ import sys
 import time
 from pathlib import Path
 
-from .. import cpu, naming
+from .. import cpu, hardware, naming
 from ..jobs import current_job
 from ..windows_timeouts import registration_limits
 from .localfs import LocalFs
@@ -690,6 +690,11 @@ class WindowsProcessRuntime:
                 # agent/runtimes/linux_container.py declares, the same way
                 # (2026-09-23).
                 "host_cores": os.cpu_count(),
+                # Logical CPUs and physical memory from the Windows API: the
+                # most any limit here may be (agent/hardware.py, GitHub #5).
+                # A key of its own, not memory_capacity, so placement on
+                # Windows is unchanged by it.
+                "hardware": hardware.facts("win32"),
                 "notes": "one service per runner under its own virtual "
                          "account, in a Job Object, over a directory tree "
                          "only it can read"}

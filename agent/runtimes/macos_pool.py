@@ -14,7 +14,7 @@ import time
 from contextlib import contextmanager
 from pathlib import Path
 
-from .. import naming
+from .. import hardware, naming
 from .appliance_host import BOOT_CLEANUP_LABEL, BOOT_ENTRYPOINT, DockerApplianceHost
 from .guest_ssh import GuestExec, GuestFs
 from .linux_container import LinuxContainerRuntime, memory_bytes
@@ -600,6 +600,8 @@ class MacAppliancePoolRuntime:
                     guest_disk_virtual_bytes=self.disk_bytes, disk_quota=False,
                     supports_drain=True, clear_cache=True, cache_scopes=sorted(SUPPORTED_SCOPES),
                     job_containers=False, nested_builds=False, resettable_os=False,
+                    # The Linux host the appliances run on (agent/hardware.py).
+                    hardware=hardware.facts("linux"),
                     notes="One QEMU guest and private disk overlay per runner; recreate preserves guest cache/logs.")
 
     memory_capacity = LinuxContainerRuntime.memory_capacity

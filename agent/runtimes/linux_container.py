@@ -50,7 +50,7 @@ from contextlib import contextmanager
 from decimal import Decimal
 from concurrent.futures import ThreadPoolExecutor
 
-from .. import cpu, naming
+from .. import cpu, hardware, naming
 from ..jobs import current_job
 from .adopted import Adopted
 
@@ -946,6 +946,9 @@ class LinuxContainerRuntime:
                 # each runner's cpuset over these, so it needs the number
                 # before any runner is here to report it.
                 "host_cores": os.cpu_count(),
+                # Logical CPUs and MemTotal: the most any limit here may
+                # be (agent/hardware.py, GitHub #5).
+                "hardware": hardware.facts("linux"),
                 "notes": "one container per runner, five named volumes "
                          "derived from its runner_id"}
 

@@ -474,3 +474,12 @@ def test_orphaned_storage_without_metadata_is_not_adopted(pool, host):
     with pytest.raises(RuntimeError, match="without ownership metadata"):
         pool.create(RID, SPEC)
     assert not host.units
+
+
+def test_it_declares_the_appliance_hosts_hardware(pool, monkeypatch):
+    """The Linux host the appliances run on: logical CPUs and MemTotal, the
+    controller's maximum for a macOS fleet's limits (GitHub #5)."""
+    from agent import hardware
+    monkeypatch.setattr(hardware, "linux_memory", lambda path=None: 64 * GIB)
+    assert pool.capabilities()["hardware"] == {"logical_cpus": os.cpu_count(),
+                                               "memory_bytes": 64 * GIB}

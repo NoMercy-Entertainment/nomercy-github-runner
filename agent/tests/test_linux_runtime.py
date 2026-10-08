@@ -648,6 +648,14 @@ class TestWhatItDeclares:
         """OPEN-7, settled: a graceful stop that stays stopped."""
         assert runtime.capabilities()["supports_drain"] is True
 
+    def test_it_declares_its_hardware(self, runtime, monkeypatch):
+        """Logical CPUs and MemTotal: the controller's maximum for every
+        limit on this worker (GitHub #5)."""
+        from agent import hardware
+        monkeypatch.setattr(hardware, "linux_memory", lambda path=None: 84418977792)
+        assert runtime.capabilities()["hardware"] == {
+            "logical_cpus": os.cpu_count(), "memory_bytes": 84418977792}
+
 
 class TestDrain:
     """SIGTERM, never `docker stop`: stop kills a job when its timeout runs
