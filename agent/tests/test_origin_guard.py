@@ -29,7 +29,13 @@ spec.loader.exec_module(runner_guard)
 @pytest.mark.parametrize("case", origin_cases.CASES, ids=lambda c: c["id"])
 def test_every_case(case, tmp_path, capsys):
     ended = []
-    code = runner_guard.check(origin_cases.hook_env(case, tmp_path), end=ended.append)
+    env = origin_cases.hook_env(case, tmp_path)
+    env["RUNNER_LOG_DIR"] = str(tmp_path / "logs")
+    (tmp_path / "logs").mkdir()
+    code = runner_guard.check(env, end=ended.append)
+    last = origin_cases.read_last(tmp_path / "logs")
+    assert last["result"] == origin_cases.last_result(case)
+    assert last["version"] == runner_guard.GUARD_VERSION and last["at"].endswith("Z")
     assert bool(ended) == (not case["allowed"]), "a refusal, and only a refusal, ends the job"
     out = capsys.readouterr().out
     assert code == (0 if case["allowed"] else runner_guard.REFUSE), out
@@ -102,6 +108,31 @@ def test_it_needs_nothing_but_the_standard_library():
     imported |= {node.module.split(".")[0] for node in ast.walk(tree)
                  if isinstance(node, ast.ImportFrom) and node.module}
     assert imported <= {"ctypes", "json", "os", "re", "signal", "sys", "time"}, imported
+
+
+class TestTheLastResult:
+    """What the agent reads to tell a hook that has run from one that never
+    did, and one that could not read its event (agent/origin_guard.py)."""
+
+    def test_it_is_written_before_the_job_is_ended(self, tmp_path):
+        seen = []
+        env = origin_cases.hook_env(origin_cases.by_id("fork-by-outsider"), tmp_path)
+        env["RUNNER_LOG_DIR"] = str(tmp_path / "logs")
+        (tmp_path / "logs").mkdir()
+        runner_guard.check(env, end=lambda e: seen.append(origin_cases.read_last(tmp_path / "logs")))
+        assert seen[0]["result"] == "refused"
+
+    def test_no_log_directory_writes_nothing_and_still_answers(self, tmp_path):
+        env = origin_cases.hook_env(origin_cases.by_id("push"), tmp_path)
+        env["RUNNER_LOG_DIR"] = str(tmp_path / "missing" / "deeper")
+        assert runner_guard.check(env) == 0
+
+    def test_a_fault_in_the_guard_is_recorded(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(runner_guard, "decide", lambda *a: 1 / 0)
+        env = origin_cases.hook_env(origin_cases.by_id("push"), tmp_path)
+        env["RUNNER_LOG_DIR"] = str(tmp_path)
+        assert runner_guard.check(env) == 0
+        assert origin_cases.read_last(tmp_path)["result"] == "failed"
 
 
 def test_the_file_is_ascii_so_any_locale_reads_it():

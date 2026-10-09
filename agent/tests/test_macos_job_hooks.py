@@ -309,8 +309,13 @@ def test_every_case(guest, tmp_path, case):
         env.pop(key)
     env.update({k: posix(v) if k == "GITHUB_EVENT_PATH" else v
                 for k, v in origin_cases.hook_env(case, events).items()})
+    env["RUNNER_LOG_DIR"] = posix(tmp_path / "logs")
+    (tmp_path / "logs").mkdir()
     code, out = _run(HOOKS / "job-started.sh", env)
     assert code == (0 if case["allowed"] else 1), out
+    last = origin_cases.read_last(tmp_path / "logs")
+    assert last and last["result"] == origin_cases.last_result(case), out
+    assert last["version"] >= 1
     for line in case["out"]:
         assert line in out, out
     for line in case["absent"]:
@@ -378,7 +383,7 @@ def test_lib_parses_as_bash():
 def test_the_node_guard_needs_nothing_but_node_and_is_ascii():
     import re
     text = (HOOKS / "runner_guard.js").read_bytes().decode("ascii")
-    assert set(re.findall(r'require\("([^"]+)"\)', text)) <= {"fs", "child_process"}
+    assert set(re.findall(r'require\("([^"]+)"\)', text)) <= {"fs", "path", "child_process"}
 
 
 # ---- a refusal ends the job -------------------------------------------------

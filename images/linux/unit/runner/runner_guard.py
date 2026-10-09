@@ -398,6 +398,29 @@ def end_the_job(env, ancestors=None, kill=None, sleep=None):
         return False
 
 
+#: Where each run leaves its answer, in the runner's log directory: the agent
+#: reads it to tell a runner whose hook has run from one whose never did, or
+#: one whose last job's event could not be read (agent/origin_guard.py).
+LAST_RESULT = "origin-guard.json"
+
+
+def record(env, result):
+    """Leave `result` - allowed, refused, unread or failed - for the agent.
+    Never raises: a record that cannot be written changes no answer."""
+    try:
+        logs = env.get("RUNNER_LOG_DIR")
+        if not logs or not os.path.isdir(logs):
+            return
+        path = os.path.join(logs, LAST_RESULT)
+        text = json.dumps({"version": GUARD_VERSION, "result": result,
+                           "at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())})
+        with open(path + ".new", "w", encoding="utf-8") as handle:
+            handle.write(text + "\n")
+        os.replace(path + ".new", path)
+    except Exception:                   # noqa: BLE001
+        pass
+
+
 def check(env=None, end=None):
     """0 to let the job run, REFUSE to stop it. Never raises. A refusal also
     ends the job (`end_the_job`)."""
@@ -411,9 +434,11 @@ def check(env=None, end=None):
             payload = None
         if not isinstance(payload, dict):
             print(UNREAD)
+            record(env, "unread")
             return 0
         allowed, line = decide(env.get("GITHUB_EVENT_NAME"), payload, env)
         print(line, flush=True)
+        record(env, "refused" if not allowed else "unread" if line == UNREAD else "allowed")
         if allowed:
             return 0
     except Exception as error:          # noqa: BLE001 - never block every job on our fault
@@ -422,6 +447,7 @@ def check(env=None, end=None):
                   f"({shown(type(error).__name__, 'error')}); origin not checked")
         except Exception:               # noqa: BLE001
             pass
+        record(env, "failed")
         return 0
     try:
         (end or end_the_job)(env)

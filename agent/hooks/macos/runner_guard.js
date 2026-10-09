@@ -136,6 +136,26 @@ function decide(event, payload, env) {
   return [false, line];
 }
 
+// Where each run leaves its answer, in the runner's log directory, for the
+// agent (agent/origin_guard.py): allowed, refused, unread or failed. Never
+// throws.
+const LAST_RESULT = "origin-guard.json";
+
+function record(env, result) {
+  try {
+    const fs = require("fs");
+    const path = require("path");
+    const logs = env.RUNNER_LOG_DIR;
+    if (!logs || !fs.statSync(logs).isDirectory()) return;
+    const file = path.join(logs, LAST_RESULT);
+    const at = new Date().toISOString().replace(/\.\d{3}Z$/, "Z");
+    fs.writeFileSync(file + ".new", JSON.stringify({ version: GUARD_VERSION, result, at }) + "\n");
+    fs.renameSync(file + ".new", file);
+  } catch (error) {
+    // A record that cannot be written changes no answer.
+  }
+}
+
 function check(env) {
   try {
     let payload = null;
@@ -146,10 +166,12 @@ function check(env) {
     }
     if (!isObject(payload)) {
       process.stdout.write(UNREAD + "\n");
+      record(env, "unread");
       return 0;
     }
     const [allowed, line] = decide(env.GITHUB_EVENT_NAME, payload, env);
     process.stdout.write(line + "\n");
+    record(env, !allowed ? "refused" : line === UNREAD ? "unread" : "allowed");
     return allowed ? 0 : REFUSE;
   } catch (error) {
     try {
@@ -158,11 +180,12 @@ function check(env) {
     } catch (ignored) {
       // The job still runs.
     }
+    record(env, "failed");
     return 0;
   }
 }
 
-module.exports = { GUARD_VERSION, REFUSE, check, decide, origin, shown };
+module.exports = { GUARD_VERSION, LAST_RESULT, REFUSE, check, decide, origin, record, shown };
 
 if (require.main === module) {
   process.exitCode = check(process.env);

@@ -221,6 +221,21 @@ CASES = [
           _without_pr_object(pull_request()), True, out=[UNREAD], absent=["::error"]),
 ]
 
+def last_result(case):
+    """What the hook records in RUNNER_LOG_DIR/origin-guard.json for `case`."""
+    if not case["allowed"]:
+        return "refused"
+    return "unread" if UNREAD in case["out"] else "allowed"
+
+
+def read_last(log_dir):
+    """The hook's record, or None when it wrote none."""
+    import json
+    from pathlib import Path
+    path = Path(log_dir) / "origin-guard.json"
+    return json.loads(path.read_text(encoding="utf-8")) if path.exists() else None
+
+
 #: The cases a hook is run against end to end: one of each answer.
 END_TO_END = ("fork-by-outsider", "deleted-fork", "fork-by-allowlisted-author",
               "member-opens-it-from-an-outsiders-fork",
