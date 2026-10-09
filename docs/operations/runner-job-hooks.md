@@ -102,52 +102,69 @@ so anyone who opens one could run anything on these machines. Until this
 check, GitHub's "Approve and run" click (every public repository asks it of
 outside contributors) was the only thing in the way.
 
-The owner's rule: code from an org member or a known maintainer runs; code
-from anyone else never runs on these runners. Every GitHub runner the
-platform builds - Linux, Windows and macOS - now enforces it in its
-job-started hook, which the runner starts before any step, checkout
-included.
+Every GitHub runner the platform builds - Linux, Windows and macOS - now
+checks where a job's code comes from in its job-started hook, which the
+runner starts before any step, checkout included.
 
-### The rule
+### The rule: trust the source, not the person
 
-A job is **refused** when its event payload has a `pull_request` object
-(the events `pull_request`, `pull_request_target`, `pull_request_review`,
-`pull_request_review_comment`, and any other whose payload carries one)
-whose head is a fork - `head.repo.full_name` is not the base repository's,
-compared without case - that the org does not own, and any of these holds:
+Like npm's trusted publishers, what is trusted is the repository the code
+comes from, not who sent it. A job whose event payload has a `pull_request`
+object (`pull_request`, `pull_request_target`, `pull_request_review`,
+`pull_request_review_comment`, and any other event whose payload carries one)
+**runs only when the pull request's head repository is owned by**:
 
-- the fork has been deleted since (`head.repo` is null): its owner cannot be
-  checked;
-- the pull request's author is not trusted;
-- the fork's owner (`head.repo.owner.login`, else the part of its name
-  before the `/`) is not trusted - a member can open a pull request from an
-  outsider's fork, and the outsider can then push to it;
-- the action is `synchronize` and whoever pushed (`sender.login`) is not
-  trusted.
+- the base repository's owner - NoMercy-Entertainment
+  (`base.repo.owner.login`); or
+- an account in `RUNNER_TRUSTED_OWNERS` (the owner's value:
+  `NoMercy-Entertainment,Fill84`).
 
-A login is **trusted** when it is in `RUNNER_TRUSTED_AUTHORS`, or when it is
-the pull request author's own and the author's `author_association` is
-`OWNER` or `MEMBER`. An outside collaborator (`COLLABORATOR`) is not
-trusted: the owner wants nothing from outside the org to run here. A fork the
-org itself owns (`head.repo.owner.login` is the base repository's owner)
-runs: what is in it was pushed by someone with write access there.
+The owner is `head.repo.owner.login`, or else the part of
+`head.repo.full_name` before the `/`, compared without case. **Everything
+else is refused, and the job ended**: an outsider's fork, an org member's or
+an outside collaborator's own fork alike, and a head repository deleted since
+(`head.repo` null). Who opened the pull request, their `author_association`,
+and who pushed play no part.
 
 The job fails with
 
-    ::error title=Outside code refused::Self-hosted runners only run code from
-    NoMercy-Entertainment members and known maintainers. Pull request #7 by
-    mallory (NONE) comes from fork mallory/app, so this job was stopped before
-    any of its code ran. If mallory is a maintainer whose org membership is
-    private, add them to RUNNER_TRUSTED_AUTHORS.
-
-The login the last sentence names is whoever was not trusted; the middle of
-the sentence says which: "comes from fork mallory/app, which belongs to
-mallory", "... last pushed to by eve", or "comes from a deleted fork, whose
-owner cannot be checked" (with no last sentence: nothing to add).
+    ::error title=Outside code refused::This pull request comes from
+    mallory/app, and these self-hosted runners only run code from
+    repositories owned by NoMercy-Entertainment or a trusted owner. Push the
+    branch to the NoMercy-Entertainment repository instead.
 
 and nothing else is done for it: no Android SDK restore, no disk check, no
-cleanup. The refusal takes the disk refusal's path (status 75, the hook's
-exit 1).
+cleanup; the job is ended (below).
+
+**Everything else runs**: push, release, workflow_dispatch, schedule,
+workflow_run, an `issue_comment` (whose payload carries no head), and a pull
+request from a branch of an org repository or of a trusted owner's. Only
+someone with write access to an org repository can cause an event without a
+pull request. Each job prints one line:
+
+    Origin: pull_request from NoMercy-Entertainment/app by bob — allowed
+    Origin: push from NoMercy-Entertainment/app by bob — allowed
+
+### Giving someone permission
+
+**Give them write access to the org's repository, and have them push their
+branch there instead of to a fork.** Their pull request then comes from the
+org's own repository and runs. There is no list of people: a collaborator is
+trusted exactly as far as the repository's write permission says. A trusted
+*owner* is for an account whose own repositories should run here as if they
+were the org's - `Fill84` today.
+
+`RUNNER_TRUSTED_OWNERS` is set in the controller's environment
+(`/etc/runner-platform/controller.env`): account names separated by commas or
+spaces, compared without case, default empty (then only the base
+repository's owner is trusted). The controller gives it to every GitHub unit
+it creates (`dashboard/control/agent_runtime.py`): the Linux unit's container
+environment, Windows' `reg\unit.json`, the macOS launchd job's
+`EnvironmentVariables`. Forgejo units get nothing. **A change reaches a
+runner only through a create**: an idempotent create rewrites the unit's
+environment, and the running service or launchd job reads it when it starts
+again; on Linux the unit is made anew. It is not a secret: every job on the
+runner can read it.
 
 ### A refusal ends the job
 
@@ -160,10 +177,10 @@ own workflow file, so it could mark `actions/checkout` and a `run:` step
 hook **kills the runner's `Runner.Worker` process**, the one that runs this
 job and nothing else:
 
-1. the `::error` is printed and flushed;
+1. the `::error` is printed and flushed, and the hook's record written;
 2. the hook waits `RUNNER_GUARD_KILL_DELAY` seconds (5 by default, at most
    30) while the runner, waiting for the hook, has nothing else running, so
-   the line reaches GitHub's log;
+   the line can reach GitHub's log;
 3. it finds `Runner.Worker` among its own parents and kills it: on Linux
    `SIGKILL`, from `/proc/<pid>/status` (`PPid`) and the process's `comm` or
    first argument; on Windows `TerminateProcess`, from a Toolhelp snapshot,
@@ -182,52 +199,24 @@ killed, the hook prints `::warning title=Runner guard::the job could not be
 ended ...; steps the workflow marks always() may still run`, and still
 fails.
 
-The runner's listener sees its worker die and reports the job as failed; the
-runner itself stays online and takes the next job. The job-completed hook
-does not run for a killed job; the next job's cleanup does its work.
+The listener should see its worker die, report the job as failed and take
+the next job. The job-completed hook does not run for a killed job; the next
+job's cleanup does its work.
 
-**What this guarantees, and what not.** Proven here: on Windows, with copies
-of node named `Runner.Listener.exe` and `Runner.Worker.exe` starting the real
+**What is proven, and what is not.** Proven here: on Windows, with copies of
+node named `Runner.Listener.exe` and `Runner.Worker.exe` starting the real
 `job-started.js` with an outside fork's event, `Runner.Worker.exe` is
 terminated before anything after the hook runs and `Runner.Listener.exe`
-carries on (`agent/tests/test_windows_job_hooks.py`); on macOS, the
-`ps` walk and the kill against a table of real processes under Git's bash
+carries on (`agent/tests/test_windows_job_hooks.py`); on macOS, the `ps`
+walk and the kill against a table of real processes under Git's bash
 (`agent/tests/test_macos_job_hooks.py`). The same proof for Linux, with bash
 under the names `Runner.Listener` and `Runner.Worker` and the real
 `job-started.sh`, is `agent/tests/test_unit_job_started.py -k
-ends_runner_worker`; it needs Linux `/proc` and has not been run yet. Not
-proven: a real runner's process tree (the first refused fork pull request on
-each platform must be watched), how much of the log GitHub shows when the
-worker dies, and the runner's exact wording for the failed job.
-
-**Everything else runs**: push, release, workflow_dispatch, schedule,
-workflow_run, an `issue_comment` (whose payload carries no head), a pull
-request from a branch of the repository itself (anyone who can push one
-has write access to it), a pull request from a fork the org owns, and one
-from a fork whose author, owner and last pusher are all trusted. It prints
-one line:
-
-    Origin: pull_request from fork alice/app by alice — allowed
-    Origin: push from NoMercy-Entertainment/app by bob — allowed
-
-### Trusted authors
-
-`author_association` is GitHub's own word for the author's relation to the
-repository. **A member whose org membership is private reads as
-`CONTRIBUTOR`**, not `MEMBER`, to anyone who cannot see the membership - so
-a private member's pull request from a fork is refused unless their login is
-in `RUNNER_TRUSTED_AUTHORS`. The same list is for a maintainer who is not in
-the org at all.
-
-`RUNNER_TRUSTED_AUTHORS` is set in the controller's environment
-(`/etc/runner-platform/controller.env`): GitHub logins, separated by commas,
-compared without case, default empty. The controller gives it to every
-GitHub unit it creates (`dashboard/control/agent_runtime.py`): the Linux
-unit's container environment, Windows' `reg\unit.json`, the macOS launchd
-job's `EnvironmentVariables`. Like any unit setting, a change reaches a
-runner at its next create; on Windows the job host reads `unit.json` when its
-service starts, and on macOS launchd reads the job when it is loaded. It is
-not a secret: every job on the runner can read it.
+ends_runner_worker`; it needs Linux `/proc` and has not been run yet (the
+test says how to run it in a throwaway container). **Not proven**: a real
+runner's process tree, how much of the job's log GitHub shows when the worker
+dies, what the listener reports for the job, and that it takes the next one.
+Watch the first refused fork pull request on each platform.
 
 ### Fail-safe
 
@@ -235,7 +224,8 @@ The check refuses only what it has positively identified. A fault of our own
 never stops every job:
 
 - no `GITHUB_EVENT_PATH`, a file that cannot be read, JSON that does not
-  parse or is not an object, or a pull request without a readable head:
+  parse or is not an object, a pull request without a readable head, or one
+  whose head or base owner the payload does not say:
   `::warning title=Runner guard::could not read the event; origin not
   checked`, and the job runs;
 - a guard that cannot be loaded, an exception inside it, or (macOS) no node
@@ -245,18 +235,21 @@ never stops every job:
 A missing `GITHUB_EVENT_NAME` alone does not skip the check: the payload
 decides, and the line says "an unnamed event".
 
-Values printed from the payload (logins, repository names) keep only the
-characters GitHub allows in them; anything else becomes `?`, so a payload can
-never end the line or start a workflow command of its own. The rule reads
-only the fields it needs, never the pull request's title or body.
+Values printed from the payload keep only the characters GitHub allows in a
+login or a repository name; anything else becomes `?`, so a payload can
+never end the line or start a workflow command of its own. Names are
+compared as they are, never as printed. The rule reads only the fields it
+needs, never the pull request's title or body.
 
 ### Where it runs
 
 | | Linux | Windows | macOS |
 | --- | --- | --- | --- |
-| Hook | `/runner/job-started.sh` | `reg\hooks\job-started.js` | `reg/hooks/job-started.sh` |
-| The check | `/runner/runner_guard.py`, loaded first by `job_started.py` | `reg\hooks\runner_guard.py`, the Linux file byte for byte, loaded first by `runner_disk.py` | `origin_check` in `reg/hooks/lib.sh`, first in `job_started` |
-| Reads the event with | Python | the agent's Python (`RUNNER_HOOK_PYTHON`) | the runner's own node, `externals/node*/bin/node` beside the hooks (newest), else `RUNNER_HOOK_NODE`, else `node` on PATH |
+| Hook | `/runner/job-started.sh` | `reg\hooks\job-started.js` | `job-started.sh`, in `/Library/Nomercy/runner-hooks/<runner_id>` for a system launchd job, else in `reg/hooks` |
+| The check | `/runner/runner_guard.py`, loaded first by `job_started.py` | `reg\hooks\runner_guard.py`, the Linux file byte for byte, loaded first by `runner_disk.py` | `runner_guard.js` beside it, a line-for-line port, run first by `lib.sh` |
+| Reads the event with | Python | the agent's Python (`RUNNER_HOOK_PYTHON`) | node: `RUNNER_HOOK_NODE` when set; else the newest `$RUNNER_REG_DIR/externals/node*/bin/node` (the runner's own); else the newest `externals/node*/bin/node` beside the hooks' directory; else `node` on `PATH` |
+| Ends the job with | `SIGKILL` | `TerminateProcess` | `kill -9` |
+| Records its last run in | `RUNNER_LOG_DIR/origin-guard.json` | the same | the same |
 
 `agent/tests/origin_cases.py` is the one table of events and answers all
 three are tested against, so the rule and the wording cannot drift apart.
@@ -270,70 +263,121 @@ and gives the hook the `github` context's variables, `GITHUB_EVENT_NAME` and
 `GITHUB_EVENT_PATH` among them, overwriting any value of the same name. A
 hook is started with an empty step environment, so a workflow's own `env:`
 - which a fork controls in its pull request - does not reach it; the
-runner's process environment (the unit's, with `RUNNER_TRUSTED_AUTHORS`)
-does. **Not yet proven on a live runner**: the first real job after rollout
-must show the `Origin:` line (see "Rolling it out" below).
+runner's process environment (the unit's, with `RUNNER_TRUSTED_OWNERS`)
+does. **Not yet seen on a live runner**: the first real job after rollout
+must show the `Origin:` line.
+
+### Tampering
+
+The check runs as the runner's own account, before the job, from files on
+the runner. A job the check *allowed* is trusted code, but nothing stops
+trusted code from being careless or compromised, so the hook's files are
+kept out of a job's reach where the platform allows it, and checked where
+it does not:
+
+- **Windows**: every create denies the runner's service account every kind
+  of write, delete, re-permission and take-over on `reg\hooks` (inherited by
+  each file) and on `reg\unit.json` (which names the hooks and
+  `RUNNER_TRUSTED_OWNERS`). LocalSystem, the agent, still rewrites them.
+- **macOS**, system launchd job: the hooks are root's
+  (`/Library/Nomercy/runner-hooks/<runner_id>`, 0755 and 0644), installed
+  with the same `sudo install` as the system plist. In a user's own launchd
+  domain there is no privileged path: the hooks stay in `reg/hooks`, which
+  that user - and so a job - can change, as it can its own plist.
+- **Linux**: a job is root in a privileged unit. Nothing in the unit is out
+  of its reach.
+
+On every platform the runner's own software stays the runner account's: an
+allowed job could still replace `Runner.Worker`, the node that runs the
+macOS check, or (Linux) Python itself, and so run without the check. What
+covers that is the next part: the agent looks, and the dashboard says.
+
+### On the dashboard
+
+On each deep pass (about every five minutes) the agent reports for every
+GitHub unit (`agent/origin_guard.py`):
+
+- **the version** of the check its hook carries, 0 when the hooks are
+  missing, from before the check, or changed. Linux: the unit image's
+  `LABEL nomercy.origin_guard`, and `docker diff` for any change since the
+  unit was made to `runner_guard.py`, `job_started.py`, `job-started.sh` or
+  `run`. Windows and macOS: every hook file in the directory the runner's
+  `unit.json` or launchd job names must be the agent's own copy - so after an
+  agent deploy that changes the hooks, runners made before it read as changed
+  until their next create;
+- **its last run**, from `origin-guard.json` in the runner's log directory:
+  allowed, refused, unread (its event could not be read) or failed, and
+  when. A record left by another version of the check is ignored.
+
+The controller keeps each report with the time it was measured. The fleet
+heading says, in plain words: "Runner group Fillz: every repository in
+NoMercy-Entertainment may use these runners, public ones included", then
+"Pull requests from forks outside NoMercy-Entertainment and trusted owners
+are refused by the runner".
+
+- **Green** only when every runner in the fleet is *proven*: it carries the
+  check, unchanged, and its last job read its event.
+- **Red** when public repositories may use the runners and a runner is
+  *missing* the check (no hooks, old ones, changed ones) or *unknown* (no
+  report in 20 minutes: a stopped guest, an agent that cannot read it):
+  "refused by 1 of 3 runners; recreate the others".
+- **Amber** otherwise: no public repositories, no runners, or runners that
+  carry the check but have not run a job with it yet, or whose last job's
+  event could not be read - each said on the heading, with the runners'
+  notes on hover.
+
+None of this is proof against a determined job: the report and the record
+are the runner's own files. It tells when the check is absent, old, changed
+or not working, which is what drift and mistakes look like.
+
+Raise `GUARD_VERSION` in `runner_guard.py` and `runner_guard.js` and the
+`nomercy.origin_guard` label together when the rule changes; tests hold them
+equal.
 
 ### What it does not cover
 
-- **A trusted author's fork runs whatever is in it**, commits by others
-  included. Trust is in the author of the pull request.
+- **A trusted owner's repository runs whatever is in it**, and so does a
+  branch of an org repository: anyone with write access there is trusted.
 - **`workflow_run`** carries no `pull_request` object; a workflow it starts
-  runs the base repository's workflow file, and runs. So does
-  `pull_request_target` from a trusted author; from anyone else it is
-  refused even though its workflow file is the base branch's, because such
-  workflows commonly check the fork out.
-- **Someone with write access** pushes to the repository itself, not to a
-  fork; that is the org's own code by this rule.
+  runs the base repository's workflow file, and runs. `pull_request_target`
+  from an untrusted owner's repository is refused even though its workflow
+  file is the base branch's, because such workflows commonly check the fork
+  out.
 - **Forgejo runners** have no job hooks. Forgejo's own approval for pull
   requests from forks is what stands in front of them.
 - **A runner the platform did not build** - one installed by hand, or an
   adopted macOS instance, which keeps its own launchd job - has none of
-  these hooks.
-
-### On the dashboard
-
-Every GitHub unit reports, in each heartbeat, which version of the check its
-**own** hook carries (`origin_guard`): on Linux the unit image's
-`LABEL nomercy.origin_guard`, on Windows `GUARD_VERSION` in the runner's
-`runner_guard.py`, on macOS `ORIGIN_GUARD_VERSION` in its `lib.sh`; 0 for
-hooks from before the check. The runner's own copy, because hooks are
-written at create: a redeployed agent or a rebuilt image says nothing about
-a runner made before them.
-
-The fleet heading says it in plain words: "Runner group Fillz: every
-repository in NoMercy-Entertainment may use these runners, public ones
-included", then "Outside pull requests are refused by the runner (only org
-members and trusted maintainers run code)" - **green** only when every
-runner in the fleet reports the check. **Red** when public repositories may
-use the runners and not every runner refuses ("refused by 1 of 3 runners;
-recreate the others"). **Amber** otherwise. Raise `GUARD_VERSION` in
-`runner_guard.py`, `ORIGIN_GUARD_VERSION` in `lib.sh` and the
-`nomercy.origin_guard` label together when the rule changes; tests hold them
-equal.
+  these hooks; it shows as unknown on the heading.
 
 ### Rolling it out
 
 Nothing here reaches a running runner by itself.
 
-1. **Controller and dashboard**: deploy, with `RUNNER_TRUSTED_AUTHORS` in
-   `controller.env` if anyone needs it, so new units are created with it
-   and the fleet headings can say what the units report.
+1. **Controller and dashboard**: deploy, with
+   `RUNNER_TRUSTED_OWNERS=NoMercy-Entertainment,Fill84` in `controller.env`,
+   so units are created with it and the fleet headings can say what the
+   units report. Restart the dashboard for its own copy of the setting.
 2. **Linux**: build a new overlay image with `Dockerfile.cleanup` (the
-   running fleet's path, see `images/linux/unit/README.md`), make it the
-   fleet's unit template, and **recreate** each GitHub Linux runner - one at
-   a time, only when idle (`runner-platform.md` 3.2). The heading turns
-   green when every unit is made from the new image.
-3. **Windows and macOS**: redeploy the agent on each worker (step 1 of the
-   disk hooks' rollout above). The hook files are rewritten by every create,
-   and the runner reads them afresh for every job, so an **idempotent
-   create** on an existing, registered runner puts the check in place for
-   its next job without re-registering it. `RUNNER_TRUSTED_AUTHORS` is in
-   the unit's environment, which the running service or launchd job read
-   when they started: it needs a restart after that create (on macOS a
-   reload of the launchd job, which a stop and start does), or a recreate.
-   A recreate does all of it.
-4. **Prove it with real jobs**: a push shows `Origin: push from ... —
-   allowed` in "Set up runner". A pull request from a fork by an account
-   that is not a member shows the refusal - try it on a scratch public
-   repository first. Read the result counts in history afterwards.
+   running fleet's path, see `images/linux/unit/README.md`); it carries
+   `runner_guard.py` and the `nomercy.origin_guard` label. Make it the
+   fleet's unit template, redeploy the Linux agent (it reports the check),
+   and **recreate** each GitHub Linux runner - one at a time, only when idle
+   (`runner-platform.md` 3.2).
+3. **Windows**: redeploy the agent on each worker that runs GitHub runners.
+   Then an **idempotent create** of each existing, registered runner - the
+   same create, driven again - rewrites its hooks (the runner reads them
+   afresh for every job, so the check applies from its next job), its
+   `unit.json` with `RUNNER_TRUSTED_OWNERS`, and the deny entries, without
+   re-registering it; **restart its service** afterwards so the runner runs
+   with the new environment. A recreate does all of it.
+4. **macOS**: redeploy the appliance's agent, then the same idempotent create
+   and a **stop and start** (a launchd job reads its plist when it is
+   loaded), or a recreate. A system launchd job's runner moves its hooks to
+   `/Library/Nomercy/runner-hooks/<runner_id>` on that create: the agent's
+   sudo rights must allow `/usr/bin/install -d` and `/bin/rm -f` as root.
+5. **Prove it with real jobs** on each platform: a push shows `Origin: push
+   from ... — allowed` in "Set up runner". A pull request from a personal
+   fork (any account but the org and Fill84) on a scratch public repository
+   shows the refusal - and **no later step runs, `always()` ones included**,
+   and the runner is online for the next job. Watch the fleet heading turn
+   green as each runner's report comes in.

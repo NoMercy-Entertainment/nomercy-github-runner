@@ -167,21 +167,27 @@ Every GitHub fleet's heading shows the runner group its runners register
 into - the fleet's own, else `RUNNER_GROUP`, else the org's default group -
 in plain words ("Runner group Fillz: every repository in
 NoMercy-Entertainment may use these runners, public ones included"), and on
-a second line whether the runners themselves refuse a pull request from an
-outside fork (`runner-job-hooks.md`, "Outside code"). Green when every runner
-in the fleet reports that its own job-started hook carries the check; red
-when public repositories may use the runners and not every runner does;
-amber otherwise (no public repositories, or no runners yet); grey with the
-reason on hover when GitHub could not be read and not every runner refuses.
+a second line whether the runners themselves refuse a pull request from a
+repository owned by anyone but the org or a trusted owner ("Pull requests
+from forks outside NoMercy-Entertainment and trusted owners are refused by
+the runner"; `runner-job-hooks.md`, "Outside code"). Green only when every
+runner in the fleet has reported, within 20 minutes, that its own hook
+carries the check unchanged and its last job read its event; red when public
+repositories may use the runners and a runner is missing the check or has
+not reported; amber otherwise (no public repositories, no runners, or a
+runner that has the check but has not proven it yet); grey with the reason
+on hover when GitHub could not be read and not every runner is proven.
 Settings lists every group read-only, with the same sentence. The dashboard
 reads them on a background thread every 300 s, with the tokens the control
 plane holds; page reads never call GitHub, and nothing here ever changes a
 group.
 
-`RUNNER_TRUSTED_AUTHORS` in `controller.env` (comma-separated GitHub logins,
-default empty) is given to every GitHub runner at its create: a pull request
-from a fork by one of them runs although GitHub does not call its author a
-member.
+`RUNNER_TRUSTED_OWNERS` in `controller.env` (account names, commas or
+spaces, default empty; the owner's value is
+`NoMercy-Entertainment,Fill84`) is given to every GitHub runner at its
+create: a pull request whose head repository one of them owns runs, as one
+from the org's own repositories does. To let a person's code run, give them
+write access to the org's repository and have them push their branch there.
 
 ### 3.2 Linux unit images
 
