@@ -10,10 +10,11 @@ This refuses such a job unless its author is trusted.
 **The rule.** A job is refused when its event payload carries a
 `pull_request` whose head is a fork - another repository than the base, or
 one deleted since (`head.repo` null) - and whose author is not trusted.
-Trusted is `author_association` OWNER, MEMBER or COLLABORATOR, or a login in
-RUNNER_TRUSTED_AUTHORS (comma-separated, case-insensitive). GitHub reports a
-member whose org membership is private as CONTRIBUTOR, which is what the
-list is for. Everything else runs, with one line that says where it came
+Trusted is `author_association` OWNER or MEMBER, or a login in
+RUNNER_TRUSTED_AUTHORS (comma-separated, case-insensitive). Not COLLABORATOR:
+an outside collaborator is not in the org, and the owner wants nothing from
+outside it run here. GitHub reports a member whose org membership is private
+as CONTRIBUTOR, which is what the list is for. Everything else runs, with one line that says where it came
 from.
 
 **Fail-open on our own faults, closed only on a positive answer.** No event
@@ -46,7 +47,7 @@ REFUSE = 75
 #: changes; macOS's lib.sh carries the same number.
 GUARD_VERSION = 1
 
-TRUSTED_ASSOCIATIONS = frozenset({"OWNER", "MEMBER", "COLLABORATOR"})
+TRUSTED_ASSOCIATIONS = frozenset({"OWNER", "MEMBER"})
 
 #: "<em dash> allowed", spelled in ASCII so this file reads the same under any
 #: locale.

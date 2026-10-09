@@ -4,7 +4,8 @@ three (Linux `runner_guard.py`, the Windows copy of it, macOS `lib.sh`).
 
 The rule: a pull request whose head is a fork - another repository, or one
 deleted since - runs only when its author is trusted: `author_association`
-OWNER, MEMBER or COLLABORATOR, or a login in RUNNER_TRUSTED_AUTHORS. Every
+OWNER or MEMBER, or a login in RUNNER_TRUSTED_AUTHORS. Not COLLABORATOR: the
+owner wants nothing from outside the org. Every
 other event runs. An event the hook cannot read lets the job run, with a
 warning: a fault of ours never stops every job.
 
@@ -100,9 +101,9 @@ CASES = [
     _case("fork-by-owner", "pull_request_target",
           pull_request(author="stoney", association="OWNER", head="stoney/app"), True,
           out=["Origin: pull_request_target from fork stoney/app by stoney — allowed"]),
-    _case("fork-by-collaborator", "pull_request",
-          pull_request(author="carol", association="COLLABORATOR", head="carol/app"), True,
-          out=["— allowed"], absent=["::error"]),
+    _case("fork-by-outside-collaborator", "pull_request",
+          pull_request(author="carol", association="COLLABORATOR", head="carol/app"), False,
+          out=[REFUSED, "by carol (COLLABORATOR)"], absent=["— allowed"]),
     _case("fork-by-allowlisted-author", "pull_request",
           pull_request(author="Mallory", association="CONTRIBUTOR"), True,
           env={"RUNNER_TRUSTED_AUTHORS": " alice , mallory ,"},

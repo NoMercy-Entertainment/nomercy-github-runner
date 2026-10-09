@@ -40,7 +40,7 @@ things:
 
 1. **Refuses outside code.** First, before anything else, `runner_guard.py`
    reads the job's event: a pull request from a fork whose author is not an
-   org member, owner, collaborator or a login in `RUNNER_TRUSTED_AUTHORS` is
+   org member or owner, or a login in `RUNNER_TRUSTED_AUTHORS`, is
    failed with `::error title=Outside code refused::`. Every other job gets
    one `Origin: ... allowed` line. An event it cannot read lets the job run
    with a warning. See `docs/operations/runner-job-hooks.md`, "Outside code".

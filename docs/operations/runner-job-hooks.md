@@ -117,9 +117,10 @@ both of these hold:
 
 - its head is a fork: `head.repo.full_name` is not the base repository's
   (compared without case), or `head.repo` is null - a fork deleted since;
-- its author is not trusted: `author_association` is not `OWNER`, `MEMBER`
-  or `COLLABORATOR`, and the author's login is not in
-  `RUNNER_TRUSTED_AUTHORS`.
+- its author is not trusted: `author_association` is not `OWNER` or
+  `MEMBER`, and the author's login is not in `RUNNER_TRUSTED_AUTHORS`. An
+  outside collaborator (`COLLABORATOR`) is not trusted: the owner wants
+  nothing from outside the org to run here.
 
 The job fails with
 

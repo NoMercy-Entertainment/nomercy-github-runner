@@ -21,7 +21,7 @@ HOOK_DIR=$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd)
 # The rule and the wording are runner_guard.py's (images/linux/unit/runner),
 # and agent/tests/origin_cases.py holds the two to the same answers: a pull
 # request whose head is a fork, or a fork deleted since, is refused unless its
-# author is OWNER, MEMBER or COLLABORATOR, or a login in RUNNER_TRUSTED_AUTHORS
+# author is OWNER or MEMBER, or a login in RUNNER_TRUSTED_AUTHORS
 # (comma-separated, without case). GitHub reports a member whose membership is
 # private as CONTRIBUTOR, which is what the list is for. Everything else runs,
 # with one line that says where it came from. An event that cannot be read, or
@@ -146,7 +146,7 @@ EOF
     echo "Origin: $name from $where by $who — allowed"
     return 0
   fi
-  case " OWNER MEMBER COLLABORATOR " in
+  case " OWNER MEMBER " in
     *" ${association:-none} "*)
       echo "Origin: $name from $where by $who — allowed"
       return 0 ;;

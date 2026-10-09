@@ -4,7 +4,7 @@ The runner group lets every repository in the org use these runners, public
 ones included, and 26 public repositories do. Until now GitHub's "Approve and
 run" click was all that stood between a stranger's fork and a self-hosted
 runner. `runner_guard.py` refuses a pull request from a fork unless its
-author is trusted - OWNER, MEMBER or COLLABORATOR, or named in
+author is trusted - OWNER or MEMBER, or named in
 RUNNER_TRUSTED_AUTHORS - before any step, checkout included, has run.
 
 It refuses only what it has positively identified. An event it cannot read,
