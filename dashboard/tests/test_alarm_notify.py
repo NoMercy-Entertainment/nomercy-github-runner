@@ -84,12 +84,49 @@ class TestFormats:
         assert "https://github.com/x/y/job/7" in json.loads(
             alarm_notify.render("slack", event)[0])["text"]
 
-    def test_discord_content_and_no_mentions(self):
+    def test_discord_is_an_embed_like_the_journal_posts_and_mentions_no_one(self):
+        """The owner wants alarms laid out as the "Shipping in the Dark" posts
+        are: a coloured card with a title, a sentence and named fields, the
+        time shown by Discord in the reader's own time zone."""
         body, headers = alarm_notify.render("discord", dict(EVENT, subject="@everyone"))
         data = json.loads(body)
-        assert data["content"].startswith("ALARM: ")
-        assert data["allowed_mentions"] == {"parse": []}
         assert headers["Content-Type"] == "application/json"
+        assert data["allowed_mentions"] == {"parse": []}
+        [embed] = data["embeds"]
+        assert embed["title"] == "Runner offline: @everyone"
+        assert embed["color"] == alarm_notify.RED
+        assert embed["timestamp"] == "2026-09-30T10:00:00Z"
+        fields = {f["name"]: f["value"] for f in embed["fields"]}
+        assert fields["Forge"] == "GitHub"
+        assert fields["Labels"] == "self-hosted, xcode"
+        assert fields["Offline since"] == "30-09-2026 12:00 CEST"
+        assert embed["footer"]["text"].startswith("NoMercy runners")
+
+    def test_discord_resolve_is_green_and_says_how_long(self):
+        event = dict(EVENT, event="resolved", resolved_at="2026-09-30T12:15:00Z",
+                     reason="back online")
+        [embed] = json.loads(alarm_notify.render("discord", event)[0])["embeds"]
+        assert embed["title"] == "Back online: nomercy-mac-mini"
+        assert embed["color"] == alarm_notify.GREEN
+        fields = {f["name"]: f["value"] for f in embed["fields"]}
+        assert fields["Down for"] == "2 h 15 min"
+        assert fields["Back since"] == "30-09-2026 14:15 CEST"
+
+    def test_discord_queued_job_links_to_the_run(self):
+        event = dict(EVENT, kind="job_queued", key="job:github:1",
+                     subject="nomercy-app-kmp / ci / android",
+                     detail={"labels": ["self-hosted", "xcode"],
+                             "url": "https://github.com/o/r/actions/runs/1"})
+        [embed] = json.loads(alarm_notify.render("discord", event)[0])["embeds"]
+        assert embed["title"] == "Job waiting: nomercy-app-kmp / ci / android"
+        assert embed["url"] == "https://github.com/o/r/actions/runs/1"
+        assert {f["name"] for f in embed["fields"]} >= {"Labels", "Queued since"}
+
+    def test_discord_fields_fit_discord_limits(self):
+        long = dict(EVENT, subject="x" * 400, detail={"labels": ["l" * 50] * 40})
+        [embed] = json.loads(alarm_notify.render("discord", long)[0])["embeds"]
+        assert len(embed["title"]) <= 256 and len(embed["description"]) <= 4096
+        assert all(len(f["value"]) <= 1024 for f in embed["fields"])
 
     def test_slack_text(self):
         assert json.loads(alarm_notify.render("slack", EVENT)[0]) == {
@@ -282,3 +319,29 @@ class TestTheSecret:
     def test_its_value_is_masked_like_a_token(self):
         from control import redact
         assert redact.secret_values({"ALARM_WEBHOOK_URL": HOOK}) == [HOOK]
+
+
+class TestLocalTime:
+    """Alarms read in the owner's own time, Europe/Amsterdam: CEST (UTC+2) in
+    summer, CET (UTC+1) in winter - not UTC, which read two hours behind."""
+
+    @pytest.mark.parametrize("utc,local", [
+        ("2026-10-09T00:31:41Z", "09-10-2026 02:31 CEST"),
+        ("2026-12-01T12:00:00Z", "01-12-2026 13:00 CET"),
+        ("2026-10-25T00:59:00Z", "25-10-2026 02:59 CEST"),
+        ("2026-10-25T01:00:00Z", "25-10-2026 02:00 CET"),
+        ("2026-03-29T00:59:00Z", "29-03-2026 01:59 CET"),
+        ("2026-03-29T01:00:00Z", "29-03-2026 03:00 CEST"),
+    ])
+    def test_amsterdam_with_and_without_a_time_zone_database(self, utc, local, monkeypatch):
+        assert alarms.local_time(utc) == local
+        monkeypatch.setattr(alarms, "_zone", lambda name: None)
+        assert alarms.local_time(utc) == local
+
+    def test_the_message_reads_in_local_time(self):
+        text = alarms.message("runner_offline", "github", "github-windows-arm64-1",
+                              {"labels": ["self-hosted", "ARM64"]}, "2026-10-09T00:31:41Z")
+        assert "09-10-2026 02:31 CEST" in text and "Z" not in text.split("since", 1)[1]
+
+    def test_an_unreadable_time_is_shown_as_it_came(self):
+        assert alarms.local_time("not a time") == "not a time"

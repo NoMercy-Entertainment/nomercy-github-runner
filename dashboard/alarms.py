@@ -24,9 +24,10 @@ list is not every runner removed.
 (`run_forever`, `run_queue_forever`); a page only reads what it published.
 """
 import json
+import os
 import threading
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from store import schema
 
@@ -77,6 +78,58 @@ def iso(t):
     return datetime.fromtimestamp(t, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+#: Where the people reading alarms are. Europe/Amsterdam: CEST (UTC+2) in
+#: summer, CET (UTC+1) in winter. UTC read two hours behind (2026-10-09).
+TIMEZONE = os.environ.get("ALARM_TIMEZONE") or "Europe/Amsterdam"
+
+
+def _zone(name):
+    try:
+        from zoneinfo import ZoneInfo
+        return ZoneInfo(name)
+    except Exception:  # noqa: BLE001 - no time zone database here
+        return None
+
+
+def _last_sunday(year, month):
+    day = datetime(year, month + 1, 1, tzinfo=timezone.utc) - timedelta(days=1)         if month < 12 else datetime(year, 12, 31, tzinfo=timezone.utc)
+    return day - timedelta(days=(day.weekday() + 1) % 7)
+
+
+def _central_european(when):
+    """CET/CEST by the EU rule, for a host without a time zone database:
+    summer time from 01:00 UTC on the last Sunday of March to 01:00 UTC on
+    the last Sunday of October."""
+    start = _last_sunday(when.year, 3).replace(hour=1)
+    end = _last_sunday(when.year, 10).replace(hour=1)
+    summer = start <= when < end
+    shifted = when + timedelta(hours=2 if summer else 1)
+    return shifted, "CEST" if summer else "CET"
+
+
+def local_time(value):
+    """An ISO time or epoch seconds as the reader's local time,
+    "09-10-2026 02:31 CEST". Anything unreadable is returned as it came."""
+    try:
+        if isinstance(value, (int, float)):
+            when = datetime.fromtimestamp(value, timezone.utc)
+        else:
+            when = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+            if when.tzinfo is None:
+                when = when.replace(tzinfo=timezone.utc)
+        when = when.astimezone(timezone.utc)
+    except (TypeError, ValueError, OverflowError):
+        return value
+    zone = _zone(TIMEZONE)
+    if zone is not None:
+        shown = when.astimezone(zone)
+        return shown.strftime("%d-%m-%Y %H:%M ") + (shown.tzname() or "")
+    if TIMEZONE != "Europe/Amsterdam":
+        return when.strftime("%d-%m-%Y %H:%M UTC")
+    shown, name = _central_european(when)
+    return shown.strftime("%d-%m-%Y %H:%M ") + name
+
+
 def epoch(text):
     """Seconds since the epoch of an ISO time, or None."""
     try:
@@ -86,9 +139,10 @@ def epoch(text):
 
 
 def message(kind, forge, subject, detail, since):
-    """What an alarm says, in one line."""
+    """What an alarm says, in one line, in the reader's local time."""
     name = FORGES.get(forge, forge)
     detail = detail or {}
+    since = local_time(since)
     if kind == "runner_offline":
         labels = ", ".join(detail.get("labels") or [])
         return (f"{name} runner {subject} has been offline since {since}"

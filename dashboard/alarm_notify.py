@@ -78,6 +78,56 @@ def _header(value):
     return " ".join(str(value).split()).encode("latin-1", "replace").decode("latin-1")
 
 
+#: Embed colours: an alarm, its resolve, and the monitor itself.
+RED, GREEN, AMBER = 0xE5484D, 0x30A46C, 0xF5A524
+
+_TITLES = {("runner_offline", True): "Runner offline", ("runner_offline", False): "Back online",
+           ("job_queued", True): "Job waiting", ("job_queued", False): "Job picked up",
+           ("monitor", True): "Alarm monitor blind", ("monitor", False): "Alarm monitor sees again"}
+
+
+def _cut(text, limit):
+    text = str(text or "")
+    return text if len(text) <= limit else text[:limit - 1] + "…"
+
+
+def discord_embed(event):
+    """A card like the dev journal's posts: a coloured bar, a title, the
+    sentence, named fields, and a timestamp Discord shows in each reader's
+    own time zone. Field times are in the dashboard's local time."""
+    raised = event["event"] == "raised"
+    kind = event.get("kind") or "monitor"
+    detail = event.get("detail") or {}
+    forge = alarms.FORGES.get(event.get("forge"), event.get("forge") or "")
+    fields = []
+    if kind != "monitor":
+        fields.append({"name": "Forge", "value": _cut(forge, 1024), "inline": True})
+    labels = ", ".join(detail.get("labels") or [])
+    if labels:
+        fields.append({"name": "Labels", "value": _cut(labels, 1024), "inline": True})
+    since_name = {"runner_offline": "Offline since", "job_queued": "Queued since"}.get(kind, "Since")
+    fields.append({"name": since_name, "value": alarms.local_time(event.get("since")), "inline": False})
+    if not raised:
+        start, end = alarms.epoch(event.get("since")), alarms.epoch(event.get("resolved_at"))
+        if start is not None and end is not None:
+            fields.append({"name": "Down for" if kind == "runner_offline" else "Lasted",
+                           "value": alarms.duration(end - start), "inline": True})
+        if event.get("resolved_at"):
+            fields.append({"name": "Back since", "value": alarms.local_time(event["resolved_at"]),
+                           "inline": True})
+    title = f"{_TITLES.get((kind, raised), 'Alarm' if raised else 'Resolved')}: {event.get('subject') or forge}"
+    embed = {"title": _cut(title, 256),
+             "description": _cut(event.get("message"), 4096),
+             "color": (AMBER if kind == "monitor" else RED) if raised else GREEN,
+             "fields": fields[:25],
+             "footer": {"text": "NoMercy runners · alarm monitor"},
+             "timestamp": (event.get("since") if raised else event.get("resolved_at")) or event.get("since")}
+    url = detail.get("url")
+    if isinstance(url, str) and url.startswith(("https://", "http://")):
+        embed["url"] = url
+    return embed
+
+
 def render(fmt, event):
     """(body bytes, headers) of one event in one format."""
     raised = event["event"] == "raised"
@@ -95,7 +145,7 @@ def render(fmt, event):
     if fmt == "discord":
         # No mentions: a job or runner name is not ours to choose, and
         # "@everyone" in one must not page a whole server.
-        body = {"content": text[:1990], "allowed_mentions": {"parse": []}}
+        body = {"embeds": [discord_embed(event)], "allowed_mentions": {"parse": []}}
     elif fmt == "slack":
         # Slack's own escaping: with &, < and > as entities, no <!channel>,
         # <!here> or <@user> in a job or runner name can mention anyone.

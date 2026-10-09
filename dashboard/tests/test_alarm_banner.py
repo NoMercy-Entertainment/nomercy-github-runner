@@ -6,6 +6,7 @@ answer at /api/v2/alarms for anyone signed in, viewers included. Both read
 what the monitor last published; neither ever reaches a forge, so a page is
 as fast with GitHub down as with GitHub up.
 """
+import re
 import json
 import shutil
 import subprocess
@@ -69,7 +70,8 @@ class TestTheBanner:
         banner = banner[:banner.index("</section>")]
         assert "1 active alarm" in banner
         assert "nomercy-mac-mini" in banner and "xcode" in banner
-        assert "offline since 2026-" in banner
+        # Local time, Europe/Amsterdam, not UTC (2026-10-09).
+        assert re.search(r"offline since \d\d-\d\d-2026 \d\d:\d\d CES?T", banner)
 
     def test_it_cannot_be_dismissed(self, client, raised):
         as_role("viewer")
