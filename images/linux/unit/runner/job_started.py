@@ -2,8 +2,8 @@
 what an earlier job took, then make sure there is room for this one.
 
 First, whose code it is (runner_guard.py, beside this file): a pull request
-from a fork whose author is not an org member or a trusted maintainer is
-refused before anything else is done for it.
+whose code comes from a repository owned by anyone but the org or a trusted
+owner is refused, and the job ended, before anything else is done for it.
 
 A unit's root is writable and outlives its jobs, so whatever one job deletes
 from the image stays deleted for every job after it. nomercy-whisper-models

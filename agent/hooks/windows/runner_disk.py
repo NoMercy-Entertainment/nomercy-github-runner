@@ -3,8 +3,9 @@ sure there is room for a job before it starts, and clear the runner's temp
 once it has ended.
 
 First, whose code it is: runner_guard.py, beside this file and the Linux
-unit's own byte for byte, refuses a pull request from a fork whose author is
-not an org member or a trusted maintainer, before the disk is looked at.
+unit's own byte for byte, refuses a pull request whose code comes from a
+repository owned by anyone but the org or a trusted owner, and ends the job,
+before the disk is looked at.
 
 A full disk crashed a runner mid-release with nothing useful in its log
 (GitHub #7). Before each job this measures the volume under the runner's work

@@ -165,12 +165,12 @@ def unit_memory(env):
     return _per_cell(env, "RUNNER_UNIT_MEMORY")
 
 
-def trusted_authors(env):
-    """RUNNER_TRUSTED_AUTHORS as every GitHub unit is given it: the logins
-    whose pull requests from a fork run although GitHub does not call them
-    members (docs/operations/runner-job-hooks.md, "Outside code")."""
+def trusted_owners(env):
+    """RUNNER_TRUSTED_OWNERS as every GitHub unit is given it: the accounts
+    besides the org whose repositories a pull request may come from and
+    still run (docs/operations/runner-job-hooks.md, "Outside code")."""
     from .agent_runtime import _names
-    return _names((env or {}).get("RUNNER_TRUSTED_AUTHORS"))
+    return _names((env or {}).get("RUNNER_TRUSTED_OWNERS"))
 
 
 class Controller:
@@ -207,7 +207,7 @@ class Controller:
         self.service.agents = agent_runtime.AgentWiring(
             client, operations=self.service.operations,
             images=unit_images(env), memory=unit_memory(env),
-            trusted_authors=trusted_authors(env))
+            trusted_owners=trusted_owners(env))
         self.flow = ProvisioningFlow(self.service,
                                      agent_runtime.FlowAgent(
                                          self.service.agents),

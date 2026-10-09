@@ -5,8 +5,10 @@
 //
 // The rule and every line it prints are runner_guard.py's
 // (images/linux/unit/runner/runner_guard.py), and agent/tests/origin_cases.py
-// holds the two to the same answers. Values from the payload are compared as
-// they are and only made safe for printing.
+// holds the two to the same answers: a pull request runs only when its head
+// repository is owned by the org or by an account in RUNNER_TRUSTED_OWNERS.
+// Values from the payload are compared as they are and only made safe for
+// printing.
 //
 // Exit status: 0 to let the job run, 75 to refuse it. A fault in here is a
 // ::warning and 0: a bug of ours never stops every job. Node's own modules
@@ -19,7 +21,6 @@ const REFUSE = 75;
 // number as runner_guard.py's.
 const GUARD_VERSION = 1;
 
-const TRUSTED_ASSOCIATIONS = new Set(["OWNER", "MEMBER"]);
 const ALLOWED = "\u2014 allowed";
 const UNREAD = "::warning title=Runner guard::could not read the event; origin not checked";
 
@@ -46,35 +47,44 @@ function shown(v, fallback) {
   return t === null ? fallback : t.replace(/[^A-Za-z0-9._\/-]/gu, "?").slice(0, 100);
 }
 
-function trustedAuthors(list) {
-  return new Set(String(list || "").split(",").map((n) => n.trim().toLowerCase()).filter(Boolean));
+// RUNNER_TRUSTED_OWNERS: account names separated by commas or spaces,
+// compared without case.
+function trustedOwners(list) {
+  return new Set(String(list || "").split(/[,\s]+/).map((n) => n.toLowerCase()).filter(Boolean));
 }
 
+function ownerOf(name) {
+  return name && name.includes("/") ? name.split("/")[0] : null;
+}
+
+// Where the code of a pull request comes from. kind: "none" (no pull
+// request), "head" (its head repository is known: head, owner), "deleted"
+// (its head repository is gone) or "unknown" (the payload does not say).
+// baseOwner is who owns the repository the pull request is for.
 function origin(payload) {
-  const facts = { kind: "none", base: null, head: null, login: null, association: null, number: null,
-    org: null, owner: null, sender: text(get(payload, "sender", "login")), action: text(payload.action) };
+  const facts = { kind: "none", head: null, owner: null, baseOwner: null, login: null };
   const pr = payload.pull_request;
   if (!isObject(pr)) return facts;
-  const association = pr.author_association;
-  const number = pr.number;
-  facts.base = text(get(pr, "base", "repo", "full_name")) || text(get(payload, "repository", "full_name"));
-  facts.login = text(get(pr, "user", "login"));
-  facts.association = typeof association === "string" ? association.toUpperCase() : null;
-  facts.number = Number.isInteger(number) && number > 0 ? number : null;
-  facts.org = text(get(pr, "base", "repo", "owner", "login")) || (facts.base || "").split("/")[0] || null;
+  const base = text(get(pr, "base", "repo", "full_name")) || text(get(payload, "repository", "full_name"));
+  facts.baseOwner = text(get(pr, "base", "repo", "owner", "login")) || ownerOf(base)
+    || text(get(payload, "repository", "owner", "login"));
+  facts.login = text(get(pr, "user", "login")) || text(get(payload, "sender", "login"));
   const head = pr.head;
   if (!isObject(head) || !Object.prototype.hasOwnProperty.call(head, "repo")) {
     facts.kind = "unknown";
   } else if (head.repo === null) {
     facts.kind = "deleted";
+  } else if (!isObject(head.repo)) {
+    facts.kind = "unknown";
   } else {
     const name = text(get(head, "repo", "full_name"));
-    if (!name || !facts.base) {
-      facts.kind = "unknown";
-    } else {
+    const owner = text(get(head, "repo", "owner", "login")) || ownerOf(name);
+    if (owner) {
+      facts.kind = "head";
       facts.head = name;
-      facts.owner = text(get(head, "repo", "owner", "login")) || name.split("/")[0] || null;
-      facts.kind = name.toLowerCase() === facts.base.toLowerCase() ? "same" : "fork";
+      facts.owner = owner;
+    } else {
+      facts.kind = "unknown";
     }
   }
   return facts;
@@ -91,49 +101,25 @@ function decide(event, payload, env) {
     const who = shown(text(get(payload, "sender", "login")) || env.GITHUB_ACTOR, "an unknown account");
     return [true, `Origin: ${name} from ${repo} by ${who} ${ALLOWED}`];
   }
-  const who = shown(facts.login, "an unknown account");
-  const where = { same: shown(facts.base, "an unknown repository"),
-    fork: "fork " + shown(facts.head, "an unknown repository"),
-    deleted: "a deleted fork" }[facts.kind];
-  const allowed = [true, `Origin: ${name} from ${where} by ${who} ${ALLOWED}`];
-  if (facts.kind === "same") return allowed;
-  if (facts.kind === "fork" && facts.org && facts.owner
-      && facts.owner.toLowerCase() === facts.org.toLowerCase()) return allowed;
-  const listed = trustedAuthors(env.RUNNER_TRUSTED_AUTHORS);
-  const author = (facts.login || "").toLowerCase();
-  const trusted = (login) => {
-    const l = (login || "").toLowerCase();
-    return Boolean(l) && (listed.has(l) || (l === author && TRUSTED_ASSOCIATIONS.has(facts.association)));
-  };
-  // Who is not trusted, and how to say it: the author, the fork's owner, the
-  // last pusher - or nobody can tell, for a deleted fork.
-  let untrusted = null;
-  let how = "";
-  if (facts.kind === "deleted") {
-    how = ", whose owner cannot be checked";
-  } else if (!trusted(facts.login)) {
-    untrusted = facts.login;
-  } else if (!trusted(facts.owner)) {
-    untrusted = facts.owner;
-    how = `, which belongs to ${shown(untrusted, "an unknown account")}`;
-  } else if (facts.action === "synchronize" && !trusted(facts.sender)) {
-    untrusted = facts.sender;
-    how = `, last pushed to by ${shown(untrusted, "an unknown account")}`;
+  const baseOwner = (facts.baseOwner || "").toLowerCase();
+  let where;
+  if (facts.kind === "head") {
+    const owner = facts.owner.toLowerCase();
+    if (owner === baseOwner || trustedOwners(env.RUNNER_TRUSTED_OWNERS).has(owner)) {
+      const from = shown(facts.head || facts.owner, "an unknown repository");
+      const who = shown(facts.login, "an unknown account");
+      return [true, `Origin: ${name} from ${from} by ${who} ${ALLOWED}`];
+    }
+    if (!baseOwner) return [true, UNREAD];
+    where = shown(facts.head, shown(facts.owner, "?") + "/?");
   } else {
-    return allowed;
+    where = "a repository that has been deleted";
   }
-  const org = shown(facts.org, "the organisation");
-  const pr = facts.number ? `Pull request #${facts.number}` : "The pull request";
-  const association = shown(facts.association, "UNKNOWN");
-  let line = "::error title=Outside code refused::Self-hosted runners only run code "
-    + `from ${org} members and known maintainers. ${pr} by ${who} (${association}) `
-    + `comes from ${where}${how}, so this job was stopped before any of its code ran.`;
-  if (facts.kind !== "deleted") {
-    const named = shown(untrusted, "an unknown account");
-    line += ` If ${named} is a maintainer whose org membership is private, add them `
-      + "to RUNNER_TRUSTED_AUTHORS.";
-  }
-  return [false, line];
+  const org = shown(facts.baseOwner, "the organisation");
+  return [false, "::error title=Outside code refused::This pull request comes from "
+    + `${where}, and these self-hosted runners only run code from repositories `
+    + `owned by ${org} or a trusted owner. Push the branch to the ${org} `
+    + "repository instead."];
 }
 
 // Where each run leaves its answer, in the runner's log directory, for the

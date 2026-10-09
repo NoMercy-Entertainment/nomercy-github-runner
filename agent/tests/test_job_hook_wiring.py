@@ -78,21 +78,21 @@ class TestWindows:
         runtime.create(RID, spec("github", WINDOWS_TEMPLATE))
         assert "run_hook.js" in host.read_text(started)
 
-    def test_the_trusted_authors_reach_the_hooks(self, runtime, host):
-        """The controller sends RUNNER_TRUSTED_AUTHORS in the spec's env; the
+    def test_the_trusted_owners_reach_the_hooks(self, runtime, host):
+        """The controller sends RUNNER_TRUSTED_OWNERS in the spec's env; the
         job host gives unit.json's env to the runner, and the runner to its
         hooks."""
         unit = spec("github", WINDOWS_TEMPLATE)
-        unit["env"]["RUNNER_TRUSTED_AUTHORS"] = "alice,bob"
+        unit["env"]["RUNNER_TRUSTED_OWNERS"] = "NoMercy-Entertainment,Fill84"
         runtime.create(RID, unit)
         reg = runtime.paths(RID)["reg"]
         env = json.loads(host.read_text(ntpath.join(reg, "unit.json")))["env"]
-        assert env["RUNNER_TRUSTED_AUTHORS"] == "alice,bob"
+        assert env["RUNNER_TRUSTED_OWNERS"] == "NoMercy-Entertainment,Fill84"
 
     def test_a_job_cannot_rewrite_the_hooks_or_the_unit_file(self, runtime, host):
         """A job runs as the runner's service account, which may change
         anything in its tree. Its hooks, and the unit file that names them
-        and RUNNER_TRUSTED_AUTHORS, deny that account every kind of write;
+        and RUNNER_TRUSTED_OWNERS, deny that account every kind of write;
         the agent, LocalSystem, still rewrites them at each create."""
         from .fake_windows import _key
         self.env(runtime, host, "github")
@@ -167,12 +167,12 @@ class TestMacOS:
         assert guest.modes[posixpath.join(hooks, "job-started.sh")] == 0o700
         assert guest.modes[posixpath.join(hooks, "job-completed.sh")] == 0o700
 
-    def test_the_trusted_authors_reach_the_hooks(self, runtime, guest):
+    def test_the_trusted_owners_reach_the_hooks(self, runtime, guest):
         unit = spec("github", MAC_TEMPLATE)
-        unit["env"]["RUNNER_TRUSTED_AUTHORS"] = "alice,bob"
+        unit["env"]["RUNNER_TRUSTED_OWNERS"] = "alice,bob"
         runtime.create(RID, unit)
         plist = plistlib.loads(guest.read_text(runtime.paths(RID)["plist"]).encode())
-        assert plist["EnvironmentVariables"]["RUNNER_TRUSTED_AUTHORS"] == "alice,bob"
+        assert plist["EnvironmentVariables"]["RUNNER_TRUSTED_OWNERS"] == "alice,bob"
 
     def test_the_hooks_know_the_accounts_own_home(self, runtime, guest):
         """Where Xcode keeps DerivedData: the job's HOME is the runner's own,

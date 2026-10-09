@@ -3,27 +3,23 @@ job-started hook asks, before any step - checkout included - has run.
 
 The runner group lets every repository in the org use these runners, public
 ones included. A pull request from a fork runs the fork's code, workflow
-file and all, so a stranger who opens one could run anything on a
-self-hosted runner; GitHub's "Approve and run" click was the only barrier.
-This refuses such a job unless everyone whose code it is is trusted.
+file and all, so anyone who opens one could run anything on a self-hosted
+runner; GitHub's "Approve and run" click was the only barrier.
 
-**The rule.** A job is refused when its event payload carries a
-`pull_request` whose head is a fork - another repository than the base - that
-the org does not own, unless everyone whose code it is is trusted: the
-pull request's author, the fork's owner (`head.repo.owner.login`: a member
-can open a pull request from an outsider's fork, and the outsider can then
-push to it), and on `synchronize` whoever pushed (`sender.login`). A fork
-deleted since (`head.repo` null) is refused: its owner cannot be checked.
-A fork the org itself owns runs: what is in it was pushed by someone with
-write access there. Everything else runs too, with one line that says where
-it came from.
+**The rule: trust the source, not the person** - as npm's trusted
+publishers do. A job whose event payload carries a `pull_request` runs only
+when the pull request's head repository is owned by the base repository's
+owner (the org) or by an account in RUNNER_TRUSTED_OWNERS (names separated
+by commas or spaces, compared without case). A head repository owned by
+anyone else - an outsider's fork, and an org member's or a collaborator's
+personal fork alike - or one deleted since (`head.repo` null) is refused.
+Who opened the pull request, their `author_association` and who pushed play
+no part. Every other event runs (push, release, workflow_dispatch,
+schedule, ...): only someone with write access to an org repository can
+cause one. Each job gets one line that says where its code came from.
 
-A login is trusted when it is in RUNNER_TRUSTED_AUTHORS (comma-separated,
-compared as written but without case), or when it is the author's and the
-author's `author_association` is OWNER or MEMBER. Not COLLABORATOR: an
-outside collaborator is not in the org, and the owner wants nothing from
-outside it run here. GitHub reports a member whose org membership is private
-as CONTRIBUTOR, which is what the list is for.
+To let someone's code run, give them write access to the org repository and
+have them push their branch there, not to a fork.
 
 **A refusal ends the job.** A failed job-started hook is only a failed
 step: the runner goes on to every later step whose `if:` is always(),
@@ -36,9 +32,10 @@ Runner.Worker is found, or it cannot be killed, a warning says the job could
 not be ended, and the hook still fails.
 
 **Fail-open on our own faults, closed only on a positive answer.** No event
-file, one that cannot be read or parsed, a pull request without a readable
-head, or a bug in here: a warning, and the job runs. Only a pull request
-positively identified as coming from outside is refused.
+file, one that cannot be read or parsed, a pull request whose head or base
+owner the payload does not say, or a bug in here: a warning, and the job
+runs. Only a pull request positively identified as coming from outside is
+refused.
 
 The runner hands a hook GITHUB_EVENT_NAME and GITHUB_EVENT_PATH from the
 job's `github` context, and writes the payload before it starts the hook
@@ -64,10 +61,8 @@ REFUSE = 75
 
 #: What a unit reports about its hook, so the dashboard can tell a runner
 #: that carries this check from one made before it. Raise it when the rule
-#: changes; macOS's lib.sh carries the same number.
+#: changes; macOS's runner_guard.js carries the same number.
 GUARD_VERSION = 1
-
-TRUSTED_ASSOCIATIONS = frozenset({"OWNER", "MEMBER"})
 
 #: "<em dash> allowed", spelled in ASCII so this file reads the same under any
 #: locale.
@@ -87,8 +82,10 @@ def shown(value, fallback):
     return _UNSAFE.sub("?", value)[:100]
 
 
-def trusted_authors(text):
-    return {name.strip().lower() for name in (text or "").split(",") if name.strip()}
+def trusted_owners(text):
+    """RUNNER_TRUSTED_OWNERS: account names separated by commas or spaces,
+    compared without case."""
+    return {name.lower() for name in re.split(r"[,\s]+", text or "") if name}
 
 
 def _text(value):
@@ -103,41 +100,42 @@ def _get(value, *keys):
     return value
 
 
+def _owner_of(name):
+    return name.split("/", 1)[0] if name and "/" in name else None
+
+
 def origin(payload):
-    """What the payload says about where the code comes from:
-    `kind` is "none" (no pull request), "same" (a branch of the base
-    repository), "fork", "deleted" (a fork deleted since) or "unknown"."""
+    """Where the code of a pull request comes from. `kind`: "none" (no pull
+    request), "head" (its head repository is known: `head`, `owner`),
+    "deleted" (its head repository is gone) or "unknown" (the payload does
+    not say). `base_owner` is who owns the repository the pull request is
+    for."""
+    facts = {"kind": "none", "head": None, "owner": None, "base_owner": None,
+             "login": None}
     pr = payload.get("pull_request")
-    facts = {"kind": "none", "base": None, "head": None, "login": None,
-             "association": None, "number": None, "org": None, "owner": None,
-             "sender": _text(_get(payload, "sender", "login")),
-             "action": _text(payload.get("action"))}
     if not isinstance(pr, dict):
         return facts
+    base = (_text(_get(pr, "base", "repo", "full_name"))
+            or _text(_get(payload, "repository", "full_name")))
+    facts["base_owner"] = (_text(_get(pr, "base", "repo", "owner", "login"))
+                           or _owner_of(base)
+                           or _text(_get(payload, "repository", "owner", "login")))
+    facts["login"] = (_text(_get(pr, "user", "login"))
+                      or _text(_get(payload, "sender", "login")))
     head = pr.get("head")
-    association = pr.get("author_association")
-    number = pr.get("number")
-    facts.update(base=(_text(_get(pr, "base", "repo", "full_name"))
-                       or _text(_get(payload, "repository", "full_name"))),
-                 login=_text(_get(pr, "user", "login")),
-                 association=association.upper() if isinstance(association, str) else None,
-                 number=number if isinstance(number, int) and not isinstance(number, bool)
-                 and number > 0 else None)
-    facts["org"] = (_text(_get(pr, "base", "repo", "owner", "login"))
-                    or (facts["base"] or "").split("/")[0] or None)
     if not isinstance(head, dict) or "repo" not in head:
         facts["kind"] = "unknown"
     elif head["repo"] is None:
         facts["kind"] = "deleted"
+    elif not isinstance(head["repo"], dict):
+        facts["kind"] = "unknown"
     else:
         name = _text(_get(head, "repo", "full_name"))
-        if not name or not facts["base"]:
-            facts["kind"] = "unknown"
+        owner = _text(_get(head, "repo", "owner", "login")) or _owner_of(name)
+        if owner:
+            facts.update(kind="head", head=name, owner=owner)
         else:
-            facts["head"] = name
-            facts["owner"] = (_text(_get(head, "repo", "owner", "login"))
-                              or name.split("/")[0] or None)
-            facts["kind"] = "same" if name.lower() == facts["base"].lower() else "fork"
+            facts["kind"] = "unknown"
     return facts
 
 
@@ -153,49 +151,23 @@ def decide(event, payload, env):
         who = shown(_text(_get(payload, "sender", "login")) or env.get("GITHUB_ACTOR"),
                     "an unknown account")
         return True, f"Origin: {name} from {repo} by {who} {ALLOWED}"
-    who = shown(facts["login"], "an unknown account")
-    where = {"same": shown(facts["base"], "an unknown repository"),
-             "fork": "fork " + shown(facts["head"], "an unknown repository"),
-             "deleted": "a deleted fork"}[facts["kind"]]
-    if facts["kind"] == "same":
-        return True, f"Origin: {name} from {where} by {who} {ALLOWED}"
-    org_owned = (facts["kind"] == "fork" and facts["org"] and facts["owner"]
-                 and facts["owner"].lower() == facts["org"].lower())
-    if org_owned:
-        return True, f"Origin: {name} from {where} by {who} {ALLOWED}"
-    listed = trusted_authors(env.get("RUNNER_TRUSTED_AUTHORS"))
-    author = (facts["login"] or "").lower()
-
-    def trusted(login):
-        login = (login or "").lower()
-        return bool(login) and (login in listed or (
-            login == author and facts["association"] in TRUSTED_ASSOCIATIONS))
-
-    # Who is not trusted, and how to say it: the author, the fork's owner,
-    # the last pusher - or nobody can tell, for a deleted fork.
-    if facts["kind"] == "deleted":
-        untrusted, how = None, ", whose owner cannot be checked"
-    elif not trusted(facts["login"]):
-        untrusted, how = facts["login"], ""
-    elif not trusted(facts["owner"]):
-        untrusted = facts["owner"]
-        how = f", which belongs to {shown(untrusted, 'an unknown account')}"
-    elif facts["action"] == "synchronize" and not trusted(facts["sender"]):
-        untrusted = facts["sender"]
-        how = f", last pushed to by {shown(untrusted, 'an unknown account')}"
+    base_owner = (facts["base_owner"] or "").lower()
+    if facts["kind"] == "head":
+        owner = facts["owner"].lower()
+        if owner == base_owner or owner in trusted_owners(env.get("RUNNER_TRUSTED_OWNERS")):
+            where = shown(facts["head"] or facts["owner"], "an unknown repository")
+            who = shown(facts["login"], "an unknown account")
+            return True, f"Origin: {name} from {where} by {who} {ALLOWED}"
+        if not base_owner:
+            return True, UNREAD
+        where = shown(facts["head"], shown(facts["owner"], "?") + "/?")
     else:
-        return True, f"Origin: {name} from {where} by {who} {ALLOWED}"
-    org = shown(facts["org"], "the organisation")
-    pr = f"Pull request #{facts['number']}" if facts["number"] else "The pull request"
-    association = shown(facts["association"], "UNKNOWN")
-    line = ("::error title=Outside code refused::Self-hosted runners only run code "
-            f"from {org} members and known maintainers. {pr} by {who} ({association}) "
-            f"comes from {where}{how}, so this job was stopped before any of its code ran.")
-    if facts["kind"] != "deleted":
-        named = shown(untrusted, "an unknown account")
-        line += (f" If {named} is a maintainer whose org membership is private, add them "
-                 "to RUNNER_TRUSTED_AUTHORS.")
-    return False, line
+        where = "a repository that has been deleted"
+    org = shown(facts["base_owner"], "the organisation")
+    return False, ("::error title=Outside code refused::This pull request comes from "
+                   f"{where}, and these self-hosted runners only run code from repositories "
+                   f"owned by {org} or a trusted owner. Push the branch to the {org} "
+                   "repository instead.")
 
 
 # ---- ending the job ---------------------------------------------------------

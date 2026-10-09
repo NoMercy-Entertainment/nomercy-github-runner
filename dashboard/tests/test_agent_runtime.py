@@ -80,31 +80,32 @@ class TestTheUnitSpec:
             "the runner's own limit wins"
 
     @pytest.mark.parametrize("platform", ["linux", "windows", "macos"])
-    def test_trusted_authors_reach_every_github_unit(self, platform):
-        """The job-started hook reads RUNNER_TRUSTED_AUTHORS from the unit's
+    def test_trusted_owners_reach_every_github_unit(self, platform):
+        """The job-started hook reads RUNNER_TRUSTED_OWNERS from the unit's
         environment: Linux's container env, Windows' unit.json, macOS's
         launchd job. One line, names only, whatever spacing it was set with."""
-        rt = ar.AgentRuntime(ar.AgentWiring(Client(), trusted_authors=" Alice, bob ,,"),
-                             "w-1")
+        rt = ar.AgentRuntime(ar.AgentWiring(
+            Client(), trusted_owners=" NoMercy-Entertainment, Fill84 ,,"), "w-1")
         spec = dict(self.SPEC, platform=platform, cache_policy=None)
-        assert rt.unit_spec(spec)["env"] == {"RUNNER_TRUSTED_AUTHORS": "Alice,bob"}
+        assert rt.unit_spec(spec)["env"] == {
+            "RUNNER_TRUSTED_OWNERS": "NoMercy-Entertainment,Fill84"}
 
-    def test_trusted_authors_sit_beside_the_cache_policy(self):
-        rt = ar.AgentRuntime(ar.AgentWiring(Client(), trusted_authors="alice"), "w-1")
+    def test_trusted_owners_sit_beside_the_cache_policy(self):
+        rt = ar.AgentRuntime(ar.AgentWiring(Client(), trusted_owners="alice"), "w-1")
         env = rt.unit_spec(dict(self.SPEC, cache_policy={"enabled": False}))["env"]
-        assert env == {"RUNNER_CLEANUP_ENABLED": "0", "RUNNER_TRUSTED_AUTHORS": "alice"}
+        assert env == {"RUNNER_CLEANUP_ENABLED": "0", "RUNNER_TRUSTED_OWNERS": "alice"}
 
-    def test_no_trusted_authors_sends_no_variable(self):
+    def test_no_trusted_owners_sends_no_variable(self):
         rt, _ = runtime()
         assert "env" not in rt.unit_spec(self.SPEC)
 
     def test_a_forgejo_unit_has_no_hook_to_tell(self):
-        rt = ar.AgentRuntime(ar.AgentWiring(Client(), trusted_authors="alice"), "w-1")
+        rt = ar.AgentRuntime(ar.AgentWiring(Client(), trusted_owners="alice"), "w-1")
         assert "env" not in rt.unit_spec(dict(self.SPEC, provider="forgejo"))
 
     def test_the_controller_reads_them_from_its_environment(self):
-        assert main.trusted_authors({"RUNNER_TRUSTED_AUTHORS": "a, b\n"}) == "a,b"
-        assert main.trusted_authors({}) == ""
+        assert main.trusted_owners({"RUNNER_TRUSTED_OWNERS": "a, b\n"}) == "a,b"
+        assert main.trusted_owners({}) == ""
 
     def test_nothing_to_make_it_from_is_refused_before_sending(self):
         rt, client = runtime()

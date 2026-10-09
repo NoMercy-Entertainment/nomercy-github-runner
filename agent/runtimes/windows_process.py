@@ -287,7 +287,7 @@ class WindowsProcessRuntime:
 
         # 5b. Out of a job's reach: a job runs as this service's account,
         #     which may change anything else in its tree. The hooks, and the
-        #     unit file that names them and RUNNER_TRUSTED_AUTHORS, deny it
+        #     unit file that names them and RUNNER_TRUSTED_OWNERS, deny it
         #     every kind of write; LocalSystem, the agent, is not denied.
         self._lock_from_jobs(name, p, _serves_github(spec))
 

@@ -36,8 +36,8 @@ FILLZ = {"id": 4, "name": "Fillz", "visibility": "all",
          "allows_public_repositories": True, "default": False, "inherited": False}
 ENV = {"GH_TOKEN": "token", "GITHUB_ORG": ORG}
 
-IN_PLACE = ("Outside pull requests are refused by the runner "
-            "(only org members and trusted maintainers run code)")
+IN_PLACE = (f"Pull requests from forks outside {ORG} and trusted owners are refused "
+            "by the runner")
 
 
 @pytest.fixture(autouse=True)
@@ -254,7 +254,8 @@ class TestTheHeading:
 
     def test_a_group_that_could_not_be_read_with_every_runner_proven_is_green(self):
         html = head({"known": False, "group": None, "why": "no GH_TOKEN"}, counts(2, proven=2))
-        assert 'class="chip safe rgroup"' in html and IN_PLACE in html
+        assert 'class="chip safe rgroup"' in html
+        assert "forks outside the organisation and trusted owners are refused by the runner" in html
 
     def test_a_forge_without_runner_groups_has_no_chip(self):
         assert "rgroup" not in head(None, None)
@@ -278,5 +279,5 @@ def test_settings_says_it_in_plain_words():
     html = run_page_js("settings_v2.html", "function field(", "async function load()",
                        "runnerGroupsPanel(" + json.dumps(panel) + ")")
     assert f"every repository in {ORG} may use these runners, public ones included" in html
-    assert "refuse a pull request from a fork" in html
+    assert "RUNNER_TRUSTED_OWNERS" in html and "push their branch there" in html
     assert "<form" not in html and "<button" not in html

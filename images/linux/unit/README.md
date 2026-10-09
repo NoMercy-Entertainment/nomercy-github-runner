@@ -39,9 +39,9 @@ Before each job, `/runner/job-started.sh` runs `job_started.py`, which does thre
 things:
 
 1. **Refuses outside code.** First, before anything else, `runner_guard.py`
-   reads the job's event: a pull request from a fork whose author is not an
-   org member or owner, or a login in `RUNNER_TRUSTED_AUTHORS`, is
-   failed with `::error title=Outside code refused::`. Every other job gets
+   reads the job's event: a pull request whose head repository is owned by
+   anyone but the org or an account in `RUNNER_TRUSTED_OWNERS` is
+   failed with `::error title=Outside code refused::`, and the job ended. Every other job gets
    one `Origin: ... allowed` line. An event it cannot read lets the job run
    with a warning. See `docs/operations/runner-job-hooks.md`, "Outside code".
 2. **Restores the Android SDK.** It copies back any file missing from

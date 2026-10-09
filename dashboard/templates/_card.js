@@ -170,21 +170,22 @@ function runnerGroupHTML(g, og) {
   const who = g.known
     ? `Runner group ${esc(g.group)}: ${esc(g.says || '')}`
     : `Runner group ${g.group ? esc(g.group) : 'unknown'}: who may use these runners could not be read`;
+  const forks = `Pull requests from forks outside ${esc(g.org || 'the organisation')} and trusted owners`;
   let guard;
   if (proven) {
-    guard = 'Outside pull requests are refused by the runner (only org members and trusted maintainers run code)';
+    guard = `${forks} are refused by the runner`;
   } else if (runners === 0) {
     guard = 'No runners to check yet: whether outside pull requests are refused is said once one runs';
   } else if (covered < runners) {
     guard = covered === 0
-      ? 'Outside pull requests are not refused by these runners yet: recreate them to put the check in place'
-      : `Outside pull requests are refused by ${covered} of ${runners} runners; recreate the others to put the check in place`;
+      ? `${forks} are not refused by these runners yet: recreate them to put the check in place`
+      : `${forks} are refused by ${covered} of ${runners} runners; recreate the others to put the check in place`;
     if (n('unknown')) guard += ` (${n('unknown')} could not be checked lately)`;
   } else {
     const why = [];
     if (n('unproven')) why.push(`${n('unproven')} of ${runners} have not run a job with it yet`);
     if (n('unread')) why.push(`the last job on ${n('unread')} of ${runners} could not read its event`);
-    guard = `These runners carry the check against outside pull requests, but ${why.join('; ')}`;
+    guard = `These runners carry the check against outside forks, but ${why.join('; ')}`;
   }
   const notes = og && og.notes && og.notes.length ? ` title="${esc(og.notes.join('; '))}"` : '';
   const why = !g.known && g.why ? ` title="${esc(g.why)}"` : '';

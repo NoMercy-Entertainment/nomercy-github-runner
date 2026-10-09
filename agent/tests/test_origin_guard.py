@@ -3,9 +3,10 @@
 The runner group lets every repository in the org use these runners, public
 ones included, and 26 public repositories do. Until now GitHub's "Approve and
 run" click was all that stood between a stranger's fork and a self-hosted
-runner. `runner_guard.py` refuses a pull request from a fork unless its
-author is trusted - OWNER or MEMBER, or named in
-RUNNER_TRUSTED_AUTHORS - before any step, checkout included, has run.
+runner. `runner_guard.py` trusts the source, not the person: a pull request
+runs only when its head repository is owned by the org or by an account in
+RUNNER_TRUSTED_OWNERS; anything else is refused, and the job ended, before
+any step - checkout included - has run.
 
 It refuses only what it has positively identified. An event it cannot read,
 or a fault of its own, lets the job run with a warning: a bug here must never
@@ -88,10 +89,11 @@ def test_what_the_payload_says_cannot_add_a_workflow_command(tmp_path, capsys):
     assert len(out.splitlines()) == 1 and out.count("::") == 2
 
 
-def test_trusted_authors_are_read_without_case_or_spaces():
-    assert runner_guard.trusted_authors(" Alice,,BOB , ") == {"alice", "bob"}
-    assert runner_guard.trusted_authors("") == set()
-    assert runner_guard.trusted_authors(None) == set()
+def test_trusted_owners_are_read_without_case_split_on_commas_or_spaces():
+    assert runner_guard.trusted_owners(" Alice,,BOB , carol dave") == {
+        "alice", "bob", "carol", "dave"}
+    assert runner_guard.trusted_owners("") == set()
+    assert runner_guard.trusted_owners(None) == set()
 
 
 def test_the_guard_says_which_version_it_is():

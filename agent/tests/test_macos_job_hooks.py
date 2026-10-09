@@ -111,7 +111,7 @@ class Guest:
 
     def env(self, **extra):
         env = {k: v for k, v in os.environ.items()
-               if not k.startswith("GITHUB_") and k != "RUNNER_TRUSTED_AUTHORS"}
+               if not k.startswith("GITHUB_") and k != "RUNNER_TRUSTED_OWNERS"}
         # Every job has an event; a push is what the disk tests run under.
         push = origin_cases.write_event(origin_cases.by_id("push"), self.root)
         env.update(GITHUB_EVENT_NAME="push", GITHUB_EVENT_PATH=posix(push))

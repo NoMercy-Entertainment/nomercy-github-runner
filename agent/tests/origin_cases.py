@@ -1,13 +1,15 @@
-"""Who wrote the code a job is about to run: one table of events and the
-answer each runner's job-started hook must give, shared by the tests of all
-three (Linux `runner_guard.py`, the Windows copy of it, macOS `lib.sh`).
+"""Where the code a job is about to run comes from: one table of events and
+the answer each runner's job-started hook must give, shared by the tests of
+all three (Linux `runner_guard.py`, the Windows copy of it, the macOS
+`runner_guard.js` under `lib.sh`).
 
-The rule: a pull request whose head is a fork - another repository, or one
-deleted since - runs only when its author is trusted: `author_association`
-OWNER or MEMBER, or a login in RUNNER_TRUSTED_AUTHORS. Not COLLABORATOR: the
-owner wants nothing from outside the org. Every
-other event runs. An event the hook cannot read lets the job run, with a
-warning: a fault of ours never stops every job.
+The rule trusts the source, not the person: a pull request runs only when
+its head repository is owned by the base repository's owner (the org) or by
+an account in RUNNER_TRUSTED_OWNERS. Anyone else's fork - a member's or a
+collaborator's own included - and a head repository deleted since are
+refused. Who opened it, their association and who pushed play no part.
+Every other event runs. An event the hook cannot read lets the job run, with
+a warning: a fault of ours never stops every job.
 
 Each case: `event` (GITHUB_EVENT_NAME, None for unset), `payload` (an object
 written as the event file, a str written as it is, None for no file),
@@ -19,6 +21,7 @@ import copy
 ORG = "NoMercy-Entertainment"
 REFUSED = "::error title=Outside code refused::"
 UNREAD = "::warning title=Runner guard::could not read the event; origin not checked"
+OWNERS = f"{ORG},Fill84"
 
 
 def pull_request(author="mallory", association="NONE", head="mallory/app",
@@ -40,16 +43,19 @@ def pull_request(author="mallory", association="NONE", head="mallory/app",
             "sender": {"login": sender or author}}
 
 
-def _without_owner(payload):
+def _without_owners(payload):
     payload = copy.deepcopy(payload)
     del payload["pull_request"]["head"]["repo"]["owner"]
     del payload["pull_request"]["base"]["repo"]["owner"]
     return payload
 
 
-def _without_pr_object(payload):
+def _without(payload, *path):
     payload = copy.deepcopy(payload)
-    del payload["pull_request"]["head"]
+    target = payload
+    for key in path[:-1]:
+        target = target[key]
+    del target[path[-1]]
     return payload
 
 
@@ -58,23 +64,25 @@ def _case(id, event, payload, allowed, out=(), absent=(), env=None):
             "out": list(out), "absent": list(absent), "env": dict(env or {})}
 
 
-REFUSAL_TEXT = (REFUSED + f"Self-hosted runners only run code from {ORG} members and "
-                "known maintainers. Pull request #7 by mallory (NONE) comes from fork "
-                "mallory/app, so this job was stopped before any of its code ran. If "
-                "mallory is a maintainer whose org membership is private, add them to "
-                "RUNNER_TRUSTED_AUTHORS.")
+def refusal(where, org=ORG):
+    return (REFUSED + f"This pull request comes from {where}, and these self-hosted "
+            f"runners only run code from repositories owned by {org} or a trusted owner. "
+            f"Push the branch to the {org} repository instead.")
+
 
 CASES = [
-    # ---- refused: a fork, and an author nobody vouched for -------------------
+    # ---- refused: a head repository owned by anyone else ----------------------
     _case("fork-by-outsider", "pull_request", pull_request(), False,
-          out=[REFUSAL_TEXT], absent=["Origin:", "— allowed"]),
-    _case("fork-by-private-member-reads-contributor", "pull_request",
-          pull_request(association="CONTRIBUTOR"), False,
-          out=[REFUSED, "by mallory (CONTRIBUTOR)"]),
-    _case("fork-by-first-time-contributor", "pull_request",
-          pull_request(association="FIRST_TIME_CONTRIBUTOR"), False, out=[REFUSED]),
-    _case("fork-by-first-timer", "pull_request",
-          pull_request(association="FIRST_TIMER"), False, out=[REFUSED]),
+          out=[refusal("mallory/app")], absent=["Origin:", "— allowed"]),
+    _case("fork-of-an-org-member", "pull_request",
+          pull_request(author="alice", association="MEMBER", head="alice/app"), False,
+          out=[refusal("alice/app")]),
+    _case("fork-of-an-org-owner", "pull_request",
+          pull_request(author="stoney", association="OWNER", head="stoney/app"), False,
+          out=[refusal("stoney/app")]),
+    _case("fork-of-an-outside-collaborator", "pull_request",
+          pull_request(author="carol", association="COLLABORATOR", head="carol/app"), False,
+          out=[refusal("carol/app")]),
     _case("fork-pull-request-target", "pull_request_target", pull_request(), False,
           out=[REFUSED]),
     _case("fork-review", "pull_request_review", pull_request(), False, out=[REFUSED]),
@@ -82,46 +90,24 @@ CASES = [
           out=[REFUSED]),
     _case("comment-carrying-a-fork-pull-request", "issue_comment", pull_request(), False,
           out=[REFUSED]),
-    _case("deleted-fork", "pull_request", pull_request(deleted=True), False,
-          out=[REFUSED + f"Self-hosted runners only run code from {ORG} members and "
-               "known maintainers. Pull request #7 by mallory (NONE) comes from a "
-               "deleted fork, whose owner cannot be checked, so this job was stopped "
-               "before any of its code ran."], absent=["RUNNER_TRUSTED_AUTHORS"]),
-    _case("deleted-fork-even-by-a-member", "pull_request",
+    _case("deleted-head-repository", "pull_request",
           pull_request(author="alice", association="MEMBER", deleted=True), False,
-          out=[REFUSED, "by alice (MEMBER) comes from a deleted fork"]),
-    _case("member-opens-it-from-an-outsiders-fork", "pull_request",
-          pull_request(author="alice", association="MEMBER", head="mallory/app"), False,
-          out=[REFUSED + f"Self-hosted runners only run code from {ORG} members and "
-               "known maintainers. Pull request #7 by alice (MEMBER) comes from fork "
-               "mallory/app, which belongs to mallory, so this job was stopped before any "
-               "of its code ran. If mallory is a maintainer whose org membership is "
-               "private, add them to RUNNER_TRUSTED_AUTHORS."]),
-    _case("the-fork-owner-not-the-repository-name-decides", "pull_request",
-          pull_request(author="alice", association="MEMBER", head="alice/app",
-                       owner="mallory"), False,
-          out=[REFUSED, "which belongs to mallory"]),
-    _case("an-outsider-pushes-to-a-members-fork", "pull_request",
-          pull_request(author="alice", association="MEMBER", head="alice/app",
-                       action="synchronize", sender="eve"), False,
-          out=[REFUSED + f"Self-hosted runners only run code from {ORG} members and "
-               "known maintainers. Pull request #7 by alice (MEMBER) comes from fork "
-               "alice/app, last pushed to by eve, so this job was stopped before any of "
-               "its code ran. If eve is a maintainer whose org membership is private, "
-               "add them to RUNNER_TRUSTED_AUTHORS."]),
-    _case("an-allowlisted-author-and-an-outside-owner", "pull_request",
-          pull_request(author="bob", head="mallory/app"), False,
-          env={"RUNNER_TRUSTED_AUTHORS": "bob"}, out=[REFUSED, "which belongs to mallory"]),
-    _case("allowlist-names-someone-else", "pull_request", pull_request(), False,
-          env={"RUNNER_TRUSTED_AUTHORS": "alice,bob"}, out=[REFUSED]),
-    _case("allowlist-is-not-a-substring-match", "pull_request", pull_request(), False,
-          env={"RUNNER_TRUSTED_AUTHORS": "mallory2,mal"}, out=[REFUSED]),
+          out=[refusal("a repository that has been deleted")]),
+    _case("trusted-owners-naming-someone-else", "pull_request", pull_request(), False,
+          env={"RUNNER_TRUSTED_OWNERS": OWNERS}, out=[REFUSED]),
+    _case("trusted-owners-is-not-a-substring-match", "pull_request", pull_request(), False,
+          env={"RUNNER_TRUSTED_OWNERS": "mallory2, mal"}, out=[REFUSED]),
+    _case("the-pull-request-author-does-not-count", "pull_request", pull_request(), False,
+          env={"RUNNER_TRUSTED_OWNERS": "someone"}, out=[REFUSED]),
+    _case("lookalike-owner-name", "pull_request",
+          pull_request(head=f"{ORG}-x/app"), False, out=[refusal(f"{ORG}-x/app")]),
+    _case("the-owner-not-the-repository-name-decides", "pull_request",
+          pull_request(head=f"{ORG}/app", owner="mallory"), False,
+          out=[refusal(f"{ORG}/app")]),
     _case("no-event-name-but-a-fork-payload", None, pull_request(), False,
           out=[REFUSED]),
-    _case("lookalike-owner-name", "pull_request",
-          pull_request(head=f"{ORG}-x/app"), False, out=[REFUSED]),
 
-    # ---- allowed: the org's own code, or a trusted author's fork -------------
+    # ---- allowed: the org's own repositories, or a trusted owner's --------------
     _case("same-repository-pull-request", "pull_request",
           pull_request(author="bob", association="MEMBER", head=f"{ORG}/app"), True,
           out=[f"Origin: pull_request from {ORG}/app by bob — allowed"],
@@ -132,50 +118,23 @@ CASES = [
     _case("same-repository-other-capitals", "pull_request",
           pull_request(head="nomercy-entertainment/APP"), True,
           out=["— allowed"], absent=["::error"]),
-    _case("fork-by-member", "pull_request",
-          pull_request(author="alice", association="MEMBER", head="alice/app"), True,
-          out=["Origin: pull_request from fork alice/app by alice — allowed"],
-          absent=["::error", "::warning"]),
-    _case("fork-by-owner", "pull_request_target",
-          pull_request(author="stoney", association="OWNER", head="stoney/app"), True,
-          out=["Origin: pull_request_target from fork stoney/app by stoney — allowed"]),
-    _case("fork-by-outside-collaborator", "pull_request",
-          pull_request(author="carol", association="COLLABORATOR", head="carol/app"), False,
-          out=[REFUSED, "by carol (COLLABORATOR)"], absent=["— allowed"]),
-    _case("fork-by-allowlisted-author", "pull_request",
-          pull_request(author="Mallory", association="CONTRIBUTOR"), True,
-          env={"RUNNER_TRUSTED_AUTHORS": " alice , mallory ,"},
-          out=["Origin: pull_request from fork mallory/app by Mallory — allowed"]),
-    _case("allowlisted-bot-compared-as-it-is", "pull_request",
-          pull_request(author="renovate[bot]", association="NONE", head="renovate/app",
-                       owner="renovate[bot]"), True,
-          env={"RUNNER_TRUSTED_AUTHORS": "renovate[bot]"},
-          out=["Origin: pull_request from fork renovate/app by renovate?bot? — allowed"]),
-    _case("a-name-made-safe-for-printing-is-not-trusted", "pull_request",
-          pull_request(author="renovate[bot]", association="NONE", head="renovate/app",
-                       owner="renovate[bot]"), False,
-          env={"RUNNER_TRUSTED_AUTHORS": "renovate?bot?"}, out=[REFUSED]),
-    _case("a-fork-the-org-owns", "pull_request",
-          pull_request(head=f"{ORG}/app-fork"), True,
-          out=[f"Origin: pull_request from fork {ORG}/app-fork by mallory — allowed"]),
-    _case("a-member-pushes-to-their-own-fork", "pull_request",
-          pull_request(author="alice", association="MEMBER", head="alice/app",
-                       action="synchronize"), True, out=["— allowed"], absent=["::error"]),
-    _case("an-allowlisted-maintainer-pushes-to-a-members-fork", "pull_request",
-          pull_request(author="alice", association="MEMBER", head="alice/app",
-                       action="synchronize", sender="Bob"), True,
-          env={"RUNNER_TRUSTED_AUTHORS": "bob"}, out=["— allowed"]),
-    _case("an-outsider-reviewing-a-members-pull-request-changes-nothing",
-          "pull_request_review",
-          pull_request(author="alice", association="MEMBER", head="alice/app",
-                       action="submitted", sender="eve"), True, out=["— allowed"]),
-    _case("the-owner-read-from-the-name-when-github-gives-none", "pull_request",
-          _without_owner(pull_request(author="alice", association="MEMBER",
-                                      head="alice/app")), True,
-          out=["— allowed"]),
-    _case("a-same-repository-push-by-anyone-with-write-access", "pull_request",
+    _case("a-push-to-the-same-repository-by-anyone-with-write-access", "pull_request",
           pull_request(head=f"{ORG}/app", action="synchronize", sender="eve"), True,
           out=["— allowed"]),
+    _case("a-fork-the-org-owns", "pull_request",
+          pull_request(head=f"{ORG}/app-fork"), True,
+          out=[f"Origin: pull_request from {ORG}/app-fork by mallory — allowed"]),
+    _case("a-trusted-owners-repository", "pull_request",
+          pull_request(author="Fill84", head="Fill84/app"), True,
+          env={"RUNNER_TRUSTED_OWNERS": OWNERS},
+          out=["Origin: pull_request from Fill84/app by Fill84 — allowed"],
+          absent=["::error", "::warning"]),
+    _case("trusted-owners-without-case-and-with-spaces", "pull_request_target",
+          pull_request(author="mallory", head="Fill84/app", action="synchronize"), True,
+          env={"RUNNER_TRUSTED_OWNERS": " fill84  other ,"},
+          out=["Origin: pull_request_target from Fill84/app by mallory — allowed"]),
+    _case("the-owner-read-from-the-name-when-github-gives-none", "pull_request",
+          _without_owners(pull_request(head=f"{ORG}/app-fork")), True, out=["— allowed"]),
     _case("push", "push",
           {"ref": "refs/heads/main", "repository": {"full_name": f"{ORG}/app"},
            "sender": {"login": "bob"}}, True,
@@ -210,7 +169,7 @@ CASES = [
           {"pull_request": None, "repository": {"full_name": f"{ORG}/app"},
            "sender": {"login": "bob"}}, True, out=["— allowed"]),
 
-    # ---- unreadable: our fault, so the job runs and is told -----------------
+    # ---- unread: our fault, so the job runs and is told -----------------------
     _case("no-event-file-named", "push", None, True, out=[UNREAD],
           absent=["::error"]),
     _case("garbage-json", "pull_request", "{not json at all", True, out=[UNREAD],
@@ -218,8 +177,16 @@ CASES = [
     _case("json-that-is-not-an-object", "pull_request", "[1, 2, 3]", True,
           out=[UNREAD], absent=["::error"]),
     _case("a-pull-request-without-a-head", "pull_request",
-          _without_pr_object(pull_request()), True, out=[UNREAD], absent=["::error"]),
+          _without(pull_request(), "pull_request", "head"), True, out=[UNREAD],
+          absent=["::error"]),
+    _case("a-head-repository-that-names-no-owner", "pull_request",
+          _without(_without_owners(pull_request()), "pull_request", "head", "repo",
+                   "full_name"), True, out=[UNREAD], absent=["::error"]),
+    _case("no-base-owner-to-compare-with", "pull_request",
+          _without(_without(_without_owners(pull_request()), "pull_request", "base"),
+                   "repository"), True, out=[UNREAD], absent=["::error"]),
 ]
+
 
 def last_result(case):
     """What the hook records in RUNNER_LOG_DIR/origin-guard.json for `case`."""
@@ -237,9 +204,8 @@ def read_last(log_dir):
 
 
 #: The cases a hook is run against end to end: one of each answer.
-END_TO_END = ("fork-by-outsider", "deleted-fork", "fork-by-allowlisted-author",
-              "member-opens-it-from-an-outsiders-fork",
-              "fork-by-member", "same-repository-pull-request", "push",
+END_TO_END = ("fork-by-outsider", "fork-of-an-org-member", "deleted-head-repository",
+              "a-trusted-owners-repository", "same-repository-pull-request", "push",
               "no-event-file-named", "garbage-json")
 
 
@@ -265,7 +231,7 @@ def hook_env(case, directory, base=None):
     and the case's own variables, over `base` with any GITHUB_ or trust
     variable of the machine running the tests taken out."""
     env = {k: v for k, v in (base or {}).items()
-           if not k.startswith("GITHUB_") and k != "RUNNER_TRUSTED_AUTHORS"}
+           if not k.startswith("GITHUB_") and k != "RUNNER_TRUSTED_OWNERS"}
     if case["event"] is not None:
         env["GITHUB_EVENT_NAME"] = case["event"]
     path = write_event(case, directory)

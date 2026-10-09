@@ -73,11 +73,11 @@ class AgentWiring:
     #: like `images`. A unit with no limit can take its whole worker down,
     #: agent and all, so a deployment names one for every cell it runs.
     memory: Mapping = field(default_factory=dict)
-    #: RUNNER_TRUSTED_AUTHORS, comma-separated logins: whose pull requests
-    #: from a fork a GitHub runner's job-started hook runs although GitHub
-    #: does not call them members (a private membership reads CONTRIBUTOR).
-    #: Given to every GitHub unit; see docs/operations/runner-job-hooks.md.
-    trusted_authors: str = ""
+    #: RUNNER_TRUSTED_OWNERS: the accounts besides the org whose
+    #: repositories a pull request may come from and still run on a GitHub
+    #: runner (its job-started hook reads it). Given to every GitHub unit;
+    #: see docs/operations/runner-job-hooks.md, "Outside code".
+    trusted_owners: str = ""
     deadline: float = DEADLINE
 
     def call(self, host_id, verb, body=None, operation_id=None):
@@ -188,10 +188,10 @@ class AgentRuntime:
                 env["RUNNER_CLEANUP_SCOPES"] = ",".join(policy["scopes"])
             if policy.get("enabled") is False:
                 env["RUNNER_CLEANUP_ENABLED"] = "0"
-        trusted = _names(getattr(self.wiring, "trusted_authors", ""))
+        trusted = _names(getattr(self.wiring, "trusted_owners", ""))
         if spec.get("provider") == "github" and trusted:
             # Read by the job-started hook, which only GitHub units have.
-            env["RUNNER_TRUSTED_AUTHORS"] = trusted
+            env["RUNNER_TRUSTED_OWNERS"] = trusted
         if env:
             unit["env"] = env
         return unit
