@@ -285,6 +285,12 @@ class WindowsProcessRuntime:
         self._fs.write_text(ntpath.join(p["reg"], "unit.json"),
                             json.dumps(self._unit(rid, spec, p)))
 
+        # 5b. Out of a job's reach: a job runs as this service's account,
+        #     which may change anything else in its tree. The hooks, and the
+        #     unit file that names them and RUNNER_TRUSTED_AUTHORS, deny it
+        #     every kind of write; LocalSystem, the agent, is not denied.
+        self._lock_from_jobs(name, p, _serves_github(spec))
+
         running = self.status(rid).get("running")
         if running is None:
             raise RuntimeError("service state is unknown; start is held")
@@ -329,6 +335,21 @@ class WindowsProcessRuntime:
                 "memory_bytes": size_bytes(spec.get("memory")),
                 "cpus": float(cpus) if cpus not in ("", "0") else None,
                 "cpuset": spec.get("cpuset") or None}
+
+    #: Every kind of write, and delete, rename, re-permission and take-over:
+    #: what a job is denied on the files its own hook and job host run from.
+    DENY_WRITE = "DE,WD,AD,WEA,WA,WDAC,WO"
+
+    def _lock_from_jobs(self, name, p, hooks):
+        sid = service_sid(name)
+        if hooks:
+            self._check(self._run([
+                self._tools["icacls"], ntpath.join(p["reg"], "hooks"), "/deny",
+                f"*{sid}:(OI)(CI)({self.DENY_WRITE.replace('WA,', 'WA,DC,')})", "/Q"],
+                timeout=120))
+        self._check(self._run([
+            self._tools["icacls"], ntpath.join(p["reg"], "unit.json"), "/deny",
+            f"*{sid}:({self.DENY_WRITE})", "/Q"], timeout=120))
 
     def _acl(self, root, name):
         """Only LocalSystem, Administrators and this runner's own account, and

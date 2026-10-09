@@ -373,6 +373,13 @@ class FakeWindows:
         if not self.exists(path):
             return False, "", f"{path}: The system cannot find the file " \
                               f"specified."
+        if "/deny" in args:
+            # Added to what is there, as icacls does.
+            at = args.index("/deny") + 1
+            acl = self.acls.setdefault(_key(path), {"inheritance": None, "grants": []})
+            acl.setdefault("denies", []).extend(
+                a for a in args[at:] if not a.startswith("/"))
+            return True, "", ""
         grants, inherit, i = [], None, 1
         while i < len(args):
             a = args[i]

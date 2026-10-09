@@ -89,6 +89,24 @@ class TestWindows:
         env = json.loads(host.read_text(ntpath.join(reg, "unit.json")))["env"]
         assert env["RUNNER_TRUSTED_AUTHORS"] == "alice,bob"
 
+    def test_a_job_cannot_rewrite_the_hooks_or_the_unit_file(self, runtime, host):
+        """A job runs as the runner's service account, which may change
+        anything in its tree. Its hooks, and the unit file that names them
+        and RUNNER_TRUSTED_AUTHORS, deny that account every kind of write;
+        the agent, LocalSystem, still rewrites them at each create."""
+        from .fake_windows import _key
+        self.env(runtime, host, "github")
+        reg = runtime.paths(RID)["reg"]
+        sid = windows_process.service_sid(f"rnr-{RID}")
+        hooks = host.acls[_key(ntpath.join(reg, "hooks"))]
+        assert hooks["denies"] == [f"*{sid}:(OI)(CI)(DE,WD,AD,WEA,WA,DC,WDAC,WO)"]
+        unit = host.acls[_key(ntpath.join(reg, "unit.json"))]
+        assert unit["denies"] == [f"*{sid}:(DE,WD,AD,WEA,WA,WDAC,WO)"]
+        written = max(i for i, a in enumerate(host.calls)
+                      if a[0] == WINDOWS_TOOLS["icacls"] and "/deny" in a)
+        assert written < max(i for i, a in enumerate(host.calls) if "start" in a), \
+            "locked before the runner starts"
+
     def test_the_hooks_run_with_the_python_the_job_host_runs(self, runtime, host):
         env = self.env(runtime, host, "github")
         assert env["RUNNER_HOOK_PYTHON"] == WINDOWS_TOOLS["python"]
