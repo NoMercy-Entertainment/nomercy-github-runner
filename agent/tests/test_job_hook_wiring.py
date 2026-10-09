@@ -174,6 +174,46 @@ class TestMacOS:
         plist = plistlib.loads(guest.read_text(runtime.paths(RID)["plist"]).encode())
         assert plist["EnvironmentVariables"]["RUNNER_TRUSTED_OWNERS"] == "alice,bob"
 
+    def test_a_system_runners_hooks_are_roots_and_out_of_a_jobs_reach(self, guest):
+        """A job runs as the runner's account, which owns its reg directory.
+        A system launchd job's hooks are installed by root into a tree root
+        owns, as the system plist is, and the job names them there."""
+        installed = []
+
+        def run(args, **kwargs):
+            if args[:3] == ["/usr/bin/sudo", "-n", "/usr/bin/install"]:
+                installed.append(args)
+                if "-d" in args:
+                    guest.makedirs(args[-1])
+                else:
+                    guest.write_text(args[-1], guest.read_text(args[-2]))
+                return True, "", ""
+            if args[:3] == ["/usr/bin/sudo", "-n", "/bin/rm"]:
+                for path in args[args.index("--") + 1:]:
+                    if guest.exists(path):
+                        guest.remove(path)
+                return True, "", ""
+            return guest(args, **kwargs)
+
+        runtime = MacApplianceRuntime(run=run, fs=guest, appliance=guest.appliance,
+                                      tools=dict(MAC_TOOLS, domain="system",
+                                                 runner_user="runner"))
+        runtime.create(RID, spec("github", MAC_TEMPLATE))
+        hooks = posixpath.join(macos_appliance.SYSTEM_HOOK_ROOT, RID)
+        assert installed[0][3:] == ["-d", "-o", "root", "-g", "wheel", "-m", "0755", hooks]
+        files = {a[-1]: a[3:9] for a in installed if "-d" not in a and a[-1].startswith(hooks)}
+        assert sorted(files) == sorted(posixpath.join(hooks, n)
+                                       for n in macos_appliance.HOOK_FILES)
+        assert all(v == ["-o", "root", "-g", "wheel", "-m", "0644"] for v in files.values())
+        env = plistlib.loads(guest.read_text(runtime.paths(RID)["plist"]).encode())[
+            "EnvironmentVariables"]
+        assert env["ACTIONS_RUNNER_HOOK_JOB_STARTED"] == posixpath.join(hooks, "job-started.sh")
+        assert not guest.exists(posixpath.join(runtime.paths(RID)["reg"], "hooks"))
+        assert not any(".hook-" in p for p in guest.files), "no stage left behind"
+        assert runtime.origin_guard_report(RID)["note"] is None
+        runtime.remove(RID, keep_data=False)
+        assert not guest.exists(posixpath.join(hooks, "lib.sh"))
+
     def test_the_hooks_know_the_accounts_own_home(self, runtime, guest):
         """Where Xcode keeps DerivedData: the job's HOME is the runner's own,
         under its work directory."""

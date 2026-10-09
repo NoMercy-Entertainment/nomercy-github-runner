@@ -77,6 +77,11 @@ HOOK_SOURCE = Path(__file__).resolve().parents[1] / "hooks" / "macos"
 HOOK_SCRIPTS = {"ACTIONS_RUNNER_HOOK_JOB_STARTED": "job-started.sh",
                 "ACTIONS_RUNNER_HOOK_JOB_COMPLETED": "job-completed.sh"}
 HOOK_FILES = ("lib.sh", "runner_guard.js", *HOOK_SCRIPTS.values())
+#: Where a runner's hooks go when its launchd job is a system one: a tree
+#: root owns, which the runner's account - and so a job - cannot change.
+#: A runner in a user's own launchd domain keeps them in its reg directory,
+#: which that user owns: there is no privileged path to write them with.
+SYSTEM_HOOK_ROOT = "/Library/Nomercy/runner-hooks"
 #: The file, and the line in it, that say which origin check a runner's
 #: hooks carry.
 GUARD_FILE = "runner_guard.js"
@@ -252,7 +257,7 @@ class MacApplianceRuntime:
         # 2b. GitHub's job hooks, before the job that points at them, and on
         #     every create, so a redeployed agent's copy reaches the guest.
         if _serves_github(spec):
-            self._install_hooks(p)
+            self._install_hooks(p, rid)
 
         # 3. The launchd job. Its environment can carry a token, so the file
         #    is readable by this user alone.
@@ -316,13 +321,36 @@ class MacApplianceRuntime:
                             json.dumps(record, sort_keys=True), mode=0o600)
         return naming.unit_name(rid)
 
-    def _install_hooks(self, p):
-        hooks = posixpath.join(p["reg"], "hooks")
-        self._fs.makedirs(hooks)
+    def _hooks_dir(self, p, rid):
+        if self._domain() == "system":
+            return posixpath.join(SYSTEM_HOOK_ROOT, rid)
+        return posixpath.join(p["reg"], "hooks")
+
+    def _install_hooks(self, p, rid):
+        hooks = self._hooks_dir(p, rid)
+        if self._domain() != "system":
+            self._fs.makedirs(hooks)
+            for name in HOOK_FILES:
+                text = (HOOK_SOURCE / name).read_text(encoding="utf-8").replace("\r\n", "\n")
+                self._fs.write_text(posixpath.join(hooks, name), text,
+                                    mode=0o700 if name in HOOK_SCRIPTS.values() else 0o600)
+            return
+        # Root's, readable by all, writable by root alone: the runner runs a
+        # .sh hook through bash and the guard through node, so nothing needs
+        # the execute bit. Staged in the runner's own tree, privately, and
+        # installed as the system plist is.
+        self._check(self._run(["/usr/bin/sudo", "-n", "/usr/bin/install", "-d",
+                               "-o", "root", "-g", "wheel", "-m", "0755", hooks]))
         for name in HOOK_FILES:
             text = (HOOK_SOURCE / name).read_text(encoding="utf-8").replace("\r\n", "\n")
-            self._fs.write_text(posixpath.join(hooks, name), text,
-                                mode=0o700 if name in HOOK_SCRIPTS.values() else 0o600)
+            stage = posixpath.join(p["reg"], ".hook-" + name)
+            self._fs.write_text(stage, text, mode=0o600)
+            try:
+                self._check(self._run(["/usr/bin/sudo", "-n", "/usr/bin/install",
+                                       "-o", "root", "-g", "wheel", "-m", "0644",
+                                       stage, posixpath.join(hooks, name)]))
+            finally:
+                self._fs.remove(stage)
 
     def origin_guard_report(self, runner_id):
         """Whether this runner's job-started hook refuses outside code
@@ -377,7 +405,7 @@ class MacApplianceRuntime:
         env["DOTNET_CLI_TELEMETRY_OPTOUT"] = "1"
         env["DOTNET_GENERATE_ASPNET_CERTIFICATE"] = "false"
         if _serves_github(spec):
-            hooks = posixpath.join(p["reg"], "hooks")
+            hooks = self._hooks_dir(p, rid)
             for key, name in HOOK_SCRIPTS.items():
                 env[key] = posixpath.join(hooks, name)
             # The account's own home, where Xcode keeps DerivedData; the
@@ -486,6 +514,11 @@ class MacApplianceRuntime:
         if self._domain() == "system":
             self._check(self._run(["/usr/bin/sudo", "-n", "/bin/rm", "-f",
                                   "--", p["plist"]]))
+            # Root's hooks, by the same privileged rm; their empty directory
+            # stays, as rm -f does not remove one.
+            hooks = self._hooks_dir(p, rid)
+            self._check(self._run(["/usr/bin/sudo", "-n", "/bin/rm", "-f", "--",
+                                   *[posixpath.join(hooks, n) for n in HOOK_FILES]]))
         else:
             self._fs.remove(p["plist"])
         doomed = ([p[a] for a in AREAS if a not in KEPT_ON_RECREATE]
