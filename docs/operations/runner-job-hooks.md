@@ -112,15 +112,25 @@ included.
 
 A job is **refused** when its event payload has a `pull_request` object
 (the events `pull_request`, `pull_request_target`, `pull_request_review`,
-`pull_request_review_comment`, and any other whose payload carries one) and
-both of these hold:
+`pull_request_review_comment`, and any other whose payload carries one)
+whose head is a fork - `head.repo.full_name` is not the base repository's,
+compared without case - that the org does not own, and any of these holds:
 
-- its head is a fork: `head.repo.full_name` is not the base repository's
-  (compared without case), or `head.repo` is null - a fork deleted since;
-- its author is not trusted: `author_association` is not `OWNER` or
-  `MEMBER`, and the author's login is not in `RUNNER_TRUSTED_AUTHORS`. An
-  outside collaborator (`COLLABORATOR`) is not trusted: the owner wants
-  nothing from outside the org to run here.
+- the fork has been deleted since (`head.repo` is null): its owner cannot be
+  checked;
+- the pull request's author is not trusted;
+- the fork's owner (`head.repo.owner.login`, else the part of its name
+  before the `/`) is not trusted - a member can open a pull request from an
+  outsider's fork, and the outsider can then push to it;
+- the action is `synchronize` and whoever pushed (`sender.login`) is not
+  trusted.
+
+A login is **trusted** when it is in `RUNNER_TRUSTED_AUTHORS`, or when it is
+the pull request author's own and the author's `author_association` is
+`OWNER` or `MEMBER`. An outside collaborator (`COLLABORATOR`) is not
+trusted: the owner wants nothing from outside the org to run here. A fork the
+org itself owns (`head.repo.owner.login` is the base repository's owner)
+runs: what is in it was pushed by someone with write access there.
 
 The job fails with
 
@@ -130,14 +140,21 @@ The job fails with
     any of its code ran. If mallory is a maintainer whose org membership is
     private, add them to RUNNER_TRUSTED_AUTHORS.
 
+The login the last sentence names is whoever was not trusted; the middle of
+the sentence says which: "comes from fork mallory/app, which belongs to
+mallory", "... last pushed to by eve", or "comes from a deleted fork, whose
+owner cannot be checked" (with no last sentence: nothing to add).
+
 and nothing else is done for it: no Android SDK restore, no disk check, no
 cleanup. The refusal takes the disk refusal's path (status 75, the hook's
 exit 1).
 
 **Everything else runs**: push, release, workflow_dispatch, schedule,
 workflow_run, an `issue_comment` (whose payload carries no head), a pull
-request from a branch of the repository itself, and a pull request from a
-trusted author's fork. It prints one line:
+request from a branch of the repository itself (anyone who can push one
+has write access to it), a pull request from a fork the org owns, and one
+from a fork whose author, owner and last pusher are all trusted. It prints
+one line:
 
     Origin: pull_request from fork alice/app by alice — allowed
     Origin: push from NoMercy-Entertainment/app by bob — allowed
