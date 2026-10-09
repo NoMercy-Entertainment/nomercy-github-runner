@@ -345,7 +345,8 @@ class TestTheRenderer:
                  "source": "GitHub default group"}
         open_ = dict(open_, says="every repository in the org may use these runners, "
                                  "public ones included")
-        unguarded = {"runners": 2, "guarded": 0}
+        unguarded = {"runners": 2, "proven": 0, "unproven": 0, "unread": 0,
+                     "missing": 2, "unknown": 0, "notes": []}
         html = render("fleetHeadHTML", [fleet_row(runner_group_policy=open_,
                                                   origin_guard=unguarded)])[0]
         assert 'class="chip danger rgroup"' in html

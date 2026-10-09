@@ -339,6 +339,11 @@ class FakeDocker:
         "{{.Id}}": lambda c: "0123456789abcdef",
         "{{.State.Status}}": lambda c: c["state"],
         "{{.State.Running}}": lambda c: str(c["state"] == "running").lower(),
+        '{{index .Config.Labels "nomercy.provider"}}\t'
+        '{{index .Config.Labels "nomercy.origin_guard"}}\t{{.State.Running}}':
+            lambda c: "\t".join([c["labels"].get("nomercy.provider", "<no value>"),
+                                 c["labels"].get("nomercy.origin_guard", "<no value>"),
+                                 str(c["state"] == "running").lower()]),
         "{{json .State}}": lambda c: json.dumps({
             "Status": c["state"], "Running": c["state"] == "running",
             "ExitCode": 0, "StartedAt": "2026-09-18T00:00:00Z",
@@ -375,6 +380,16 @@ class FakeDocker:
             "Status": c["state"], "Running": c["state"] == "running",
             "ExitCode": 0, "StartedAt": "2026-09-18T00:00:00Z",
             "RestartCount": c["restarts"]}), ""
+
+    def _diff(self, args, input):
+        """What changed in a unit's own layer since it was made: what a test
+        put in `changed` (path -> A, C or D)."""
+        name = args[-1]
+        missing = self._need(name)
+        if missing:
+            return missing
+        changed = self.containers[name].get("changed", {})
+        return True, "\n".join(f"{kind} {path}" for path, kind in sorted(changed.items())), ""
 
     def _ps(self, args, input):
         import re
@@ -470,6 +485,10 @@ class FakeDocker:
             return True, "", ""
         if cmd == ["cat", "/runner/reg/agent_version"]:
             return True, "2.336.0\n", ""
+        if cmd[0] == "cat" and cmd[-1] in c.get("texts", {}):
+            return True, c["texts"][cmd[-1]], ""
+        if cmd[0] == "cat":
+            return False, "", f"cat: {cmd[-1]}: No such file or directory"
         if cmd == ["/runner/register"]:
             plan = json.loads(input or "{}")
             try:

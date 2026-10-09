@@ -476,17 +476,50 @@ class TestObserving:
         states = {u["runner_id"]: u["state"] for u in runtime.instances()}
         assert states == {RID: "running", OTHER: "stopped"}
 
-    def test_instances_say_which_origin_guard_each_units_image_carries(self, runtime, docker):
-        """The unit image's LABEL nomercy.origin_guard: the job-started
-        hook's check on whose code a job runs. A unit made from an image
-        before it has none, and says 0 - not unknown, not the image's
-        newer tag."""
+    GITHUB = dict(SPEC, labels={"nomercy.provider": "github", "nomercy.fleet": "f"})
+
+    def test_a_unit_from_an_image_with_the_check_reports_it(self, runtime, docker):
+        """The image's LABEL nomercy.origin_guard; the hook's own record of
+        its last run, from the unit's log directory."""
         docker.image_labels[SPEC["image"]] = {"nomercy.origin_guard": "1"}
-        runtime.create(RID, SPEC)
-        docker.image_labels.clear()
-        runtime.create(OTHER, SPEC)
-        guards = {u["runner_id"]: u.get("origin_guard") for u in runtime.instances()}
-        assert guards == {RID: 1, OTHER: 0}
+        runtime.create(RID, self.GITHUB)
+        assert runtime.origin_guard_report(RID) == {"version": 1, "note": None, "last": None}
+        docker.containers[f"rnr-{RID}"]["texts"] = {
+            "/runner/logs/origin-guard.json":
+                '{"version": 1, "result": "unread", "at": "2026-10-09T10:00:00Z"}'}
+        assert runtime.origin_guard_report(RID)["last"] == {
+            "result": "unread", "at": "2026-10-09T10:00:00Z"}
+
+    def test_a_unit_from_an_image_before_the_check_says_so(self, runtime, docker):
+        runtime.create(RID, self.GITHUB)
+        got = runtime.origin_guard_report(RID)
+        assert got["version"] == 0 and got["note"] == "hooks from before the check"
+
+    @pytest.mark.parametrize("path", ["/runner/runner_guard.py", "/runner/job-started.sh",
+                                      "/runner/job_started.py", "/runner/run"])
+    def test_a_unit_whose_check_was_changed_since_it_was_made_is_not_trusted(
+            self, runtime, docker, path):
+        """A job is root in its unit. `docker diff` names every file of the
+        image's that its own layer has changed, added or deleted."""
+        docker.image_labels[SPEC["image"]] = {"nomercy.origin_guard": "1"}
+        runtime.create(RID, self.GITHUB)
+        docker.containers[f"rnr-{RID}"]["changed"] = {path: "C", "/usr/local/x": "A"}
+        got = runtime.origin_guard_report(RID)
+        assert got["version"] == 0 and path.rsplit("/", 1)[-1] in got["note"]
+
+    def test_other_changes_in_the_unit_do_not_count(self, runtime, docker):
+        docker.image_labels[SPEC["image"]] = {"nomercy.origin_guard": "1"}
+        runtime.create(RID, self.GITHUB)
+        docker.containers[f"rnr-{RID}"]["changed"] = {"/runner/other.py": "A",
+                                                      "/runner": "C", "/etc/hosts": "C"}
+        assert runtime.origin_guard_report(RID)["version"] == 1
+
+    def test_a_unit_that_is_not_githubs_or_not_running_says_nothing(self, runtime, docker):
+        runtime.create(RID, dict(SPEC, labels={"nomercy.provider": "forgejo"}))
+        assert runtime.origin_guard_report(RID) is None
+        runtime.create(OTHER, self.GITHUB)
+        runtime.stop(OTHER)
+        assert runtime.origin_guard_report(OTHER) is None
 
     def test_instances_raises_rather_than_claiming_nothing(self):
         runtime = LinuxContainerRuntime(

@@ -57,7 +57,6 @@ from typing import Protocol
 
 from .. import naming
 from ..jobs import current_job
-from ..origin_guard import guard_version
 from .localfs import LocalFs
 
 #: The areas an appliance instance has: every one in naming except the
@@ -148,10 +147,6 @@ class MacApplianceRuntime:
         self._tools = dict(TOOLS, **(tools or {}))
         if self._tools["domain"] == "system" and not self._tools["runner_user"]:
             raise ValueError("system launchd jobs require an explicit runner_user")
-        #: runner_id -> the origin check its hooks carry (origin_guard), as
-        #: written by this agent or read once: every read crosses the guest's
-        #: SSH, and the hooks change only at a create, which sets it here.
-        self._guards = {}
 
     # ---- where things are ----------------------------------------------------
 
@@ -257,7 +252,7 @@ class MacApplianceRuntime:
         # 2b. GitHub's job hooks, before the job that points at them, and on
         #     every create, so a redeployed agent's copy reaches the guest.
         if _serves_github(spec):
-            self._install_hooks(p, rid)
+            self._install_hooks(p)
 
         # 3. The launchd job. Its environment can carry a token, so the file
         #    is readable by this user alone.
@@ -321,37 +316,40 @@ class MacApplianceRuntime:
                             json.dumps(record, sort_keys=True), mode=0o600)
         return naming.unit_name(rid)
 
-    def _install_hooks(self, p, rid=None):
+    def _install_hooks(self, p):
         hooks = posixpath.join(p["reg"], "hooks")
         self._fs.makedirs(hooks)
         for name in HOOK_FILES:
             text = (HOOK_SOURCE / name).read_text(encoding="utf-8").replace("\r\n", "\n")
             self._fs.write_text(posixpath.join(hooks, name), text,
                                 mode=0o700 if name in HOOK_SCRIPTS.values() else 0o600)
-            if name == GUARD_FILE and rid:
-                self._guards[rid] = guard_version(text, GUARD_PREFIX)
 
-    def origin_guard(self, runner_id):
-        """Which version of the origin check this runner's own hooks carry:
-        GUARD_VERSION in its reg/hooks/runner_guard.js, 0 for hooks from before
-        the check, None for a runner with no hooks (not GitHub's, or adopted)
-        or one that cannot be read now."""
+    def origin_guard_report(self, runner_id):
+        """Whether this runner's job-started hook refuses outside code
+        (agent/origin_guard.py): every file in the hooks directory its
+        launchd job names must still be this agent's own copy, and its log
+        directory holds the hook's record of its last run. Read afresh on
+        every deep pass, over the guest's SSH when the agent is outside it.
+        None for a runner that is not GitHub's (no hook in its launchd job,
+        an adopted one included) or that cannot be read now."""
+        from ..origin_guard import LAST_RESULT, measure_tree
         rid = naming.check(runner_id)
-        if rid in self._guards:
-            return self._guards[rid]
-        hooks = posixpath.join(self.paths(rid)["reg"], "hooks")
-        guard_file = posixpath.join(hooks, GUARD_FILE)
+        p = self.paths(rid)
         try:
-            if not self._fs.exists(hooks):
-                guard = None
-            elif not self._fs.exists(guard_file):
-                guard = 0
-            else:
-                guard = guard_version(self._fs.read_text(guard_file), GUARD_PREFIX)
-        except (OSError, ValueError, RuntimeError):
+            if not self._fs.exists(p["plist"]):
+                return None
+            job = plistlib.loads(self._fs.read_text(p["plist"]).encode("utf-8"))
+            hook = (job.get("EnvironmentVariables") or {}).get(
+                "ACTIONS_RUNNER_HOOK_JOB_STARTED")
+            if not hook:
+                return None
+            expected = {name: (HOOK_SOURCE / name).read_text(encoding="utf-8")
+                        for name in HOOK_FILES}
+            return measure_tree(self._fs, posixpath.dirname(hook), expected,
+                                posixpath.join, GUARD_FILE, GUARD_PREFIX,
+                                posixpath.join(p["logs"], LAST_RESULT))
+        except (OSError, ValueError, RuntimeError, AttributeError, plistlib.InvalidFileException):
             return None
-        self._guards[rid] = guard
-        return guard
 
     def _plist(self, rid, spec, p):
         env = dict(spec.get("env") or {})
@@ -484,7 +482,6 @@ class MacApplianceRuntime:
         """Remove the job and its storage. Safe when any of it is absent."""
         rid = naming.check(runner_id)
         self.stop(rid)
-        self._guards.pop(rid, None)
         p = self.paths(rid)
         if self._domain() == "system":
             self._check(self._run(["/usr/bin/sudo", "-n", "/bin/rm", "-f",
@@ -686,13 +683,9 @@ class MacApplianceRuntime:
             if rid in seen:
                 continue
             s = self.status(rid)
-            unit = {"runner_id": rid,
-                    "state": "running" if s.get("running") is True else
-                    ("stopped" if s.get("running") is False else "unknown")}
-            guard = self.origin_guard(rid)
-            if guard is not None:
-                unit["origin_guard"] = guard
-            found.append(unit)
+            found.append({"runner_id": rid,
+                          "state": "running" if s.get("running") is True else
+                          ("stopped" if s.get("running") is False else "unknown")})
         return found
 
     # ---- cache ---------------------------------------------------------------

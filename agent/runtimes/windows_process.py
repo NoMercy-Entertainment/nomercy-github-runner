@@ -50,7 +50,6 @@ from pathlib import Path
 
 from .. import cpu, hardware, naming
 from ..jobs import current_job
-from ..origin_guard import guard_version
 from ..windows_timeouts import registration_limits
 from .localfs import LocalFs
 from .windows_storage import UNMANAGED, WindowsStorage
@@ -701,31 +700,33 @@ class WindowsProcessRuntime:
                     current = None
                     continue
                 state = line.split()[-1]
-                unit = {"runner_id": rid,
-                        "state": {"RUNNING": "running",
-                                  "STOPPED": "stopped"}.get(state, "unknown")}
-                guard = self._origin_guard(rid)
-                if guard is not None:
-                    unit["origin_guard"] = guard
-                found.append(unit)
+                found.append({"runner_id": rid,
+                              "state": {"RUNNING": "running",
+                                        "STOPPED": "stopped"}.get(state,
+                                                                 "unknown")})
                 current = None
         return found
 
-    def _origin_guard(self, rid):
-        """Which version of the origin check this runner's own hooks carry:
-        GUARD_VERSION in its reg\\hooks\\runner_guard.py, 0 for hooks from
-        before the check, None for a runner with no hooks (not GitHub's) or
-        one that cannot be read. Its own copy, not the agent's: hooks are
-        written at create."""
-        hooks = ntpath.join(self.paths(rid)["reg"], "hooks")
+    def origin_guard_report(self, runner_id):
+        """Whether this runner's job-started hook refuses outside code
+        (agent/origin_guard.py): every file in the hooks directory its
+        unit.json names must still be this agent's own copy, and its log
+        directory holds the hook's record of its last run. None for a runner
+        that is not GitHub's (no hook in its unit.json) or cannot be read."""
+        from ..origin_guard import LAST_RESULT, measure_tree
+        rid = naming.check(runner_id)
+        p = self.paths(rid)
         try:
-            if not self._fs.exists(hooks):
+            unit = json.loads(self._fs.read_text(ntpath.join(p["reg"], "unit.json")))
+            hook = ((unit or {}).get("env") or {}).get("ACTIONS_RUNNER_HOOK_JOB_STARTED")
+            if not hook:
                 return None
-            guard = ntpath.join(hooks, "runner_guard.py")
-            if not self._fs.exists(guard):
-                return 0
-            return guard_version(self._fs.read_text(guard), "GUARD_VERSION = ")
-        except (OSError, ValueError):
+            expected = {name: (HOOK_SOURCE / name).read_text(encoding="utf-8")
+                        for name in HOOK_FILES}
+            return measure_tree(self._fs, ntpath.dirname(hook), expected, ntpath.join,
+                                "runner_guard.py", "GUARD_VERSION = ",
+                                ntpath.join(p["logs"], LAST_RESULT))
+        except (OSError, ValueError, AttributeError):
             return None
 
     # ---- cache ---------------------------------------------------------------

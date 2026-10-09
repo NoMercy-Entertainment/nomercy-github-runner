@@ -114,6 +114,21 @@ def _depth(runtime, runner_id):
     return out
 
 
+def _guard(runtime, runner_id):
+    """Whether the unit's job-started hook refuses outside code, with when
+    that was measured (agent/origin_guard.py), or None when the runtime
+    cannot say. A deep measurement: it reads the runner's own files."""
+    if not hasattr(runtime, "origin_guard_report"):
+        return None
+    try:
+        got = runtime.origin_guard_report(runner_id)
+    except Exception:                       # noqa: BLE001
+        return None
+    if not isinstance(got, dict):
+        return None
+    return dict(got, at=_stamp())
+
+
 def _with_depth(telemetry, depth):
     """A light measurement with the last deep one added. A figure both
     carry - the volume an appliance runner shares, read every beat and on
@@ -179,11 +194,6 @@ def build(agent, server=None, deep=False):
                 proof = observed.get("resource_enforcement")
                 if isinstance(proof, dict):
                     unit["resource_enforcement"] = dict(proof)
-                # Which origin check the unit's own job-started hook carries
-                # (agent/origin_guard.py); left out when the runtime cannot say.
-                guard = observed.get("origin_guard")
-                if isinstance(guard, int) and not isinstance(guard, bool) and guard >= 0:
-                    unit["origin_guard"] = guard
                 instances.append(unit)
             beat["instances"] = instances
         except Exception:                   # noqa: BLE001
@@ -241,6 +251,9 @@ class HeartbeatSender:
         self._measuring = None
         self._deep_thread = None
         self._depths = {}
+        #: runner_id -> its last origin guard report, with when it was
+        #: measured; sent with every beat until the next deep pass.
+        self._guards = {}
 
     def measure_once(self):
         """Measure live units independently of sending and storage probes.
@@ -258,6 +271,9 @@ class HeartbeatSender:
             depth = self._depths.get(unit["runner_id"])
             if depth:
                 _with_depth(unit.setdefault("telemetry", {}), depth)
+            guard = self._guards.get(unit["runner_id"])
+            if guard:
+                unit["origin_guard"] = dict(guard)
         self.measured += 1
         self._measured = (started, built)
         self._sample_ready.set()
@@ -271,13 +287,15 @@ class HeartbeatSender:
         ids = [unit["runner_id"] for unit in payload[1].get("instances", [])]
         def measure(rid):
             if self._stop.is_set():
-                return rid, {}
-            return rid, _depth(self.agent.runtime, rid)
+                return rid, {}, None
+            return rid, _depth(self.agent.runtime, rid), _guard(self.agent.runtime, rid)
         with ThreadPoolExecutor(max_workers=4) as pool:
             futures = [pool.submit(measure, rid) for rid in ids]
             for future in as_completed(futures):
-                rid, depth = future.result()
+                rid, depth, guard = future.result()
                 self._depths[rid] = depth
+                if guard is not None:
+                    self._guards[rid] = guard
 
     def _deep_loop(self):
         while not self._stop.is_set():

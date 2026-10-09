@@ -79,6 +79,11 @@ RUNNER_LABEL = "nomercy.runner_id"
 #: The unit image's LABEL: which version of the job-started hook's check on
 #: whose code a job runs (images/linux/unit/runner/runner_guard.py) it ships.
 ORIGIN_GUARD_LABEL = "nomercy.origin_guard"
+#: The image's files the check is made of, and the one that sets the hook: a
+#: unit whose copy of any has changed since it was made (`docker diff`) is
+#: not trusted to refuse anything.
+ORIGIN_GUARD_FILES = ("/runner/job-started.sh", "/runner/job_started.py",
+                      "/runner/runner_guard.py", "/runner/run")
 STOP_TIMEOUT = 60
 READONLY_TMPFS = "/run:rw,nosuid,nodev,size=64m,mode=755"
 
@@ -781,6 +786,35 @@ class LinuxContainerRuntime:
                     "error": "job state is authoritative at the forge"}
         return {"ok": False, "error": "unknown probe"}
 
+    def origin_guard_report(self, runner_id):
+        """Whether this unit's job-started hook refuses outside code
+        (agent/origin_guard.py): the image's label for the version, `docker
+        diff` for any change to the files the check is made of since the
+        unit was made, and the hook's own record of its last run. None for a
+        unit that is not GitHub's, or not running, or cannot be read now."""
+        from ..origin_guard import LAST_RESULT, last_result, report
+        name = naming.unit_name(naming.check(runner_id))
+        ok, out, _ = self._run(["inspect", "--type", "container", "--format",
+                                '{{index .Config.Labels "nomercy.provider"}}\t'
+                                '{{index .Config.Labels "' + ORIGIN_GUARD_LABEL + '"}}\t'
+                                "{{.State.Running}}", name], timeout=30)
+        if not ok:
+            return None
+        provider, guard, running = (out.strip().split("\t") + ["", "", ""])[:3]
+        if provider != "github" or running != "true":
+            return None
+        ok, diff, _ = self._run(["diff", name], timeout=120)
+        if not ok:
+            return None
+        changed = sorted({line.split(None, 1)[1].strip().rsplit("/", 1)[-1]
+                          for line in diff.splitlines()
+                          if len(line.split(None, 1)) == 2
+                          and line.split(None, 1)[1].strip() in ORIGIN_GUARD_FILES})
+        ok, text, _ = self._run(["exec", name, "cat",
+                                 f"{MOUNTS['logs']}/{LAST_RESULT}"], timeout=30)
+        return report(int(guard) if guard.strip().isdigit() else 0, changed,
+                      last=last_result(text) if ok else None)
+
     def instances(self):
         """Every unit on this engine that belongs to a runner, and its state.
         Raises when the engine cannot be asked: an empty list would say this
@@ -788,22 +822,16 @@ class LinuxContainerRuntime:
         ok, out, err = self._run(["ps", "-a", "--filter",
                                   f"label={RUNNER_LABEL}", "--format",
                                   '{{.Label "' + RUNNER_LABEL + '"}}\t'
-                                  "{{.State}}\t"
-                                  '{{.Label "' + ORIGIN_GUARD_LABEL + '"}}'],
-                                 timeout=30)
+                                  "{{.State}}"], timeout=30)
         if not ok:
             raise RuntimeError(err or "docker ps failed")
         found, seen = [], set()
         for line in out.splitlines():
-            rid, _, rest = line.partition("\t")
-            state, _, guard = rest.partition("\t")
+            rid, _, state = line.partition("\t")
             if not rid:
                 continue
             seen.add(rid)
-            found.append({"runner_id": rid, "state": _state_word(state),
-                          # A label of the image the unit was made from:
-                          # one made before the check has none, which is 0.
-                          "origin_guard": int(guard) if guard.strip().isdigit() else 0})
+            found.append({"runner_id": rid, "state": _state_word(state)})
         # The adopted ones, which carry no label: a container's labels are
         # fixed when it is made, and adopting exists precisely not to make it
         # again (T-0802). Without this they are in no heartbeat, and a runner

@@ -260,19 +260,55 @@ def all_cards(service=None):
     return _action_policy(out)
 
 
-def origin_guard_of(provider_key, fid, all_runner_cards):
-    """How many of a GitHub fleet's runners refuse a pull request from an
-    outside fork: {"runners", "guarded"}, where guarded counts the runners
-    whose own job-started hook carries the origin check, as each unit last
-    reported it. A runner that never said - made before the check, or not
-    the platform's own - counts as not guarded. None for a forge without
-    job hooks."""
+#: A runner's origin guard report older than this - four deep passes of
+#: about five minutes - says nothing about it now.
+ORIGIN_GUARD_STALE = 20 * 60
+
+
+def _guard_state(report, now):
+    """proven: the hook carries the check, unchanged, and its last run read
+    its event; unproven: it carries it but has not run since; unread: its
+    last run could not read the event (or failed); missing: no check, or a
+    changed one; unknown: no report, or one too old."""
+    from datetime import datetime, timezone
+    if not isinstance(report, dict):
+        return "unknown"
+    try:
+        at = datetime.strptime(report.get("at") or "", "%Y-%m-%dT%H:%M:%SZ").replace(
+            tzinfo=timezone.utc)
+    except ValueError:
+        return "unknown"
+    if (now - at).total_seconds() > ORIGIN_GUARD_STALE:
+        return "unknown"
+    if not isinstance(report.get("version"), int) or report["version"] < 1:
+        return "missing"
+    last = report.get("last")
+    if not isinstance(last, dict):
+        return "unproven"
+    return "proven" if last.get("result") in ("allowed", "refused") else "unread"
+
+
+def origin_guard_of(provider_key, fid, all_runner_cards, now=None):
+    """Whether a GitHub fleet's runners refuse a pull request from an outside
+    fork, counted per runner from what its own unit last reported
+    (agent/origin_guard.py): {runners, proven, unproven, unread, missing,
+    unknown, notes}. A runner that never reported - made before the check,
+    or not the platform's own - is unknown. None for a forge without job
+    hooks."""
+    from datetime import datetime, timezone
     if provider_key != "github":
         return None
+    now = now or datetime.now(timezone.utc)
     members = [c for c in all_runner_cards if c.get("fleet_id") == fid]
-    guarded = [c for c in members if isinstance(c.get("origin_guard"), int)
-               and not isinstance(c.get("origin_guard"), bool) and c["origin_guard"] >= 1]
-    return {"runners": len(members), "guarded": len(guarded)}
+    out = {"runners": len(members), "proven": 0, "unproven": 0, "unread": 0,
+           "missing": 0, "unknown": 0, "notes": []}
+    for card in members:
+        report = card.get("origin_guard")
+        out[_guard_state(report, now)] += 1
+        note = report.get("note") if isinstance(report, dict) else None
+        if note and note not in out["notes"] and len(out["notes"]) < 3:
+            out["notes"].append(note)
+    return out
 
 
 def fleet_list(service, note, all_runner_cards):

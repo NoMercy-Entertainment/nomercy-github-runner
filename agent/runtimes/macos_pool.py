@@ -596,17 +596,20 @@ class MacAppliancePoolRuntime:
                                              else "unknown"))
             if state.get("resource_enforcement"):
                 unit["resource_enforcement"] = state["resource_enforcement"]
-            if record and unit["state"] == "running":
-                # Through the guest's own runtime, which wrote the hooks and
-                # keeps what it found; a stopped guest cannot be read.
-                try:
-                    guard = self._context(record)[1].origin_guard(rid)
-                except (OSError, ValueError, RuntimeError):
-                    guard = None
-                if guard is not None:
-                    unit["origin_guard"] = guard
             result.append(unit)
         return result
+
+    def origin_guard_report(self, runner_id):
+        """The guest's own runtime's report (MacApplianceRuntime), while the
+        guest runs; a stopped guest cannot be read, and says nothing."""
+        rid = naming.check(runner_id)
+        try:
+            record = self._read(rid, required=False)
+            if record is None or self._power(rid) != "running":
+                return None
+            return self._context(record)[1].origin_guard_report(rid)
+        except (OSError, ValueError, RuntimeError):
+            return None
 
     def capabilities(self):
         return dict(kind=self.kind, builds_from="template", templates=self.templates,

@@ -179,11 +179,29 @@ _KEPT = ((("storage_bytes",), "storage_at"),
 _STAMPS = ("at",) + tuple(stamp for _, stamp in _KEPT)
 
 
+_GUARD_RESULTS = ("allowed", "refused", "unread", "failed")
+
+
 def _origin_guard(value):
-    """A unit's origin_guard: a whole number from 0, or None."""
-    if isinstance(value, int) and not isinstance(value, bool) and 0 <= value < 2 ** 31:
-        return value
-    return None
+    """A unit's origin guard report (agent/origin_guard.py), kept to its
+    known fields - {version, note, last: {result, at} or None, at} - or None
+    when it is not one. A beat is data from a worker."""
+    if not isinstance(value, dict):
+        return None
+    version, note, last, at = (value.get(k) for k in ("version", "note", "last", "at"))
+    if not (isinstance(version, int) and not isinstance(version, bool)
+            and 0 <= version < 2 ** 31):
+        return None
+    if not (isinstance(at, str) and _parse(at)):
+        return None
+    if note is not None and not (isinstance(note, str) and len(note) <= 200):
+        return None
+    if last is not None:
+        if not (isinstance(last, dict) and last.get("result") in _GUARD_RESULTS
+                and isinstance(last.get("at"), str) and len(last["at"]) <= 40):
+            return None
+        last = {"result": last["result"], "at": last["at"]}
+    return {"version": version, "note": note, "last": last, "at": at}
 
 
 def _telemetry(value):
@@ -392,9 +410,10 @@ class Inventory:
         current["resource_enforcement"] = enforcement
         current["resource_enforcement_at"] = observed_at if enforcement else None
         if origin_guard is not None:
-            # Which origin check the unit's own job-started hook carries
-            # (agent/origin_guard.py). Kept when a beat cannot say - a stopped
-            # macOS guest cannot be read - since only a create changes it.
+            # Whether the unit's job-started hook refuses outside code, as
+            # its last deep pass found (agent/origin_guard.py), with when.
+            # Kept when a beat carries none; the dashboard decides when it
+            # is too old to count (api_v2.origin_guard_of).
             current["origin_guard"] = origin_guard
         for key in ("cpu_percent", "cpu_cores", "host_cores",
                     "host_mem_bytes", "job",

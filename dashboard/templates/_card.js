@@ -147,32 +147,49 @@ function cardHTML(c) {
 // fleet whose forge has runner groups.
 //
 // `g` is the runner group as GitHub last told it (runner_groups.py; `says`
-// is the sentence). `og` counts the fleet's runners and how many of them
-// carry the origin check in their own job-started hook, as each unit last
-// reported it. Green: every runner refuses outside code. Red: public
-// repositories may use the runners and not every runner refuses. Amber:
-// anything else - no public repositories, or no runners to check. Grey: the
-// group could not be read and not every runner refuses.
+// is the sentence). `og` counts the fleet's runners by what each one's own
+// unit last reported of its job-started hook (api_v2.origin_guard_of):
+// proven (carries the check, unchanged, and its last job read its event),
+// unproven (carries it, no job since), unread (its last job's event could
+// not be read), missing (no check, or a changed one), unknown (no recent
+// report). Green: every runner proven. Red: public repositories may use the
+// runners and a runner is missing or unknown. Amber: anything else - no
+// public repositories, no runners, or runners that carry the check but have
+// not proven it. Grey: the group could not be read and not every runner is
+// proven.
 function runnerGroupHTML(g, og) {
   if (!g) return '';
-  const runners = og ? Number(og.runners) || 0 : 0;
-  const guarded = og ? Number(og.guarded) || 0 : 0;
-  const inPlace = runners > 0 && guarded === runners;
-  const tone = inPlace ? 'safe'
+  const n = (k) => (og ? Number(og[k]) || 0 : 0);
+  const runners = n('runners');
+  const covered = n('proven') + n('unproven') + n('unread');
+  const proven = runners > 0 && n('proven') === runners;
+  const tone = proven ? 'safe'
     : !g.known ? 'unknown'
-    : runners === 0 ? 'warn'
+    : runners === 0 || covered === runners ? 'warn'
     : g.allows_public_repositories ? 'danger' : 'warn';
   const who = g.known
     ? `Runner group ${esc(g.group)}: ${esc(g.says || '')}`
     : `Runner group ${g.group ? esc(g.group) : 'unknown'}: who may use these runners could not be read`;
-  const guard = inPlace
-    ? 'Outside pull requests are refused by the runner (only org members and trusted maintainers run code)'
-    : runners === 0 ? 'No runners to check yet: whether outside pull requests are refused is said once one runs'
-    : guarded === 0 ? 'Outside pull requests are not refused by these runners yet: recreate them to put the check in place'
-    : `Outside pull requests are refused by ${guarded} of ${runners} runners; recreate the others to put the check in place`;
+  let guard;
+  if (proven) {
+    guard = 'Outside pull requests are refused by the runner (only org members and trusted maintainers run code)';
+  } else if (runners === 0) {
+    guard = 'No runners to check yet: whether outside pull requests are refused is said once one runs';
+  } else if (covered < runners) {
+    guard = covered === 0
+      ? 'Outside pull requests are not refused by these runners yet: recreate them to put the check in place'
+      : `Outside pull requests are refused by ${covered} of ${runners} runners; recreate the others to put the check in place`;
+    if (n('unknown')) guard += ` (${n('unknown')} could not be checked lately)`;
+  } else {
+    const why = [];
+    if (n('unproven')) why.push(`${n('unproven')} of ${runners} have not run a job with it yet`);
+    if (n('unread')) why.push(`the last job on ${n('unread')} of ${runners} could not read its event`);
+    guard = `These runners carry the check against outside pull requests, but ${why.join('; ')}`;
+  }
+  const notes = og && og.notes && og.notes.length ? ` title="${esc(og.notes.join('; '))}"` : '';
   const why = !g.known && g.why ? ` title="${esc(g.why)}"` : '';
   return `<div class="flabels"><span class="chip ${tone} rgroup"${why}>${who}` +
-    `<span class="rguard">${guard}</span></span></div>`;
+    `<span class="rguard"${notes}>${guard}</span></span></div>`;
 }
 
 function fleetHeadHTML(f) {

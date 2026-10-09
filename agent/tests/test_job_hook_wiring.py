@@ -209,12 +209,14 @@ class TestMacOS:
             assert name.endswith(".sh") and (AGENT / "hooks" / "macos" / name).is_file(), name
 
 
-# ---- which origin guard each runner's hooks carry ---------------------------
+# ---- whether each runner's hook refuses outside code -------------------------
 #
-# The dashboard shows a fleet as protected from outside pull requests only when
-# every one of its runners runs a job-started hook with the check. Hooks are
-# written at create, so an agent that has the check says nothing about a runner
-# made before it: each runner's own hook file is what is read.
+# The dashboard shows a fleet as protected only when every runner's own hook
+# carries the check, unchanged, and has run. Hooks are written at create, so
+# an agent that has the check says nothing about a runner made before it, and
+# a job the guard allowed runs as the account that owns the files: each
+# runner's own files are read, on each deep pass, and compared with the
+# agent's copy (agent/origin_guard.py).
 
 def _guard_version():
     import re
@@ -222,65 +224,98 @@ def _guard_version():
     return int(re.search(r"^GUARD_VERSION = (\d+)$", text, re.M).group(1))
 
 
-class TestWhatEachRunnerSaysOfItsGuard:
-    def test_windows_reads_the_runners_own_copy(self):
-        host = FakeWindows()
-        runtime = WindowsProcessRuntime(run=host, fs=host, tools=WINDOWS_TOOLS)
-        runtime.create(RID, spec("github", WINDOWS_TEMPLATE))
-        (unit,) = runtime.instances()
-        assert unit["origin_guard"] == _guard_version() >= 1
-        guard = ntpath.join(runtime.paths(RID)["reg"], "hooks", "runner_guard.py")
-        host.remove(guard)
-        (unit,) = runtime.instances()
-        assert unit["origin_guard"] == 0, "hooks from before the check"
+LAST = '{"version": 1, "result": "allowed", "at": "2026-10-09T10:00:00Z"}\n'
 
-    @pytest.mark.parametrize("provider", ["forgejo", None])
-    def test_windows_without_hooks_says_nothing(self, provider):
+
+class TestWhatEachRunnerSaysOfItsGuard:
+    def _windows(self, provider="github"):
         host = FakeWindows()
         runtime = WindowsProcessRuntime(run=host, fs=host, tools=WINDOWS_TOOLS)
         runtime.create(RID, spec(provider, WINDOWS_TEMPLATE))
-        (unit,) = runtime.instances()
-        assert "origin_guard" not in unit
+        return runtime, host
+
+    def test_windows_a_fresh_runner_carries_the_check_and_has_not_run_it(self):
+        runtime, host = self._windows()
+        assert runtime.origin_guard_report(RID) == {
+            "version": _guard_version(), "note": None, "last": None}
+
+    def test_windows_the_hooks_record_of_its_last_run(self):
+        runtime, host = self._windows()
+        host.write_text(ntpath.join(runtime.paths(RID)["logs"], "origin-guard.json"), LAST)
+        assert runtime.origin_guard_report(RID)["last"] == {
+            "result": "allowed", "at": "2026-10-09T10:00:00Z"}
+
+    @pytest.mark.parametrize("name", ["runner_guard.py", "job-started.js", "run_hook.js",
+                                      "runner_disk.py"])
+    def test_windows_a_changed_hook_file_is_not_trusted(self, name):
+        runtime, host = self._windows()
+        path = ntpath.join(runtime.paths(RID)["reg"], "hooks", name)
+        host.write_text(path, host.read_text(path) + "\n// changed by a job\n")
+        got = runtime.origin_guard_report(RID)
+        assert got["version"] == 0 and name in got["note"]
+
+    def test_windows_missing_hooks_say_so(self):
+        runtime, host = self._windows()
+        host.rmtree(ntpath.join(runtime.paths(RID)["reg"], "hooks"))
+        got = runtime.origin_guard_report(RID)
+        assert got["version"] == 0 and got["note"] == "the hooks are missing"
+
+    @pytest.mark.parametrize("provider", ["forgejo", None])
+    def test_windows_without_hooks_says_nothing(self, provider):
+        runtime, _ = self._windows(provider)
+        assert runtime.origin_guard_report(RID) is None
 
     def _mac(self, guest):
         return MacApplianceRuntime(run=guest, fs=guest, appliance=guest.appliance,
                                    tools=dict(MAC_TOOLS, runner_user="runner"))
 
-    def test_macos_reads_the_runners_own_copy_once(self):
+    def test_macos_reads_the_runners_own_copy_every_time(self):
         guest = FakeMac()
         runtime = self._mac(guest)
         runtime.create(RID, spec("github", MAC_TEMPLATE))
-        (unit,) = runtime.instances()
-        assert unit["origin_guard"] == _guard_version()
+        assert runtime.origin_guard_report(RID) == {
+            "version": _guard_version(), "note": None, "last": None}
+        guest.write_text(posixpath.join(runtime.paths(RID)["logs"], "origin-guard.json"), LAST)
+        assert runtime.origin_guard_report(RID)["last"]["result"] == "allowed"
         guard = posixpath.join(runtime.paths(RID)["reg"], "hooks", "runner_guard.js")
-        guest.remove(guard)
-        # Known since this agent wrote them: no read over the guest's SSH
-        # every beat. An agent started afterwards reads the file once.
-        assert runtime.instances()[0]["origin_guard"] == _guard_version()
-        assert self._mac(guest).instances()[0]["origin_guard"] == 0
+        guest.write_text(guard, "const GUARD_VERSION = 9;\nprocess.exitCode = 0;\n")
+        got = runtime.origin_guard_report(RID)
+        assert got["version"] == 0 and "runner_guard.js" in got["note"], \
+            "a changed file is not trusted, whatever version it claims"
 
     @pytest.mark.parametrize("provider", ["forgejo", None])
     def test_macos_without_hooks_says_nothing(self, provider):
         guest = FakeMac()
         runtime = self._mac(guest)
         runtime.create(RID, spec(provider, MAC_TEMPLATE))
-        (unit,) = runtime.instances()
-        assert "origin_guard" not in unit
+        assert runtime.origin_guard_report(RID) is None
 
-    def test_a_beat_carries_it_for_each_unit(self):
+    def test_the_report_rides_every_beat_until_the_next_deep_pass(self):
         from agent import heartbeat
 
         class Runtime:
+            calls = 0
+
             def capabilities(self):
                 return {}
 
             def instances(self):
-                return [{"runner_id": RID, "state": "stopped", "origin_guard": 1},
-                        {"runner_id": RID[:-1] + "2", "state": "stopped", "origin_guard": True},
-                        {"runner_id": RID[:-1] + "3", "state": "stopped"}]
+                return [{"runner_id": RID, "state": "running"}]
+
+            def probe(self, rid, name):
+                return {}
+
+            def origin_guard_report(self, rid):
+                Runtime.calls += 1
+                return {"version": 1, "note": None, "last": None}
 
         class Agent:
             host_id, version, permitted, runtime = "w-1", "1", frozenset(), Runtime()
 
-        units = heartbeat.build(Agent())["instances"]
-        assert [u.get("origin_guard") for u in units] == [1, None, None]
+        sender = heartbeat.HeartbeatSender(Agent(), "https://controller.example/beat", None)
+        sender.measure_once()
+        sender.measure_depth_once()
+        first = sender.measure_once()["instances"][0]["origin_guard"]
+        second = sender.measure_once()["instances"][0]["origin_guard"]
+        assert first["version"] == 1 and first["at"] and first == second
+        assert Runtime.calls == 1, "read on the deep pass only"
