@@ -48,7 +48,9 @@ class TestTheGroupAFleetJoins:
                                           dict(ENV, RUNNER_GROUP="Default"))
         assert policy == {"known": True, "group": "Stoney", "source": "fleet setting",
                           "visibility": "selected", "allows_public_repositories": False,
-                          "default": False}
+                          "default": False, "org": "NoMercy-Entertainment",
+                          "says": "only the repositories chosen for it on GitHub may "
+                                  "use these runners, but no public one"}
 
     def test_then_the_deployments(self, monkeypatch):
         answers(monkeypatch, [DEFAULT, PRIVATE])

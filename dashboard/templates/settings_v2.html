@@ -113,10 +113,11 @@ function runnerGroupsPanel(rg) {
   rg=rg||{};
   const when=rg.at?` Last read ${esc(String(rg.at).replace('T',' ').replace('Z',' UTC'))}; read again every ${Math.round((rg.refresh_seconds||300)/60)} minutes.`:'';
   if(!rg.known)return `<h2>GitHub runner groups</h2><p class="notice">Unknown: ${esc(rg.error||'not read yet')}.${when}</p>`;
-  const rows=(rg.groups||[]).map(g=>`<tr><td>${esc(g.name)}${g.default?' (default)':''}</td><td>${esc(g.visibility||'unknown')}</td>`+
+  const rows=(rg.groups||[]).map(g=>`<tr><td>${esc(g.name)}${g.default?' (default)':''}</td><td>${esc(g.says||'')}</td>`+
     `<td class="${g.allows_public_repositories?'no':''}">${g.allows_public_repositories?'allowed':'not allowed'}</td><td>${esc((g.fleets||[]).join(', ')||'none')}</td></tr>`).join('');
-  return `<h2>GitHub runner groups</h2><p class="hint">Read only.${when} A group that allows public repositories lets a fork's pull request run on its runners.</p>`+
-    `<table class="kv"><tr><th>Group</th><th>Visibility</th><th>Public repositories</th><th>Fleets that register into it</th></tr>${rows||'<tr><td colspan="4">none</td></tr>'}</table>`;
+  return `<h2>GitHub runner groups</h2><p class="hint">Read only.${when} Which repositories may send jobs to each group's runners, as GitHub says. `+
+    `When public repositories may, anyone can open a pull request from a fork and ask these runners to run it. The runners themselves refuse a pull request from a fork unless its author is an org member, owner or collaborator, or a login in RUNNER_TRUSTED_AUTHORS; each fleet's heading on the Fleets page says whether all of its runners carry that check.</p>`+
+    `<table class="kv"><tr><th>Group</th><th>Who may use its runners</th><th>Public repositories</th><th>Fleets that register into it</th></tr>${rows||'<tr><td colspan="4">none</td></tr>'}</table>`;
 }
 async function load() {
   const d=await api('/api/v2/settings');

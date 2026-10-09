@@ -586,5 +586,9 @@ def from_spec(spec, telemetry=None, worker_reachable=None, now=None,
         lifecycle_state=state,
         href=f"/runners/{rid}",
         fleet_id=spec.get("fleet_id"),
+        # Which origin check the runner's own job-started hook carries, as
+        # its unit last reported (agent/origin_guard.py); None if never.
+        origin_guard=(spec.get("telemetry") or {}).get("origin_guard")
+        if isinstance(spec.get("telemetry"), dict) else None,
         actions=actions,
     )

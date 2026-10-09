@@ -343,18 +343,26 @@ class TestTheRenderer:
         open_ = {"known": True, "group": "Default", "visibility": "all",
                  "allows_public_repositories": True, "default": True,
                  "source": "GitHub default group"}
-        html = render("fleetHeadHTML", [fleet_row(runner_group_policy=open_)])[0]
+        open_ = dict(open_, says="every repository in the org may use these runners, "
+                                 "public ones included")
+        unguarded = {"runners": 2, "guarded": 0}
+        html = render("fleetHeadHTML", [fleet_row(runner_group_policy=open_,
+                                                  origin_guard=unguarded)])[0]
         assert 'class="chip danger rgroup"' in html
-        assert "Default" in html and "public repositories allowed" in html
+        assert "Runner group Default: every repository" in html
         closed = dict(open_, group="Stoney", visibility="selected",
-                      allows_public_repositories=False)
-        html = render("fleetHeadHTML", [fleet_row(runner_group_policy=closed)])[0]
-        assert 'class="chip rgroup"' in html
-        assert "Stoney" in html and "no public repositories" in html
+                      allows_public_repositories=False,
+                      says="only the repositories chosen for it on GitHub may use "
+                           "these runners, but no public one")
+        html = render("fleetHeadHTML", [fleet_row(runner_group_policy=closed,
+                                                  origin_guard=unguarded)])[0]
+        assert 'class="chip warn rgroup"' in html
+        assert "Stoney" in html and "but no public one" in html
         unknown = {"known": False, "group": None, "why": "GitHub could not be read"}
-        html = render("fleetHeadHTML", [fleet_row(runner_group_policy=unknown)])[0]
+        html = render("fleetHeadHTML", [fleet_row(runner_group_policy=unknown,
+                                                  origin_guard=unguarded)])[0]
         assert 'class="chip unknown rgroup"' in html
-        assert "runner group unknown" in html
+        assert "Runner group unknown" in html
         assert 'title="GitHub could not be read"' in html
         html = render("fleetHeadHTML", [fleet_row(runner_group_policy=None)])[0]
         assert "rgroup" not in html

@@ -85,6 +85,23 @@ def snapshot():
                 "error": _cache["error"], "at": _cache["at"], "org": _cache["org"]}
 
 
+def describe(group, org):
+    """Who may send jobs to a runner group, as a sentence the owner reads
+    without knowing GitHub's field names: "every repository in
+    NoMercy-Entertainment may use these runners, public ones included"."""
+    org = org or "the organisation"
+    visibility = (group or {}).get("visibility")
+    public = bool((group or {}).get("allows_public_repositories"))
+    if visibility == "private":
+        return f"only the private repositories in {org} may use these runners"
+    who = {"all": f"every repository in {org}",
+           "selected": "only the repositories chosen for it on GitHub"}.get(
+        visibility, f"repositories in {org}")
+    how = "" if visibility in ("all", "selected") else " as GitHub's settings for it say"
+    return (f"{who} may use these runners{how}, "
+            + ("public ones included" if public else "but no public one"))
+
+
 def _wanted(fleet, env):
     """(group name or None for the org's default, where that came from) -
     the same order a registration uses: the fleet's own group, then the
@@ -118,7 +135,8 @@ def policy_for(fleet, env):
     return {"known": True, "group": match.get("name"), "source": source,
             "visibility": match.get("visibility"),
             "allows_public_repositories": bool(match.get("allows_public_repositories")),
-            "default": bool(match.get("default"))}
+            "default": bool(match.get("default")), "org": state["org"],
+            "says": describe(match, state["org"])}
 
 
 def panel(fleets, env):
@@ -130,7 +148,8 @@ def panel(fleets, env):
         policy = policy_for(fleet, env)
         if policy and policy.get("known"):
             used.setdefault(policy["group"], []).append(fleet["fleet_id"])
-    groups = [dict(g, fleets=used.get(g.get("name"), []))
+    groups = [dict(g, fleets=used.get(g.get("name"), []),
+                   says=describe(g, state["org"]))
               for g in (state["groups"] or [])]
     return {"groups": groups, "known": state["groups"] is not None,
             "error": state["error"], "at": state["at"],

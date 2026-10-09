@@ -142,6 +142,39 @@ function cardHTML(c) {
     (buttons ? `<div class="actions" role="group" aria-label="Manage runner">${buttons}</div>` : '');
 }
 
+// Who may use this fleet's runners, in plain words, and whether the runners
+// themselves refuse a pull request from an outside fork - always, for every
+// fleet whose forge has runner groups.
+//
+// `g` is the runner group as GitHub last told it (runner_groups.py; `says`
+// is the sentence). `og` counts the fleet's runners and how many of them
+// carry the origin check in their own job-started hook, as each unit last
+// reported it. Green: every runner refuses outside code. Red: public
+// repositories may use the runners and not every runner refuses. Amber:
+// anything else - no public repositories, or no runners to check. Grey: the
+// group could not be read and not every runner refuses.
+function runnerGroupHTML(g, og) {
+  if (!g) return '';
+  const runners = og ? Number(og.runners) || 0 : 0;
+  const guarded = og ? Number(og.guarded) || 0 : 0;
+  const inPlace = runners > 0 && guarded === runners;
+  const tone = inPlace ? 'safe'
+    : !g.known ? 'unknown'
+    : runners === 0 ? 'warn'
+    : g.allows_public_repositories ? 'danger' : 'warn';
+  const who = g.known
+    ? `Runner group ${esc(g.group)}: ${esc(g.says || '')}`
+    : `Runner group ${g.group ? esc(g.group) : 'unknown'}: who may use these runners could not be read`;
+  const guard = inPlace
+    ? 'Outside pull requests are refused by the runner (only org members and trusted maintainers run code)'
+    : runners === 0 ? 'No runners to check yet: whether outside pull requests are refused is said once one runs'
+    : guarded === 0 ? 'Outside pull requests are not refused by these runners yet: recreate them to put the check in place'
+    : `Outside pull requests are refused by ${guarded} of ${runners} runners; recreate the others to put the check in place`;
+  const why = !g.known && g.why ? ` title="${esc(g.why)}"` : '';
+  return `<div class="flabels"><span class="chip ${tone} rgroup"${why}>${who}` +
+    `<span class="rguard">${guard}</span></span></div>`;
+}
+
 function fleetHeadHTML(f) {
   const count = (f.runners || []).length;
   const buttons = (f.actions || []).map((a, i) => {
@@ -157,17 +190,7 @@ function fleetHeadHTML(f) {
   // said on the heading too, not only in a button's tooltip.
   const limits = f.limits_problem
     ? `<div class="cwarn flimits">${esc(f.limits_problem)}</div>` : '';
-  // The runner group this fleet's runners join, always - also when public
-  // repositories may use it, which is when it matters most and is drawn in
-  // the alert colour. Grey when it could not be read, with why on hover.
-  const g = f.runner_group_policy;
-  const group = !g ? ''
-    : g.known
-      ? `<div class="flabels">runner group: <span class="chip${g.allows_public_repositories ? ' danger' : ''} rgroup">` +
-        `${esc(g.group)} · ${esc(g.visibility || 'visibility unknown')} · ` +
-        `${g.allows_public_repositories ? 'public repositories allowed' : 'no public repositories'}</span></div>`
-      : `<div class="flabels">runner group: <span class="chip unknown rgroup" title="${esc(g.why || '')}">` +
-        `${g.group ? esc(g.group) + ' · ' : ''}runner group unknown</span></div>`;
+  const group = runnerGroupHTML(f.runner_group_policy, f.origin_guard);
   const labels = f.labels && f.labels.length
     ? `<div class="flabels">runs-on: ${f.labels.map(l => `<span class="chip">${esc(l)}</span>`).join('')}</div>`
     : '';

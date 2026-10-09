@@ -31,6 +31,13 @@ a.cname:hover{text-decoration:underline;text-underline-offset:3px}
 .card .chip{border-color:transparent;background:var(--bg-inset)}
 .chip.danger{border-color:var(--alert-dk);color:var(--alert)}
 .chip.unknown{color:var(--text-faint);border-style:dashed}
+/* Who may use a fleet's runners and whether they refuse outside code: green
+   when every runner does, amber when nothing public is at stake or there is
+   nothing to check, red when public repositories meet a runner without it. */
+.chip.safe{border-color:var(--signal-dk);color:var(--signal)}
+.chip.warn{border-color:var(--busy-dk);color:var(--busy)}
+.chip.rgroup{line-height:1.4}
+.chip.rgroup .rguard{display:block;margin-top:var(--space-1)}
 .metrics{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:var(--space-5)}
 .meter{min-width:0}
 .mrow{display:flex;align-items:baseline;justify-content:space-between;flex-wrap:wrap;gap:var(--space-1) var(--space-2);font-size:var(--type-small);color:var(--text-faint)}

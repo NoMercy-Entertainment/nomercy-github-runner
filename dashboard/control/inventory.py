@@ -179,6 +179,13 @@ _KEPT = ((("storage_bytes",), "storage_at"),
 _STAMPS = ("at",) + tuple(stamp for _, stamp in _KEPT)
 
 
+def _origin_guard(value):
+    """A unit's origin_guard: a whole number from 0, or None."""
+    if isinstance(value, int) and not isinstance(value, bool) and 0 <= value < 2 ** 31:
+        return value
+    return None
+
+
 def _telemetry(value):
     """A unit's reported usage, kept to the known keys and to numbers - a
     beat is data from a worker, and only what the card can show is taken."""
@@ -335,7 +342,7 @@ class Inventory:
                        capabilities=declared if isinstance(declared, dict)
                        else None, at=moment)
 
-        seen, used, enforced = {}, {}, {}
+        seen, used, enforced, guards = {}, {}, {}, {}
         for unit in payload.get("instances") or []:
             if not isinstance(unit, dict):
                 continue
@@ -346,6 +353,7 @@ class Inventory:
             seen[runner_id] = state if state in UNIT_STATES else "unknown"
             enforced[runner_id] = (_resource_enforcement(unit.get("resource_enforcement"))
                                    if state != "absent" else None)
+            guards[runner_id] = _origin_guard(unit.get("origin_guard"))
             t = _telemetry(unit.get("telemetry"))
             if t:
                 used[runner_id] = t
@@ -364,10 +372,12 @@ class Inventory:
                     continue
                 recorded[runner_id] = state
                 self._merge_telemetry(c, runner_id, used.get(runner_id, {}),
-                                      _iso(moment), enforced.get(runner_id), observed_at)
+                                      _iso(moment), enforced.get(runner_id), observed_at,
+                                      guards.get(runner_id))
         return recorded
 
-    def _merge_telemetry(self, c, runner_id, fresh, at, enforcement=None, observed_at=None):
+    def _merge_telemetry(self, c, runner_id, fresh, at, enforcement=None, observed_at=None,
+                         origin_guard=None):
         """What a unit uses, as last reported (T-1803). CPU and memory are
         replaced every beat; storage, cache and a runner's own disk figures
         (T-27) only arrive on a deep beat - or, on Linux, whenever the light
@@ -381,6 +391,11 @@ class Inventory:
             current = {}
         current["resource_enforcement"] = enforcement
         current["resource_enforcement_at"] = observed_at if enforcement else None
+        if origin_guard is not None:
+            # Which origin check the unit's own job-started hook carries
+            # (agent/origin_guard.py). Kept when a beat cannot say - a stopped
+            # macOS guest cannot be read - since only a create changes it.
+            current["origin_guard"] = origin_guard
         for key in ("cpu_percent", "cpu_cores", "host_cores",
                     "host_mem_bytes", "job",
                     "mem_used_bytes", "mem_limit_bytes",

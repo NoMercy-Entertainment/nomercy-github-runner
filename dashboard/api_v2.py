@@ -260,6 +260,21 @@ def all_cards(service=None):
     return _action_policy(out)
 
 
+def origin_guard_of(provider_key, fid, all_runner_cards):
+    """How many of a GitHub fleet's runners refuse a pull request from an
+    outside fork: {"runners", "guarded"}, where guarded counts the runners
+    whose own job-started hook carries the origin check, as each unit last
+    reported it. A runner that never said - made before the check, or not
+    the platform's own - counts as not guarded. None for a forge without
+    job hooks."""
+    if provider_key != "github":
+        return None
+    members = [c for c in all_runner_cards if c.get("fleet_id") == fid]
+    guarded = [c for c in members if isinstance(c.get("origin_guard"), int)
+               and not isinstance(c.get("origin_guard"), bool) and c["origin_guard"] >= 1]
+    return {"runners": len(members), "guarded": len(guarded)}
+
+
 def fleet_list(service, note, all_runner_cards):
     """The six fleets - rows, not code (design 14.4). From the controller's
     table when it exists, else from what each provider says it supports, so
@@ -325,6 +340,7 @@ def fleet_list(service, note, all_runner_cards):
                                      members),
         })
         out[-1]["limits_problem"] = None
+        out[-1]["origin_guard"] = origin_guard_of(provider_key, fid, all_runner_cards)
         # From the background cache only (runner_groups.py): a page read
         # never calls GitHub.
         import runner_groups
