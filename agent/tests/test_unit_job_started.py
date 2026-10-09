@@ -305,3 +305,63 @@ def test_the_shell_hook_end_to_end_with_an_event(tmp_path, name):
         assert "Disk free before the job" in out, "an allowed job still gets its disk check"
     else:
         assert "Disk free before the job" not in out
+
+
+# ---- a refusal ends the job, for real (Linux) --------------------------------
+#
+# The runner's process tree rebuilt from bash under the runner's names - a
+# link's name is the process's comm, as the runner's own apphost is - with
+# the real job-started.sh, job_started.py and runner_guard.py. A refusal must
+# end Runner.Worker, so no later step runs, and leave Runner.Listener alone.
+# Linux only: it reads the real /proc. Run it in any throwaway container:
+#   docker run --rm -v "$PWD:/src" -w /src python:3.13-slim \
+#     sh -c "pip -q install pytest && cd agent && python -m pytest -q \
+#            tests/test_unit_job_started.py -k ends_runner_worker"
+
+LISTENER = r"""
+"$TEST_WORKER" -c '
+  bash -e -o pipefail "$TEST_HOOK"
+  echo "$?" > "$TEST_SURVIVED"
+' &
+worker=$!
+wait "$worker"
+echo "$?" > "$TEST_OUT"
+"""
+
+
+@pytest.mark.skipif(not os.path.isdir("/proc/self") or os.name == "nt",
+                    reason="needs Linux /proc")
+@pytest.mark.parametrize("name,ended", [("fork-by-outsider", True), ("push", False)])
+def test_a_refusal_ends_runner_worker_and_spares_runner_listener(tmp_path, name, ended):
+    import shutil
+    import subprocess
+    case = origin_cases.by_id(name)
+    hook = tmp_path / "runner"
+    hook.mkdir()
+    for f in ("job-started.sh", "job_started.py", "runner_guard.py"):
+        (hook / f).write_text((SCRIPT.parent / f).read_text(encoding="utf-8"),
+                              encoding="utf-8", newline="\n")
+    bins = tmp_path / "bin"
+    bins.mkdir()
+    bash = os.path.realpath(shutil.which("bash"))
+    for name_ in ("Runner.Listener", "Runner.Worker"):
+        (bins / name_).symlink_to(bash)
+    env = origin_cases.hook_env(case, tmp_path, os.environ)
+    env.update(RUNNER_DISK_CLEAN_BELOW_GB="0", RUNNER_DISK_WARN_BELOW_GB="0",
+               RUNNER_DISK_FAIL_BELOW_GB="0", RUNNER_GUARD_KILL_DELAY="0",
+               RUNNER_ANDROID_PRISTINE=str(tmp_path / "no-sdk"), PYTHONIOENCODING="utf-8",
+               TEST_WORKER=str(bins / "Runner.Worker"), TEST_HOOK=str(hook / "job-started.sh"),
+               TEST_SURVIVED=str(tmp_path / "survived"), TEST_OUT=str(tmp_path / "worker.status"))
+    done = subprocess.run([str(bins / "Runner.Listener"), "-c", LISTENER], env=env,
+                          capture_output=True, timeout=120)
+    out = done.stdout.decode("utf-8")
+    assert done.returncode == 0, out + done.stderr.decode()
+    status = (tmp_path / "worker.status").read_text().strip()
+    if ended:
+        assert origin_cases.REFUSED in out
+        assert not (tmp_path / "survived").exists(), "a step after the hook ran: " + out
+        assert status == "137", status          # SIGKILL
+    else:
+        assert "Origin: push from " in out
+        assert (tmp_path / "survived").read_text().strip() == "0"
+        assert status == "0"

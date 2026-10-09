@@ -48,6 +48,57 @@ hook_node() {
   printf '%s' "$found"
 }
 
+# The file name of process $1, from its executable (comm, a path on macOS) or
+# else its first argument.
+process_name() {
+  local comm
+  comm=$(ps -o comm= -p "$1" 2>/dev/null)
+  [ -n "$comm" ] || comm=$(ps -o args= -p "$1" 2>/dev/null | awk '{ print $1 }')
+  printf '%s' "${comm##*/}"
+}
+
+# The Runner.Worker that started this hook, or nothing. The runner runs
+# job-started.sh as a shell of its own ($$ in every subshell here), whose
+# parent is Runner.Worker - or, when the runner goes through its
+# macos-run-invoker.js, a node whose parent is. Anything else is not a hook
+# the runner started (a test of the hook inside a job, say), and nothing is
+# named. Never Runner.Listener.
+worker_of_this_hook() {
+  local parent
+  parent=$(ps -o ppid= -p "$$" 2>/dev/null | tr -d ' ')
+  case "$parent" in ''|*[!0-9]*|0|1) return 0 ;; esac
+  case "$(ps -o args= -p "$parent" 2>/dev/null)" in
+    *macos-run-invoker.js*)
+      parent=$(ps -o ppid= -p "$parent" 2>/dev/null | tr -d ' ')
+      case "$parent" in ''|*[!0-9]*|0|1) return 0 ;; esac ;;
+  esac
+  [ "$(process_name "$parent")" = "Runner.Worker" ] && printf '%s' "$parent"
+  return 0
+}
+
+# A failed job-started hook is only a failed step: the runner still runs
+# every later step marked always(), failure() or !cancelled(), and a fork
+# writes its own workflow file. So a refusal kills the Runner.Worker running
+# the job, once the ::error has had RUNNER_GUARD_KILL_DELAY seconds (5) to
+# reach GitHub - the runner waits for this hook meanwhile.
+end_the_job() {
+  local worker delay
+  worker=$(worker_of_this_hook)
+  if [ -z "$worker" ]; then
+    echo "::warning title=Runner guard::the job could not be ended (this hook was not started by a Runner.Worker); steps the workflow marks always() may still run"
+    return 1
+  fi
+  delay=${RUNNER_GUARD_KILL_DELAY:-5}
+  case "$delay" in ''|*[!0-9]*) delay=5 ;; esac
+  [ "$delay" -gt 30 ] && delay=30
+  sleep "$delay"
+  if ! kill -9 "$worker" 2>/dev/null; then
+    echo "::warning title=Runner guard::the job could not be ended (Runner.Worker $worker could not be killed); steps the workflow marks always() may still run"
+    return 1
+  fi
+  return 0
+}
+
 # 0 to let the job run, REFUSE to stop it.
 origin_check() {
   local node status
@@ -182,7 +233,10 @@ clear_gradle_build_cache() {
 job_started() {
   local work free after clean_below warn_below fail_below
   origin_check
-  [ $? -eq "$REFUSE" ] && return "$REFUSE"
+  if [ $? -eq "$REFUSE" ]; then
+    end_the_job
+    return "$REFUSE"
+  fi
   work=${RUNNER_WORK_DIR:-}
   [ -n "$work" ] || return 0
   clean_below=$(threshold "${RUNNER_DISK_CLEAN_BELOW_GB:-}" 15)

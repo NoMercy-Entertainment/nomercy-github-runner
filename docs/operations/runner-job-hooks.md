@@ -149,6 +149,57 @@ and nothing else is done for it: no Android SDK restore, no disk check, no
 cleanup. The refusal takes the disk refusal's path (status 75, the hook's
 exit 1).
 
+### A refusal ends the job
+
+**A failing hook alone does not stop a job.** The runner treats the
+job-started hook as a step: when it fails, the runner still runs every later
+step whose `if:` is `always()`, `failure()` or `!cancelled()`
+(actions/runner `StepsRunner`) - and a pull request from a fork brings its
+own workflow file, so it could mark `actions/checkout` and a `run:` step
+`always()` and have its code run after the refusal. So after a refusal the
+hook **kills the runner's `Runner.Worker` process**, the one that runs this
+job and nothing else:
+
+1. the `::error` is printed and flushed;
+2. the hook waits `RUNNER_GUARD_KILL_DELAY` seconds (5 by default, at most
+   30) while the runner, waiting for the hook, has nothing else running, so
+   the line reaches GitHub's log;
+3. it finds `Runner.Worker` among its own parents and kills it: on Linux
+   `SIGKILL`, from `/proc/<pid>/status` (`PPid`) and the process's `comm` or
+   first argument; on Windows `TerminateProcess`, from a Toolhelp snapshot,
+   refusing a "parent" created after its child (Windows reuses the pid of a
+   dead parent); on macOS `kill -9`, from `ps -o ppid=,comm=,args=`.
+
+It kills a process only when the chain is exactly what the runner builds: at
+most the hook's own helpers (its Python, Linux's `timeout`), then the hook
+itself (a shell whose arguments name `job-started.sh`, or on Windows the
+runner's node), and **directly above it** a process whose file name is
+exactly `Runner.Worker` (`.exe` on Windows; on macOS the node of the
+runner's `macos-run-invoker.js` may stand between). Never `Runner.Listener`,
+which takes the next job, and never anything else - so a test of the hook run
+inside a job kills nothing. When there is no such worker, or it cannot be
+killed, the hook prints `::warning title=Runner guard::the job could not be
+ended ...; steps the workflow marks always() may still run`, and still
+fails.
+
+The runner's listener sees its worker die and reports the job as failed; the
+runner itself stays online and takes the next job. The job-completed hook
+does not run for a killed job; the next job's cleanup does its work.
+
+**What this guarantees, and what not.** Proven here: on Windows, with copies
+of node named `Runner.Listener.exe` and `Runner.Worker.exe` starting the real
+`job-started.js` with an outside fork's event, `Runner.Worker.exe` is
+terminated before anything after the hook runs and `Runner.Listener.exe`
+carries on (`agent/tests/test_windows_job_hooks.py`); on macOS, the
+`ps` walk and the kill against a table of real processes under Git's bash
+(`agent/tests/test_macos_job_hooks.py`). The same proof for Linux, with bash
+under the names `Runner.Listener` and `Runner.Worker` and the real
+`job-started.sh`, is `agent/tests/test_unit_job_started.py -k
+ends_runner_worker`; it needs Linux `/proc` and has not been run yet. Not
+proven: a real runner's process tree (the first refused fork pull request on
+each platform must be watched), how much of the log GitHub shows when the
+worker dies, and the runner's exact wording for the failed job.
+
 **Everything else runs**: push, release, workflow_dispatch, schedule,
 workflow_run, an `issue_comment` (whose payload carries no head), a pull
 request from a branch of the repository itself (anyone who can push one

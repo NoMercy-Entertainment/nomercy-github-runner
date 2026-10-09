@@ -379,3 +379,109 @@ def test_the_node_guard_needs_nothing_but_node_and_is_ascii():
     import re
     text = (HOOKS / "runner_guard.js").read_bytes().decode("ascii")
     assert set(re.findall(r'require\("([^"]+)"\)', text)) <= {"fs", "child_process"}
+
+
+# ---- a refusal ends the job -------------------------------------------------
+#
+# Under a `ps` that answers from a table, as macOS's does (comm a path, args
+# the command line): the hook's own shell is `*`, and each "process" above it
+# is a real one, a sleep the test started, so `kill -9` has something to end.
+
+FAKE_PS = r"""#!/bin/bash
+here=$(dirname "$0")
+field=""; pid=""
+while [ $# -gt 0 ]; do
+  case "$1" in -o) field=${2%=}; shift 2 ;; -p) pid=$2; shift 2 ;; *) shift ;; esac
+done
+line=$(awk -v p="$pid" '$1 == p' "$here/ps.table")
+[ -n "$line" ] || line=$(awk '$1 == "*"' "$here/ps.table")
+case "$field" in
+  ppid) echo "$line" | awk '{ print $2 }' ;;
+  comm) echo "$line" | awk '{ print $3 }' ;;
+  args) echo "$line" | cut -d' ' -f4- ;;
+esac
+"""
+
+
+class Sleeper:
+    """A real process, in bash's own numbering, and how it ended."""
+
+    def __init__(self, directory, name):
+        self.status = directory / f"{name}.status"
+        pid = directory / f"{name}.pid"
+        self.proc = subprocess.Popen([BASH, "--noprofile", "--norc", "-c",
+                                      f'sleep 60 & echo $! > "{posix(pid)}"; wait $!; '
+                                      f'echo $? > "{posix(self.status)}"'])
+        for _ in range(200):
+            if pid.exists() and pid.read_text().strip():
+                break
+            time.sleep(0.05)
+        self.pid = pid.read_text().strip()
+
+    def ended(self):
+        self.proc.wait(timeout=30)
+        return self.status.read_text().strip()
+
+    def stop(self):
+        if self.proc.poll() is None:
+            self.proc.kill()
+
+
+def _refuse_under(guest, tmp_path, rows):
+    (guest.bin / "ps").write_text(FAKE_PS, newline="\n")
+    (guest.bin / "ps").chmod(0o755)
+    (guest.bin / "ps.table").write_text("\n".join(rows) + "\n", newline="\n")
+    events = tmp_path / "events"
+    events.mkdir()
+    env = guest.env()
+    env.update({k: posix(v) if k == "GITHUB_EVENT_PATH" else v for k, v in
+                origin_cases.hook_env(origin_cases.by_id("fork-by-outsider"), events).items()})
+    env["RUNNER_GUARD_KILL_DELAY"] = "0"
+    return _run(HOOKS / "job-started.sh", env)
+
+
+@needs_node
+def test_a_refusal_kills_the_runner_worker_that_started_the_hook(guest, tmp_path):
+    worker = Sleeper(tmp_path, "worker")
+    try:
+        code, out = _refuse_under(guest, tmp_path, [
+            f"* {worker.pid} bash /bin/bash -e /reg/hooks/job-started.sh",
+            f"{worker.pid} 1 /Users/runner/actions-runner/bin/Runner.Worker "
+            "/Users/runner/actions-runner/bin/Runner.Worker spawnclient 3 4"])
+        assert code == 1 and origin_cases.REFUSED in out, out
+        assert worker.ended() == "137", "Runner.Worker was not killed"
+        assert "could not be ended" not in out
+    finally:
+        worker.stop()
+
+
+@needs_node
+def test_through_the_runners_macos_run_invoker(guest, tmp_path):
+    worker, invoker = Sleeper(tmp_path, "worker"), Sleeper(tmp_path, "invoker")
+    try:
+        _refuse_under(guest, tmp_path, [
+            f"* {invoker.pid} bash /bin/bash -e /reg/hooks/job-started.sh",
+            f"{invoker.pid} {worker.pid} /reg/externals/node20/bin/node "
+            "/reg/externals/node20/bin/node /reg/bin/macos-run-invoker.js /bin/bash",
+            f"{worker.pid} 1 /reg/bin/Runner.Worker /reg/bin/Runner.Worker spawnclient 3 4"])
+        assert worker.ended() == "137"
+        assert invoker.proc.poll() is None, "only Runner.Worker is killed"
+    finally:
+        worker.stop()
+        invoker.stop()
+
+
+@needs_node
+@pytest.mark.parametrize("parent", ["/reg/bin/Runner.Listener", "/usr/bin/python3",
+                                    "/reg/bin/Runner.Worker.dll"])
+def test_nothing_but_a_runner_worker_parent_is_killed(guest, tmp_path, parent):
+    other = Sleeper(tmp_path, "other")
+    try:
+        code, out = _refuse_under(guest, tmp_path, [
+            f"* {other.pid} bash /bin/bash -e /reg/hooks/job-started.sh",
+            f"{other.pid} 1 {parent} {parent}"])
+        assert code == 1, out
+        assert "::warning title=Runner guard::the job could not be ended" in out
+        assert other.proc.poll() is None, f"{parent} was killed"
+    finally:
+        other.stop()

@@ -14,6 +14,7 @@ work directory correctly even when that volume is the runner's own disk,
 mounted at a folder rather than a drive letter.
 """
 import importlib.util
+import json
 import os
 import shutil
 import stat
@@ -489,3 +490,72 @@ def test_the_hooks_need_nothing_but_node_itself():
 def test_no_powershell_hook_is_left_to_be_wired_by_mistake():
     assert not list(HOOKS.glob("*.ps1"))
 
+
+
+# ---- a refusal ends the job, for real ---------------------------------------
+#
+# The runner's own process tree, rebuilt from copies of node under the
+# runner's names: Runner.Listener starts Runner.Worker, which starts
+# job-started.js under a node of another name, as the runner starts a hook.
+# A refusal must end Runner.Worker - so no later step, always() or not, runs
+# - and leave Runner.Listener, which takes the next job, alone.
+
+LISTENER_JS = r"""
+const { spawn } = require("child_process");
+const fs = require("fs");
+const [worker, workerJs, out] = process.argv.slice(2);
+const child = spawn(worker, [workerJs], { stdio: "inherit", env: process.env });
+child.on("exit", (code, signal) => {
+  fs.writeFileSync(out, JSON.stringify({ code, signal, listener: process.pid }));
+});
+"""
+
+WORKER_JS = r"""
+const { spawnSync } = require("child_process");
+const fs = require("fs");
+const env = process.env;
+const hook = spawnSync(env.TEST_HOOK_NODE, [env.TEST_HOOK], { stdio: "inherit", env });
+// What a step marked `if: always()` would do after a failed hook.
+fs.writeFileSync(env.TEST_SURVIVED, String(hook.status));
+"""
+
+
+def _named_node(directory, name):
+    target = directory / name
+    try:
+        os.link(NODE, target)
+    except OSError:
+        shutil.copy2(NODE, target)
+    return target
+
+
+@pytest.mark.skipif(NODE is None or not WINDOWS, reason="needs node on Windows")
+@pytest.mark.parametrize("name,ended", [("fork-by-outsider", True), ("push", False)])
+def test_a_refusal_ends_runner_worker_and_spares_runner_listener(tmp_path, name, ended):
+    case = origin_cases.by_id(name)
+    bins = tmp_path / "bin"
+    bins.mkdir()
+    listener, worker = _named_node(bins, "Runner.Listener.exe"), _named_node(bins, "Runner.Worker.exe")
+    (tmp_path / "listener.js").write_text(LISTENER_JS)
+    (tmp_path / "worker.js").write_text(WORKER_JS)
+    work = runner_tree(tmp_path)
+    env = _environment(origin_cases.hook_env(case, tmp_path), sys.executable)
+    env.update(RUNNER_WORK_DIR=str(work), GITHUB_WORKSPACE=str(work / "app" / "app"),
+               RUNNER_DISK_CLEAN_BELOW_GB="0", RUNNER_DISK_WARN_BELOW_GB="0",
+               RUNNER_DISK_FAIL_BELOW_GB="0", RUNNER_GUARD_KILL_DELAY="0",
+               TEST_HOOK_NODE=NODE, TEST_HOOK=str(HOOKS / "job-started.js"),
+               TEST_SURVIVED=str(tmp_path / "survived"))
+    result = subprocess.run([str(listener), str(tmp_path / "listener.js"), str(worker),
+                             str(tmp_path / "worker.js"), str(tmp_path / "listener.json")],
+                            env=env, capture_output=True, timeout=300)
+    out = result.stdout.decode("utf-8", errors="replace")
+    assert result.returncode == 0, out + result.stderr.decode(errors="replace")
+    seen = json.loads((tmp_path / "listener.json").read_text())
+    if ended:
+        assert origin_cases.REFUSED in out
+        assert not (tmp_path / "survived").exists(), "a step after the hook ran: " + out
+        assert seen["code"] == 1, seen       # TerminateProcess(worker, 1)
+    else:
+        assert "Origin: push from " in out
+        assert (tmp_path / "survived").read_text() == "0"
+        assert seen["code"] == 0, seen
