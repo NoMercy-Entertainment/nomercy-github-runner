@@ -165,11 +165,23 @@ logical CPUs than a runner's width or less physical memory than its limit.
 
 Every GitHub fleet's heading shows the runner group its runners register
 into - the fleet's own, else `RUNNER_GROUP`, else the org's default group -
-with its visibility and whether public repositories may use it: red when
-they may, grey "unknown" with the reason when GitHub could not be read.
-Settings lists every group read-only. The dashboard reads them on a
-background thread every 300 s, with the tokens the control plane holds;
-page reads never call GitHub, and nothing here ever changes a group.
+in plain words ("Runner group Fillz: every repository in
+NoMercy-Entertainment may use these runners, public ones included"), and on
+a second line whether the runners themselves refuse a pull request from an
+outside fork (`runner-job-hooks.md`, "Outside code"). Green when every runner
+in the fleet reports that its own job-started hook carries the check; red
+when public repositories may use the runners and not every runner does;
+amber otherwise (no public repositories, or no runners yet); grey with the
+reason on hover when GitHub could not be read and not every runner refuses.
+Settings lists every group read-only, with the same sentence. The dashboard
+reads them on a background thread every 300 s, with the tokens the control
+plane holds; page reads never call GitHub, and nothing here ever changes a
+group.
+
+`RUNNER_TRUSTED_AUTHORS` in `controller.env` (comma-separated GitHub logins,
+default empty) is given to every GitHub runner at its create: a pull request
+from a fork by one of them runs although GitHub does not call its author a
+member.
 
 ### 3.2 Linux unit images
 
