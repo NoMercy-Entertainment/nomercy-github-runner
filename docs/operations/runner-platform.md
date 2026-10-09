@@ -399,7 +399,12 @@ environment that is not one is never sent to.
 | `ALARM_QUEUE_POLL_SECONDS` | 300 | How often the GitHub queue is swept (at least 60) |
 | `ALARM_RATE_LIMIT_FLOOR` | 1000 | The sweep stops when GitHub says fewer calls than this are left in the hour, and resumes at the reset |
 | `ALARM_WEBHOOK_URL` | unset | Where raises and resolves are sent. Unset means the banner only. It is a credential: never logged, and masked like a token |
-| `ALARM_WEBHOOK_FORMAT` | from the URL | `ntfy` (text, with Title, Priority and Tags headers), `discord` (`content`, no mentions), `slack` (`text`, with `&`, `<` and `>` escaped so no `<!channel>` or `<@user>` mentions anyone) or `json` (`{"event", "alarm": {...}}`). When unset: a Discord or Slack webhook URL, or an ntfy host, picks its own format, and anything else gets `json` |
+| `ALARM_TIMEZONE` | `Europe/Amsterdam` | The time zone alarm texts are written in (CEST in summer, CET in winter). Discord shows a card's own timestamp in each reader's zone |
+| `ALARM_DISCORD_PEOPLE` | unset | Who may be tagged, as `Name=<Discord user id>` pairs, e.g. `Fill=2707…, Stoney=3708…`. Only 17–20 digit ids are used; unset means no one is tagged |
+| `ALARM_RUNNER_OWNERS` | unset | Whose runner is whose, as `pattern=Name` (shell patterns, case-insensitive, first match wins), e.g. `nomercy-mac-mini=Stoney, ffmpeg-verify-*=Fill` |
+| `ALARM_LABEL_OWNERS` | unset | For a waiting job: `label=Name`, everyone whose label the job asks for is tagged, e.g. `xcode=Stoney` |
+| `ALARM_DISCORD_DEFAULT` | unset | Who is tagged when nothing above matches - the platform's own runners, other jobs, and the monitor itself |
+| `ALARM_WEBHOOK_FORMAT` | from the URL | `ntfy` (text, with Title, Priority and Tags headers), `discord` (an embed card - red alarm, green resolve, amber monitor - that tags the owner on a raise only and can mention no one else), `slack` (`text`, with `&`, `<` and `>` escaped so no `<!channel>` or `<@user>` mentions anyone) or `json` (`{"event", "alarm": {...}}`). When unset: a Discord or Slack webhook URL, or an ntfy host, picks its own format, and anything else gets `json` |
 
 Each raise and each resolve is sent once. `alarm_outbox` is unique on
 alarm, event and raise time, so a retry or a restart cannot send it twice.

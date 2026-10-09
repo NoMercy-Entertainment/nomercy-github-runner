@@ -345,3 +345,56 @@ class TestLocalTime:
 
     def test_an_unreadable_time_is_shown_as_it_came(self):
         assert alarms.local_time("not a time") == "not a time"
+
+
+FILL, STONEY = "270700469943271424", "370822077831184405"
+TAGS = {"ALARM_DISCORD_PEOPLE": f"Fill={FILL}, Stoney={STONEY}",
+        "ALARM_DISCORD_DEFAULT": "Fill",
+        "ALARM_RUNNER_OWNERS": "nomercy-mac-mini=Stoney, nomercy-dat30=Stoney, ffmpeg-verify-*=Fill",
+        "ALARM_LABEL_OWNERS": "xcode=Stoney, mac-mini=Stoney, apple-silicon=Stoney, eagle=Stoney"}
+
+
+class TestWhoIsTagged:
+    """An alarm tags the person whose machine it is - Stoney for his Mac mini,
+    Fill for the platform's runners - on the red message only (2026-10-09)."""
+
+    def body(self, event, env=TAGS):
+        return json.loads(alarm_notify.render("discord", event, env)[0])
+
+    @pytest.mark.parametrize("subject,who", [
+        ("nomercy-mac-mini", STONEY), ("nomercy-dat30", STONEY),
+        ("ffmpeg-verify-mac", FILL), ("github-linux-x64-3", FILL),
+        ("forgejo-windows-arm64-1", FILL), ("someone-new", FILL)])
+    def test_a_runner_alarm_tags_its_owner(self, subject, who):
+        data = self.body(dict(EVENT, subject=subject))
+        assert data["content"] == f"<@{who}>"
+        assert data["allowed_mentions"] == {"parse": [], "users": [who]}
+
+    def test_a_waiting_job_tags_whoever_owns_runners_with_its_labels(self):
+        job = dict(EVENT, kind="job_queued", subject="kmp / ci / apple",
+                   detail={"labels": ["self-hosted", "xcode"]})
+        assert self.body(job)["content"] == f"<@{STONEY}>"
+        plain = dict(job, detail={"labels": ["self-hosted", "beast-unit"]})
+        assert self.body(plain)["content"] == f"<@{FILL}>"
+
+    def test_the_monitor_tags_the_default(self):
+        blind = dict(EVENT, kind="monitor", subject="GitHub", detail={})
+        assert self.body(blind)["content"] == f"<@{FILL}>"
+
+    def test_a_resolve_tags_no_one(self):
+        data = self.body(dict(EVENT, event="resolved", resolved_at="2026-09-30T12:00:00Z"))
+        assert "content" not in data and data["allowed_mentions"] == {"parse": []}
+
+    def test_without_people_configured_no_one_is_tagged(self):
+        data = self.body(EVENT, env={})
+        assert "content" not in data and data["allowed_mentions"] == {"parse": []}
+
+    def test_only_real_discord_ids_are_ever_mentioned(self):
+        env = dict(TAGS, ALARM_DISCORD_PEOPLE="Fill=@everyone, Stoney=12ab")
+        data = self.body(EVENT, env)
+        assert "content" not in data and data["allowed_mentions"] == {"parse": []}
+        # A runner named "@everyone" is text in the card; only the owner's
+        # own id may ping, because allowed_mentions names exactly that id.
+        named = self.body(dict(EVENT, subject="@everyone"))
+        assert named["content"] == f"<@{FILL}>"
+        assert named["allowed_mentions"] == {"parse": [], "users": [FILL]}

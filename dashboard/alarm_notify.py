@@ -18,7 +18,9 @@ up to half an hour, and is given up after MAX_ATTEMPTS.
 **The URL is a credential** - a Discord or Slack webhook URL is all it takes
 to post as it - so no log line, error column or payload carries it.
 """
+import fnmatch
 import json
+import re
 import time
 import urllib.error
 import urllib.request
@@ -128,7 +130,53 @@ def discord_embed(event):
     return embed
 
 
-def render(fmt, event):
+#: A Discord user id: a snowflake, 17 to 20 digits. Nothing else is ever
+#: put in a mention.
+_SNOWFLAKE = re.compile(r"^[0-9]{17,20}$")
+
+
+def _pairs(text):
+    """"a=b, c=d" as [(a, b), ...], lower-cased keys, blanks dropped."""
+    out = []
+    for part in re.split(r"[,;\n]", str(text or "")):
+        if "=" in part:
+            key, value = part.split("=", 1)
+            if key.strip() and value.strip():
+                out.append((key.strip().lower(), value.strip()))
+    return out
+
+
+def owners_of(event, env):
+    """Who an alarm is for - by the runner's name (ALARM_RUNNER_OWNERS,
+    shell patterns), by a waiting job's labels (ALARM_LABEL_OWNERS), else
+    ALARM_DISCORD_DEFAULT - as Discord user ids (ALARM_DISCORD_PEOPLE).
+    The platform's own runners have no entry and fall to the default."""
+    env = env or {}
+    people = {name: value for name, value in _pairs(env.get("ALARM_DISCORD_PEOPLE"))
+              if _SNOWFLAKE.match(value)}
+    if not people:
+        return []
+    kind = event.get("kind")
+    names = []
+    if kind == "runner_offline":
+        subject = str(event.get("subject") or "").lower()
+        names = [owner for pattern, owner in _pairs(env.get("ALARM_RUNNER_OWNERS"))
+                 if fnmatch.fnmatchcase(subject, pattern)][:1]
+    elif kind == "job_queued":
+        labels = {str(l).lower() for l in (event.get("detail") or {}).get("labels") or []}
+        names = [owner for label, owner in _pairs(env.get("ALARM_LABEL_OWNERS"))
+                 if label in labels]
+    if not names:
+        names = [str(env.get("ALARM_DISCORD_DEFAULT") or "").strip()]
+    ids = []
+    for name in names:
+        user = people.get(name.lower())
+        if user and user not in ids:
+            ids.append(user)
+    return ids
+
+
+def render(fmt, event, env=None):
     """(body bytes, headers) of one event in one format."""
     raised = event["event"] == "raised"
     text = text_of(event)
@@ -145,7 +193,13 @@ def render(fmt, event):
     if fmt == "discord":
         # No mentions: a job or runner name is not ours to choose, and
         # "@everyone" in one must not page a whole server.
+        # Only the owners' own ids may ping, and only on the red message;
+        # a name in a runner or job ("@everyone") stays text.
         body = {"embeds": [discord_embed(event)], "allowed_mentions": {"parse": []}}
+        users = owners_of(event, env) if raised else []
+        if users:
+            body["content"] = " ".join(f"<@{u}>" for u in users)
+            body["allowed_mentions"]["users"] = users
     elif fmt == "slack":
         # Slack's own escaping: with &, < and > as entities, no <!channel>,
         # <!here> or <@user> in a job or runner name can mention anyone.
@@ -224,7 +278,7 @@ def deliver_due(path, env, now, post=None):
     for row in rows:
         event = json.loads(row["payload"])
         try:
-            body, headers = render(fmt, event)
+            body, headers = render(fmt, event, env)
             ok, why = post(url, body, headers)
         except Exception as e:  # noqa: BLE001
             ok, why = False, type(e).__name__
