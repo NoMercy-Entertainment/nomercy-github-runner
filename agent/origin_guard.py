@@ -11,11 +11,12 @@ before the check.
 
 def guard_version(text, prefix):
     """The whole number after `prefix` at the start of a line of `text`
-    (`GUARD_VERSION = 1` in runner_guard.py, `ORIGIN_GUARD_VERSION=1` in
-    the macOS lib.sh), or 0 when no line says one."""
+    (`GUARD_VERSION = 1` in runner_guard.py, `const GUARD_VERSION = 1;` in
+    the macOS runner_guard.js), or 0 when no line says one."""
     for line in str(text or "").splitlines():
         if line.startswith(prefix):
-            value = line[len(prefix):].strip()
-            if value.isdigit():
-                return int(value)
+            rest = line[len(prefix):].strip()
+            digits = rest[:len(rest) - len(rest.lstrip("0123456789"))]
+            if digits and rest[len(digits):] in ("", ";"):
+                return int(digits)
     return 0

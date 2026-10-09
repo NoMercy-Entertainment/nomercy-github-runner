@@ -143,7 +143,7 @@ class TestMacOS:
     def test_the_hooks_are_the_agents_own_copy(self, runtime, guest):
         self.env(runtime, guest, "github")
         hooks = posixpath.join(runtime.paths(RID)["reg"], "hooks")
-        for name in ("job-started.sh", "job-completed.sh", "lib.sh"):
+        for name in ("job-started.sh", "job-completed.sh", "lib.sh", "runner_guard.js"):
             source = (AGENT / "hooks" / "macos" / name).read_text(encoding="utf-8")
             assert guest.read_text(posixpath.join(hooks, name)) == source.replace("\r\n", "\n")
         assert guest.modes[posixpath.join(hooks, "job-started.sh")] == 0o700
@@ -252,8 +252,8 @@ class TestWhatEachRunnerSaysOfItsGuard:
         runtime.create(RID, spec("github", MAC_TEMPLATE))
         (unit,) = runtime.instances()
         assert unit["origin_guard"] == _guard_version()
-        lib = posixpath.join(runtime.paths(RID)["reg"], "hooks", "lib.sh")
-        guest.write_text(lib, "# hooks from before the check\n")
+        guard = posixpath.join(runtime.paths(RID)["reg"], "hooks", "runner_guard.js")
+        guest.remove(guard)
         # Known since this agent wrote them: no read over the guest's SSH
         # every beat. An agent started afterwards reads the file once.
         assert runtime.instances()[0]["origin_guard"] == _guard_version()

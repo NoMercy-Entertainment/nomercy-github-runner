@@ -77,9 +77,11 @@ TEMPLATE_MARKER = ".template"
 HOOK_SOURCE = Path(__file__).resolve().parents[1] / "hooks" / "macos"
 HOOK_SCRIPTS = {"ACTIONS_RUNNER_HOOK_JOB_STARTED": "job-started.sh",
                 "ACTIONS_RUNNER_HOOK_JOB_COMPLETED": "job-completed.sh"}
-HOOK_FILES = ("lib.sh", *HOOK_SCRIPTS.values())
-#: The line in lib.sh that says which origin check it carries.
-GUARD_PREFIX = "ORIGIN_GUARD_VERSION="
+HOOK_FILES = ("lib.sh", "runner_guard.js", *HOOK_SCRIPTS.values())
+#: The file, and the line in it, that say which origin check a runner's
+#: hooks carry.
+GUARD_FILE = "runner_guard.js"
+GUARD_PREFIX = "const GUARD_VERSION = "
 #: What an adopted instance is: the launchd job and the directory that were
 #: already there when the controller took it over (MIG-4). Written by
 #: `create` when its spec carries an `adopt` block, and read by every verb
@@ -326,21 +328,26 @@ class MacApplianceRuntime:
             text = (HOOK_SOURCE / name).read_text(encoding="utf-8").replace("\r\n", "\n")
             self._fs.write_text(posixpath.join(hooks, name), text,
                                 mode=0o700 if name in HOOK_SCRIPTS.values() else 0o600)
-            if name == "lib.sh" and rid:
+            if name == GUARD_FILE and rid:
                 self._guards[rid] = guard_version(text, GUARD_PREFIX)
 
     def origin_guard(self, runner_id):
         """Which version of the origin check this runner's own hooks carry:
-        ORIGIN_GUARD_VERSION in its reg/hooks/lib.sh, 0 for hooks from before
+        GUARD_VERSION in its reg/hooks/runner_guard.js, 0 for hooks from before
         the check, None for a runner with no hooks (not GitHub's, or adopted)
         or one that cannot be read now."""
         rid = naming.check(runner_id)
         if rid in self._guards:
             return self._guards[rid]
-        lib = posixpath.join(self.paths(rid)["reg"], "hooks", "lib.sh")
+        hooks = posixpath.join(self.paths(rid)["reg"], "hooks")
+        guard_file = posixpath.join(hooks, GUARD_FILE)
         try:
-            guard = (guard_version(self._fs.read_text(lib), GUARD_PREFIX)
-                     if self._fs.exists(lib) else None)
+            if not self._fs.exists(hooks):
+                guard = None
+            elif not self._fs.exists(guard_file):
+                guard = 0
+            else:
+                guard = guard_version(self._fs.read_text(guard_file), GUARD_PREFIX)
         except (OSError, ValueError, RuntimeError):
             return None
         self._guards[rid] = guard

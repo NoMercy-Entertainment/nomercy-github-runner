@@ -360,16 +360,22 @@ def test_no_node_anywhere_lets_the_job_run_and_says_so(guest, tmp_path):
 
 
 def test_the_version_is_runner_guards():
-    """What the agent reports for a macOS runner (lib.sh) and what it reads
-    from runner_guard.py elsewhere are one number."""
+    """What the agent reports for a macOS runner (runner_guard.js) and what
+    it reads from runner_guard.py elsewhere are one number."""
     import re
-    lib = (HOOKS / "lib.sh").read_text(encoding="utf-8")
+    lib = (HOOKS / "runner_guard.js").read_text(encoding="utf-8")
     guard = (Path(__file__).parents[2] / "images/linux/unit/runner/runner_guard.py"
              ).read_text(encoding="utf-8")
-    ours = re.search(r"^ORIGIN_GUARD_VERSION=(\d+)$", lib, re.M)
+    ours = re.search(r"^const GUARD_VERSION = (\d+);$", lib, re.M)
     theirs = re.search(r"^GUARD_VERSION = (\d+)$", guard, re.M)
     assert ours and theirs and ours.group(1) == theirs.group(1)
 
 
 def test_lib_parses_as_bash():
     subprocess.run([BASH, "-n", posix(HOOKS / "lib.sh")], check=True)
+
+
+def test_the_node_guard_needs_nothing_but_node_and_is_ascii():
+    import re
+    text = (HOOKS / "runner_guard.js").read_bytes().decode("ascii")
+    assert set(re.findall(r'require\("([^"]+)"\)', text)) <= {"fs", "child_process"}
