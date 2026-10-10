@@ -12,6 +12,7 @@ on:
 
 jobs:
   health:
+    timeout-minutes: 7200
     runs-on: [self-hosted, Windows, X64]
     defaults:
       run:
