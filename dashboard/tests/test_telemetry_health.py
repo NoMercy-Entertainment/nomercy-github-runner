@@ -76,21 +76,24 @@ class TestReadyNeedsBothHalves:
         assert card["state"] == "registering"
 
 
+@pytest.fixture
+def placed(tmp_path):
+    """One GitHub Linux runner, placed on worker linux-1 and idle."""
+    from control.service import RunnerService
+    from store.fleets import FleetStore
+    path = str(tmp_path / "control.db")
+    schema.init(path)
+    FleetStore(path).seed({})
+    service = RunnerService(path, runtimes=dict(ALL_CELLS))
+    service.inventory.register_worker("linux-1", inv.HYPERV_LINUX)
+    rid = service.planned_ids(service.plan(GH, 1))[0]
+    s = service.specs.get(rid)
+    service.specs.update(rid, s["spec_version"], host_id="linux-1",
+                         actual_state="idle")
+    return service, rid
+
+
 class TestTheCardShowsWhatTheUnitUses:
-    @pytest.fixture
-    def placed(self, tmp_path):
-        from control.service import RunnerService
-        from store.fleets import FleetStore
-        path = str(tmp_path / "control.db")
-        schema.init(path)
-        FleetStore(path).seed({})
-        service = RunnerService(path, runtimes=dict(ALL_CELLS))
-        service.inventory.register_worker("linux-1", inv.HYPERV_LINUX)
-        rid = service.planned_ids(service.plan(GH, 1))[0]
-        s = service.specs.get(rid)
-        service.specs.update(rid, s["spec_version"], host_id="linux-1",
-                             actual_state="idle")
-        return service, rid
 
     def beat(self, service, rid, telemetry, when=None):
         service.inventory.accept_heartbeat("linux-1", {
@@ -324,3 +327,51 @@ class TestTheJobField:
         card = cards.from_spec(spec(), telemetry={"job": "task 412 - a/b"},
                                now=NOW)
         assert card["job"] is None
+
+
+class TestFreshnessIsTheControllersClock:
+    """A beat is dated when the controller receives it, not by the agent's
+    own stamp. The ARM64 guest's stamps ran 15 s behind the controller
+    (emulated clock plus a slow TLS post), so with a 10 s interval almost
+    nothing was left of the 30 s window: its card flipped to "unknown" and
+    "not reachable" on every small hiccup (2026-10-10). The agent already
+    refuses to send a measurement older than its own STALE_AFTER, so what
+    arrives is fresh by construction."""
+
+    def beat(self, service, rid, telemetry, measured_at, when):
+        service.inventory.accept_heartbeat("linux-1", {
+            "host_id": "linux-1", "measured_at": measured_at,
+            "instances": [{"runner_id": rid, "state": "running",
+                           "telemetry": dict(telemetry, at=measured_at)}]}, at=when)
+
+    def test_a_beat_stamped_behind_the_controller_is_dated_on_arrival(self, placed):
+        service, rid = placed
+        behind = NOW - timedelta(seconds=15)
+        self.beat(service, rid, {"cpu_percent": 42.0}, inv._iso(behind), NOW)
+        spec = service.specs.get(rid)
+        assert spec["telemetry"]["at"] == inv._iso(NOW)
+        assert spec["last_seen_at"] == inv._iso(NOW)
+        card = cards.from_spec(spec, worker_reachable=True,
+                               now=NOW + timedelta(seconds=25))
+        assert card["cpu"]["percent"] == 42.0
+        assert card["readiness"]["process"] == "up"
+
+    def test_a_beat_stamped_ahead_of_the_controller_is_dated_on_arrival_too(self, placed):
+        service, rid = placed
+        ahead = NOW + timedelta(minutes=5)
+        self.beat(service, rid, {"cpu_percent": 42.0}, inv._iso(ahead), NOW)
+        spec = service.specs.get(rid)
+        assert spec["telemetry"]["at"] == inv._iso(NOW)
+        assert spec["last_seen_at"] == inv._iso(NOW)
+
+
+class TestTheJobNameStays:
+    def test_a_busy_runner_keeps_its_job_name_between_measurements(self):
+        """The job name does not change while the forge still says busy, so
+        a measurement that is a little late must not swap it for "the forge
+        does not say which" and back - the flicker seen on 2026-10-10."""
+        runner = spec(actual_state="busy", forge_state="busy",
+                      telemetry={"job": "build app", "at": at(45), "cpu_percent": 80})
+        card = cards.from_spec(runner, now=NOW)
+        assert card["job"] == "build app"
+        assert card["cpu"]["percent"] is None, "the numbers are still only as fresh as they are"

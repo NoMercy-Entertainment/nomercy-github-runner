@@ -351,9 +351,14 @@ class Inventory:
             raise ValueError(
                 f"heartbeat names {claimed!r} but arrived from {host_id!r}")
 
+        # Dated on arrival, by this clock, never by the agent's `measured_at`:
+        # the ARM64 guest's stamps ran 15 s behind, which left almost nothing
+        # of the 30 s freshness window and flipped its card to "unknown" and
+        # "not reachable" on every hiccup (2026-10-10). What a beat carries is
+        # fresh by construction - the agent drops anything older than its own
+        # STALE_AFTER - so the moment it arrives is the honest date for it.
         moment = at or _now()
-        measured = _parse(payload.get("measured_at")) or moment
-        observed_at = _iso(min(measured, moment))
+        observed_at = _iso(moment)
         declared = payload.get("capabilities")
         self.heartbeat(host_id,
                        agent_version=payload.get("agent_version"),
@@ -422,7 +427,7 @@ class Inventory:
             current[key] = fresh.get(key)
         for key in ("root_disk_used_bytes", "root_disk_total_bytes"):
             current.pop(key, None)
-        current["at"] = min(fresh.get("at", at), at)
+        current["at"] = at              # arrival, as accept_heartbeat says
         for keys, stamp in _KEPT:
             if any(key in fresh for key in keys):
                 for key in keys:

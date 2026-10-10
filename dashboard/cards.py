@@ -499,12 +499,17 @@ def _measured(spec, override, now, host=None):
 
 
 def _job_telemetry(spec, override, now):
+    """The telemetry the job name may come from. A job's name does not
+    change while the forge still says busy, so it is kept as long as the
+    forge's own word is - a measurement a little late must not swap it for
+    "the forge does not say which" and back (2026-10-10). The numbers on the
+    card stay bound to HEARTBEAT_FRESH in `_measured`."""
     from datetime import datetime, timezone
     if override is not None:
         return override
     t = spec.get("telemetry") or {}
     age = _age(t.get("at"), now or datetime.now(timezone.utc))
-    return t if age is not None and 0 <= age <= HEARTBEAT_FRESH else None
+    return t if age is not None and 0 <= age <= FORGE_FRESH else None
 
 
 def _job(lifecycle, telemetry):
