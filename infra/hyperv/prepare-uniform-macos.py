@@ -85,14 +85,17 @@ def main():
             pool._command(['docker', 'update', '--cpuset-cpus', '', '--cpu-shares', '1024',
                            'rnr-' + record['runner_id']], timeout=30)
         else:
-            # Preparation shares a host with the existing production guest.
-            # Give preparation a low scheduling weight, without pinning six
-            # guest CPUs to two host CPUs. The first restricted boot had slow
-            # disk flushes followed by a kernel panic; avoid CPU starvation
-            # when testing whether a fresh boot can complete.
-            # Restore the normal scheduling weight before cutover.
+            # Boot only one preparation beside the existing guest, once the
+            # approved host memory expansion is active. Use the normal CPU
+            # weight: starving boot delayed disk flushes and caused a panic.
             assert not record.get('initialized') and record.get('listener_disabled')
-            pool._command(['docker', 'update', '--cpuset-cpus', '', '--cpu-shares', '64',
+            memory = next(int(line.split()[1]) * 1024 for line in
+                          Path('/proc/meminfo').read_text().splitlines()
+                          if line.startswith('MemTotal:'))
+            assert memory >= 38 * GIB, 'Approved 40-GiB appliance host must be active first'
+            sibling = IDS[1 - args.index]
+            assert pool._power(sibling) == 'stopped', 'Stage one preparation guest at a time'
+            pool._command(['docker', 'update', '--cpuset-cpus', '', '--cpu-shares', '1024',
                            'rnr-' + record['runner_id']], timeout=30)
             inner, _ = pool._boot(record, maintenance=True)
             inner._ensure_storage(record['runner_id'])

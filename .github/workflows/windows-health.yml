@@ -10,6 +10,9 @@ on:
   schedule:
     - cron: '41 6 * * 1'
 
+permissions:
+  contents: read
+
 jobs:
   health:
     timeout-minutes: 7200

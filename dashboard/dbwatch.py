@@ -39,6 +39,14 @@ class DatabaseChanges:
             if self.libc.inotify_add_watch(self.fd, os.fsencode(self.directory), 0x03CA) < 0:
                 os.close(self.fd)
                 raise OSError(ctypes.get_errno(), "inotify_add_watch failed")
+            try:
+                self.notifications = select.epoll()
+                self.notifications.register(self.fd, select.EPOLLIN)
+            except BaseException:
+                if hasattr(self, "notifications"):
+                    self.notifications.close()
+                os.close(self.fd)
+                raise
         elif sys.platform == "darwin":
             self.fd = os.open(self.directory, os.O_RDONLY)
             self.queue = select.kqueue()
@@ -70,7 +78,7 @@ class DatabaseChanges:
             if events:
                 self._refresh_mac_files()
             return bool(events)
-        if not select.select([self.fd], [], [], timeout)[0]:
+        if not self.notifications.poll(-1 if timeout is None else max(0, timeout)):
             return False
         events = os.read(self.fd, 65536)
         offset, changed = 0, False
@@ -116,6 +124,8 @@ class DatabaseChanges:
         if sys.platform == "win32":
             self.kernel.FindCloseChangeNotification(self.fd)
         else:
+            if hasattr(self, "notifications"):
+                self.notifications.close()
             if hasattr(self, "queue"):
                 self.queue.close()
                 for fd, _ in self.mac_files.values():

@@ -113,7 +113,15 @@ def test_registration_with_lost_reply_cannot_discard_its_storage(world):
 def _lost_reply(world, fleet, monkeypatch, attempted_ago, registered):
     """A registration whose reply was lost, `attempted_ago` seconds back."""
     import control.provision as provision
+    from control import inventory
     service, flow, agent, forges, reconciler = world
+    # This scenario advances registration age explicitly. Keep setup time
+    # fixed so slow storage cannot expire the fake worker's heartbeat.
+    now = provision.time.time()
+    worker_now = inventory._now()
+    monkeypatch.setattr(inventory, "_now", lambda: worker_now)
+    monkeypatch.setattr(provision.time, "time", lambda: now)
+    service.inventory.heartbeat("linux-1")
     service.scale_up(fleet)
     reconciler.pass_once()
     if registered:
@@ -124,7 +132,6 @@ def _lost_reply(world, fleet, monkeypatch, attempted_ago, registered):
     spec = the_runner(service, fleet)
     assert spec["actual_state"] == "registering"
     assert "reply is unknown" in (spec["last_error"] or "")
-    now = provision.time.time()
     monkeypatch.setattr(provision.time, "time", lambda: now + attempted_ago)
     return spec
 

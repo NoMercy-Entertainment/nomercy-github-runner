@@ -46,6 +46,24 @@ def as_role(store, monkeypatch):
 
 # ------------------------------------------------------------- the POST rule
 
+def test_sign_in_failure_does_not_expose_provider_details(anon_client, monkeypatch):
+    import app as dash
+
+    class FailedIdentityProvider:
+        def exchange(self, code, verifier):
+            raise oidc.OIDCError("https://private-idp.example: credential=private-value")
+
+    monkeypatch.setattr(dash, "_oidc", FailedIdentityProvider)
+    with anon_client.session_transaction() as session:
+        session["oidc_state"] = "callback-state"
+        session["oidc_verifier"] = "callback-verifier"
+    response = anon_client.get("/callback?state=callback-state&code=authorization-code")
+    assert response.status_code == 400
+    assert b"Sign-in could not be verified" in response.data
+    assert b"private-idp" not in response.data
+    assert b"private-value" not in response.data
+
+
 POST_PATH = "/api/v2/runners/rnr-00000000/actions/start"
 
 

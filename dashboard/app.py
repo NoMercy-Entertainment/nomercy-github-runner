@@ -613,10 +613,10 @@ def auth_start():
             error="Single sign-on is not configured on this dashboard."), 500
     try:
         url, state, verifier = client.authorize_url()
-    except oidc.OIDCError as e:
+    except oidc.OIDCError:
         return render_template(
             "login.html", secure=request_is_secure(), oidc_ready=True,
-            error=f"Could not reach the identity provider: {e}"), 502
+            error="Could not reach the identity provider. Please try again."), 502
     session["oidc_state"] = state
     session["oidc_verifier"] = verifier
     return redirect(url)
@@ -647,8 +647,9 @@ def auth_callback():
 
     try:
         claims = _oidc().exchange(code, verifier)
-    except oidc.OIDCError as e:
-        return render_template("forbidden.html", why=str(e)), 400
+    except oidc.OIDCError:
+        return render_template("forbidden.html",
+                               why="Sign-in could not be verified. Please try again."), 400
 
     role = users.sign_in(claims["sub"],
                          claims.get("preferred_username", ""),

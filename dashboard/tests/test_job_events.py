@@ -1,4 +1,6 @@
 import json
+import os
+import sys
 
 import pytest
 
@@ -100,6 +102,30 @@ def test_database_watch_receives_atomic_replace_without_polling(tmp_path):
         assert watch.wait(2)
     finally:
         watch.close()
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="Linux descriptor limit")
+def test_database_watch_receives_changes_with_many_open_files(tmp_path):
+    import resource
+    from dbwatch import DatabaseChanges
+    if resource.getrlimit(resource.RLIMIT_NOFILE)[0] < 1100:
+        pytest.skip("Process descriptor limit is below the regression boundary")
+    path = tmp_path / "control.db"
+    path.write_text("before")
+    handles, watch = [], None
+    try:
+        while not handles or handles[-1] < 1024:
+            handles.append(os.open(os.devnull, os.O_RDONLY))
+        watch = DatabaseChanges(path)
+        replacement = tmp_path / "replacement"
+        replacement.write_text("after")
+        replacement.replace(path)
+        assert watch.wait(2)
+    finally:
+        if watch:
+            watch.close()
+        for descriptor in handles:
+            os.close(descriptor)
 
 
 def test_event_stream_replays_from_cursor_and_closes_watcher(events, client, monkeypatch):

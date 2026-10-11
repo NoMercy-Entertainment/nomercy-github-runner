@@ -23,6 +23,7 @@ import json
 import re
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 
 import alarms
@@ -57,12 +58,12 @@ def format_of(env, url):
     named = str((env or {}).get("ALARM_WEBHOOK_FORMAT") or "").strip().lower()
     if named in FORMATS:
         return named
-    lowered = (url or "").lower()
-    if "discord.com/api/webhooks" in lowered or "discordapp.com/api/webhooks" in lowered:
+    parsed = urllib.parse.urlsplit(url or "")
+    host = (parsed.hostname or "").lower()
+    if host in ("discord.com", "discordapp.com") and parsed.path.startswith("/api/webhooks/"):
         return "discord"
-    if "hooks.slack.com" in lowered:
+    if host == "hooks.slack.com":
         return "slack"
-    host = lowered.split("://", 1)[-1].split("/", 1)[0]
     if "ntfy" in host:
         return "ntfy"
     return "json"

@@ -65,13 +65,30 @@ Capacity must be backed before these resource cutovers are activated.
 Increasing the budget constant or printing 16 GiB on a card is not a
 substitute for that evidence.
 
+## Revised work order, 2026-10-11
+
+The operator has deferred ARM work until the other runners are complete.
+The combined host-maintenance watcher was interrupted before paging was
+configured, any VM was shut down, or any VM memory was changed. Its recovery
+returns drained runners to service after their current jobs finish; no
+running job is cancelled. The automatic host-startup recovery task is
+disabled while the combined maintenance plan is superseded.
+
+The remaining macOS-only host expansion is 16 GiB (24 to 40 GiB). It must
+not include the deferred 28-GiB ARM expansion. The two prepared macOS guests
+must be staged one at a time beside the existing guest, with normal CPU
+weight, before their registrations are moved. The requested per-runner
+profile remains unchanged.
+
 ## Authorized maintenance route
 
 The operator approved a 64-GiB pagefile on the host SSD and a controlled host
 restart after all active jobs finish. The read-only preflight measured
-95.9 GiB SSD free, leaving 31.9 GiB after paging allocation. The plan predicts
-43.1 GiB commit headroom after the 44-GiB VM increase. This is a capacity
-plan, not evidence that the pagefile is active or the VM cutovers are done.
+95.9 GiB SSD free, leaving 31.9 GiB after paging allocation. The earlier
+combined plan predicted 43.1 GiB commit headroom after a 44-GiB VM increase;
+it is superseded by the macOS-first work order above. Commit headroom must
+be measured again for the smaller expansion. The pagefile is not active
+and the pending VM cutovers are not complete.
 
 The maintenance checkpoint records all 19 runner and registration identities.
 A native database watcher waits for actual idle jobs, closes the fleet through
