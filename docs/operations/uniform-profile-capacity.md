@@ -127,10 +127,19 @@ four SSH endpoints remain unreachable; a native network-change watcher
 records reachability when the host network changes.
 
 The macOS runtime, offline migration preparation and shutdown checks passed
-108 targeted tests. The full dashboard suite on commit `c1e34c1` is still
-running. Its database commits were observed making progress on the HDD.
+108 targeted tests. Full CI on commit `474fe3a` passed. The earlier `c1e34c1`
+run completed with one timing-sensitive compensation fixture failure; its
+database commits were observed making progress on the HDD.
 Following workflow runs use a bounded 4-GiB tmpfs for temporary test data,
 retain the same test suites and 7200-minute job timeout, and unmount that
 temporary storage after completion. A real Linux runner verified the mount
 and cleanup route. All 30 separately published timeout-only PRs are merged;
 the runner isolation PR remains open until the live cutovers pass.
+
+Asynchronous agent operations now advertise native completion waiting.
+The first request remains fast; an authenticated repeat with the same
+idempotency key waits on a threading event instead of sending periodic
+status requests. Lost connections can be retried without duplicating work;
+older agents retain compatibility during the rolling upgrade. This transport
+has passed 87 targeted controller tests. It does not change job time limits,
+restart listeners, or claim that the older job-log collector is event driven.

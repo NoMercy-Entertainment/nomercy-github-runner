@@ -87,6 +87,17 @@ def post_and_wait(server, verb, body, timeout=5.0):
     return status, payload
 
 
+@pytest.mark.parametrize("wait", ["NaN", "inf", "-1", "1801", "invalid"])
+def test_invalid_completion_wait_cannot_start_work(server, runtime, wait):
+    status, result = post(server, "exec_unit.create",
+                          {"runner_id": RID, "spec": {"image": "node:20"}},
+                          headers={"X-Wait-Seconds": wait})
+    assert status == 400
+    assert "completion wait" in result["error"]
+    assert runtime.calls == []
+    assert server.operations == {}
+
+
 class TestTheTableIsClosed:
     def test_it_holds_exactly_the_designs_verbs(self):
         assert set(VERBS) == protocol.VERB_NAMES
