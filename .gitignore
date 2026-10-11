@@ -1,5 +1,6 @@
 .env
 .claude/settings.local.json
+/.jq.swp
 
 # Python
 __pycache__/

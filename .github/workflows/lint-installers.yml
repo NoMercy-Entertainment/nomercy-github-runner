@@ -15,7 +15,8 @@ permissions:
 
 jobs:
   shell:
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux, X64, beast-unit]
+    timeout-minutes: 7200
     steps:
       - uses: actions/checkout@v5
 
@@ -40,11 +41,14 @@ jobs:
 
       - name: Shellcheck
         run: |
-          sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
+          if ! command -v shellcheck >/dev/null; then
+            sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
+          fi
           shellcheck -S error install/*.sh
 
   powershell:
-    runs-on: windows-latest
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 7200
     steps:
       - uses: actions/checkout@v5
 

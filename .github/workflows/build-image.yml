@@ -26,6 +26,7 @@ permissions:
 jobs:
   build:
     runs-on: [self-hosted, Linux, X64, beast-unit]
+    timeout-minutes: 7200
     steps:
       - uses: actions/checkout@v5
 
