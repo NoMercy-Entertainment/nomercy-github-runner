@@ -1,0 +1,32 @@
+name: Runner origin guard health
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - '.github/workflows/origin-guard-health.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: origin-guard-health-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  health:
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macOS
+            arch: X64
+          - os: Windows
+            arch: ARM64
+    runs-on: [self-hosted, '${{ matrix.os }}', '${{ matrix.arch }}']
+    timeout-minutes: 7200
+    steps:
+      - name: Confirm a real job passes the installed origin hook
+        run: echo "Runner origin hook integration check"
