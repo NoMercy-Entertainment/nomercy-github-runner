@@ -710,8 +710,8 @@ def api_machines(identity=None):
             from control import audit
             audit.record(schema.DB_PATH, verb="machine-access", decision="revoked" if identity else "created",
                          actor=actor, parameters=metadata)
-    except ValueError as error:
-        return jsonify(error=str(error)), 400
+    except ValueError:
+        return jsonify(error="Invalid machine access request; check the name, scopes and expiry."), 400
     except users.Unreadable:
         return jsonify(error="Access store is unreadable; no credentials were changed."), 503
     response = jsonify(ok=True, machine=metadata, credential=credential)
@@ -740,8 +740,8 @@ def receive_job_webhook(provider):
     try:
         from store import schema
         result = webhook_jobs.accept(provider, delivery, json.loads(raw), schema.DB_PATH)
-    except (ValueError, UnicodeDecodeError) as error:
-        return jsonify(error=str(error)), 400
+    except (ValueError, UnicodeDecodeError):
+        return jsonify(error="Invalid job-event delivery."), 400
     return jsonify(ok=True, **result)
 
 
@@ -753,8 +753,8 @@ def enable_job_events(provider):
     import webhook_jobs
     try:
         result = webhook_jobs.configure(provider, read_env(), _public_url(), DATA)
-    except ValueError as error:
-        return jsonify(error=str(error)), 400
+    except ValueError:
+        return jsonify(error="Could not configure job events; check the provider settings and public URL."), 400
     from store import schema
     if os.path.exists(schema.DB_PATH):
         from control import audit

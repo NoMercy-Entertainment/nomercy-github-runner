@@ -115,7 +115,11 @@ def service_sid(service_name):
     """The SID Windows gives a service's virtual account: S-1-5-80 followed by
     the SHA-1 of the upper-cased name in UTF-16LE, as five little-endian
     words. Checked against `sc.exe showsid` in the tests."""
-    digest = hashlib.sha1(service_name.upper().encode("utf-16-le")).digest()
+    # Windows fixes this identifier format; this hashes a public service name,
+    # not a password or authentication credential. See Microsoft's service SID
+    # description: https://techcommunity.microsoft.com/blog/askperf/ws2008-windows-service-hardening/372702
+    digest = hashlib.sha1(service_name.upper().encode("utf-16-le"),
+                          usedforsecurity=False).digest()
     return "S-1-5-80-" + "-".join(str(w) for w in struct.unpack("<5I",
                                                                  digest))
 
