@@ -35,6 +35,16 @@ DB_PATH = os.path.join(os.environ.get("DASH_DATA", "/data"), "control.db")
 _lock = threading.Lock()
 
 SCHEMA = """
+CREATE TABLE IF NOT EXISTS job_events (
+  sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+  host_id TEXT NOT NULL,
+  event_id TEXT NOT NULL,
+  runner_id TEXT NOT NULL REFERENCES runner_specs(runner_id),
+  provider TEXT NOT NULL,
+  received_at TEXT NOT NULL,
+  payload TEXT NOT NULL,
+  UNIQUE(host_id,event_id)
+);
 CREATE TABLE IF NOT EXISTS workers (
   host_id                 TEXT PRIMARY KEY,
   display_name            TEXT,

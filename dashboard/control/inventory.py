@@ -425,6 +425,11 @@ class Inventory:
                     "mem_used_bytes", "mem_limit_bytes",
                     "mem_swap_limit_bytes"):
             current[key] = fresh.get(key)
+        # Once events report this runner's job, a delayed sampled heartbeat
+        # cannot resurrect a completed job or replace the current one.
+        if isinstance(current.get("job_event"), dict):
+            event = current["job_event"]
+            current["job"] = event.get("job") if event.get("state") == "started" else None
         for key in ("root_disk_used_bytes", "root_disk_total_bytes"):
             current.pop(key, None)
         current["at"] = at              # arrival, as accept_heartbeat says

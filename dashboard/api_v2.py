@@ -24,7 +24,7 @@ import sqlite3
 import time
 from datetime import datetime, timezone
 
-from flask import Blueprint, g, has_request_context, jsonify, request, session
+from flask import Blueprint, Response, g, has_request_context, jsonify, request, session, stream_with_context
 
 import cards
 import providers
@@ -498,7 +498,60 @@ def fleets_list():
 
 
 def requested_by():
+    account = getattr(g, "machine", None)
+    if account:
+        return "machine:" + account["id"]
     return session.get("email") or session.get("sub") or "unknown"
+
+
+@bp.route("/api/v2/events/jobs")
+def job_event_stream():
+    raw = request.headers.get("Last-Event-ID") or request.args.get("after", "0")
+    if not re.fullmatch(r"[0-9]{1,19}", raw) or int(raw) > 2 ** 63 - 1:
+        return _refuse(400, "A nonnegative event sequence is required")
+    path = _db_path()
+    if not os.path.exists(path):
+        return _refuse(503, "The control database is unavailable")
+    from dbwatch import DatabaseChanges
+    from control.job_events import JobEvents
+    watch = DatabaseChanges(path)  # installed before the first read
+    bearer = request.headers.get("Authorization")
+    sub = session.get("sub")
+
+    def allowed():
+        if bearer:
+            import machines
+            account = machines.authenticate(bearer.partition(" ")[2])
+            return account and "jobs:read" in account["scopes"]
+        import users
+        return users.role_of(sub) is not None
+
+    def records():
+        sequence = int(raw)
+        try:
+            yield "retry: 1000\n\n"
+            while allowed():
+                events = JobEvents(path).after(sequence)
+                if events:
+                    for event in events:
+                        if not allowed():
+                            return
+                        sequence = event["sequence"]
+                        yield "id: %s\nevent: job\ndata: %s\n\n" % (sequence, json.dumps(event))
+                else:
+                    # Connection keepalives do not read job state. Only a
+                    # native change wakes the next database read.
+                    while not watch.wait(30):
+                        account = getattr(g, "machine", None)
+                        if account and time.time() >= account["expires_at"]:
+                            return
+                        yield ": keepalive\n\n"
+                    yield ": changed\n\n"
+        finally:
+            watch.close()
+
+    return Response(stream_with_context(records()), mimetype="text/event-stream",
+                    headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"})
 
 
 # ---------------------------------------------------------------------------
