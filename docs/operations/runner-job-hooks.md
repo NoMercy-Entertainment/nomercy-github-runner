@@ -360,6 +360,12 @@ This avoids `docker diff` scanning the entire build filesystem. Guard verificati
 also runs independently of disk/cache measurements, at its existing cadence,
 so a slow storage probe cannot expire the fleet's security evidence.
 
+After a macOS guest boots, its owned APFS volume can become available after SSH.
+Startup may restore its recorded mount only when `/etc/fstab` pins a unique volume
+UUID, that volume still has the runner's name and exact quota, and the unmounted
+directory is empty. Existing data and mismatched volumes are never adopted or
+reformatted; normal ownership/quota verification must pass before a listener starts.
+
 Nothing here reaches a running runner by itself.
 
 1. **Controller and dashboard**: deploy, with
