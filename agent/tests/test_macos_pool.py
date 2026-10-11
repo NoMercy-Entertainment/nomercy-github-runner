@@ -87,6 +87,10 @@ class Host:
             assert self.units[name]["State"]["Running"] is False
             del self.units[name]
             return True, name, ""
+        if argv[1] == "wait":
+            if self.units[name]["State"]["Running"]:
+                return False, "", "exit event timed out"
+            return True, "0", ""
         raise AssertionError(argv)
 
     def guest(self, record):
@@ -388,6 +392,15 @@ def test_stuck_guest_shutdown_is_failure_without_force(pool, host):
         pool.stop(RID)
     assert pool._power(RID) == "running"
     assert not any(a[:2] == ["docker", "stop"] for a in host.calls)
+
+
+def test_shutdown_waits_on_native_exit_without_repeated_inspections(pool, host):
+    pool.create(RID, SPEC)
+    host.calls.clear()
+    pool.stop(RID)
+    wait = ["docker", "wait", naming.unit_name(RID)]
+    assert host.calls.count(wait) == 1
+    assert host.now == 0
 
 
 def test_descendant_processes_with_new_process_groups_are_counted(pool, host):

@@ -105,3 +105,32 @@ guard with a recorded allowed decision. The dashboard payload and heading
 renderer were checked for all four GitHub fleets: every heading is green
 with the requested Fillz access policy and outside-fork refusal text. This
 does not mean the pending ARM/macOS resource cutovers are complete.
+
+## Prepared macOS transfer and recovery
+
+The macOS migration helper captures only stopped source listeners, checks
+their existing forge registration IDs and UUIDs, and compares registration
+file hashes after transfer and a maintenance reboot. The adopted Forgejo
+runner's registration is copied from its existing legacy directory into the
+prepared template; it is never registered again. Offline preparation writes
+a persistently disabled launchd definition without starting the listener.
+The original guest and its data remain available for rollback.
+
+Guest shutdown now waits on Docker's native exit event and verifies the
+resulting power state. Boot readiness still uses the existing SSH readiness
+check; this change does not claim that every internal polling path is gone.
+
+The host recovery plan also checkpoints the 22 currently running Docker
+Desktop containers by their existing IDs and restores them through the
+owning Windows account before returning the fleet to service. Stoney's
+four SSH endpoints remain unreachable; a native network-change watcher
+records reachability when the host network changes.
+
+The macOS runtime, offline migration preparation and shutdown checks passed
+108 targeted tests. The full dashboard suite on commit `c1e34c1` is still
+running. Its database commits were observed making progress on the HDD.
+Following workflow runs use a bounded 4-GiB tmpfs for temporary test data,
+retain the same test suites and 7200-minute job timeout, and unmount that
+temporary storage after completion. A real Linux runner verified the mount
+and cleanup route. All 30 separately published timeout-only PRs are merged;
+the runner isolation PR remains open until the live cutovers pass.

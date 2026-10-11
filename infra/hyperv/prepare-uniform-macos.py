@@ -15,6 +15,7 @@ TEMPLATES = ('actions-runner-v2.338.0-macos-r20261008', 'forgejo-runner-v13.1.0-
 
 def build():
     config = json.loads(Path('/etc/runner-agent/agent.json').read_text())
+    config.pop('appliance', None)
     config['appliance_pool'] = dict(
         image='sha256:ab06f62364694bc5c49b41ea9644d42da03f7af2b36d86acec008a725ae6e745',
         base_disk='/var/lib/runner-appliances/base/macos-sequoia-15.7.7-runner-debloated-20260924.qcow2',

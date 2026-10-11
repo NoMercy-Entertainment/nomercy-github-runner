@@ -337,13 +337,15 @@ class MacAppliancePoolRuntime:
         # launchctl disable persists in the guest across this graceful shutdown.
         ok, out, err = guest(["/usr/bin/sudo", "-n", "/sbin/shutdown", "-h", "now"], timeout=15)
         # SSH can close before shutdown replies: accept only observed poweroff.
-        deadline = self._clock() + self._shutdown_timeout
-        while self._clock() < deadline:
-            if self._power(rid) == "stopped":
-                return
-            self._sleep(2)
+        # Docker waits on the execution unit's exit event. A guest that
+        # already exited is returned immediately; no status timer is needed.
+        waited, _, wait_error = self._run(
+            [self._docker, "wait", naming.unit_name(rid)], timeout=self._shutdown_timeout)
+        if waited and self._power(rid) == "stopped":
+            return
+        reason = wait_error or ((err or out) if not ok else "")
         raise RuntimeError("guest did not power off; no forced stop was attempted" +
-                           (": " + (err or out) if not ok else ""))
+                           (": " + reason if reason else ""))
 
     def prepare(self, runner_id, spec):
         """Prepare an owned, powered-off guest before a migration's outage."""

@@ -235,9 +235,13 @@ class MacApplianceRuntime:
 
     # ---- lifecycle -----------------------------------------------------------
 
-    def create(self, runner_id, spec):
+    def create(self, runner_id, spec, *, start=True):
         rid = naming.check(runner_id)
+        if type(start) is not bool:
+            raise ValueError("start must be a boolean")
         if (spec or {}).get("adopt"):
+            if not start:
+                raise ValueError("a serving adoption cannot be prepared offline")
             return self._adopt(rid, spec["adopt"])
         image = (spec or {}).get("image")
         if not image:
@@ -248,6 +252,8 @@ class MacApplianceRuntime:
             raise RuntimeError(f"no runner template {image!r} in this "
                                f"appliance")
         p = self.paths(rid)
+        if not start and self._loaded(rid):
+            raise RuntimeError("offline preparation refuses a loaded launchd job")
 
         if self._storage_limit:
             if spec.get('disk_limit') != self._storage_limit:
@@ -286,6 +292,12 @@ class MacApplianceRuntime:
             self._fs.remove(stage)
         else:
             self._fs.write_text(p["plist"], plist_text, mode=0o600)
+
+        if not start:
+            # Migration prepares a registered definition without briefly
+            # enabling it to claim a job. The disable survives guest reboot.
+            self._check(self._launchctl("disable", self._target(rid)))
+            return naming.unit_name(rid)
 
         # 4. Loaded and running, from whatever state a cut-off create left.
         self._check(self._launchctl("enable", self._target(rid)))

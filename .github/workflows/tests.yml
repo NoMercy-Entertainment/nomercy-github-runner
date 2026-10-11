@@ -21,12 +21,25 @@ jobs:
           python-version: '3.12'
       - name: Dependencies
         run: python -m pip install flask==3.0.3 flask-sock==0.7.0 cryptography==48.0.1 pyyaml pytest
+      - name: Prepare bounded temporary test storage
+        run: |
+          pytest_root="${RUNNER_TEMP}/pytest-memory-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          mkdir -m 0700 "$pytest_root"
+          mount -t tmpfs -o size=4G,mode=0700 tmpfs "$pytest_root"
+          echo "PYTEST_MEMORY_DIR=$pytest_root" >> "$GITHUB_ENV"
       - name: Agent tests
         working-directory: agent
-        run: python -m pytest -q -p no:cacheprovider
+        run: python -m pytest -q -p no:cacheprovider --basetemp "$PYTEST_MEMORY_DIR/agent"
       - name: Node check
         run: |
           node --version || echo "no node: the renderer tests will skip"
       - name: Dashboard tests
         working-directory: dashboard
-        run: python -m pytest -q -p no:cacheprovider
+        run: python -m pytest -q -p no:cacheprovider --basetemp "$PYTEST_MEMORY_DIR/dashboard"
+      - name: Release temporary test storage
+        if: always()
+        run: |
+          if [ -n "${PYTEST_MEMORY_DIR:-}" ] && mountpoint -q "$PYTEST_MEMORY_DIR"; then
+            umount "$PYTEST_MEMORY_DIR"
+            rmdir "$PYTEST_MEMORY_DIR"
+          fi

@@ -55,6 +55,30 @@ def test_unknown_launchd_state_is_not_proof_of_quiescence(runtime, guest):
     assert runtime.instances()[0]["state"] == "unknown"
 
 
+def test_offline_registered_preparation_never_starts_listener(runtime, guest):
+    paths = runtime.paths(RID)
+    guest.makedirs(paths["reg"])
+    credential = paths["reg"] + "/.runner"
+    guest.write_text(credential, '{"id": "original-registration"}')
+    runtime.create(RID, SPEC, start=False)
+    assert guest.read_text(credential) == '{"id": "original-registration"}'
+    assert not launchctl(guest, "enable")
+    assert not launchctl(guest, "bootstrap")
+    assert not launchctl(guest, "kickstart")
+    assert launchctl(guest, "disable")
+    runtime.start(RID)
+    assert runtime.status(RID)["running"] is True
+
+
+def test_offline_preparation_refuses_existing_listener_before_writes(runtime, guest):
+    runtime.create(RID, SPEC)
+    before = guest.read_text(runtime.paths(RID)["plist"])
+    with pytest.raises(RuntimeError, match="loaded launchd"):
+        runtime.create(RID, dict(SPEC, env={"changed": "yes"}), start=False)
+    assert guest.read_text(runtime.paths(RID)["plist"]) == before
+    assert runtime.status(RID)["running"] is True
+
+
 def launchctl(guest, verb=None):
     return [c for c in guest.calls
             if c[0] == TOOLS["launchctl"] and (verb is None or c[1] == verb)]
