@@ -340,10 +340,10 @@ class FakeDocker:
         "{{.State.Status}}": lambda c: c["state"],
         "{{.State.Running}}": lambda c: str(c["state"] == "running").lower(),
         '{{index .Config.Labels "nomercy.provider"}}\t'
-        '{{index .Config.Labels "nomercy.origin_guard"}}\t{{.State.Running}}':
+        '{{index .Config.Labels "nomercy.origin_guard"}}\t{{.State.Running}}\t{{.Image}}':
             lambda c: "\t".join([c["labels"].get("nomercy.provider", "<no value>"),
                                  c["labels"].get("nomercy.origin_guard", "<no value>"),
-                                 str(c["state"] == "running").lower()]),
+                                 str(c["state"] == "running").lower(), c["image"]]),
         "{{json .State}}": lambda c: json.dumps({
             "Status": c["state"], "Running": c["state"] == "running",
             "ExitCode": 0, "StartedAt": "2026-09-18T00:00:00Z",

@@ -39,7 +39,8 @@ def docker():
 
 @pytest.fixture
 def runtime(docker):
-    return LinuxContainerRuntime(run=docker)
+    return LinuxContainerRuntime(run=docker, guard_check=lambda name, image, paths: [
+        path for path in paths if path in docker.containers[name].get("changed", {})])
 
 
 @pytest.fixture

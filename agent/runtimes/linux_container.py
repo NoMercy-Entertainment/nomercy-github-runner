@@ -81,7 +81,7 @@ RUNNER_LABEL = "nomercy.runner_id"
 #: whose code a job runs (images/linux/unit/runner/runner_guard.py) it ships.
 ORIGIN_GUARD_LABEL = "nomercy.origin_guard"
 #: The image's files the check is made of, and the one that sets the hook: a
-#: unit whose copy of any has changed since it was made (`docker diff`) is
+#: unit whose copy of any differs from the immutable image is
 #: not trusted to refuse anything.
 ORIGIN_GUARD_FILES = ("/runner/job-started.sh", "/runner/job_started.py",
                       "/runner/runner_guard.py", "/runner/run")
@@ -233,8 +233,10 @@ def memory_bytes(value):
 class LinuxContainerRuntime:
     kind = "linux-container"
 
-    def __init__(self, run=None, adopted=None, storage=None, readonly_root=None):
+    def __init__(self, run=None, adopted=None, storage=None, readonly_root=None, guard_check=None):
         self._run = run or _docker
+        from .linux_guard import ImageGuardFiles
+        self._guard_check = guard_check or ImageGuardFiles(self._run)
         from .linux_storage import LinuxStorage
         # `storage` doubles as a config.py mapping (production, via
         # __main__.runtime_for) and as an already-built LinuxStorage (every
@@ -800,28 +802,25 @@ class LinuxContainerRuntime:
 
     def origin_guard_report(self, runner_id):
         """Whether this unit's job-started hook refuses outside code
-        (agent/origin_guard.py): the image's label for the version, `docker
-        diff` for any change to the files the check is made of since the
-        unit was made, and the hook's own record of its last run. None for a
+        (agent/origin_guard.py): the image's label for the version, a bounded
+        content comparison of the four guard files against that image,
+        and the hook's own record of its last run. None for a
         unit that is not GitHub's, or not running, or cannot be read now."""
         from ..origin_guard import LAST_RESULT, last_result, report
         name = naming.unit_name(naming.check(runner_id))
         ok, out, _ = self._run(["inspect", "--type", "container", "--format",
                                 '{{index .Config.Labels "nomercy.provider"}}\t'
                                 '{{index .Config.Labels "' + ORIGIN_GUARD_LABEL + '"}}\t'
-                                "{{.State.Running}}", name], timeout=30)
+                                "{{.State.Running}}\t{{.Image}}", name], timeout=30)
         if not ok:
             return None
-        provider, guard, running = (out.strip().split("\t") + ["", "", ""])[:3]
+        provider, guard, running, image = (out.strip().split("\t") + ["", "", "", ""])[:4]
         if provider != "github" or running != "true":
             return None
-        ok, diff, _ = self._run(["diff", name], timeout=120)
-        if not ok:
+        changes = self._guard_check(name, image, ORIGIN_GUARD_FILES)
+        if changes is None:
             return None
-        changed = sorted({line.split(None, 1)[1].strip().rsplit("/", 1)[-1]
-                          for line in diff.splitlines()
-                          if len(line.split(None, 1)) == 2
-                          and line.split(None, 1)[1].strip() in ORIGIN_GUARD_FILES})
+        changed = sorted(path.rsplit("/", 1)[-1] for path in changes)
         ok, text, _ = self._run(["exec", name, "cat",
                                  f"{MOUNTS['logs']}/{LAST_RESULT}"], timeout=30)
         return report(int(guard) if guard.strip().isdigit() else 0, changed,

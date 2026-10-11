@@ -351,6 +351,15 @@ equal.
 
 ### Rolling it out
 
+Linux agents compare only the four guard files with the container's immutable
+image ID. The original files are read from an unstarted, isolated temporary
+container, which is removed after verification. Reads accept bounded regular
+files only; a timeout, unreadable image, or failed cleanup leaves the policy
+unknown. No command is executed inside the running runner to prove file contents.
+This avoids `docker diff` scanning the entire build filesystem. Guard verification
+also runs independently of disk/cache measurements, at its existing cadence,
+so a slow storage probe cannot expire the fleet's security evidence.
+
 Nothing here reaches a running runner by itself.
 
 1. **Controller and dashboard**: deploy, with

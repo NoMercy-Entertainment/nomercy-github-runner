@@ -250,6 +250,7 @@ class HeartbeatSender:
         self._thread = None
         self._measuring = None
         self._deep_thread = None
+        self._guard_thread = None
         self._depths = {}
         #: runner_id -> its last origin guard report, with when it was
         #: measured; sent with every beat until the next deep pass.
@@ -279,29 +280,54 @@ class HeartbeatSender:
         self._sample_ready.set()
         return built
 
-    def measure_depth_once(self):
+    def measure_guards_once(self):
+        """Publish security evidence independently of storage walks."""
+        payload = self._measured
+        if not payload:
+            return
+        ids = [unit["runner_id"] for unit in payload[1].get("instances", [])]
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            futures = {pool.submit(_guard, self.agent.runtime, rid): rid for rid in ids}
+            for future in as_completed(futures):
+                guard = future.result()
+                if guard is not None:
+                    self._guards[futures[future]] = guard
+
+    def measure_depth_once(self, include_guards=True):
         """Deep probes cannot delay CPU, job, or instance observations."""
+        if include_guards:
+            self.measure_guards_once()
         payload = self._measured
         if not payload:
             return
         ids = [unit["runner_id"] for unit in payload[1].get("instances", [])]
         def measure(rid):
             if self._stop.is_set():
-                return rid, {}, None
-            return rid, _depth(self.agent.runtime, rid), _guard(self.agent.runtime, rid)
+                return rid, {}
+            return rid, _depth(self.agent.runtime, rid)
         with ThreadPoolExecutor(max_workers=4) as pool:
             futures = [pool.submit(measure, rid) for rid in ids]
             for future in as_completed(futures):
-                rid, depth, guard = future.result()
+                rid, depth = future.result()
                 self._depths[rid] = depth
-                if guard is not None:
-                    self._guards[rid] = guard
 
     def _deep_loop(self):
         while not self._stop.is_set():
             if self._measured:
                 started = time.monotonic()
-                self.measure_depth_once()
+                self.measure_depth_once(include_guards=False)
+                self._stop.wait(max(self.interval, DEEP_EVERY * self.interval
+                                    - (time.monotonic() - started)))
+            else:
+                self._stop.wait(self.interval)
+
+    def _guard_loop(self):
+        # Preserve the existing verification cadence; slow cache/disk probes
+        # must not postpone checks or make valid security evidence expire.
+        while not self._stop.is_set():
+            if self._measured:
+                started = time.monotonic()
+                self.measure_guards_once()
                 self._stop.wait(max(self.interval, DEEP_EVERY * self.interval
                                     - (time.monotonic() - started)))
             else:
@@ -360,6 +386,10 @@ class HeartbeatSender:
                                              name="agent-heartbeat-storage",
                                              daemon=True)
         self._deep_thread.start()
+        self._guard_thread = threading.Thread(target=self._guard_loop,
+                                              name="agent-heartbeat-guard",
+                                              daemon=True)
+        self._guard_thread.start()
         return self
 
     def stop(self):
