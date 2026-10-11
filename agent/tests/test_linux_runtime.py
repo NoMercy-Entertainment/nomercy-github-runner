@@ -51,6 +51,11 @@ def run_argv(docker):
     return next(c for c in docker.calls if c[0] == "run")
 
 
+def test_worker_startup_margin_cannot_be_lowered_by_a_spec(runtime, docker):
+    runtime.create(RID, dict(SPEC, env={'GITHUB_ACTIONS_RUNNER_CHANNEL_TIMEOUT': '30'}))
+    assert docker.containers[naming.unit_name(RID)]['env']['GITHUB_ACTIONS_RUNNER_CHANNEL_TIMEOUT'] == '300'
+
+
 class TestTheArgv:
     def test_it_carries_t0002s_stop_timeout(self, runtime, docker):
         """Docker Engine 29 defaults to one second, which kills the runner's

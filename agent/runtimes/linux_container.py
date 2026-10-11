@@ -51,6 +51,7 @@ from decimal import Decimal
 from concurrent.futures import ThreadPoolExecutor
 
 from .. import cpu, hardware, naming
+from ..runner_environment import CHANNEL_TIMEOUT_KEY, CHANNEL_TIMEOUT_SECONDS
 from ..jobs import current_job
 from .adopted import Adopted
 from .localfs import df_figures
@@ -347,6 +348,7 @@ class LinuxContainerRuntime:
 
         env = dict(spec.get("env") or {})
         env.update(LAYOUT_ENV)
+        env[CHANNEL_TIMEOUT_KEY] = CHANNEL_TIMEOUT_SECONDS
         env_file = _env_file(env)
         try:
             args += ["--env-file", env_file, image]

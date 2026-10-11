@@ -125,6 +125,10 @@ set -m
 /runner/cleanup
 case "$RUNNER_KIND" in
   github)
+    # Upstream caps the local Listener -> Worker startup channel at 300s.
+    # The job itself retains its separately configured five-day allowance.
+    export GITHUB_ACTIONS_RUNNER_CHANNEL_TIMEOUT=300
+    python3 /runner/runner_environment.py "$RUNNER_HOME/.env"
     # The GitHub runner keeps its registration beside its binaries; those
     # files are links into the registration volume, so a new unit on the same
     # volume is the same runner and a recreate, which drops the volume, is not.

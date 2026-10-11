@@ -91,6 +91,7 @@ def test_runner_profiles_do_not_share_dotnet_or_package_caches(runtime):
     for rid, env in zip((RID, OTHER), envs):
         paths = runtime.paths(rid)
         assert env["HOME"] == posixpath.join(paths["work"], ".home")
+        assert env['GITHUB_ACTIONS_RUNNER_CHANNEL_TIMEOUT'] == '300'
         for key in ("CARGO_HOME", "DOTNET_CLI_HOME", "NUGET_PACKAGES", "NUGET_SCRATCH",
                     "NPM_CONFIG_CACHE", "GOCACHE", "XDG_DATA_HOME",
                     "RUNNER_TOOL_CACHE", "AGENT_TOOLSDIRECTORY"):

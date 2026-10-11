@@ -204,6 +204,7 @@ class TestIsolation:
         assert unit["env"]["SOME_TOKEN"] == SECRET
         assert unit["env"]["RUNNER_WORK_DIR"] == p["work"]
         assert unit["env"]["TEMP"] == unit["env"]["TMP"] == p["tmp"]
+        assert unit['env']['GITHUB_ACTIONS_RUNNER_CHANNEL_TIMEOUT'] == '300'
 
     def test_directory_worker_profiles_and_tool_caches_are_cleared_together(self, runtime, host):
         assert runtime._storage is None

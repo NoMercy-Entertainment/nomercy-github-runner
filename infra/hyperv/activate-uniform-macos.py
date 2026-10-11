@@ -11,7 +11,7 @@ import importlib.util
 s=importlib.util.spec_from_file_location('migration','/tmp/migrate-uniform-macos.py');m=importlib.util.module_from_spec(s);s.loader.exec_module(m)
 ROOT=Path('/var/lib/runner-appliances/uniform-activation-20261011');ROOT.mkdir(mode=0o700,parents=True,exist_ok=True);os.chmod(ROOT,0o700)
 CONFIG=Path('/etc/runner-agent/agent.json');ORIGINAL=ROOT/'agent.original.json'
-MODULES=('server.py','runtimes/macos_appliance.py','runtimes/macos_pool.py')
+MODULES=('runner_environment.py','server.py','runtimes/macos_appliance.py','runtimes/macos_pool.py')
 def command(args):subprocess.run(args,check=True,timeout=180)
 def save(name,data):
  temp=ROOT/(name+'.writing')

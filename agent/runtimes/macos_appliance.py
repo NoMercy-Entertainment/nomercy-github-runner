@@ -56,6 +56,7 @@ from pathlib import Path
 from typing import Protocol
 
 from .. import naming
+from ..runner_environment import CHANNEL_TIMEOUT_KEY, CHANNEL_TIMEOUT_SECONDS, channel_dotenv
 from ..jobs import current_job
 from .localfs import LocalFs
 
@@ -275,6 +276,12 @@ class MacApplianceRuntime:
         # 2b. GitHub's job hooks, before the job that points at them, and on
         #     every create, so a redeployed agent's copy reaches the guest.
         if _serves_github(spec):
+            home = posixpath.join(p["reg"], "agent")
+            self._fs.makedirs(home)
+            dotenv = posixpath.join(home, ".env")
+            before = self._fs.read_text(dotenv) if self._fs.exists(dotenv) else ""
+            self._fs.write_text(dotenv, channel_dotenv(before))
+            self._fs.chmod(dotenv, 0o600)
             self._install_hooks(p, rid)
 
         # 3. The launchd job. Its environment can carry a token, so the file
@@ -405,6 +412,7 @@ class MacApplianceRuntime:
 
     def _plist(self, rid, spec, p):
         env = dict(spec.get("env") or {})
+        env[CHANNEL_TIMEOUT_KEY] = CHANNEL_TIMEOUT_SECONDS
         for area, key in LAYOUT_ENV_KEYS.items():
             env[key] = p[area]
         env["TMPDIR"] = p["tmp"] + "/"

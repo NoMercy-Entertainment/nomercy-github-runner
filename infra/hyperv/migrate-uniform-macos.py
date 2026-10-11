@@ -62,7 +62,7 @@ def registration(fs, home, provider):
         path = home + '/' + name
         assert fs.exists(path), 'Registration file missing: ' + name
         hashes[name] = hashlib.sha256(fs.read_text(path).encode()).hexdigest()
-    data = json.loads(fs.read_text(home + '/.runner'))
+    data = json.loads(fs.read_text(home + '/.runner').lstrip('\ufeff'))
     return dict(hashes=hashes, id=str(data['agentId'] if provider == 'github' else data['id']),
                 uuid=data.get('uuid'))
 

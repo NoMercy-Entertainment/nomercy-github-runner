@@ -49,6 +49,7 @@ import time
 from pathlib import Path
 
 from .. import cpu, hardware, naming
+from ..runner_environment import CHANNEL_TIMEOUT_KEY, CHANNEL_TIMEOUT_SECONDS, channel_dotenv
 from ..jobs import current_job
 from ..windows_timeouts import registration_limits
 from .localfs import LocalFs
@@ -279,6 +280,11 @@ class WindowsProcessRuntime:
         # 4b. GitHub's job hooks, before the unit file that points at them,
         #     and on every create, so a redeployed agent's copy is the one used.
         if _serves_github(spec):
+            home = ntpath.join(p["reg"], "agent")
+            self._fs.makedirs(home)
+            dotenv = ntpath.join(home, ".env")
+            before = self._fs.read_text(dotenv) if self._fs.exists(dotenv) else ""
+            self._fs.write_text(dotenv, channel_dotenv(before))
             hooks = ntpath.join(p["reg"], "hooks")
             self._fs.makedirs(hooks)
             for hook in HOOK_FILES:
@@ -304,6 +310,7 @@ class WindowsProcessRuntime:
 
     def _unit(self, rid, spec, p):
         env = dict(spec.get("env") or {})
+        env[CHANNEL_TIMEOUT_KEY] = CHANNEL_TIMEOUT_SECONDS
         for area, key in LAYOUT_ENV_KEYS.items():
             env[key] = p[area]
         env["TEMP"] = env["TMP"] = p["tmp"]
