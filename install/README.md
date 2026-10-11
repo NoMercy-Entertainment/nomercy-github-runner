@@ -94,27 +94,20 @@ Useful flags when scripting it (`--non-interactive`):
 | `-MinFree N` / `-SkipSpaceCheck` (Windows) | The same two escape hatches as the shell installer |
 | `-RunnerGroup ""` (Windows) | The org default, stated deliberately, same as `--group ""` |
 
-One trap when scripting it, and it depends on the shell you call from rather than
-on `-File`. Only `cmd.exe` mishandles `''`, where quoting is not a thing it does:
-the child receives two literal apostrophes, so `-RunnerGroup ''` asks for a group
-whose name really is `''` instead of the org default. From `cmd.exe` use `""`.
-From PowerShell or bash, `''` and `""` both arrive genuinely empty and bind:
-
-| Called from | Form | Parameter receives |
-|---|---|---|
-| PowerShell 5.1 / pwsh 7 | `-RunnerGroup ''` | empty, bound |
-| bash / WSL | `-RunnerGroup ''` | empty, bound |
-| `cmd.exe` | `-RunnerGroup ""` | empty, bound |
-| `cmd.exe` | `-RunnerGroup ''` | `''` — two characters, not empty |
-
-The argument is never dropped and never shifts onto the next parameter in any of
-them. A splat sidesteps the `cmd.exe` case entirely if you would rather not think
-about the calling shell:
+Windows PowerShell 5.1 drops an empty string when it launches another
+`powershell.exe -File` command. A supplied `-RunnerGroup ''` can therefore
+arrive with its value missing. Invoke the script through PowerShell with a
+splat so the explicitly empty group remains bound:
 
 ```powershell
 $p = @{ Org = 'YourOrg'; Token = $pat; RunnerGroup = ''; NonInteractive = $true }
 & .\nomercy-github-runners-setup.ps1 @p
 ```
+
+When calling from another process, use `powershell.exe -Command` to construct
+that splat inside PowerShell. In `cmd.exe`, `''` means two literal apostrophes;
+it does not express an empty string.
+
 | `--auto-login` / `--no-auto-login` | macOS. Answer the reboot question without a prompt |
 | `--login-password-stdin` | macOS. Reads the login password from stdin for `--auto-login`. There is deliberately no `--password` flag: `argv` is readable through `ps` by any local user and lands in shell history |
 
