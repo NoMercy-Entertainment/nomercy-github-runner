@@ -416,6 +416,7 @@ class MacApplianceRuntime:
             "NUGET_PACKAGES": "nuget", "NUGET_HTTP_CACHE_PATH": "nuget-http",
             "NUGET_SCRATCH": "nuget-scratch", "GRADLE_USER_HOME": "gradle",
             "NPM_CONFIG_CACHE": "npm", "PIP_CACHE_DIR": "pip",
+            "RUNNER_TOOL_CACHE": "toolcache", "AGENT_TOOLSDIRECTORY": "toolcache",
             "GOCACHE": "go-build", "GOMODCACHE": "go-mod", "GOPATH": "go",
             "XDG_DATA_HOME": "xdg-data", "XDG_CONFIG_HOME": "xdg-config",
         }.items():

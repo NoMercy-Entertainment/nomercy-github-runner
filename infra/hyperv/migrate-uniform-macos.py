@@ -126,7 +126,6 @@ def capture(index):
 
 def install(index):
     _, _, original = source()
-    stopped(original)
     config, pool = build()
     rid = IDS[index]
     record = pool._read(rid)
@@ -138,6 +137,13 @@ def install(index):
     directory = ROOT / rid
     captured = json.loads((directory / 'capture.json').read_text())
     assert captured['runner_id'] == rid
+    # The production listener may resume after the short, quiescent capture.
+    # The target remains disabled throughout installation and restart proof;
+    # copying the same registration must never create a second live listener.
+    source_paths = original.paths(rid)
+    source_home = (source_paths['reg'] + '/agent' if captured['expected']['provider'] == 'github'
+                   else captured['legacy_directory'] or source_paths['reg'])
+    assert registration(original._fs, source_home, captured['expected']['provider']) == captured['registration']
     inner, _ = pool._boot(record, maintenance=True)
     inner._owned_storage(rid)
     guest, _, _ = pool._context(record)
@@ -171,7 +177,12 @@ def install(index):
     assert inner.status(rid).get('running') is False, 'Listener restarted during maintenance boot'
     assert registration(inner._fs, home, captured['expected']['provider']) == captured['registration']
     assert inner._owned_storage(rid)['CapacityQuota'] == 100*GIB
+    ok, hardware, _ = pool._context(record)[0](['/usr/sbin/sysctl', 'hw.logicalcpu', 'hw.memsize'])
+    assert ok, 'Cannot verify guest hardware'
+    values = dict(line.split(': ', 1) for line in hardware.strip().splitlines())
+    assert int(values['hw.logicalcpu']) == 8 and int(values['hw.memsize']) == 16*GIB
     pool._shutdown(record)
+    assert registration(original._fs, source_home, captured['expected']['provider']) == captured['registration']
     private_json(directory / 'installed.json', dict(runner_id=rid, registration=captured['registration'],
                  memory_gib=16, cores=8, storage_gib=100, cache_gib=40, restart_proved=True,
                  installed_at=datetime.now(timezone.utc).isoformat()))

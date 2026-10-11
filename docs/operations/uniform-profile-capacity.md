@@ -141,5 +141,23 @@ The first request remains fast; an authenticated repeat with the same
 idempotency key waits on a threading event instead of sending periodic
 status requests. Lost connections can be retried without duplicating work;
 older agents retain compatibility during the rolling upgrade. This transport
-has passed 87 targeted controller tests. It does not change job time limits,
+has passed 87 targeted controller tests and full CI on `9c68f16`. Its slow
+operation and native completion fixtures use explicit events, so a loaded
+disk cannot make their simulated work finish early. It does not change job time limits,
 restart listeners, or claim that the older job-log collector is event driven.
+
+The staged macOS continuation briefly drains the two source listeners for a
+quiescent data capture, then restores them while installing and restarting
+their disabled targets. Before final activation it checks the guest's actual
+8-core/16-GiB hardware and 100-GiB APFS quota, drains only those two runners,
+and preserves the original guest, configuration and registration files.
+Mac tool downloads now use the owned cache rather than a shared toolcache.
+The runtime, APFS storage, guest pool and job hooks passed 177 targeted tests.
+These are preparation checks; the live cutover has not yet passed.
+
+The revised host watcher selects the 17 non-ARM runners. A fresh forge
+observation must also report no active ARM job, but ARM is not drained,
+expanded or reconfigured. The already approved whole-host restart saves its
+VM state. Offline is accepted only as the forge's explicit non-busy record;
+an unknown observation still blocks maintenance. Each provider is queried
+once per gate, rather than once per runner.

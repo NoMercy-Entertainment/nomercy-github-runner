@@ -67,7 +67,22 @@ class Counting(AgentServer):
 
     def handle_verb(self, handler, verb, body):
         type(self).handled += 1
+        release = getattr(self, "release_on_wait", None)
+        if release is not None and handler.headers.get("X-Wait-Seconds"):
+            release.set()
         return super().handle_verb(handler, verb, body)
+
+
+class BlockedCreate(FakeRuntime):
+    """Completion is controlled by the test, independently of disk speed."""
+
+    def __init__(self):
+        super().__init__()
+        self.release = threading.Event()
+
+    def create(self, runner_id, spec):
+        self.release.wait()
+        return super().create(runner_id, spec)
 
 
 def an_agent(pki, db, receiver=None, runtime=None, host_id="linux-1"):
@@ -109,9 +124,8 @@ def wait_for(condition, timeout=5.0):
 
 class TestASlowVerbIsAnsweredAtOnce:
     def test_it_comes_back_202_long_before_the_work_is_done(self, pki, db):
-        runtime = FakeRuntime()
-        release = threading.Event()
-        runtime.delay = release
+        runtime = BlockedCreate()
+        release = runtime.release
         server, _ = an_agent(pki, db, runtime=runtime)
         runner_id = SpecStore(db).create(provider="github", platform="linux",
                                          host_id="linux-1")
@@ -402,9 +416,9 @@ class TestWaitingForAnOutcome:
             server.stop()
 
     def test_native_completion_without_receiver_uses_one_wait_request(self, pki, db):
-        runtime = FakeRuntime()
-        runtime.delay = 0.3
+        runtime = BlockedCreate()
         server, _ = an_agent(pki, db, runtime=runtime)
+        server.release_on_wait = runtime.release
         runner_id = SpecStore(db).create(provider="github", platform="linux", host_id="linux-1")
         try:
             result = controller(pki, db).call_and_wait(
@@ -415,6 +429,7 @@ class TestWaitingForAnOutcome:
             assert Counting.handled == 2
             assert len(runtime.calls) == 1
         finally:
+            runtime.release.set()
             server.stop()
 
 

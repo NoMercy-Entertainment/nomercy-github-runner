@@ -92,7 +92,8 @@ def test_runner_profiles_do_not_share_dotnet_or_package_caches(runtime):
         paths = runtime.paths(rid)
         assert env["HOME"] == posixpath.join(paths["work"], ".home")
         for key in ("CARGO_HOME", "DOTNET_CLI_HOME", "NUGET_PACKAGES", "NUGET_SCRATCH",
-                    "NPM_CONFIG_CACHE", "GOCACHE", "XDG_DATA_HOME"):
+                    "NPM_CONFIG_CACHE", "GOCACHE", "XDG_DATA_HOME",
+                    "RUNNER_TOOL_CACHE", "AGENT_TOOLSDIRECTORY"):
             assert posixpath.commonpath([env[key], paths["cache"]]) == paths["cache"]
         assert env["RUSTUP_HOME"] == "/Users/user/.rustup"
         assert env["ANDROID_HOME"] == "/Users/user/Library/Android/sdk"
