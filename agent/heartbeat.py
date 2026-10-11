@@ -28,7 +28,7 @@ from . import protocol
 from .link import ControllerLink
 
 INTERVAL = 10
-TIMEOUT = 5
+TIMEOUT = 20
 
 
 #: Every how many beats the storage and cache of each unit are measured as

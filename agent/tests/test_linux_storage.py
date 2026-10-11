@@ -348,19 +348,23 @@ def test_runtime_binds_volumes_and_recreate_preserves_work(disk):
     assert not store._paths(RID)[0].exists()
 
 
-def test_a_runner_with_its_own_disk_keeps_its_probes_as_they_were(disk):
-    """Its own filesystem is its boundary, and the card knows that disk's
-    size already - no df is run for a volume it does not share."""
+def test_owned_disk_usage_does_not_walk_job_files(disk, monkeypatch):
+    """Filesystem counters avoid recursive scans competing with builds."""
     store, commands = disk
     docker = BoundDocker()
     runtime = LinuxContainerRuntime(run=docker, storage=store)
     runtime.create(RID, {"image": "unit:v1", "disk_limit": MIN_BYTES})
     assert store.has_disk(RID) is True
     docker.calls.clear()
+    from types import SimpleNamespace
+    monkeypatch.setattr(shutil, "disk_usage", lambda path:
+                        SimpleNamespace(total=MIN_BYTES, used=123456, free=MIN_BYTES - 123456))
     got = runtime.probe(RID, "disk_usage")
+    assert got["ok"] is True
+    assert got["value"] == 123456
     assert got["total_bytes"] == MIN_BYTES
     assert "volume_total_bytes" not in got
-    assert not [c for c in docker.calls if "df" in c and "-Pk" in c]
+    assert not docker.calls
 
 
 def test_an_uncapped_cache_on_the_runners_own_disk_is_bounded_by_it(disk):

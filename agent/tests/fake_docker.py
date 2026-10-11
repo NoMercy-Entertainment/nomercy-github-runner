@@ -401,7 +401,7 @@ class FakeDocker:
             if rid:
                 line = re.sub(r'\{\{\.Label "([^"]+)"\}\}',
                               lambda m: c["labels"].get(m.group(1), ""), fmt)
-                lines.append(line.replace("{{.State}}", c["state"]))
+                lines.append(line.replace("{{.Names}}", name).replace("{{.State}}", c["state"]))
         return True, "\n".join(lines), ""
 
     def _stats(self, args, input):
@@ -427,6 +427,9 @@ class FakeDocker:
         if args[0] == "-i":
             args = args[1:]
         name, cmd = args[0], args[1:]
+        if cmd[:9] == ["timeout", "--signal=KILL", "10s", "nice", "-n", "19",
+                       "ionice", "-c", "3"]:
+            cmd = cmd[9:]
         missing = self._need(name)
         if missing:
             return missing

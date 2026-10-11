@@ -733,9 +733,19 @@ class LinuxContainerRuntime:
     def probe(self, runner_id, probe):
         name = self._unit(runner_id)
         if probe == "disk_usage":
+            if self._storage:
+                try:
+                    usage = self._storage.telemetry(naming.check(runner_id))
+                except (OSError, RuntimeError, ValueError) as error:
+                    return {"ok": False, "value": None, "error": str(error)}
+                if usage.get("disk_limit_enforced"):
+                    return {"ok": True, "value": usage["disk_used_bytes"],
+                            "total_bytes": usage["disk_limit_bytes"], "error": ""}
             paths = list(MOUNTS.values())
             ok, out, err = self._run(
-                ["exec", name, "du", "-sx", "-B1", *paths], timeout=45)
+                ["exec", name, "timeout", "--signal=KILL", "10s",
+                 "nice", "-n", "19", "ionice", "-c", "3",
+                 "du", "-sx", "-B1", *paths], timeout=15)
             try:
                 measured = dict((line.split("\t", 1)[1],
                                  int(line.split("\t", 1)[0]))
@@ -821,14 +831,18 @@ class LinuxContainerRuntime:
         worker runs nothing."""
         ok, out, err = self._run(["ps", "-a", "--filter",
                                   f"label={RUNNER_LABEL}", "--format",
-                                  '{{.Label "' + RUNNER_LABEL + '"}}\t'
+                                  '{{.Names}}\t{{.Label "' + RUNNER_LABEL + '"}}\t'
                                   "{{.State}}"], timeout=30)
         if not ok:
             raise RuntimeError(err or "docker ps failed")
         found, seen = [], set()
         for line in out.splitlines():
-            rid, _, state = line.partition("\t")
-            if not rid:
+            name, _, rest = line.partition("\t")
+            rid, _, state = rest.partition("\t")
+            if not rid or name != self._unit(rid):
+                # A stopped rollback copy or a never-started preparation may
+                # retain ownership labels and volumes. Only the execution
+                # unit addressed by this runtime may report this UUID's state.
                 continue
             seen.add(rid)
             found.append({"runner_id": rid, "state": _state_word(state)})
