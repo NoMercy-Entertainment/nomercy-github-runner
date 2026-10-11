@@ -1,5 +1,26 @@
 # Runner platform on Hyper-V (phase 5)
 
+## Dedicated Windows ARM64 appliance (2026-10-09)
+
+Windows ARM64 has its own Hyper-V Linux host, `rnr-windows-arm64` at
+`10.77.0.50`, outside the ordinary Linux-worker `VMs` collection. Its
+resources are in `WindowsArm.Appliance` in `settings.psd1`: 12 GiB static
+RAM, 8 vCPU, 64 GiB OS disk and a separate 320 GiB data disk. The Windows
+QEMU guest retains 8 GiB RAM, 8 CPUs and both existing 120 GiB virtual disks.
+
+`New-WindowsArmAppliance.ps1` creates only this VM from the verified Ubuntu
+base and prepared seed. It refuses to modify an existing VM or directory.
+`guest/setup-windows-arm-host.sh` prepares only the dedicated host and its
+data disk. Never enrol this Linux appliance as a Linux runner worker: the
+existing `windows-arm64-1` agent runs inside Windows, exposed through
+`https://10.77.0.50:8445`.
+
+The isolation migration and recovery procedure are recorded in
+[`images/windows/arm64/README.md`](../../images/windows/arm64/README.md).
+The original deployment notes below describe phase 5, not current capacity.
+
+## Original phase 5 deployment
+
 Two VMs on an internal network of their own: the control plane, running the
 controller, and the first Linux worker, running the agent and its runner units.
 They sit beside the WSL fleet and change nothing about it. The 13 runners and

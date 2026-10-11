@@ -74,6 +74,9 @@ The controller/dashboard deployment preserved all 19 runner UUIDs and
 upstream registration identities. The subsequent webhook-validation update
 recreated only the dashboard; the controller container was preserved.
 
-Machine enrollment for Stoney's Mac, Windows PC and Proxmox Linux VM is
-pending the addresses and existing SSH access supplied by the operator.
-No unknown machines have been enrolled.
+The operator has supplied Stoney's Mac, Windows PC, Proxmox host and Linux
+VM addresses. A dedicated SSH key is prepared outside the repository. Stoney
+has installed its public key on the Mac, Proxmox host and Linux VM; Windows
+still needs its administrator step. Enrollment awaits access to Stoney's
+LAN or VPN. The Proxmox host is infrastructure, not an extra runner.
+No machines have been enrolled before their access and capacity are verified.

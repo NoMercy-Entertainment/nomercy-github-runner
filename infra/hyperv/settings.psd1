@@ -35,14 +35,20 @@
     # least this much commit is still free. Static memory is a reservation;
     # commit exhaustion has killed the WSL VM twice (R-2).
     CommitReserveGB = 20
-    # And the platform's VMs together stay inside this. The WSL VM the figure
-    # above once budgeted around is retired; the live cost is now the VMs
-    # themselves. Corrected 2026-09-23 against rnr-linux-1's corrected entry
-    # below (80 GB) plus rnr-control (4 GB) plus the new rnr-windows-1
-    # (16 GB) = 100 of 110. Measured that day: host commit 169 of 256 GB
-    # used, 87 GB free. CommitReserveGB is still enforced per VM on top of
-    # this sum.
-    VmBudgetGB    = 110
+    # Current managed VMs: Linux 80, controller 4, Windows x64 36,
+    # and the dedicated ARM appliance 12 GiB. The existing macOS host is
+    # outside this collection. Every allocation also requires the actual
+    # host commit reserve above; this budget is not evidence of free memory.
+    VmBudgetGB    = 132
+
+    # Operator-selected target (2026-10-10). Individual VM sizes below describe
+    # the current deployment until its prepared maintenance cutover completes.
+    UniformRunnerProfile = @{
+        Cores = 8
+        MemoryGiB = 16
+        StorageGiB = 100
+        CacheGiB = 40
+    }
 
     # The GitHub cells. The image is what the fleet on the WSL worker is
     # already made from; the drain group is a runner group with no repository
@@ -59,13 +65,15 @@
 
     GitHub = @{
         BaseImage   = 'ghcr.io/nomercy-entertainment/nomercy-github-runner:latest'
-        RunnerMemGB = 32
+        RunnerMemGB = 16
         DrainGroup  = 'drain'
+        RunnerGroup = 'Fillz'
+        TrustedOwners = 'NoMercy-Entertainment,Fill84'
         # What a GitHub runner on the Windows worker is made from: a template
         # on that worker holding the runner GitHub publishes, checked against
         # the hash from its own release notes (images/windows/manifest.json).
         WindowsTemplate    = 'actions-runner-v2.338.0-windows'
-        WindowsRunnerMemGB = 8
+        WindowsRunnerMemGB = 16
     }
 
     # OPEN-5: static memory, inside the measured margin.
@@ -95,19 +103,16 @@
             MgmtMac   = '00155D77140A'
             UplinkMac = '00155D77140B'
             # What the agent declares, and placement respects: room for two
-            # runners at 6 GB each, leaving the guest and its engine 68 GB.
+            # runners at 16 GiB each. The live 13-runner worker declares its
+            # separate bounded commitment budget in the agent configuration.
             MaxRunners   = 2
-            RunnerMemGB  = 6
+            RunnerMemGB  = 16
         }
         'rnr-windows-1' = @{
             Role      = 'windows-worker'
-            MemoryGB  = 16
-            # 16, not 8 (corrected 2026-09-23): a pinned Windows fleet
-            # gives each runner a sixteen-core window, the same width as
-            # the ones already running on BEAST-UNIT's own 56 cores. An
-            # eight-processor guest cannot hold a real sixteen-core window
-            # at all - the fault behind a runner placed here being pinned
-            # to cores 32-47, which did not exist on it.
+            # Live 2026-10-11: two 16-GiB runner ceilings plus 4 GiB for
+            # Windows. Each runner is limited to eight of these processors.
+            MemoryGB  = 36
             Cpus      = 16
             DiskGB    = 200
             # 320, not 200 (corrected 2026-09-24): this guest hosts two
@@ -159,7 +164,7 @@
         RunnerBinary  = 'D:\HyperV\runner-platform\artefacts\forgejo-runner-v13.1.0\forgejo-runner-v13.1.0-windows-amd64.exe'
         RunnerSha256  = '82ea01bc63c3ba60526576f3d8ac491a1e77db0f8d3d55cc37bd39666a5f04c8'
         MaxRunners    = 2
-        RunnerMemGB   = 8
+        RunnerMemGB   = 16
         # What the Windows Forgejo runners register with: the labels the
         # retired NSSM runner carried (C:\forgejo-runner\.runner), which the
         # workflows ask for. The pilot label is gone with the pilot.
@@ -186,14 +191,12 @@
     WindowsGuests = @{
         'rnr-windows-1' = @{
             MaxRunners  = 2
-            RunnerMemGB = 8
+            RunnerMemGB = 16
             StorageRoot = 'D:\runner-disks'
         }
     }
 
-    # A separate ARM64 Windows 11 QEMU guest on the existing macOS appliance
-    # host. The guest uses software emulation on this x86_64 host. These are
-    # template and capacity defaults; no fleet gains capacity by seeding.
+    # macOS template defaults; capacity is managed by the controller.
     MacOS = @{
         GitHubTemplate = 'actions-runner-v2.338.0-macos-r20261008'
         ForgejoTemplate = 'forgejo-runner-v13.1.0-macos-r20260921'
@@ -204,9 +207,23 @@
 
     WindowsArm = @{
         HostId = 'windows-arm64-1'
+        # Dedicated Hyper-V Linux host. Windows ARM64 stays a QEMU guest
+        # with its existing disks, firmware, TPM and runner identities.
+        Appliance = @{
+            Name = 'rnr-windows-arm64'
+            Address = '10.77.0.50'
+            MemoryGB = 12
+            Cpus = 8
+            DiskGB = 64
+            # Expanded online on 2026-10-10; the guest filesystem is 629 GiB.
+            # Keep room for the original disk and the staged per-runner disks.
+            DataDiskGB = 640
+            MgmtMac = '00155D77320A'
+            UplinkMac = '00155D77320B'
+        }
         PythonUrl = 'https://www.python.org/ftp/python/3.13.14/python-3.13.14-embed-arm64.zip'
         PythonSha256 = '8b5bfc935a24b55c17410aa0b21016ebeee225c96addf008d1d3cd83ff52eb43'
-        Endpoint = 'https://10.77.0.40:8445'
+        Endpoint = 'https://10.77.0.50:8445'
         GuestAddress = '10.0.2.15'
         MaxRunners = 2
         RunnerMemGB = 3

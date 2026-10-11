@@ -1,5 +1,169 @@
 # Windows 11 ARM64 QEMU guest
 
+## Windows Update rollback investigation (2026-10-09)
+
+The preserved Windows installation attempted the ARM64 cumulative package
+`Package_for_RollupFix~31bf3856ad364e35~arm64~~26100.9457.1.0` (KB5129195).
+Its CBS log records a 900,000 ms no-progress timeout during shutdown and
+repeated startup timeouts while the `Events` advanced installer was running.
+Windows initiated its own restarts, then reported `0x800f0920`
+(`CBS_E_HANG_DETECTED`) and rolled back. The later registry write-protection
+errors followed those shutdowns; they do not establish a read-only disk.
+The system drive had approximately 68 GiB free when inspected.
+
+Microsoft documents increasing the TrustedInstaller timeout for this failure:
+[Windows Update hangs and updates are uninstalled](https://learn.microsoft.com/en-us/troubleshoot/windows-client/installing-updates-features-roles/windows-update-hangs-updates-uninstalled).
+`HKLM\SYSTEM\CurrentControlSet\Services\TrustedInstaller\BlockTimeIncrement`
+was changed from DWORD 900 to 10800 seconds and independently read back as
+`0x2a30`. A temporary LocalSystem task performed this one registry write,
+without changing the key's permissions; that task was then deleted. Backups
+are `C:\ProgramData\nomercy\arm-update-timeout-before-20261009.json` and
+`C:\Users\admin\TrustedInstaller-before-arm-timeout-20261009.reg`.
+To undo this mitigation, restore only `BlockTimeIncrement` to its recorded
+original value, rather than importing unrelated service settings.
+
+The current rollback was allowed to proceed without a forced restart, update
+cache deletion, or another installation attempt. This is a verified timeout
+mitigation, not proof of a successful update. Check the final CBS result,
+installed build, and both forge connections before retrying an update or
+performing the pending runner-resource migration.
+
+A read-only inspection of the running QEMU system disk later confirmed that
+Windows timed out again at 14:41:56 local time and initiated its own restart.
+At 14:48:06 CBS reported both `BlockTime` and `BlockTimeIncrement` as
+10,800,000 ms, confirming that the mitigation was loaded at this startup.
+CBS resumed the same session `31282919_3229239499` in rollback state; this
+was not evidence of a new update installation attempt. The last observed
+log entry was the `Events` installer starting at 15:04:10. Agent heartbeats
+and idle forge status had returned while the console still showed rollback
+and SSH commands did not respond, so these signals do not establish recovery.
+The temporary QEMU disk export and NTFS mount were read-only, without journal
+replay, and were removed after inspection; the view was crash-consistent.
+
+By 15:43 the log had advanced beyond `Events`, including a successful WinRE
+rollback sub-operation at 15:39. This is not completion of the whole rollback.
+Native SSH commands worked again, but a simple PowerShell readiness command
+did not finish within 20 seconds. TiWorker CPU and read counters were active.
+Windows Search also consumed substantial CPU; `sc.exe stop WSearch` was used
+only inside the ARM guest and its stopped state was verified. Its existing
+DEMAND_START configuration was left unchanged. Restore the previously running
+search service with `sc.exe start WSearch` after servicing recovers.
+
+Servicing is now watched through Windows directory-change notifications,
+without periodic status queries. The SYSTEM task
+`NoMercy-ArmRecoveryWatch-20261009` starts immediately and after a guest boot.
+It reports a new critical CBS startup failure or successful CBS startup
+completion to the ARM host's loopback-only `arm-recovery-watch.service`.
+WinRE sub-operation success does not trigger a completion report. Both real
+Windows notification tests passed, and the receiver acknowledged `ready` at
+16:15:36 local time. Its protected event record is
+`/var/lib/runner-appliances/windows-arm64/recovery-watch/event.json`.
+`receiver.py wait` blocks on inotify and can forward an event to the active
+tool session. A completion event still requires a single Windows readiness
+check and restoration of WSearch before declaring the guest recovered.
+The Windows task deletes itself on completion; stop the dedicated receiver
+after handling the event. Installation is in
+`infra/hyperv/Install-ArmServicingWatch.ps1`.
+
+The event receiver recorded successful CBS startup completion at 17:59:18
+on October 9 (received at 18:03:18, Europe/Amsterdam). The October 10
+readiness check found the unchanged build 26200.8037 and `rnr-agent` running;
+the attempted update did not become installed. WSearch was confirmed
+RUNNING again, with no startup-type change. Standalone PowerShell 5.1 and
+7 readiness probes exceeded 20 and 60 seconds respectively; these short
+deadlines do not prove failure under emulation. The reporting GitHub probe
+subsequently passed job setup, its start-hook and machine inspection.
+The dedicated servicing receiver was stopped and disabled after handling
+its completion event. No runner or QEMU process was restarted for cleanup.
+
+`infra/hyperv/guest/watch_windows_job.py` can wait for the current reporting
+probe using native Windows file-change notifications on its runner log.
+It emits only the matched job's terminal result and exits, without reading
+job payloads or periodically querying GitHub. Always verify fresh forge
+state before starting maintenance after such a notification.
+
+## Dedicated Hyper-V host (2026-10-09)
+
+Isolation completed on 2026-10-09. Both existing ARM64 runners are online
+and executing their existing build-environment health workflows on this host.
+The dedicated host is `rnr-windows-arm64` at `10.77.0.50`, with 12 GiB static
+RAM, 8 vCPU, a 64 GiB Ubuntu system VHDX and its own 320 GiB data VHDX.
+Its configuration and disks live under
+`D:\HyperV\runner-platform\vms\rnr-windows-arm64`.
+`WindowsArm.Appliance` in `infra/hyperv/settings.psd1` describes these resources;
+`New-WindowsArmAppliance.ps1` creates only this host and uses its prepared seed.
+
+Windows retains its existing 8 GiB RAM, 8 emulated CPUs, two 120 GiB NVMe
+disks, QEMU 11.1.2, AAVMF firmware/variables, TPM state, toolchains, service
+accounts, certificates and both runner registrations. The worker ID stays
+`windows-arm64-1`; its controller endpoint is `https://10.77.0.50:8445`.
+SSH to Windows uses `admin@127.0.0.1:52222` through
+`rnr-admin@10.77.0.50`, with the platform SSH key. The existing LAN console
+address stays `http://192.168.178.19:8898/`.
+
+The dedicated host runs `windows-arm64-runner.service` and
+`windows-arm64-novnc.service`. Both start automatically. Stopping the QEMU
+service requests ACPI shutdown and allows up to ten minutes for Windows to
+exit cleanly. Drain both runners through the controller before maintenance.
+The macOS VM, its QEMU process, its agent and port 8899 remain independent.
+
+During this cutover the existing global GitHub drain-group validation refused
+the GitHub drain request. The dedicated destination was therefore fenced from
+forge traffic until both listeners could be explicitly stopped and verified
+quiescent through the healthy agent. Global drain settings were left unchanged.
+For later maintenance, verify that the controller's GitHub drain group is
+closed before relying on a normal drain; do not stop a busy listener.
+
+During the migration Windows internally restarted and later displayed an update
+rollback. Its ACPI shutdown did not finish within the bounded wait. The guest
+was therefore network-fenced, then saved using QEMU's complete VM save/restore
+path, including RAM, CPU and emulated TPM state. The source reported migration
+completed and `postmigrate` before its QEMU process was closed. QEMU binary
+hashes, swtpm 0.7.3 and libtpms 0.9.3 match on both hosts. The saved execution
+state is protected by SHA-256 in `isolation-checkpoint-20261009.json`; it is
+restored once, with forge traffic blocked until the existing drains complete.
+This preserves the in-progress Windows update operation rather than resetting it.
+The destination passed both `qemu-img check` inspections and firmware/TPM
+SHA-256 comparisons. The one-time restore completed at 03:21 UTC; its systemd
+override was removed, so future starts use the normal launcher.
+After restoring the saved guest, its DNS cache was flushed and Windows Time
+was started and successfully resynchronized with `time.windows.com` using
+`w32tm /resync /rediscover`. The paused Windows clock must be current before
+checking forge authentication.
+
+The original ARM disks on the macOS host are retained as an offline recovery
+copy, with ARM autostart disabled after cutover. A later rollback must first
+drain the runners, cleanly stop the new Windows guest, and synchronize its
+latest disks, UEFI variables and TPM state back while both guests are stopped.
+Then restore the worker endpoint and console proxy, start the old ARM service,
+and resume the same registrations. Never start both copies simultaneously.
+
+### Cutover verification (03:50 UTC)
+
+- Both GitHub and Forgejo report the ARM64 registrations online. All 19 fleet
+  runners were checked directly against their forges; the original IDs,
+  registrations, limits and worker certificate are unchanged.
+- Windows reports ARM64, 8 CPUs and 8 GiB RAM. Its existing agent and SSH
+  services run on the dedicated host, using the preserved Windows disks.
+- The old ARM QEMU service is inactive with PID 0 and autostart disabled.
+  Its old `windows-arm-novnc` container is stopped with restart policy `no`.
+  Both dedicated-host services are active and enabled, using the normal launcher.
+- All other Hyper-V VMs retain their state, CPU count, memory and uninterrupted
+  uptime. The macOS container and QEMU PID/start time match the pre-cutover
+  baseline. Console ports 8898 (ARM64) and 8899 (macOS) both return HTTP 200.
+- Temporary transfer access and the destination's temporary outgoing firewall
+  restriction were removed. Incoming management restrictions remain in place.
+- GitHub's [health run](https://github.com/NoMercy-Entertainment/nomercy-runner-health-check/actions/runs/37881055139)
+  is executing on `github-windows-arm64-1`; Forgejo's
+  [health run](https://forgejo.phillippepelzer.me/FiLL/forgejo-runners-heath-check/actions/runs/59)
+  is executing on its existing ARM64 runner. Full build-environment results
+  are still pending; job execution and fleet availability are verified.
+
+The ARM maintenance drain began at 02:01 UTC; both forges reported their
+runners online again around 03:49 UTC. Windows' own update rollback, final
+disk synchronization and slow Windows process startup extended the outage.
+The other runners stayed online throughout.
+
 ## ARM runner provisioning in progress (2026-10-02)
 
 ### Targeted installer startup investigation (18:50 UTC)

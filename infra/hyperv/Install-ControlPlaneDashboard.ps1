@@ -75,6 +75,8 @@ $lines = ($Settings | ForEach-Object { "$_=$($values[$_])" }) + @(
     "RUNNER_UNIT_IMAGE_GITHUB_LINUX=nomercy/runner-unit-github:$version",
     "RUNNER_UNIT_MEMORY_GITHUB_LINUX=$($s.GitHub.RunnerMemGB)g",
     "GITHUB_DRAIN_GROUP=$($s.GitHub.DrainGroup)",
+    "RUNNER_GROUP=$($s.GitHub.RunnerGroup)",
+    "RUNNER_TRUSTED_OWNERS=$($s.GitHub.TrustedOwners)",
     "RUNNER_UNIT_IMAGE_GITHUB_WINDOWS=$($s.GitHub.WindowsTemplate)",
     "RUNNER_UNIT_MEMORY_GITHUB_WINDOWS=$($s.GitHub.WindowsRunnerMemGB)g",
     "RUNNER_UNIT_MEMORY_FORGEJO_LINUX=${unitMemGB}g",

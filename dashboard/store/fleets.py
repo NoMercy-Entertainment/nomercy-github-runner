@@ -212,7 +212,10 @@ class FleetStore:
                         raise ValueError("cache enabled must be boolean")
                     if fleet["platform"] != "linux":
                         if maximum is not None or value.get("enabled") is True:
-                            raise ValueError("automatic cache budgets are supported only on Linux")
+                            from control import placement
+                            if not any(placement.declared(w, 'cache_budget') is True
+                                       for w in self._resource_workers(fleet)):
+                                raise ValueError("automatic cache budgets require a supporting worker")
                         if any(scope.startswith("engine-") for scope in (scopes or [])):
                             raise ValueError("engine cache scopes are supported only on Linux")
                     values[key] = json.dumps(value)

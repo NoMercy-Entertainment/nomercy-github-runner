@@ -181,6 +181,10 @@ class AgentRuntime:
             unit["disk_limit"] = int(spec["disk_limit"])
         env = {}
         policy = spec.get("cache_policy") or {}
+        if (spec.get('platform') != 'linux' and isinstance(policy, dict)
+                and policy.get('enabled') is True and type(policy.get('max_bytes')) is int
+                and policy['max_bytes'] > 0):
+            env['RUNNER_CACHE_MAX_BYTES'] = str(policy['max_bytes'])
         if spec.get("platform") == "linux" and isinstance(policy, dict):
             if isinstance(policy.get("max_bytes"), int) and policy["max_bytes"] > 0:
                 env["RUNNER_BUILD_CACHE_GC"] = f"{policy['max_bytes']}B"

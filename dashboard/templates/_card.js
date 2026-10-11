@@ -23,10 +23,10 @@ function esc(v) {
 
 function fmtBytes(b) {
   if (b == null || isNaN(Number(b))) return 'unknown';
-  const g = Number(b) / 1e9;
-  if (g >= 10) return Math.round(g) + ' GB';
-  if (g >= 0.01) return g.toFixed(2) + ' GB';
-  return (Number(b) / 1e6).toFixed(1) + ' MB';
+  const g = Number(b) / 1073741824;
+  if (g >= 10) return Math.round(g) + ' GiB';
+  if (g >= 0.01) return g.toFixed(2) + ' GiB';
+  return (Number(b) / 1048576).toFixed(1) + ' MiB';
 }
 
 function fmtCores(n) {

@@ -679,6 +679,13 @@ class WindowsProcessRuntime:
         elif probe == "cache_size":
             value = self._fs.du(p["cache"])
             volume = self._volume(p["cache"], disk)
+            try:
+                cap = int(json.loads(self._fs.read_text(ntpath.join(p['reg'], 'unit.json')))
+                          .get('env', {}).get('RUNNER_CACHE_MAX_BYTES', 0))
+                if cap > 0:
+                    volume['cap_bytes'] = cap
+            except (OSError, ValueError, TypeError):
+                pass
             if disk is not None:
                 # No cap, but on the runner's own disk: that disk, its alone,
                 # is what bounds the cache.
@@ -808,6 +815,7 @@ class WindowsProcessRuntime:
                 "resettable_os": False,
                 "disk_limit_enforced": self._storage is not None,
                 "disk_quota": self._storage is not None,
+                "cache_budget": True,
                 # OPEN-7: a graceful stop that stays stopped.
                 "supports_drain": True,
                 "clear_cache": True,

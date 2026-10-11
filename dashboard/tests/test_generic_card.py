@@ -244,9 +244,9 @@ class TestTheRenderer:
         """T-27: once a total arrives, storage reads exactly as memory does -
         percent, then used / total - not as a bare used figure."""
         c = dict(spec_cards()[0],
-                 storage={"used_bytes": 12 * 10 ** 7, "total_bytes": 100 * 10 ** 9})
+                 storage={"used_bytes": int(0.12 * 1024 ** 3), "total_bytes": 100 * 1024 ** 3})
         html = render("cardHTML", [c])[0]
-        assert "0.1%" in html and "0.12 GB / 100 GB" in html
+        assert "0.1%" in html and "0.12 GiB / 100 GiB" in html
 
     def test_a_disabled_action_carries_its_reason(self):
         html = render("cardHTML", [cards.from_unmanaged(

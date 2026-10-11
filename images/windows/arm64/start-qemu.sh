@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# One Windows ARM64 QEMU guest on the same Linux host that runs macOS QEMU.
+# Windows ARM64 guest on its dedicated rnr-windows-arm64 Hyper-V Linux host.
 set -euo pipefail
 
 root=/var/lib/runner-appliances/windows-arm64

@@ -108,6 +108,8 @@ try {
         # A runner group no repository may use, which a runner is moved into
         # while it drains: no job can follow it there (OPEN-7).
         "GITHUB_DRAIN_GROUP=$($s.GitHub.DrainGroup)",
+        "RUNNER_GROUP=$($s.GitHub.RunnerGroup)",
+        "RUNNER_TRUSTED_OWNERS=$($s.GitHub.TrustedOwners)",
         # The GitHub Windows cell: the template installed on that worker.
         "RUNNER_UNIT_IMAGE_GITHUB_WINDOWS=$($s.GitHub.WindowsTemplate)",
         "RUNNER_UNIT_MEMORY_GITHUB_WINDOWS=$($s.GitHub.WindowsRunnerMemGB)g",

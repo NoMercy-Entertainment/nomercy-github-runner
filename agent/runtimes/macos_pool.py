@@ -54,7 +54,8 @@ class MacAppliancePoolRuntime:
                  docker="docker", qemu_img="qemu-img", boot_timeout=600,
                  shutdown_timeout=180, image_uid=1000, image_gid=1000,
                  run=None, guest_factory=None,
-                 port_free=_port_free, sleep=time.sleep, clock=time.monotonic):
+                 port_free=_port_free, sleep=time.sleep, clock=time.monotonic,
+                 runner_storage_limit=None):
         if not PINNED_IMAGE.fullmatch(image):
             raise ValueError("appliance pool image must be pinned by sha256")
         if base_guests_disabled is not True:
@@ -94,6 +95,10 @@ class MacAppliancePoolRuntime:
         self._docker, self._qemu = docker, qemu_img
         self._run, self._guest_factory = run or _exec, guest_factory
         self._guest, self._tools = dict(guest), dict(tools or {})
+        if runner_storage_limit is not None and (type(runner_storage_limit) is not int
+                or runner_storage_limit < GIB or runner_storage_limit % GIB):
+            raise ValueError('runner_storage_limit must be whole GiB')
+        self._runner_storage_limit = runner_storage_limit
         self._port_base, self._port_free = ssh_port_base, port_free
         self._boot_timeout, self._shutdown_timeout = boot_timeout, shutdown_timeout
         self._sleep, self._clock = sleep, clock
@@ -293,7 +298,8 @@ class MacAppliancePoolRuntime:
                                   ssh=opts.get("ssh", "ssh"), sshpass=opts.get("sshpass", "sshpass"),
                                   control_dir=str(self._directory(rid) / "ssh.sock"))
                 fs = GuestFs(guest)
-                inner = MacApplianceRuntime(run=guest, fs=fs, tools=self._tools, remote=True)
+                inner = MacApplianceRuntime(run=guest, fs=fs, tools=self._tools, remote=True,
+                                            storage_limit=self._runner_storage_limit)
                 self._contexts[rid] = (guest, inner, MacRegistrar(run=guest, fs=fs))
         return self._contexts[rid]
 
@@ -339,7 +345,8 @@ class MacAppliancePoolRuntime:
         raise RuntimeError("guest did not power off; no forced stop was attempted" +
                            (": " + (err or out) if not ok else ""))
 
-    def create(self, runner_id, spec):
+    def prepare(self, runner_id, spec):
+        """Prepare an owned, powered-off guest before a migration's outage."""
         with self._locked(runner_id) as rid:
             if spec.get("image") not in self.templates:
                 raise ValueError("runner template is not in the verified pool manifest")
@@ -410,6 +417,11 @@ class MacAppliancePoolRuntime:
                         "--env", f"CORES={record['cpus']}",
                         "--env", "NOPICKER=true", self.image]
                 self._command(argv, timeout=300)
+            return record
+
+    def create(self, runner_id, spec):
+        with self._locked(runner_id) as rid:
+            record = self.prepare(rid, spec)
             inner, _ = self._boot(record)
             # Mark before enabling: a crash must never leave a false disabled proof.
             self._write(record, listener_disabled=False)
@@ -560,7 +572,7 @@ class MacAppliancePoolRuntime:
         if got.get("ok") and probe in ("disk_usage", "cache_size"):
             # Each runner here has a guest, and a guest disk, of its own:
             # the volume its tree and cache are on bounds it alone.
-            got = dict(got, total_bytes=got.get("volume_total_bytes"))
+            got = dict(got, total_bytes=got.get('total_bytes', got.get("volume_total_bytes")))
         return got
 
     def clear_cache(self, runner_id, policy):
@@ -616,7 +628,10 @@ class MacAppliancePoolRuntime:
                     appliance_per_runner=True, appliance_control=True,
                     cpu_enforcement=True, memory_enforcement=True,
                     per_runner_memory_overhead_bytes=OVERHEAD_BYTES,
-                    guest_disk_virtual_bytes=self.disk_bytes, disk_quota=False,
+                    guest_disk_virtual_bytes=self.disk_bytes,
+                    disk_quota=bool(self._runner_storage_limit),
+                    disk_limit_enforced=bool(self._runner_storage_limit),
+                    cache_budget=True,
                     supports_drain=True, clear_cache=True, cache_scopes=sorted(SUPPORTED_SCOPES),
                     job_containers=False, nested_builds=False, resettable_os=False,
                     # The Linux host the appliances run on (agent/hardware.py).

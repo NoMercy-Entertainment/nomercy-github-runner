@@ -144,12 +144,19 @@ def _exec(args, input=None, timeout=30):
 class MacApplianceRuntime:
     kind = "macos-appliance"
 
-    def __init__(self, run=None, fs=None, appliance=None, tools=None, remote=False):
+    def __init__(self, run=None, fs=None, appliance=None, tools=None, remote=False,
+                 storage_limit=None):
         self._run = run or _exec
         self._fs = fs or LocalFs()
         self._appliance = appliance
         self._remote = remote
+        self._storage_limit = storage_limit
         self._tools = dict(TOOLS, **(tools or {}))
+        self._storage = None
+        if storage_limit:
+            from .macos_storage import MacStorage
+            self._storage = MacStorage(self._run, self._fs, storage_limit,
+                                       self._tools['runner_user'])
         if self._tools["domain"] == "system" and not self._tools["runner_user"]:
             raise ValueError("system launchd jobs require an explicit runner_user")
 
@@ -241,6 +248,11 @@ class MacApplianceRuntime:
             raise RuntimeError(f"no runner template {image!r} in this "
                                f"appliance")
         p = self.paths(rid)
+
+        if self._storage_limit:
+            if spec.get('disk_limit') != self._storage_limit:
+                raise ValueError('runner disk limit differs from its provisioned APFS quota')
+            self._ensure_storage(rid)
 
         # 1. Storage, private to this user before anything is in it.
         self._fs.makedirs(p["root"])
@@ -458,6 +470,8 @@ class MacApplianceRuntime:
     def start(self, runner_id):
         rid = naming.check(runner_id)
         self._appliance_up()
+        if self._storage_limit:
+            self._owned_storage(rid)
         self._check(self._launchctl("enable", self._target(rid)))
         self._load(rid)
         self._check(self._launchctl("kickstart", self._target(rid)))
@@ -660,6 +674,12 @@ class MacApplianceRuntime:
                 continue
         return ""
 
+    def _ensure_storage(self, runner_id):
+        self._storage.ensure(runner_id)
+
+    def _owned_storage(self, runner_id):
+        return self._storage.verify(runner_id)
+
     def probe(self, runner_id, probe):
         p = self.paths(runner_id)
         volume = {}
@@ -669,6 +689,13 @@ class MacApplianceRuntime:
         elif probe == "cache_size":
             value = self._fs.du(p["cache"])
             volume = self._volume(p["cache"])
+            try:
+                job = plistlib.loads(self._fs.read_text(p['plist']).encode())
+                cap = int(job.get('EnvironmentVariables', {}).get('RUNNER_CACHE_MAX_BYTES', 0))
+                if cap > 0:
+                    volume['cap_bytes'] = cap
+            except (OSError, ValueError, TypeError, plistlib.InvalidFileException):
+                pass
         elif probe == "agent_version":
             try:
                 value = self._fs.read_text(
@@ -682,6 +709,10 @@ class MacApplianceRuntime:
             return {"ok": False, "error": "unknown probe"}
         if value is None:
             return {"ok": False, "error": "could not be measured"}
+        if self._storage_limit and probe == 'disk_usage':
+            owned = self._owned_storage(runner_id)
+            value = owned['CapacityInUse']
+            volume = {'total_bytes': owned['CapacityQuota']}
         return {"ok": True, "value": value, **volume}
 
     def instances(self):
@@ -724,6 +755,8 @@ class MacApplianceRuntime:
     # ---- cache ---------------------------------------------------------------
 
     def clear_cache(self, runner_id, policy):
+        if self._storage_limit:
+            self._owned_storage(runner_id)
         where = self.scope_locations(runner_id)
         scopes = list((policy or {}).get("scopes") or DEFAULT_SCOPES)
         per_scope, errors, measured = {}, {}, True
@@ -775,6 +808,7 @@ class MacApplianceRuntime:
                 # OPEN-7: a graceful stop that stays stopped.
                 "supports_drain": True,
                 "clear_cache": True,
+                "cache_budget": True,
                 "cache_scopes": sorted(SUPPORTED_SCOPES),
                 "notes": "one launchd job per runner inside the macOS "
                          "appliance, over a directory tree only its user "

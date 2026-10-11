@@ -44,13 +44,12 @@ New-Item -ItemType Directory -Path $stage | Out-Null
 $sshConfig = Join-Path $stage 'ssh.conf'
 $tar = Join-Path $stage 'agent.tar'
 if ($Name -eq 'windows-arm64-1') {
-    $hostKey = (Join-Path $env:USERPROFILE '.ssh\macos_runner').Replace('\', '/')
     $lines = @('Host guest', '    HostName 127.0.0.1', '    Port 52222', '    User admin',
                '    ProxyJump rnr-arm-host', "    IdentityFile $key", '    IdentitiesOnly yes',
-               '    StrictHostKeyChecking accept-new',
-               'Host rnr-arm-host', '    HostName 10.77.0.40', '    HostKeyAlias 172.19.136.46',
-               '    User runner', "    IdentityFile $hostKey", '    IdentitiesOnly yes',
-               '    StrictHostKeyChecking accept-new')
+               '    StrictHostKeyChecking accept-new', "    UserKnownHostsFile $known", '    ConnectTimeout 60',
+               'Host rnr-arm-host', "    HostName $($s.WindowsArm.Appliance.Address)",
+               "    User $($s.AdminUser)", "    IdentityFile $key", '    IdentitiesOnly yes',
+               '    StrictHostKeyChecking accept-new', "    UserKnownHostsFile $known")
 } else {
     $lines = @('Host guest', "    HostName $($s.VMs[$Name].Address)", '    User admin',
                "    IdentityFile $key", '    IdentitiesOnly yes', "    UserKnownHostsFile $known",

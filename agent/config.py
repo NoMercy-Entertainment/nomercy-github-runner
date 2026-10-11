@@ -42,7 +42,8 @@ FIELDS = frozenset({"host_id", "runtime", "listen", "controller", "tls",
 APPLIANCE_FIELDS = frozenset({"name", "docker", "boot_timeout"})
 POOL_FIELDS = frozenset({"image", "base_disk", "base_system", "nvram_seed", "data_root", "templates",
                          "base_guests_disabled", "ssh_port_base", "docker", "qemu_img",
-                         "boot_timeout", "shutdown_timeout", "image_uid", "image_gid"})
+                         "boot_timeout", "shutdown_timeout", "image_uid", "image_gid",
+                         "runner_storage_limit"})
 TOOLS_FIELDS = {
     "linux-container": frozenset(),
     "windows-process": frozenset({"nssm", "sc", "icacls", "powershell", "python", "templates", "short_workspaces"}),
