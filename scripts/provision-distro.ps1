@@ -44,11 +44,42 @@ if (-not $vhdx) {
 }
 Write-Host "   virtual disk: $($vhdx.FullName)" -ForegroundColor Green
 
-Write-Host '== enabling systemd ==' -ForegroundColor Cyan
-Invoke-Wsl @('-d', $DistroName, '-u', 'root', '--', 'bash', '-c', "printf '[boot]\nsystemd=true\n' > /etc/wsl.conf")
+Write-Host '== enabling systemd and static DNS ==' -ForegroundColor Cyan
+# generateResolvConf=false + static resolv.conf: by default WSL points the
+# distro at the Windows host's DNS proxy (172.28.x.1), which can silently stop
+# answering after long uptime — on 2026-07-30 that took every runner down with
+# UnknownHostException on all hosts (nomercy-app-kmp#1), and the keepalive task
+# kept the broken distro alive indefinitely. Public resolvers are reachable
+# directly through the NAT, so depend on them instead of the proxy.
+Invoke-Wsl @('-d', $DistroName, '-u', 'root', '--', 'bash', '-c', "printf '[boot]\nsystemd=true\n\n[network]\ngenerateResolvConf=false\n' > /etc/wsl.conf")
+Invoke-Wsl @('-d', $DistroName, '-u', 'root', '--', 'bash', '-c', "rm -f /etc/resolv.conf && printf 'nameserver 1.1.1.1\nnameserver 8.8.8.8\nnameserver 9.9.9.9\n' > /etc/resolv.conf")
 Invoke-Wsl @('--terminate', $DistroName)
 Start-Sleep -Seconds 3
 Invoke-Wsl @('-d', $DistroName, '-u', 'root', '--', 'systemctl', 'is-system-running', '--wait')
+
+Write-Host '== masking systemd-timesyncd ==' -ForegroundColor Cyan
+# WSL2 runs every distro on ONE shared kernel, so there is ONE system clock and
+# this distro does not own it. Hyper-V feeds it the Windows host's time, and a
+# chronyd in the WSL utility VM (outside this distro) already disciplines it.
+# A timesyncd in here is a second, competing disciplinarian steering toward
+# public NTP instead — and when the two references disagree, neither converges:
+# chronyd pins the kernel tick at its 11000 ceiling (+100000 ppm, a clock 10%
+# fast) while timesyncd steps realtime back ~2s every ~27s. Those steps are what
+# made meson see files in the future and let make skip targets (issue #6).
+# Masking it leaves exactly one disciplinarian and the clock tracks the host to
+# within a few ms. Absolute accuracy is then the HOST's job: keep W32Time running
+# (Automatic), or every runner inherits whatever error the host has drifted to.
+Invoke-Wsl @('-d', $DistroName, '-u', 'root', '--', 'systemctl', 'disable', '--now', 'systemd-timesyncd')
+Invoke-Wsl @('-d', $DistroName, '-u', 'root', '--', 'systemctl', 'mask', 'systemd-timesyncd')
+
+Write-Host '== enabling proactive memory compaction ==' -ForegroundColor Cyan
+# WSL ships this distro with vm.compaction_proactiveness=0. Memory a runner
+# frees is then left in fragments smaller than 2 MB, and WSL only hands back
+# 2 MB blocks to Windows: on 2026-09-15 the VM had 114 GB free while vmmem
+# stayed at 103 GB. 20 is the upstream kernel default; it keeps free memory
+# contiguous so it actually returns to the host. The runners' cache itself is
+# bounded by RUNNER_MEM_LIMIT (see docker-compose.runners.yml).
+Invoke-Wsl @('-d', $DistroName, '-u', 'root', '--', 'bash', '-c', "printf 'vm.compaction_proactiveness = 20\n' > /etc/sysctl.d/90-runner-memory.conf && sysctl --system")
 
 Write-Host '== installing Docker Engine ==' -ForegroundColor Cyan
 # Pass the installer as a file rather than an inline string: quoting a bash

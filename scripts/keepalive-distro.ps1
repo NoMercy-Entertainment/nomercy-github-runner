@@ -22,6 +22,14 @@ $DistroName = 'github-runners'
 $LogPath    = Join-Path $env:LOCALAPPDATA 'github-runners-keepalive.log'
 $MaxLogKB   = 512
 
+# The dashboard's LAN publication is re-established here as well, because the
+# thing that breaks it is the same thing this loop already watches for: the
+# distro going away and coming back on a different NAT address. See
+# Publish-Dashboard below. Keep in step with publish-dashboard-lan.ps1, which
+# stays the manual one-shot for setting this up by hand.
+$DashPort     = 9200
+$DashListenOn = '192.168.178.19'
+
 function Write-Log {
     param([string]$Message)
     $line = "{0:yyyy-MM-dd HH:mm:ss}  {1}" -f (Get-Date), $Message
@@ -34,6 +42,67 @@ function Write-Log {
     } catch { }
 }
 
+function Test-DashboardListener {
+    param([string]$Address, [int]$Port)
+
+    # Check the LISTENER, not the portproxy rule. A registered rule proves
+    # nothing: if IP Helper tried to bind before DHCP handed out $Address, the
+    # rule sits there looking correct while nothing listens on it and every
+    # connection is refused. That is exactly how the dashboard went dark on
+    # 2026-09-10 - the rule was present and pointed at the right distro address
+    # the whole time.
+    [bool](Get-NetTCPConnection -State Listen -LocalPort $Port -ErrorAction SilentlyContinue |
+           Where-Object LocalAddress -eq $Address)
+}
+
+function Publish-Dashboard {
+    param([string]$Distro, [string]$ListenOn, [int]$Port, [int]$Attempts = 12)
+
+    for ($i = 1; $i -le $Attempts; $i++) {
+        try {
+            $raw = ((& wsl.exe -d $Distro -u root -- hostname -I) -replace "`0", "").Trim()
+
+            # hostname -I lists every address; the docker bridges (172.17/172.18)
+            # are not the one to talk to.
+            $wslIp = ($raw -split '\s+' |
+                Where-Object { $_ -match '^\d+\.\d+\.\d+\.\d+$' -and $_ -notmatch '^172\.1[78]\.' -and $_ -ne '127.0.0.1' } |
+                Select-Object -First 1)
+
+            $haveListenAddr = [bool](Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue |
+                                     Where-Object IPAddress -eq $ListenOn)
+
+            if ($wslIp -and $haveListenAddr) {
+                # Rewrite unconditionally instead of parsing netsh output to work
+                # out whether it needs changing. This runs only at boot and after
+                # a dropped hold, so it is cheap, and one code path heals both
+                # failures: a rule pointing at a dead distro address, and a rule
+                # that never bound a listener.
+                & netsh interface portproxy delete v4tov4 `
+                        listenport=$Port listenaddress=$ListenOn 2>&1 | Out-Null
+                & netsh interface portproxy add v4tov4 `
+                        listenport=$Port listenaddress=$ListenOn `
+                        connectport=$Port connectaddress=$wslIp 2>&1 | Out-Null
+
+                if (Test-DashboardListener -Address $ListenOn -Port $Port) {
+                    Write-Log "dashboard published: ${ListenOn}:${Port} -> ${wslIp}:${Port}"
+                    return
+                }
+            }
+        }
+        catch {
+            Write-Log "dashboard publish attempt ${i}: $($_.Exception.Message)"
+        }
+
+        # The usual reason an early attempt fails is the LAN address not being up
+        # yet this soon after logon, so back off and retry rather than giving up
+        # until the next time the hold drops - which could be days.
+        Start-Sleep -Seconds 10
+    }
+
+    Write-Log "WARNING dashboard not published after $Attempts attempts - LAN/public access is down"
+    Write-Log "         (needs elevation: run install-keepalive-task.ps1 to re-register with RunLevel Highest)"
+}
+
 Write-Log "keepalive starting for '$DistroName'"
 
 while ($true) {
@@ -42,6 +111,11 @@ while ($true) {
         # systemd enables it, but a distro that just cold-booted may still be
         # coming up, and starting it is idempotent.
         & wsl.exe -d $DistroName -u root -- systemctl start docker 2>&1 | Out-Null
+
+        # Do this every pass, not just at startup. The distro's NAT address is
+        # reassigned whenever WSL restarts, and this loop wakes up on exactly
+        # that event, so it is the right place to re-point the portproxy.
+        Publish-Dashboard -Distro $DistroName -ListenOn $DashListenOn -Port $DashPort
 
         Write-Log "holding distro open"
 

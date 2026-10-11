@@ -1,0 +1,12 @@
+{% extends "base.html" %}
+{% block title %}Not allowed - NoMercy Runners{% endblock %}
+{% block body %}
+<div class="center">
+  <div class="brand" style="margin-bottom:22px">
+    <h1>NoMercy Runners</h1>
+    <div class="sub">Control dashboard</div>
+  </div>
+  <div class="notice err"><b>Not allowed.</b> {{ why }}</div>
+  <div style="margin-top:16px"><a href="/logout">Sign out</a></div>
+</div>
+{% endblock %}

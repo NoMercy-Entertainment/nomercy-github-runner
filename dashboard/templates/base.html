@@ -4,6 +4,9 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{% block title %}NoMercy Runners{% endblock %}</title>
+<!-- Inline rather than a file under static/: an icon that lives in the
+     layout cannot be left out of the image by a forgotten COPY. -->
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http%3A//www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='7' fill='%230e1113'/><rect x='.75' y='.75' width='30.5' height='30.5' rx='6.5' fill='none' stroke='%231d5c40' stroke-width='1.5'/><path d='M9 8.5 L20 16 L9 23.5 Z' fill='%235ee6a0'/><rect x='22.5' y='8.5' width='3.5' height='15' rx='1.25' fill='%235ee6a0'/></svg>">
 <style>
 :root {
   --bg:#0b0d0f; --bg-panel:#121619; --bg-inset:#0e1113;
@@ -107,10 +110,65 @@ footer{margin-top:18px;display:flex;flex-wrap:wrap;gap:10px 20px;font-size:10px;
   letter-spacing:.12em;text-transform:uppercase;color:var(--text-faint);
   border-top:1px solid var(--rule);padding-top:12px}
 .center{max-width:380px;margin:12vh auto}
+/* Confirmation dialog. One element in the shared layout rather than one per
+   page: every page asks the same kind of question, and four copies would
+   drift. */
+dialog#confirm{border:1px solid var(--rule-hot);background:var(--bg-panel);
+  color:var(--text);padding:0;max-width:440px;width:calc(100% - 32px);
+  /* The reset above zeroes every margin, including the margin:auto a browser
+     uses to centre a modal dialog - without this it sits in the top-left. */
+  margin:auto}
+dialog#confirm::backdrop{background:rgba(0,0,0,.65)}
+dialog#confirm .dlg-t{font-family:var(--label);font-size:11px;letter-spacing:.18em;
+  text-transform:uppercase;color:var(--text);padding:14px 18px;
+  border-bottom:1px solid var(--rule)}
+dialog#confirm .dlg-b{padding:16px 18px;font-size:12px;line-height:1.65;
+  color:var(--text-dim);font-family:var(--mono)}
+dialog#confirm .dlg-a{display:flex;gap:10px;justify-content:flex-end;
+  padding:12px 18px;border-top:1px solid var(--rule)}
+dialog#confirm.is-danger{border-color:var(--alert-dk)}
+dialog#confirm.is-danger .dlg-t{color:var(--alert)}
+
 {% block style %}{% endblock %}
 </style>
 </head>
 <body>
 {% block body %}{% endblock %}
+
+<dialog id="confirm">
+  <!-- method="dialog" so the buttons close natively and set returnValue;
+       Escape closes with "" and therefore reads as a cancel. -->
+  <form method="dialog">
+    <div class="dlg-t" id="confirm-t"></div>
+    <div class="dlg-b" id="confirm-b"></div>
+    <div class="dlg-a">
+      <button value="cancel" id="confirm-no">Cancel</button>
+      <button value="ok" id="confirm-yes" class="danger">Confirm</button>
+    </div>
+  </form>
+</dialog>
+<script>
+// Replaces the native window.confirm dialog: styleable, says which button
+// is the dangerous one, and cannot be suppressed by the browser after
+// repeated use. Resolves false on Escape, on Cancel, and on the
+// backdrop closing the dialog.
+function confirmDialog({title, body, confirm = 'Confirm', danger = true}) {
+  const dlg = document.getElementById('confirm');
+  document.getElementById('confirm-t').textContent = title;
+  document.getElementById('confirm-b').textContent = body;
+  document.getElementById('confirm-yes').textContent = confirm;
+  document.getElementById('confirm-yes').className = danger ? 'danger' : 'primary';
+  dlg.classList.toggle('is-danger', danger);
+  return new Promise(resolve => {
+    dlg.addEventListener('close', () => resolve(dlg.returnValue === 'ok'),
+                         {once: true});
+    dlg.showModal();
+    // Cancel takes focus, never the destructive button. Enter submits the
+    // first button in the form, which is Cancel - so a stray keypress on a
+    // dialog that just appeared cannot destroy a runner.
+    document.getElementById('confirm-no').focus();
+  });
+}
+</script>
 </body>
 </html>

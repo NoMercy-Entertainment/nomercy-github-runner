@@ -161,7 +161,7 @@ ask_() {
     read -r _answer
     [ -n "$_answer" ] || _answer="$_default"
     if [ -z "$_answer" ]; then warn_ "A value is required." >&2; continue; fi
-    if [ -n "$_regex" ] && ! printf '%s' "$_answer" | grep -Eq "$_regex"; then
+    if [ -n "$_regex" ] && [ "$(printf '%s' "$_answer" | grep -cE "$_regex")" -eq 0 ]; then
       warn_ "$_hint" >&2; continue
     fi
     printf '%s' "$_answer"; return
@@ -254,7 +254,11 @@ preflight_linux_() {
   fi
   ok_ "Docker engine present ($(dockerd --version 2>/dev/null | head -1))"
 
-  if systemctl list-unit-files 2>/dev/null | grep -q "^${SERVICE_NAME}.service"; then
+  # Counted, not `grep -q`. Under `set -o pipefail`, grep -q exits at the first
+  # match, the producer takes SIGPIPE, and the pipeline reports 141 - so the
+  # test reads FALSE exactly when there IS a match. Here that meant the name
+  # looked free while the service already existed.
+  if [ "$(systemctl list-unit-files 2>/dev/null | grep -c "^${SERVICE_NAME}.service")" -gt 0 ]; then
     fail_ "A service named ${SERVICE_NAME} already exists." \
           "Remove the previous install with nomercy-github-runners-uninstall.sh first."
   fi
@@ -598,7 +602,9 @@ EOF
 
   _limits=''
   [ "$CPU_LIMIT" != 0 ] && _limits="$_limits --cpus $CPU_LIMIT"
-  [ "$MEM_LIMIT" != 0 ] && _limits="$_limits --memory $MEM_LIMIT"
+  # Swap capped at the memory limit, so the limit reclaims page cache
+  # instead of paging the overflow out to disk.
+  [ "$MEM_LIMIT" != 0 ] && _limits="$_limits --memory $MEM_LIMIT --memory-swap $MEM_LIMIT"
 
   _n=1
   while [ "$_n" -le "$RUNNER_COUNT" ]; do
@@ -613,7 +619,6 @@ EOF
       --name "$_name" \
       --label nomercy.runner=true \
       --privileged --restart unless-stopped --stop-timeout 60 \
-      --tmpfs /tmp \
       -v "${DATA_PATH}/start.sh:/root/start.sh:ro" \
       -e "GH_TOKEN=${TOKEN}" \
       -e "GITHUB_ORG=${ORG}" \
@@ -631,7 +636,10 @@ EOF
     sleep 6
     READY_COUNT=0
     for _c in $(docker -H "unix://${DOCKER_SOCK}" ps --format '{{.Names}}' 2>/dev/null | grep '^nomercy-runner-'); do
-      if docker -H "unix://${DOCKER_SOCK}" logs --tail 40 "$_c" 2>&1 | grep -q 'Listening for Jobs'; then
+      # Counted rather than `grep -q` - see the note in preflight_linux_. A
+      # readiness check that inverts on a match would report 0 of N ready
+      # forever while every runner was in fact listening.
+      if [ "$(docker -H "unix://${DOCKER_SOCK}" logs --tail 40 "$_c" 2>&1 | grep -c 'Listening for Jobs')" -gt 0 ]; then
         READY_COUNT=$((READY_COUNT + 1))
       fi
     done

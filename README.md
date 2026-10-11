@@ -90,3 +90,11 @@ curl -L -X POST \
 - The runner name is randomized per instance.
 - The container runs as root and `privileged`, which its own Docker daemon requires.
 - For repository-level runners, adjust the API endpoint and variables accordingly.
+
+## Forgejo runners
+
+The dashboard controls Forgejo Actions runners as well as GitHub ones, on the
+same isolated engine and through the same lifecycle code. See
+`docs/superpowers/specs/2026-08-25-forgejo-runners-design.md` for the design
+and `docs/forgejo-runner-migration.md` for how the Forgejo runner moves off
+BeastStack's shared Docker socket and onto this distro.

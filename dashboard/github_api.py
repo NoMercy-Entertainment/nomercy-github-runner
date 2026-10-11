@@ -136,3 +136,52 @@ class GitHub:
                         "conclusion": j.get("conclusion"),
                     }
         return None
+
+    # ------------------------------------------------------------- runners
+    def runners(self):
+        """Self-hosted runners as GitHub sees them.
+
+        Worth showing beside the local view: a container that is Up while
+        GitHub reports it offline is the visible shape of a registration that
+        broke silently.
+        """
+        data = self._get(f"/orgs/{self.org}/actions/runners",
+                         params={"per_page": 100})
+        if data is None:
+            # The runners call itself failed - distinct from "no runners
+            # exist". Callers must not treat this the same as an empty org.
+            return None
+
+        # Build runner_id -> group_name map from group endpoints.
+        # This is best-effort: if any group call fails, all runners get
+        # runner_group: "" and we still return the runner list.
+        runner_to_group = {}
+        groups = self._get(f"/orgs/{self.org}/actions/runner-groups")
+        if groups and groups.get("runner_groups"):
+            for group in groups["runner_groups"]:
+                group_id = group.get("id")
+                group_name = group.get("name", "")
+                if group_id:
+                    group_runners = self._get(
+                        f"/orgs/{self.org}/actions/runner-groups/{group_id}/runners",
+                        params={"per_page": 100})
+                    if group_runners and group_runners.get("runners"):
+                        for gr in group_runners["runners"]:
+                            rid = gr.get("id")
+                            if rid:
+                                runner_to_group[rid] = group_name
+
+        out = []
+        for r in data.get("runners", []):
+            rid = r.get("id")
+            out.append({
+                "id": rid,
+                "name": r.get("name", ""),
+                "status": r.get("status", ""),
+                "busy": bool(r.get("busy")),
+                "os": r.get("os", ""),
+                "version": r.get("version", ""),
+                "labels": [l.get("name", "") for l in r.get("labels", [])],
+                "runner_group": runner_to_group.get(rid, ""),
+            })
+        return out

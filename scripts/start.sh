@@ -8,8 +8,25 @@ cd /root/actions-runner
 export RUNNER_ALLOW_RUNASROOT=1
 
 # Fix Yarn 4 .bin/ permission issue: ensure all new files are created with
-# execute permission when running as root in Docker
-umask 0000
+# execute permission when running as root in Docker. 0022 keeps that bit
+# without making everything world-writable, which breaks dpkg (see dockerfile).
+umask 0022
+
+# The image also wraps bash and dash so every shell a job starts gets the same
+# mask, and a container running an older image still carries the 0000 wrappers
+# that abort dpkg. This file is bind-mounted from the host checkout, so
+# rewriting them here means a pull and a restart is enough to repair a runner —
+# no image pull, no recreate. Idempotent: a correct wrapper is rewritten to
+# itself. Replaces via a temp file so the shim currently interpreting this
+# script keeps its own inode.
+for shell in bash dash; do
+  if [ -f "/usr/bin/${shell}.real" ]; then
+    printf '#!/usr/bin/bash.real\numask 0022\nexec /usr/bin/%s.real "$@"\n' "$shell" \
+      > "/usr/bin/${shell}.new"
+    chmod +x "/usr/bin/${shell}.new"
+    mv -f "/usr/bin/${shell}.new" "/usr/bin/${shell}"
+  fi
+done
 
 # ── Runner version ───────────────────────────────────────────────────────────
 # GitHub deprecates old runner versions and refuses to deliver jobs to them:
@@ -24,10 +41,41 @@ RUNNER_VERSION="2.336.0"
 # still ships a now-deprecated runner). Idempotent: a matching install is a no-op.
 if [ ! -f ./bin/Runner.Listener ] || [ "$(cat ./.runner_version 2>/dev/null)" != "$RUNNER_VERSION" ]; then
   echo "Installing GitHub Actions runner v${RUNNER_VERSION}..."
-  curl -fsSL "https://github.com/actions/runner/releases/download/v${RUNNER_VERSION}/actions-runner-linux-x64-${RUNNER_VERSION}.tar.gz" \
-    | tar -xz
-  echo "$RUNNER_VERSION" > ./.runner_version
-  echo "Runner v${RUNNER_VERSION} installed."
+  _tar="actions-runner-linux-x64-${RUNNER_VERSION}.tar.gz"
+  _url="https://github.com/actions/runner/releases/download/v${RUNNER_VERSION}/${_tar}"
+
+  # Download to a file, then extract, and check BOTH. The previous version was
+  # `curl … | tar -xz` with neither exit status examined, followed by an
+  # unconditional write of the marker below. A transient download failure
+  # therefore recorded "v2.336.0 installed" over binaries that were still
+  # v2.333.1 — and because the marker then matched the pin, the next boot's
+  # check passed and it never retried. github-runner-6 sat on deprecated
+  # binaries until GitHub refused to send it work, then restart-looped for
+  # hours. Observed 2026-08-01; the download takes anywhere from 20s to 255s
+  # on this host, so the failure window is real and not rare.
+  if curl -fsSL -o "/tmp/${_tar}" "$_url" && tar -xzf "/tmp/${_tar}"; then
+    rm -f "/tmp/${_tar}"
+    # Trust the binary over the download. The only claim worth recording is
+    # what the extracted listener actually reports.
+    _got="$(./bin/Runner.Listener --version 2>/dev/null | tail -1 | tr -d '\r')"
+    if [ "$_got" = "$RUNNER_VERSION" ]; then
+      echo "$RUNNER_VERSION" > ./.runner_version
+      echo "Runner v${RUNNER_VERSION} installed."
+    else
+      # Never leave a marker we cannot stand behind: it is what prevents the
+      # retry that would fix this.
+      rm -f ./.runner_version
+      echo "[FATAL] Extracted runner reports '${_got:-nothing}', expected ${RUNNER_VERSION}."
+      echo "        Marker not written; this container will retry on restart."
+      exit 1
+    fi
+  else
+    rm -f "/tmp/${_tar}" ./.runner_version
+    echo "[FATAL] Could not download or extract runner ${RUNNER_VERSION}."
+    echo "        ${_url}"
+    echo "        Marker not written; this container will retry on restart."
+    exit 1
+  fi
 fi
 
 # ── Start Docker daemon (Docker-in-Docker) ─────────────────────────────────

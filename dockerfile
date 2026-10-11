@@ -72,8 +72,16 @@ RUN sed -i "s|http://archive.ubuntu.com|http://${UBUNTU_MIRROR}|g" /etc/apt/sour
 FROM ubuntu:24.04 AS stage-maven
 ARG MAVEN_VERSION
 ARG UBUNTU_MIRROR
+# archive.apache.org, NOT dlcdn.apache.org. The CDN carries only the releases
+# Apache currently considers live and drops the rest, so a pinned version stops
+# resolving the moment a newer one supersedes it — the download 404s, `tar`
+# exits 2, and the whole image build fails with no code change on our side.
+# That is what broke this build: MAVEN_VERSION was 3.9.14 while dlcdn had moved
+# on to 3.9.16. Bumping the pin would only postpone the next rotation; archive
+# keeps every release permanently, so the pin decides the version and nothing
+# else can take it away.
 RUN sed -i "s|http://archive.ubuntu.com|http://${UBUNTU_MIRROR}|g" /etc/apt/sources.list.d/ubuntu.sources && apt-get update && apt-get install -y curl && \
-    curl -fsSL "https://dlcdn.apache.org/maven/maven-3/${MAVEN_VERSION}/binaries/apache-maven-${MAVEN_VERSION}-bin.tar.gz" \
+    curl -fsSL "https://archive.apache.org/dist/maven/maven-3/${MAVEN_VERSION}/binaries/apache-maven-${MAVEN_VERSION}-bin.tar.gz" \
         | tar -C /opt -xz
 
 # ── AWS CLI v2 ──────────────────────────────────────────────────────────────
@@ -357,11 +365,16 @@ RUN chmod +x /root/start.sh
 # Fix file permissions for all shells: Yarn 4 .bin/ shims use #!/bin/sh
 # (dash on Ubuntu) which doesn't inherit bash umask settings.
 # Wrapping both sh and bash ensures umask propagates everywhere.
+#
+# 0022, not 0000. Both keep the execute bit Yarn needs, but 0000 also makes
+# every new file world-writable, and Debian packaging refuses that: dpkg-deb
+# rejects a 777 control directory, and a maintainer script's `umask 022 or die`
+# reads back the previous mask, gets 0 from 0000, and aborts the whole apt run.
 RUN mv /usr/bin/bash /usr/bin/bash.real && \
-    printf '#!/usr/bin/bash.real\numask 0000\nexec /usr/bin/bash.real "$@"\n' > /usr/bin/bash && \
+    printf '#!/usr/bin/bash.real\numask 0022\nexec /usr/bin/bash.real "$@"\n' > /usr/bin/bash && \
     chmod +x /usr/bin/bash && \
     mv /usr/bin/dash /usr/bin/dash.real && \
-    printf '#!/usr/bin/bash.real\numask 0000\nexec /usr/bin/dash.real "$@"\n' > /usr/bin/dash && \
+    printf '#!/usr/bin/bash.real\numask 0022\nexec /usr/bin/dash.real "$@"\n' > /usr/bin/dash && \
     chmod +x /usr/bin/dash
 
 ENTRYPOINT ["/root/start.sh"]
