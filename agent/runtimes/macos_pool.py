@@ -9,6 +9,7 @@ import os
 import re
 import shutil
 import socket
+import sys
 import threading
 import time
 from contextlib import contextmanager
@@ -29,6 +30,10 @@ PINNED_IMAGE = re.compile(r"(?:sha256:[0-9a-f]{64}|[^\s]+@sha256:[0-9a-f]{64})\Z
 
 def _port_free(port):
     with socket.socket() as connection:
+        if sys.platform.startswith('linux'):
+            # Docker can republish a stopped guest's port while old SSH
+            # connections remain in TIME_WAIT. An active listener still wins.
+            connection.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         try:
             connection.bind(("127.0.0.1", port))
             return True

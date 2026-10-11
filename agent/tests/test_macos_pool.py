@@ -1,6 +1,8 @@
 """Appliance isolation and fail-closed power/storage transitions, no live host."""
 import json
 import os
+import socket
+import sys
 from pathlib import Path
 
 import pytest
@@ -14,6 +16,29 @@ from .fake_macos import FakeMac, TEMPLATE, TOOLS
 from .test_macos_runtime import RID, OTHER, SPEC, PLAN
 
 IMAGE = "sha256:" + "a" * 64
+
+
+def test_port_check_refuses_a_real_active_listener():
+    from agent.runtimes.macos_pool import _port_free
+    with socket.socket() as listener:
+        listener.bind(('127.0.0.1', 0))
+        listener.listen()
+        assert not _port_free(listener.getsockname()[1])
+
+
+@pytest.mark.skipif(not sys.platform.startswith('linux'), reason='Linux Docker port reuse')
+def test_stopped_guest_ssh_connections_do_not_block_restart():
+    from agent.runtimes.macos_pool import _port_free
+    with socket.socket() as listener:
+        listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        listener.bind(('127.0.0.1', 0))
+        port = listener.getsockname()[1]
+        listener.listen()
+        with socket.create_connection(('127.0.0.1', port)) as client:
+            accepted, _ = listener.accept()
+            accepted.close()
+            assert client.recv(1) == b''
+    assert _port_free(port)
 
 
 class Host:

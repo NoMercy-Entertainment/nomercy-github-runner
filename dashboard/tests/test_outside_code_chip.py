@@ -221,6 +221,14 @@ class TestTheHeading:
         html = head(policy(), counts(2, proven=1, unknown=1))
         assert 'class="chip danger rgroup"' in html
         assert "1 could not be checked lately" in html
+        assert "protection is currently unverified" in html
+        assert "recreate" not in html and "not refused" not in html
+
+    def test_unknown_runners_are_not_told_to_recreate_without_missing_hook_evidence(self):
+        html = head(policy(), counts(10, unknown=10))
+        assert 'class="chip danger rgroup"' in html
+        assert "10 could not be checked lately" in html
+        assert "recreate" not in html and "not refused" not in html
 
     def test_every_runner_carries_it_but_one_has_not_run_a_job_yet_is_amber(self):
         html = head(policy(), counts(2, proven=1, unproven=1))

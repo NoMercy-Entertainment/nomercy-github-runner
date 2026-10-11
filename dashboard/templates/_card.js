@@ -177,10 +177,14 @@ function runnerGroupHTML(g, og) {
   } else if (runners === 0) {
     guard = 'No runners to check yet: whether outside pull requests are refused is said once one runs';
   } else if (covered < runners) {
-    guard = covered === 0
-      ? `${forks} are not refused by these runners yet: recreate them to put the check in place`
-      : `${forks} are refused by ${covered} of ${runners} runners; recreate the others to put the check in place`;
-    if (n('unknown')) guard += ` (${n('unknown')} could not be checked lately)`;
+    if (n('missing')) {
+      guard = covered === 0
+        ? `${forks} are not refused by these runners yet: recreate the ${n('missing')} runners missing the check`
+        : `${forks} are refused by ${covered} of ${runners} runners; recreate the ${n('missing')} runners missing the check`;
+      if (n('unknown')) guard += ` (${n('unknown')} could not be checked lately)`;
+    } else {
+      guard = `${forks}: protection is currently unverified (${n('unknown')} could not be checked lately)`;
+    }
   } else {
     const why = [];
     if (n('unproven')) why.push(`${n('unproven')} of ${runners} have not run a job with it yet`);
