@@ -18,7 +18,13 @@ class MacStorage:
     def ensure(self, runner_id):
         root = posixpath.dirname(naming.names(naming.check(runner_id), 'macos')['work'])
         if self._fs.exists(root):
-            owned = self.verify(runner_id)
+            try:
+                owned = self.verify(runner_id)
+            except RuntimeError as error:
+                if str(error) != 'runner APFS volume is not mounted at its owned root':
+                    raise
+                self._restore_persisted_mount(runner_id, root)
+                owned = self.verify(runner_id)
             self._persist(owned, root, runner_id)
             return owned
         ok, out, err = self._run(['/usr/sbin/diskutil', 'apfs', 'list', '-plist'], timeout=30)
@@ -36,6 +42,37 @@ class MacStorage:
         owned = self.verify(runner_id)
         self._persist(owned, root, runner_id)
         return owned
+
+    def _restore_persisted_mount(self, runner_id, root):
+        """Restore only the exact previously recorded UUID, never adopt a tree."""
+        if not hasattr(self._fs, 'read_text') or not self._fs.exists('/etc/fstab'):
+            raise RuntimeError('runner APFS volume has no persistent mount identity')
+        entries = [line.split('#', 1)[0].split() for line in
+                   self._fs.read_text('/etc/fstab').splitlines()]
+        matches = [fields for fields in entries if len(fields) >= 2 and fields[1] == root]
+        if (len(matches) != 1 or len(matches[0]) != 6
+                or matches[0][2:] != ['apfs', 'rw', '0', '0']
+                or not re.fullmatch(r'UUID=[0-9A-Fa-f]{8}(?:-[0-9A-Fa-f]{4}){3}-[0-9A-Fa-f]{12}', matches[0][0])):
+            raise RuntimeError('runner APFS persistent mount identity is ambiguous')
+        volume_uuid = matches[0][0].split('=', 1)[1]
+        ok, out, err = self._run(['/usr/sbin/diskutil', 'apfs', 'list', '-plist'], timeout=30)
+        if not ok:
+            raise RuntimeError('runner APFS persistent volume cannot be inspected')
+        volumes = [v for c in plistlib.loads(out.encode())['Containers'] for v in c['Volumes']
+                   if str(v.get('APFSVolumeUUID', '')).lower() == volume_uuid.lower()]
+        if (len(volumes) != 1 or volumes[0].get('Name') != 'rnr-' + runner_id
+                or volumes[0].get('CapacityQuota') != self._storage_limit):
+            raise RuntimeError('runner APFS persistent volume identity or quota differs')
+        # Auto-mount may have completed while its identity was being inspected.
+        try:
+            self.verify(runner_id)
+            return
+        except RuntimeError:
+            pass
+        if self._fs.listdir(root):
+            raise RuntimeError('runner APFS unmounted directory is not empty; refusing adoption')
+        self._check(self._run(['/usr/bin/sudo', '-n', '/usr/sbin/diskutil', 'mount',
+                              '-mountPoint', root, volume_uuid], timeout=120))
 
     def _persist(self, owned, root, runner_id):
         """Finish a partially completed provision without creating another volume."""

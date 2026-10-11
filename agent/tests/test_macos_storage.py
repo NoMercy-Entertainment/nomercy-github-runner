@@ -10,6 +10,45 @@ ROOT = '/Users/runner/runners/' + RID
 LIMIT = 100 * 1024 ** 3
 
 
+@pytest.mark.parametrize('quota,name,entries,nonempty,accepted', [
+    (LIMIT, 'rnr-' + RID, 1, False, True),
+    (LIMIT - 1, 'rnr-' + RID, 1, False, False),
+    (LIMIT, 'another-runner', 1, False, False),
+    (LIMIT, 'rnr-' + RID, 0, False, False),
+    (LIMIT, 'rnr-' + RID, 2, False, False),
+    (LIMIT, 'rnr-' + RID, 1, True, False),
+])
+def test_boot_restores_only_the_owned_persistent_volume(quota, name, entries, nonempty, accepted):
+    volume_uuid = 'DD742E76-024E-41B3-BBF8-F4046C43A364'
+    line = 'UUID=' + volume_uuid + ' ' + ROOT + ' apfs rw 0 0\n'
+    mounted = False
+    mounts = []
+    fs = SimpleNamespace(exists=lambda p: True, read_text=lambda p: line * entries,
+                         listdir=lambda p: ['retained-data'] if nonempty else [])
+
+    def run(args, timeout=30):
+        nonlocal mounted
+        if args[0] == '/bin/df':
+            return True, 'Filesystem Blocks Used Available Capacity Mounted on\n/dev/disk2s7 10 2 8 20% ' + (ROOT if mounted else '/System/Volumes/Data'), ''
+        if 'mount' in args:
+            mounts.append(args)
+            mounted = True
+            return True, '', ''
+        return True, plistlib.dumps({'Containers': [{'Volumes': [{
+            'APFSVolumeUUID': volume_uuid, 'DeviceIdentifier': 'disk2s7',
+            'Name': name, 'CapacityQuota': quota}]}]}).decode(), ''
+
+    storage = MacStorage(run, fs, LIMIT, 'runner')
+    storage._persist = lambda *a: None
+    if accepted:
+        assert storage.ensure(RID)['APFSVolumeUUID'] == volume_uuid
+        assert mounts == [['/usr/bin/sudo', '-n', '/usr/sbin/diskutil', 'mount', '-mountPoint', ROOT, volume_uuid]]
+    else:
+        with pytest.raises(RuntimeError):
+            storage.ensure(RID)
+        assert not mounts
+
+
 @pytest.mark.parametrize('mount,quota,name,accepted', [
     (ROOT, LIMIT, 'rnr-' + RID, True),
     ('/System/Volumes/Data', LIMIT, 'rnr-' + RID, False),
