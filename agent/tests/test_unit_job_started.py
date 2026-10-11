@@ -343,7 +343,12 @@ def test_a_refusal_ends_runner_worker_and_spares_runner_listener(tmp_path, name,
                               encoding="utf-8", newline="\n")
     bins = tmp_path / "bin"
     bins.mkdir()
-    bash = os.path.realpath(shutil.which("bash"))
+    # Runner images may put a script in front of bash (for their umask).
+    # Use its actual ELF interpreter: a wrapper exec would erase the fake
+    # Runner.Worker name and make this process-tree fixture unlike GitHub.
+    bash = subprocess.check_output(
+        [shutil.which("bash"), "-c", 'readlink /proc/$$/exe; :'],
+        text=True, timeout=10).strip()
     for name_ in ("Runner.Listener", "Runner.Worker"):
         (bins / name_).symlink_to(bash)
     env = origin_cases.hook_env(case, tmp_path, os.environ)
