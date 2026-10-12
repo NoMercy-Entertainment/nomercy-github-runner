@@ -488,7 +488,10 @@ def test_controller_native_expiry_worker_clears_credentials_without_a_provisione
         while time.monotonic() < deadline:
             if service.get(row["id"])["state"] == "denied":
                 break
-            assert watch.wait(max(0, deadline - time.monotonic()))
+            # inotify can consume an unrelated directory event (the
+            # convergence lock's first creation) and return False before the
+            # timeout. Keep waiting on native events until the actual deadline.
+            watch.wait(max(0, deadline - time.monotonic()))
         assert service.get(row["id"])["state"] == "denied"
         with schema.connect(path) as c:
             assert c.execute("SELECT sealed_credential FROM federation_requests WHERE id=?", (row["id"],)).fetchone()[0] is None
