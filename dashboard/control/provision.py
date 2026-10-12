@@ -179,6 +179,9 @@ class ProvisioningFlow:
         #: pass. See `_records` for why.
         self._forge_records = {}
         self._forge_read_at = {}
+        self.registration_health = None
+        self.forge_observed_at = {}
+        self._observed_at = {}
 
     # ---- the two adapters, looked up per cell ------------------------------
 
@@ -499,7 +502,7 @@ class ProvisioningFlow:
         self._forge_records.clear()
         self._forge_read_at.clear()
 
-    def _records(self, provider, fresh=False):
+    def _records(self, provider, fresh=False, spec=None):
         """The forge's runner list, or None - unknown - when it could not be
         read. Never the last list that did arrive: 17.2.
 
@@ -514,6 +517,12 @@ class ProvisioningFlow:
         when the forge cannot be asked, not about two reads a second apart.
         """
         key = getattr(provider, "key", str(provider))
+        if self.registration_health is not None and self.registration_health.active:
+            records, captured = (self.registration_health.read(provider, spec=spec) if fresh
+                                 else self.registration_health.snapshot(provider, spec=spec))
+            self._observed_at[key] = captured
+            return records
+        self._observed_at.pop(key, None)
         age = time.monotonic() - self._forge_read_at.get(key, -FORGE_WINDOW)
         if not fresh and age < FORGE_WINDOW and key in self._forge_records:
             return self._forge_records[key]
@@ -792,11 +801,18 @@ class ProvisioningFlow:
                           "registering"):
             return None
         provider = self._provider(spec)
-        records = self._records(provider, fresh=fresh)
+        records = self._records(provider, fresh=fresh, spec=spec)
+        if provider.key in self._observed_at and self._observed_at[provider.key] is None:
+            self.forge_words.pop(spec["runner_id"], None)
+            self.forge_labels.pop(spec["runner_id"], None)
+            self.forge_observed_at.pop(spec["runner_id"], None)
+            return None
         seen = provider.job_state(spec, records)
         # What the forge said, kept for the reconciler to record as an
         # observation: readiness needs it, not only the machine (T-1803).
         self.forge_words[spec["runner_id"]] = seen
+        if provider.key in self._observed_at:
+            self.forge_observed_at[spec["runner_id"]] = self._observed_at.get(provider.key)
         if records is not None:
             self.forge_labels[spec["runner_id"]] = provider.record_labels(
                 provider.record_for(spec, records))
@@ -829,9 +845,11 @@ class ProvisioningFlow:
         """A host reboot is down only with fresh agreement from both sides."""
         if not self.service.inventory.accepts_destructive_verbs(spec.get("host_id")):
             return False
-        records = self._records(provider, fresh=True)
+        records = self._records(provider, fresh=True, spec=spec)
         seen = provider.job_state(spec, records)
         self.forge_words[spec["runner_id"]] = seen
+        if provider.key in self._observed_at:
+            self.forge_observed_at[spec["runner_id"]] = self._observed_at[provider.key]
         if (records is None or provider.record_for(spec, records) is None
                 or seen != providers.OFFLINE):
             return False

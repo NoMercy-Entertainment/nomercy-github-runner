@@ -945,6 +945,86 @@ def ws_fleet_v2(ws):
         pass
 
 
+@sock.route("/ws/v2/operations/<operation_id>")
+def ws_operation_v2(ws, operation_id):
+    """Push operation changes from the controller's native database events."""
+    from control.redact import redact_mapping
+    sub = session.get("sub")
+    previous = None
+    closed = threading.Event()
+    disconnect = None
+    def watch_disconnect():
+        try:
+            ws.receive()  # Native socket close, or an unexpected client frame.
+        except Exception:
+            pass
+        finally:
+            closed.set()
+            with _status_lock:
+                _status_lock.notify_all()
+    try:
+        if not _public_url() or request.headers.get("Origin") != _public_url():
+            ws.send(encode_frame({"type": "operation", "error": "origin not allowed"}))
+            return
+        if not operation_id or len(operation_id) > 128:
+            ws.send(encode_frame({"type": "operation", "error": "operation not found"}))
+            return
+        while ws.connected and not closed.is_set():
+            with _status_lock:
+                observed_generation = _status_gen
+            role = users.role_of(sub)
+            if role is None:
+                ws.send(encode_frame({"type": "operation", "error": "not authenticated"}))
+                return
+            g.role = role
+            service, note = api_v2.control_plane()
+            if service is None:
+                ws.send(encode_frame({"type": "operation", "error": "control plane unavailable"}))
+                return
+            operation = service.operations.get(operation_id)
+            if operation is None:
+                ws.send(encode_frame({"type": "operation", "error": "operation not found"}))
+                return
+            operation = redact_mapping(operation)
+            if operation != previous:
+                ws.send(encode_frame({"type": "operation", "data": operation}))
+                previous = operation
+            if operation.get("state") in ("succeeded", "failed", "cancelled"):
+                return
+            if disconnect is None:
+                disconnect = threading.Thread(target=watch_disconnect,
+                    name="operation-socket-close", daemon=True)
+                disconnect.start()
+            with _status_lock:
+                _status_lock.wait_for(lambda: _status_gen != observed_generation or closed.is_set())
+    except Exception:
+        pass  # Disconnects reconnect through the browser's native socket.
+    finally:
+        if disconnect is not None:
+            # Interrupt the owned reader before close() changes connected:
+            # simple_websocket otherwise exits its reader without waking receive.
+            import socket
+            transport = getattr(ws, "sock", None)
+            if transport is not None:
+                try:
+                    transport.shutdown(socket.SHUT_RDWR)
+                except OSError:
+                    pass
+                # Let EOF wake the library reader before closing its selector
+                # descriptor. Closing it first can discard the wake on Linux.
+                ws.thread.join(timeout=1)
+                transport.close()
+                ws.connected = False
+                ws.event.set()
+            else:
+                ws.close()
+            disconnect.join(timeout=1)
+            try:
+                ws.close()
+            except Exception:
+                pass
+
+
 @app.route("/api/control/workers")
 def api_control_workers():
     """The control plane's workers, with each one's health and why.

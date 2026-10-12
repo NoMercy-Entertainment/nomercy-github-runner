@@ -208,6 +208,14 @@ def render(fn, payload):
 
 @pytest.mark.skipif(NODE is None, reason="node is not installed")
 class TestTheRenderer:
+    def test_same_state_registration_reason_changes_the_visible_card(self):
+        before = dict(spec_cards()[0], state="unknown", readiness_note="GitHub registration status is unverified")
+        after = dict(before, readiness_note="GitHub registration status is unverified; last confirmed 2026-10-12T16:00:00Z")
+        first, second = render("cardHTML", [before, after])
+        assert first != second
+        assert "last confirmed 2026-10-12T16:00:00Z" in second
+        assert "readiness_note" in cards.FIELDS
+
     def test_draining_is_shown_without_claiming_a_job(self):
         card = dict(spec_cards()[0], lifecycle_state="draining", state="unknown",
                     job=None)

@@ -312,7 +312,7 @@ class TestTheJobField:
         assert card["job"] and "running a job" in card["job"]
 
     def test_a_named_job_is_shown_by_name(self):
-        card = cards.from_spec(spec(actual_state="busy"),
+        card = cards.from_spec(spec(actual_state="busy", forge_state="busy"),
                                telemetry={"job": "build (NoMercy/app)"},
                                now=NOW)
         assert card["job"] == "build (NoMercy/app)"

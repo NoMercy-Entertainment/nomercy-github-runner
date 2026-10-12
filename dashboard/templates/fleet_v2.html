@@ -134,7 +134,7 @@ function matchesRunner(c, f) {
   const wanted = $('state-filter').value;
   const forge = f.provider;
   if ($('provider-filter').value !== 'all' && forge !== $('provider-filter').value) return false;
-  if (wanted === 'attention' && c.reachable !== false && !['failed','offline','stopped'].includes(c.state)) return false;
+  if (wanted === 'attention' && c.attention !== true) return false;
   if (wanted !== 'all' && wanted !== 'attention' && c.state !== wanted) return false;
   if (!query) return true;
   return [c.display_name,c.worker,c.job,c.runtime,...(c.labels || [])]
@@ -144,11 +144,11 @@ function matchesRunner(c, f) {
 function render(d) {
   state = d;
   const byKey = new Map((d.runners || []).map(c => [c.key, c]));
-  $('s-total').textContent = (d.runners || []).length;
-  $('s-online').textContent = (d.runners || []).filter(c => c.reachable).length;
-  $('s-busy').textContent = (d.runners || []).filter(c => c.state === 'busy').length;
-  $('s-attention').textContent = (d.runners || []).filter(c =>
-    c.reachable === false || ['failed','offline','stopped'].includes(c.state)).length;
+  const summary = d.summary || {};
+  $('s-total').textContent = summary.total ?? 0;
+  $('s-online').textContent = summary.online ?? 0;
+  $('s-busy').textContent = summary.busy ?? 0;
+  $('s-attention').textContent = summary.attention ?? 0;
   $('f-gen').textContent = 'Updated ' + String(d.generated || '').replace('T', ' ').replace('Z', ' UTC');
   const plane = d.control_plane || {};
   $('plane').className = 'plane' + (plane.maintenance ? ' paused' : plane.running ? '' : ' down');
@@ -176,8 +176,7 @@ function render(d) {
       root.appendChild(sec);
     }
     sec.dataset.fleet = f.fleet_id;
-    patch(document.getElementById(fid + '-head'), fleetHeadHTML({...f,
-      summary: {running: (f.runners || []).filter(key => byKey.get(key)?.reachable).length}}));
+    patch(document.getElementById(fid + '-head'), fleetHeadHTML(f));
     const grid = document.getElementById(fid + '-grid');
     const keys = new Set();
     members.forEach((key, i) => {

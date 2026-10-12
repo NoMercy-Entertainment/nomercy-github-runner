@@ -214,6 +214,47 @@ class SpecStore:
                 return spec_version + 1
             self._explain_failed_write(c, runner_id, spec_version)
 
+    def update_observed(self, expected, captured_at, **changes):
+        """Commit an observed transition only against the evidence it read.
+
+        Signed job events intentionally do not increment spec_version. Their
+        identity, the observed source state and registration evidence must
+        therefore be checked under the same write lock as this transition.
+        A superseding observation returns None; changed intent still raises
+        StaleSpec, exactly as update() does.
+        """
+        unknown = sorted(set(changes) - {"actual_state", "last_error"})
+        if unknown or "actual_state" not in changes:
+            raise ValueError("an observed update changes only state and its error")
+        if not isinstance(captured_at, str) or not captured_at:
+            raise ValueError("an observation needs its capture timestamp")
+
+        def marker(spec):
+            telemetry = spec.get("telemetry") or {}
+            if not isinstance(telemetry, dict):
+                raise ValueError("unreadable observation evidence")
+            event = telemetry.get("forge_job_event") or {}
+            if not isinstance(event, dict):
+                raise ValueError("unreadable observation evidence")
+            return event.get("event_id")
+
+        rid, version = expected["runner_id"], expected["spec_version"]
+        with self._conn() as c:
+            c.execute("BEGIN IMMEDIATE")
+            current = _decode(c.execute("SELECT * FROM runner_specs WHERE runner_id=?", (rid,)).fetchone())
+            if current is None or current["spec_version"] != version:
+                self._explain_failed_write(c, rid, version)
+            fields = ("provider", "registration_id", "registration_uuid", "actual_state")
+            if (any(current.get(k) != expected.get(k) for k in fields)
+                    or (current.get("forge_seen_at") or "") > captured_at
+                    or marker(current) != marker(expected)):
+                return None
+            values = _encode(changes)
+            assignments = ", ".join(f"{k}=?" for k in values)
+            c.execute(f"UPDATE runner_specs SET {assignments},spec_version=spec_version+1 "
+                      "WHERE runner_id=? AND spec_version=?", (*values.values(), rid, version))
+            return version + 1
+
     def soft_delete(self, runner_id, spec_version=None):
         """Mark the spec absent without removing the row.
 
