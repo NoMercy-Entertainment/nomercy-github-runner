@@ -21,7 +21,7 @@ input:disabled{opacity:.5}
 {% block body %}
 <a class="skip-link" href="#main">Skip to content</a>
 <header><div class="brand"><h1>Runner settings</h1><div class="sub">Defaults for every fleet</div></div>
-<nav aria-label="Main"><a href="/">Fleet</a><a href="/history">History</a><a class="on" aria-current="page" href="/settings">Settings</a>{% if role == 'admin' %}<a href="/users">Access</a>{% endif %}<a href="/logout">Sign out</a></nav></header>
+<nav aria-label="Main"><a href="/">Fleet</a><a href="/history">History</a><a class="on" aria-current="page" href="/settings">Settings</a>{% if role == 'admin' %}<a href="/federation">Sharing</a><a href="/users">Access</a>{% endif %}<a href="/logout">Sign out</a></nav></header>
 <main id="main" tabindex="-1">
 <p class="notice">Changes apply to newly created runners and subsequent recreations. Existing runners keep their current limits until recreated.</p>
 <div id="message" role="status" aria-live="polite"></div>

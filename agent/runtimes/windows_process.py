@@ -290,6 +290,9 @@ class WindowsProcessRuntime:
             for hook in HOOK_FILES:
                 self._fs.write_text(ntpath.join(hooks, hook),
                                     (HOOK_SOURCE / hook).read_text(encoding="utf-8"))
+            if (spec.get("env") or {}).get("RUNNER_REFUSE_ALL_FORKS") == "1":
+                self._fs.write_text(ntpath.join(hooks, "federation-started.js"),
+                                    (HOOK_SOURCE.parent / "federation-started.js").read_text(encoding="utf-8"))
 
         # 5. What the job host reads: limits and environment, never argv.
         self._fs.write_text(ntpath.join(p["reg"], "unit.json"),
@@ -343,6 +346,8 @@ class WindowsProcessRuntime:
             hooks = ntpath.join(p["reg"], "hooks")
             for key, hook in HOOK_SCRIPTS.items():
                 env[key] = ntpath.join(hooks, hook)
+            if env.get("RUNNER_REFUSE_ALL_FORKS") == "1":
+                env["ACTIONS_RUNNER_HOOK_JOB_STARTED"] = ntpath.join(hooks, "federation-started.js")
             # The .js hooks hand their work to the Python the job host runs
             # under, which the runner's account can already execute and a
             # code deploy does not move.
@@ -784,9 +789,15 @@ class WindowsProcessRuntime:
                 return None
             expected = {name: (HOOK_SOURCE / name).read_text(encoding="utf-8")
                         for name in HOOK_FILES}
-            return measure_tree(self._fs, ntpath.dirname(hook), expected, ntpath.join,
+            lent = ((unit or {}).get("env") or {}).get("RUNNER_REFUSE_ALL_FORKS") == "1"
+            if lent:
+                expected["federation-started.js"] = (HOOK_SOURCE.parent / "federation-started.js").read_text(encoding="utf-8")
+            report = measure_tree(self._fs, ntpath.dirname(hook), expected, ntpath.join,
                                 "runner_guard.py", "GUARD_VERSION = ",
                                 ntpath.join(p["logs"], LAST_RESULT))
+            if lent:
+                report["federation_guard"] = report["version"] > 0 and hook == ntpath.join(p["reg"], "hooks", "federation-started.js")
+            return report
         except (OSError, ValueError, AttributeError):
             return None
 
@@ -836,6 +847,8 @@ class WindowsProcessRuntime:
 
     def capabilities(self):
         return {"kind": self.kind,
+                "federation_fork_guard": True,
+                "federation_templates": self._templates(),
                 # What a unit here is made from, and which ones exist: a
                 # cell whose template is not on any worker cannot be built,
                 # and saying so is cheaper than failing at create.

@@ -143,6 +143,24 @@ def test_claims_without_a_sub_are_refused(idp, monkeypatch):
         client.exchange("the-code", "the-verifier")
 
 
+def test_optional_sharing_observer_receives_only_verified_userinfo_identity(idp):
+    client, _ = idp
+    captured = []
+    client.access_observer = lambda claims, token: captured.append((claims, token))
+    assert client.exchange("the-code", "the-verifier") == CLAIMS
+    assert captured == [(CLAIMS, {"access_token": "at-123", "token_type": "Bearer"})]
+
+
+def test_sharing_retention_failure_never_exposes_the_account_token(idp):
+    client, _ = idp
+    def unavailable(claims, token):
+        raise RuntimeError(token["access_token"])
+    client.access_observer = unavailable
+    with pytest.raises(oidc.OIDCError) as error:
+        client.exchange("the-code", "the-verifier")
+    assert "at-123" not in str(error.value)
+
+
 # ------------------------------------------------------------------ discovery
 
 def test_discovery_is_fetched_once_and_reused(idp):

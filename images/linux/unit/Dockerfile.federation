@@ -1,0 +1,8 @@
+ARG BASE=nomercy/github-runner-unit:2.338.0
+FROM ${BASE}
+# Build from the repository root. Only this opt-in image adds the stricter
+# lent-capacity hook; existing normal images and their immutable guard stay.
+COPY agent/hooks/federation-started.js /runner/federation-started.js
+COPY images/linux/unit/runner/run /runner/run
+RUN chmod 0755 /runner/run && chmod 0644 /runner/federation-started.js
+LABEL nomercy.federation_guard="1"

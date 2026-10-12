@@ -201,7 +201,10 @@ def _origin_guard(value):
                 and isinstance(last.get("at"), str) and len(last["at"]) <= 40):
             return None
         last = {"result": last["result"], "at": last["at"]}
-    return {"version": version, "note": note, "last": last, "at": at}
+    result = {"version": version, "note": note, "last": last, "at": at}
+    if type(value.get("federation_guard")) is bool:
+        result["federation_guard"] = value["federation_guard"]
+    return result
 
 
 def _telemetry(value):

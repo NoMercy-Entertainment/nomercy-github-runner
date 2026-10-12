@@ -642,6 +642,7 @@ class MacAppliancePoolRuntime:
 
     def capabilities(self):
         return dict(kind=self.kind, builds_from="template", templates=self.templates,
+                    federation_fork_guard=False, federation_templates=[],
                     appliance_per_runner=True, appliance_control=True,
                     cpu_enforcement=True, memory_enforcement=True,
                     per_runner_memory_overhead_bytes=OVERHEAD_BYTES,

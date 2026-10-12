@@ -238,6 +238,8 @@ class MacApplianceRuntime:
 
     def create(self, runner_id, spec, *, start=True):
         rid = naming.check(runner_id)
+        if (spec.get("env") or {}).get("RUNNER_REFUSE_ALL_FORKS") == "1":
+            raise RuntimeError("macOS lending requires verified unprivileged job-user templates; system launchd alone is insufficient")
         if type(start) is not bool:
             raise ValueError("start must be a boolean")
         if (spec or {}).get("adopt"):
@@ -282,7 +284,7 @@ class MacApplianceRuntime:
             before = self._fs.read_text(dotenv) if self._fs.exists(dotenv) else ""
             self._fs.write_text(dotenv, channel_dotenv(before))
             self._fs.chmod(dotenv, 0o600)
-            self._install_hooks(p, rid)
+            self._install_hooks(p, rid, lent=(spec.get("env") or {}).get("RUNNER_REFUSE_ALL_FORKS") == "1")
 
         # 3. The launchd job. Its environment can carry a token, so the file
         #    is readable by this user alone.
@@ -357,12 +359,17 @@ class MacApplianceRuntime:
             return posixpath.join(SYSTEM_HOOK_ROOT, rid)
         return posixpath.join(p["reg"], "hooks")
 
-    def _install_hooks(self, p, rid):
+    def _install_hooks(self, p, rid, lent=False):
         hooks = self._hooks_dir(p, rid)
+        files = {name: HOOK_SOURCE / name for name in HOOK_FILES}
+        if lent:
+            if self._domain() != "system":
+                raise RuntimeError("Lent hooks require a root-owned system launchd installation")
+            files["federation-started.js"] = HOOK_SOURCE.parent / "federation-started.js"
         if self._domain() != "system":
             self._fs.makedirs(hooks)
-            for name in HOOK_FILES:
-                text = (HOOK_SOURCE / name).read_text(encoding="utf-8").replace("\r\n", "\n")
+            for name, source in files.items():
+                text = source.read_text(encoding="utf-8").replace("\r\n", "\n")
                 self._fs.write_text(posixpath.join(hooks, name), text,
                                     mode=0o700 if name in HOOK_SCRIPTS.values() else 0o600)
             return
@@ -372,8 +379,8 @@ class MacApplianceRuntime:
         # installed as the system plist is.
         self._check(self._run(["/usr/bin/sudo", "-n", "/usr/bin/install", "-d",
                                "-o", "root", "-g", "wheel", "-m", "0755", hooks]))
-        for name in HOOK_FILES:
-            text = (HOOK_SOURCE / name).read_text(encoding="utf-8").replace("\r\n", "\n")
+        for name, source in files.items():
+            text = source.read_text(encoding="utf-8").replace("\r\n", "\n")
             stage = posixpath.join(p["reg"], ".hook-" + name)
             self._fs.write_text(stage, text, mode=0o600)
             try:
@@ -404,9 +411,15 @@ class MacApplianceRuntime:
                 return None
             expected = {name: (HOOK_SOURCE / name).read_text(encoding="utf-8")
                         for name in HOOK_FILES}
-            return measure_tree(self._fs, posixpath.dirname(hook), expected,
+            lent = (job.get("EnvironmentVariables") or {}).get("RUNNER_REFUSE_ALL_FORKS") == "1"
+            if lent:
+                expected["federation-started.js"] = (HOOK_SOURCE.parent / "federation-started.js").read_text(encoding="utf-8")
+            report = measure_tree(self._fs, posixpath.dirname(hook), expected,
                                 posixpath.join, GUARD_FILE, GUARD_PREFIX,
                                 posixpath.join(p["logs"], LAST_RESULT))
+            if lent:
+                report["federation_guard"] = report["version"] > 0 and hook == posixpath.join(self._hooks_dir(p, rid), "federation-started.js") and self._domain() == "system"
+            return report
         except (OSError, ValueError, RuntimeError, AttributeError, plistlib.InvalidFileException):
             return None
 
@@ -443,6 +456,8 @@ class MacApplianceRuntime:
             hooks = self._hooks_dir(p, rid)
             for key, name in HOOK_SCRIPTS.items():
                 env[key] = posixpath.join(hooks, name)
+            if env.get("RUNNER_REFUSE_ALL_FORKS") == "1":
+                env["ACTIONS_RUNNER_HOOK_JOB_STARTED"] = posixpath.join(hooks, "federation-started.js")
             # The account's own home, where Xcode keeps DerivedData; the
             # job's HOME is the runner's, under its work directory. From
             # outside the guest only runner_user names it - the agent's own
@@ -830,6 +845,11 @@ class MacApplianceRuntime:
 
     def capabilities(self):
         return {"kind": self.kind,
+                # A system plist alone cannot prove the job user lacks sudo.
+                # Keep lending closed until a verified unprivileged template
+                # contract is available; ordinary macOS jobs keep running.
+                "federation_fork_guard": False,
+                "federation_templates": [],
                 "builds_from": "template",
                 "templates": self._templates(),
                 "appliance_control": self._appliance is not None,
