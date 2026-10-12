@@ -845,9 +845,11 @@ class ProvisioningFlow:
         """A host reboot is down only with fresh agreement from both sides."""
         if not self.service.inventory.accepts_destructive_verbs(spec.get("host_id")):
             return False
-        records = self._records(provider, fresh=True)
+        records = self._records(provider, fresh=True, spec=spec)
         seen = provider.job_state(spec, records)
         self.forge_words[spec["runner_id"]] = seen
+        if provider.key in self._observed_at:
+            self.forge_observed_at[spec["runner_id"]] = self._observed_at[provider.key]
         if (records is None or provider.record_for(spec, records) is None
                 or seen != providers.OFFLINE):
             return False

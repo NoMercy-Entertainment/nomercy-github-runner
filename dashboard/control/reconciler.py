@@ -630,7 +630,7 @@ class Reconciler:
 
     # ---- writing what is ---------------------------------------------------
 
-    def _move(self, spec, to, **extra):
+    def _move(self, spec, to, observed_at=None, **extra):
         """Record a transition. The machine is consulted every time, so a bug
         here raises rather than writing a state the design does not have.
 
@@ -644,8 +644,13 @@ class Reconciler:
         states.check(spec["actual_state"], to)
         if to in SERVING:
             extra.setdefault("last_error", None)
-        self.service.specs.update(spec["runner_id"], spec["spec_version"],
-                                  actual_state=to, **extra)
+        if observed_at is not None:
+            committed = self.service.specs.update_observed(spec, observed_at, actual_state=to, **extra)
+            if committed is None:
+                return None
+        else:
+            self.service.specs.update(spec["runner_id"], spec["spec_version"],
+                                      actual_state=to, **extra)
         return self.service.specs.get(spec["runner_id"])
 
     def _fail(self, spec, operation, error, report, step=""):
@@ -1025,7 +1030,9 @@ class Reconciler:
             report.held.append((spec["runner_id"],
                                 f"ignored observation {edge}"))
             return
-        self._move(spec, seen)
+        if self._move(spec, seen, observed_at=captured or _iso(_now())) is None:
+            report.held.append((spec["runner_id"], "changed before observation commit"))
+            return
         report.did("observed", spec["runner_id"], seen)
 
     #: The forge's words that are an answer about the runner. "unknown" is
