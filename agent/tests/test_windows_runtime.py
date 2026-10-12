@@ -12,6 +12,7 @@ the cap.
 import json
 import ntpath
 import os
+from pathlib import Path
 import subprocess
 import sys
 import textwrap
@@ -128,6 +129,86 @@ class TestTheServiceSid:
 
     def test_it_ignores_case_as_windows_does(self):
         assert service_sid("RNR-ABC") == service_sid("rnr-abc")
+
+
+def test_event_spool_grants_own_service_access_and_keeps_path_pinned(tmp_path, monkeypatch):
+    logs = tmp_path / "logs"
+    logs.mkdir()
+    seen = []
+
+    def run(argv, **kwargs):
+        assert argv[0] == TOOLS["icacls"]
+        seen.append(argv)
+        # A privilege-bearing ACL change must keep the inspected path pinned.
+        if os.name == "nt":
+            with pytest.raises(OSError):
+                (logs / "job-events").rename(logs / "replaced")
+        return True, "", ""
+
+    runtime = WindowsProcessRuntime(run=run, tools=TOOLS)
+    monkeypatch.setattr(runtime, "status", lambda rid: {"running": True})
+    monkeypatch.setattr(runtime, "paths", lambda rid: {"logs": str(logs)})
+    source = runtime.job_event_source(RID)
+    assert source == {"directory": str(logs / "job-events")}
+    grants = seen[0][seen[0].index("/grant:r") + 1:-1]
+    assert set(grants) == {f"*{SYSTEM_SID}:(OI)(CI)F", f"*{ADMINISTRATORS_SID}:(OI)(CI)F",
+                           f"*{service_sid(naming.unit_name(RID))}:(OI)(CI)M"}
+    assert service_sid(naming.unit_name(OTHER)) not in " ".join(seen[0])
+    # Reattach repairs an existing Python-3.13 private spool too.
+    runtime.job_event_source(RID)
+    assert len(seen) == 2
+    (logs / "job-events").rename(logs / "released")
+
+
+def test_event_spool_acl_failure_refuses_attachment_and_releases_path(tmp_path, monkeypatch):
+    logs = tmp_path / "logs"
+    logs.mkdir()
+    runtime = WindowsProcessRuntime(run=lambda *a, **kw: (False, "", "access denied"), tools=TOOLS)
+    monkeypatch.setattr(runtime, "status", lambda rid: {"running": True})
+    monkeypatch.setattr(runtime, "paths", lambda rid: {"logs": str(logs)})
+    with pytest.raises(RuntimeError):
+        runtime.job_event_source(RID)
+    (logs / "job-events").rename(logs / "released")
+
+
+@pytest.mark.skipif(os.name != "nt", reason="requires actual Windows DACLs")
+def test_private_native_spool_has_real_own_service_modify_acl(tmp_path, monkeypatch):
+    logs = tmp_path / "logs"
+    logs.mkdir()
+    directory = logs / "job-events"
+    directory.mkdir(mode=0o700)  # Python 3.13 creates a protected DACL here.
+    runtime = WindowsProcessRuntime(tools=TOOLS)
+    monkeypatch.setattr(runtime, "status", lambda rid: {"running": True})
+    monkeypatch.setattr(runtime, "paths", lambda rid: {"logs": str(logs)})
+    # Numeric service SIDs resolve only for existing services. Exercise the
+    # real ACL API using an existing Windows identity without creating a service.
+    own = service_sid("TrustedInstaller")
+    def existing_service_sid(name):
+        assert name == naming.unit_name(RID)
+        return own
+    monkeypatch.setattr("agent.runtimes.windows_process.service_sid", existing_service_sid)
+    assert runtime.job_event_source(RID)["directory"] == str(directory)
+    powershell = str(Path(os.environ["SystemRoot"]) / "System32/WindowsPowerShell/v1.0/powershell.exe")
+    script = """$p = ConvertFrom-Json -InputObject ([Console]::In.ReadToEnd())
+$acl = Get-Acl -LiteralPath $p
+$rules = @($acl.Access | ForEach-Object {
+  @{sid=$_.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]).Value;
+    rights=[int]$_.FileSystemRights; type=[int]$_.AccessControlType; inherited=$_.IsInherited}
+})
+@{protected=$acl.AreAccessRulesProtected; rules=$rules} | ConvertTo-Json -Depth 5
+"""
+    env = dict(os.environ)
+    env.pop("PSMODULEPATH", None)
+    done = subprocess.run([powershell, "-NoProfile", "-NonInteractive", "-Command", script],
+                          input=json.dumps(str(directory)), text=True, capture_output=True,
+                          env=env, timeout=30, check=True)
+    proof = json.loads(done.stdout)
+    assert proof["protected"] is True
+    rules = {row["sid"]: row for row in proof["rules"]}
+    assert rules[own]["type"] == 0 and rules[own]["rights"] & 197055 == 197055
+    assert rules[own]["inherited"] is False
+    assert service_sid(naming.unit_name(OTHER)) not in rules
+    assert "S-1-5-32-545" not in rules  # Builtin Users cannot write another unit's events.
 
 
 class TestSizes:

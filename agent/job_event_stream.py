@@ -256,12 +256,17 @@ class DirectoryChanges:
         elif sys.platform == "darwin":
             self.fd = os.dup(self.spool.fd)
             self.queue = select.kqueue()
+            # Apple's bundled Python 3.9 exposes vnode/read filters, but not
+            # EVFILT_USER. A pipe provides a native, cancellable wake instead.
+            self.stop_read, self.stop_write = os.pipe()
+            os.set_blocking(self.stop_write, False)
             self.queue.control([select.kevent(fd, filter=select.KQ_FILTER_VNODE,
                                               flags=select.KQ_EV_ADD | select.KQ_EV_CLEAR,
                                               fflags=select.KQ_NOTE_RENAME | select.KQ_NOTE_DELETE |
                                               (select.KQ_NOTE_WRITE if fd == self.spool.fd else 0))
                                 for fd in self.spool.directories] + [
-                select.kevent(1, filter=select.KQ_FILTER_USER, flags=select.KQ_EV_ADD | select.KQ_EV_CLEAR)], 0)
+                select.kevent(self.stop_read, filter=select.KQ_FILTER_READ,
+                              flags=select.KQ_EV_ADD | select.KQ_EV_CLEAR)], 0)
         else:
             raise RuntimeError("native job notifications are unavailable")
 
@@ -275,7 +280,7 @@ class DirectoryChanges:
             return True
         if sys.platform == "darwin":
             events = self.queue.control(None, 8)
-            if any(event.filter == select.KQ_FILTER_USER for event in events):
+            if any(event.filter == select.KQ_FILTER_READ and event.ident == self.stop_read for event in events):
                 return False
             if any(event.fflags & (select.KQ_NOTE_RENAME | select.KQ_NOTE_DELETE) for event in events):
                 raise RuntimeError("event spool was removed")
@@ -299,8 +304,10 @@ class DirectoryChanges:
             if sys.platform == "win32":
                 self.kernel.SetEvent(self.stop)
             elif sys.platform == "darwin":
-                self.queue.control([select.kevent(1, filter=select.KQ_FILTER_USER,
-                                                  fflags=select.KQ_NOTE_TRIGGER)], 0)
+                try:
+                    os.write(self.stop_write, b"x")
+                except BlockingIOError:
+                    pass  # An already signalled pipe still wakes the wait.
             else:
                 os.write(self.stop_write, b"x")
 
