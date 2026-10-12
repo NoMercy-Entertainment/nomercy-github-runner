@@ -1,0 +1,58 @@
+name: Runner job event health
+
+on:
+  workflow_dispatch:
+    inputs:
+      outcome:
+        description: Result to exercise in the native event stream
+        type: choice
+        default: success
+        options: [success, failure, cancellation]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: runner-job-event-health
+  cancel-in-progress: false
+
+jobs:
+  health:
+    name: native-event-${{ matrix.platform }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux-x64
+            os: Linux
+            arch: X64
+            shell: bash
+          - platform: windows-x64
+            os: Windows
+            arch: X64
+            shell: pwsh
+          - platform: windows-arm64
+            os: Windows
+            arch: ARM64
+            shell: pwsh
+          - platform: macos-x64
+            os: macOS
+            arch: X64
+            shell: bash
+    runs-on: [self-hosted, '${{ matrix.os }}', '${{ matrix.arch }}']
+    timeout-minutes: 7200
+    defaults:
+      run:
+        shell: ${{ matrix.shell }}
+    steps:
+      - name: Emit a real bounded diagnostic job
+        run: echo 'Native job event delivery check'
+      - name: Exercise a failed result
+        if: inputs.outcome == 'failure'
+        run: exit 1
+      - name: Hold the owned POSIX diagnostic until cancelled
+        if: inputs.outcome == 'cancellation' && matrix.shell == 'bash'
+        run: sleep 600
+      - name: Hold the owned Windows diagnostic until cancelled
+        if: inputs.outcome == 'cancellation' && matrix.shell == 'pwsh'
+        run: Start-Sleep -Seconds 600
