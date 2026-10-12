@@ -50,6 +50,16 @@ def plane():
 def guard():
     """Return None for normal auth; peer bearers can reach exactly this ingress."""
     scheme, _, credential = request.headers.get("Authorization", "").partition(" ")
+    if credential.startswith("nrr_") or request.path == "/api/v2/federation/peer/results":
+        if request.path != "/api/v2/federation/peer/results" or request.method != "POST" or scheme.casefold() != "bearer":
+            return jsonify(error="Result credentials authorise only their exact result ingress"), 403
+        from control.federation_direct import Direct
+        identity = Direct(plane().path).authenticate(credential)
+        if not identity:
+            return jsonify(error="Result credential is not valid"), 401
+        g.federation_peer = identity
+        g.role = "federation-result"
+        return True
     courier_routes = {"/api/v2/federation/broker/requests": "capacity", "/api/v2/federation/broker/challenge": "registration",
                       "/api/v2/federation/broker/results": "result"}
     if request.path in courier_routes or credential.startswith("nmc_"):
@@ -142,11 +152,14 @@ def snapshot():
     capacity = [service.capacity(p["id"]) for p in service.peers() if p["enabled"]]
     from control.federation_broker import Broker
     from control.federation_outbound import Outbound
+    from control.federation_direct import Direct
+    direct = Direct(service.path)
     response = jsonify(peers=service.peers(), requests=service.requests(),
                    activity=service.activity(), capacity=capacity,
                    provisioning_available=any(row["provisioning_available"] for row in capacity),
                    broker_available=Broker(service.path).settings().get("enabled", False),
-                   outgoing=Outbound(service.path).results(session.get("sub")))
+                   direct_targets=direct.targets(session.get("sub")),
+                   outgoing=Outbound(service.path).results(session.get("sub")) + direct.results(session.get("sub")))
     response.headers["Cache-Control"] = "no-store"
     return response
 
@@ -222,9 +235,54 @@ def peer_requests():
     if not worker or worker[0] != "running" or not api_v2.controller_health(service.path)["running"]:
         raise Refused("The local capacity-sharing expiry worker is unavailable")
     value = g.federation_body
-    if set(value) != {"request_key", "intent", "credential"}:
+    if set(value) not in ({"request_key", "intent", "credential"}, {"request_key", "intent", "credential", "receipt"}):
         raise Refused("A request contains request_key, bounded intent and registration credential")
-    return jsonify(request=service.submit(peer["id"], value["request_key"], value["intent"], value["credential"])), 202
+    from control.federation_direct import Direct
+    direct = Direct(service.path)
+    if "receipt" in value:
+        direct.validate_receipt(value["request_key"], value["receipt"])
+    row = service.submit(peer["id"], value["request_key"], value["intent"], value["credential"], receipt=value.get("receipt"))
+    return jsonify(request=row), 202
+
+
+@bp.route("/api/v2/federation/peer/results", methods=["POST"])
+def direct_result():
+    from control.federation_direct import Direct
+    Direct(plane().path).receive(g.federation_peer, g.federation_body)
+    return jsonify(received=True)
+
+
+@bp.route("/api/v2/federation/direct/targets", methods=["POST"])
+def direct_connect():
+    value = g.federation_body
+    if set(value) != {"name", "origin", "credential", "expires_at"}:
+        raise Refused("A direct connection contains name, HTTPS origin, peer credential and expiry")
+    from control.federation_direct import Direct
+    identity = Direct(plane().path).add(session["sub"], value["name"], value["origin"], value["credential"], value["expires_at"])
+    response = jsonify(id=identity)
+    response.headers["Cache-Control"] = "no-store"
+    return response, 201
+
+
+@bp.route("/api/v2/federation/direct/targets/<identity>/disconnect", methods=["POST"])
+def direct_disconnect(identity):
+    if g.federation_body:
+        raise Refused("Disconnect accepts no additional parameters")
+    from control.federation_direct import Direct
+    Direct(plane().path).disconnect(session["sub"], identity)
+    return jsonify(disconnected=True)
+
+
+@bp.route("/api/v2/federation/direct/outgoing", methods=["POST"])
+def direct_outgoing():
+    value = g.federation_body
+    if set(value) != {"target_id", "intent", "runner_group"}:
+        raise Refused("Choose an existing direct connection, bounded intent and restricted group")
+    from control.federation_direct import Direct
+    local = outbound()
+    public = public_origin_provider() if public_origin_provider else ""
+    key = Direct(local.path, local.service).submit(session["sub"], value["target_id"], value["intent"], value["runner_group"], public)
+    return jsonify(request_key=key), 202
 
 
 @bp.route("/api/v2/federation/peer/requests/<identity>")
