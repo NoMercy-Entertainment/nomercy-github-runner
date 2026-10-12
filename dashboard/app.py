@@ -951,6 +951,17 @@ def ws_operation_v2(ws, operation_id):
     from control.redact import redact_mapping
     sub = session.get("sub")
     previous = None
+    closed = threading.Event()
+    disconnect = None
+    def watch_disconnect():
+        try:
+            ws.receive()  # Native socket close, or an unexpected client frame.
+        except Exception:
+            pass
+        finally:
+            closed.set()
+            with _status_lock:
+                _status_lock.notify_all()
     try:
         if not _public_url() or request.headers.get("Origin") != _public_url():
             ws.send(encode_frame({"type": "operation", "error": "origin not allowed"}))
@@ -958,7 +969,7 @@ def ws_operation_v2(ws, operation_id):
         if not operation_id or len(operation_id) > 128:
             ws.send(encode_frame({"type": "operation", "error": "operation not found"}))
             return
-        while ws.connected:
+        while ws.connected and not closed.is_set():
             with _status_lock:
                 observed_generation = _status_gen
             role = users.role_of(sub)
@@ -980,10 +991,21 @@ def ws_operation_v2(ws, operation_id):
                 previous = operation
             if operation.get("state") in ("succeeded", "failed", "cancelled"):
                 return
+            if disconnect is None:
+                disconnect = threading.Thread(target=watch_disconnect,
+                    name="operation-socket-close", daemon=True)
+                disconnect.start()
             with _status_lock:
-                _status_lock.wait_for(lambda: _status_gen != observed_generation or not ws.connected)
+                _status_lock.wait_for(lambda: _status_gen != observed_generation or closed.is_set())
     except Exception:
         pass  # Disconnects reconnect through the browser's native socket.
+    finally:
+        if disconnect is not None:
+            try:
+                ws.close()
+            except Exception:
+                pass
+            disconnect.join(timeout=1)
 
 
 @app.route("/api/control/workers")

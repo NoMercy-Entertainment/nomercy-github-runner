@@ -12,6 +12,13 @@ class Socket:
     def __init__(self, sent=None):
         self.frames = []
         self.sent = sent
+        self.closed = threading.Event()
+    def receive(self):
+        self.closed.wait()
+        raise OSError("socket closed")
+    def close(self):
+        self.connected = False
+        self.closed.set()
     def send(self, value):
         self.frames.append(json.loads(value))
         if self.sent:
@@ -108,12 +115,40 @@ def test_native_notification_delivers_completion_without_repeated_reads(socket_c
         assert socket.frames[-1]["data"]["state"] == "failed"
         assert "sentinel-private-token" not in json.dumps(socket.frames)
     finally:
-        socket.connected = False
-        with dash._status_lock:
-            dash._status_gen += 1
-            dash._status_lock.notify_all()
+        socket.close()
         thread.join(2)
     assert not thread.is_alive()
+
+def test_quiet_socket_disconnect_wakes_without_database_mutation(socket_context, monkeypatch):
+    dash = socket_context
+    first = threading.Event()
+    finished = threading.Event()
+    reads = []
+    operation = {"operation_id": "op-1", "verb": "restart", "state": "running"}
+    service = SimpleNamespace(operations=SimpleNamespace(get=lambda oid: reads.append(oid) or operation))
+    monkeypatch.setattr(dash.api_v2, "control_plane", lambda: (service, None))
+    socket = Socket(lambda frame: first.set())
+    def serve():
+        with dash.app.test_request_context("/ws/v2/operations/op-1", headers={"Origin": "https://runner.example"}):
+            dash.session["sub"] = "observer"
+            dash.app.view_functions["ws_operation_v2"].__wrapped__(socket, "op-1")
+        finished.set()
+    thread = threading.Thread(target=serve)
+    thread.start()
+    try:
+        assert first.wait(2)
+        assert not finished.wait(.08)
+        with dash._status_lock:
+            generation = dash._status_gen
+        socket.close()  # No generation change or dashboard notification here.
+        assert finished.wait(2)
+        assert dash._status_gen == generation
+        assert reads == ["op-1"]
+    finally:
+        socket.close()
+        thread.join(2)
+    assert not thread.is_alive()
+
 
 def test_role_revocation_blocks_later_operation_contents(socket_context, monkeypatch):
     dash = socket_context
