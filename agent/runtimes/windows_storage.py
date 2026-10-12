@@ -12,6 +12,7 @@ from pathlib import Path
 import re
 
 from .. import naming
+from ..windows_timeouts import shell_timeout
 
 DEFAULT_LIMIT = 100 * 1024 ** 3
 DEFAULT_RESERVE = 20 * 1024 ** 3
@@ -56,7 +57,7 @@ class WindowsStorage:
             self._powershell, "-NoProfile", "-NonInteractive", "-ExecutionPolicy",
             "Bypass", "-File", script], input=json.dumps(request),
             # A verify may wait up to 8 s for the host's storage lock first.
-            timeout=30 if action == "verify" else 3600)
+            timeout=shell_timeout() if action == "verify" else 3600)
         if not ok:
             raise RuntimeError("runner storage: " + (err or out or "helper failed"))
         try:

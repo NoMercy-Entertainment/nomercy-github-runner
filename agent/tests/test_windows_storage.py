@@ -47,6 +47,21 @@ def test_helper_uses_fixed_argv_and_json_not_request_text_as_code():
     assert "-Command" not in args
 
 
+def test_arm_storage_verification_allows_emulated_shell_startup_without_skipping_identity(monkeypatch):
+    from agent import windows_timeouts
+    monkeypatch.setattr(windows_timeouts.platform, 'machine', lambda: 'ARM64')
+
+    def run(args, **kwargs):
+        assert kwargs['timeout'] >= 120, 'Emulated PowerShell can take over a minute to start'
+        return True, json.dumps({'runner_id': RID, 'volume_guid': 'not-an-owned-volume',
+                                 'virtual_bytes': DEFAULT_LIMIT,
+                                 'capacity_bytes': DEFAULT_LIMIT - 1024**2,
+                                 'free_bytes': DEFAULT_LIMIT - 2*1024**2}), ''
+
+    with pytest.raises(RuntimeError, match='volume identity'):
+        WindowsStorage({}, run, PS).verify(RID)
+
+
 @pytest.mark.parametrize("root", [r"D:\runners", r"D:\runners\disk", "D:\\",
                                   r"D:\x:stream", r"\\server\share", "relative"])
 def test_invalid_or_overlapping_roots_are_refused(root):
@@ -546,9 +561,15 @@ def test_a_verify_waits_long_enough_for_another_short_check():
     text = (ROOT / "agent/runtimes/windows_storage.ps1").read_text(encoding="utf-8")
     wait = re.search(r"-eq 'verify'\) \{ (\d+) \}", text)
     assert wait and 5000 <= int(wait.group(1)) <= 15000, wait
-    source = (ROOT / "agent/runtimes/windows_storage.py").read_text(encoding="utf-8")
-    deadline = re.search(r'timeout=(\d+) if action == "verify"', source)
-    assert deadline and int(deadline.group(1)) * 1000 >= int(wait.group(1)) + 10000
+    calls = []
+    def run(args, **kwargs):
+        calls.append(kwargs['timeout'])
+        return True, json.dumps({'runner_id': RID, 'volume_guid': VOLUME,
+                                 'virtual_bytes': DEFAULT_LIMIT,
+                                 'capacity_bytes': DEFAULT_LIMIT - 1024**2,
+                                 'free_bytes': DEFAULT_LIMIT - 2*1024**2}), ''
+    WindowsStorage({}, run, PS).verify(RID)
+    assert calls[0]*1000 >= int(wait.group(1)) + 10000
 
 
 @pytest.mark.parametrize("cmdlet", ["New-VHD", "Get-VHD", "Mount-VHD", "Dismount-VHD",
