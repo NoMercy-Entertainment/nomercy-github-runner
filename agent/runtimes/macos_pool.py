@@ -13,6 +13,7 @@ import socket
 import sys
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -593,6 +594,19 @@ class MacAppliancePoolRuntime:
             pass
         return result
 
+    def telemetry_all(self, runner_ids):
+        """Read independent guests concurrently, without reusing old samples."""
+        result = {}
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            futures = {rid: pool.submit(self.telemetry, rid) for rid in runner_ids}
+            for rid, future in futures.items():
+                try:
+                    result[rid] = future.result()
+                except Exception:
+                    # One unreachable guest must not erase another's reading.
+                    continue
+        return result
+
     def logs(self, runner_id, since_seconds, max_bytes=256 * 1024):
         rid = naming.check(runner_id)
         inner = self._online(rid)
@@ -646,8 +660,10 @@ class MacAppliancePoolRuntime:
                 raise RuntimeError("appliance inventory could not be observed")
             return [dict(runner_id=rid, state="unknown") for rid in records]
         result = []
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            observations = dict(zip(records, pool.map(self.status, records)))
         for rid, record in records.items():
-            state = self.status(rid)
+            state = observations[rid]
             if record and record.get("retained") and state.get("exists") is False:
                 continue
             unit = dict(runner_id=rid, state=("absent" if state.get("exists") is False
