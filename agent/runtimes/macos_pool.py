@@ -6,6 +6,7 @@ argv; runner commands and registration secrets travel exclusively over SSH.
 """
 import json
 import os
+import posixpath
 import re
 import shutil
 import socket
@@ -569,6 +570,15 @@ class MacAppliancePoolRuntime:
     def jobs(self, runner_ids):
         from ..jobs import current_job
         return {rid: current_job(self.logs(rid, 86400)) for rid in runner_ids}
+
+    def job_event_source(self, runner_id):
+        rid = naming.check(runner_id)
+        record = self._read(rid)
+        if self._power(rid) != "running":
+            raise RuntimeError("owned macOS event guest is not running")
+        guest, inner, _ = self._context(record)
+        return {"directory": posixpath.join(inner.paths(rid)["logs"], "job-events"),
+                "guest": guest, "known_hosts": str(self._directory(rid) / "guest_known_hosts")}
 
     def probe(self, runner_id, probe):
         rid = naming.check(runner_id)

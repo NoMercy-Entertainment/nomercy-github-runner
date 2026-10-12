@@ -77,7 +77,7 @@ TEMPLATE_MARKER = ".template"
 HOOK_SOURCE = Path(__file__).resolve().parents[1] / "hooks" / "macos"
 HOOK_SCRIPTS = {"ACTIONS_RUNNER_HOOK_JOB_STARTED": "job-started.sh",
                 "ACTIONS_RUNNER_HOOK_JOB_COMPLETED": "job-completed.sh"}
-HOOK_FILES = ("lib.sh", "runner_guard.js", *HOOK_SCRIPTS.values())
+HOOK_FILES = ("lib.sh", "runner_guard.js", "job_event.py", *HOOK_SCRIPTS.values())
 #: Where a runner's hooks go when its launchd job is a system one: a tree
 #: root owns, which the runner's account - and so a job - cannot change.
 #: A runner in a user's own launchd domain keeps them in its reg directory,
@@ -436,6 +436,8 @@ class MacApplianceRuntime:
         }.items():
             env.setdefault(key, posixpath.join(shared_home, directory))
         env["DOTNET_CLI_TELEMETRY_OPTOUT"] = "1"
+        env["NOMERCY_RUNNER_ID"] = rid
+        env["NOMERCY_JOB_EVENT_DIR"] = posixpath.join(p["logs"], "job-events")
         env["DOTNET_GENERATE_ASPNET_CERTIFICATE"] = "false"
         if _serves_github(spec):
             hooks = self._hooks_dir(p, rid)
@@ -669,6 +671,16 @@ class MacApplianceRuntime:
 
     def jobs(self, runner_ids):
         return {rid: current_job(self.logs(rid, 86400)) for rid in runner_ids}
+
+    def job_event_source(self, runner_id):
+        rid = naming.check(runner_id)
+        directory = posixpath.join(self.paths(rid)["logs"], "job-events")
+        if self._remote:
+            raise RuntimeError("remote macOS events require the owned pool's host-key pin")
+        from ..job_event_stream import safe_directory
+        safe_directory(posixpath.dirname(directory))
+        Path(directory).mkdir(mode=0o700, exist_ok=True)
+        return {"directory": directory}
 
     def logs(self, runner_id, since_seconds, max_bytes=256 * 1024):
         rid = naming.check(runner_id)

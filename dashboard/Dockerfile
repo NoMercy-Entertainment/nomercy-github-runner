@@ -10,7 +10,7 @@ RUN apk add --no-cache bash coreutils tzdata \
       cryptography==48.0.1
 
 WORKDIR /app
-COPY alarm_notify.py alarms.py api_v2.py app.py cards.py dbwatch.py forgejo_api.py github_api.py history.py machines.py oidc.py providers.py runner_groups.py users.py webhook_jobs.py ./
+COPY alarm_notify.py alarms.py api_v2.py app.py cards.py dbwatch.py forgejo_api.py github_api.py history.py machines.py native_history.py oidc.py providers.py runner_groups.py users.py webhook_jobs.py ./
 COPY runtime/ ./runtime/
 COPY store/ ./store/
 COPY control/ ./control/

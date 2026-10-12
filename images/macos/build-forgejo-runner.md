@@ -1,5 +1,13 @@
 # Forgejo runner for macOS: the self-built darwin artefact
 
+For the current native job-event producer use the common
+`images/windows/build-forgejo-runner.sh v13.1.0` recipe with both `/build`
+and `/events` mounted read-only. It builds and tests the reviewed reporter
+patch for both darwin architectures and records its hashes in PROVENANCE.
+[Native event rollout](../../docs/native-job-events.md) describes the protected
+guest stream, host-key pins and per-runner environment. Earlier measurements
+and the historical unpatched recipe below do not prove that producer is active.
+
 Forgejo publishes no darwin runner (design 9.4: release v13.1.0 ships only
 `linux-amd64` and `linux-arm64`). The Forgejo runner that is online in the
 macOS appliance today runs a locally cross-compiled binary. Design 9.4

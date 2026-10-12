@@ -6,6 +6,7 @@
 set +e +u
 set +o pipefail
 here=$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd)
+/usr/bin/python3 -I -B "$here/job_event.py" finished 2>/dev/null || true
 if ! . "$here/lib.sh" 2>/dev/null; then
   echo "::warning title=Runner hook::job-completed cleanup could not load $here/lib.sh"
   exit 0

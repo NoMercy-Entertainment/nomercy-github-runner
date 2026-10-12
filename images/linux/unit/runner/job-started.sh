@@ -10,6 +10,7 @@
 set +e
 set -u
 here=$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd) || here=/runner
+python3 -I -B "$here/job_event.py" started 2>/dev/null || true
 status=0
 timeout --kill-after=5s 600s python3 "$here/job_started.py" || status=$?
 [ "$status" -eq 75 ] && exit 1
