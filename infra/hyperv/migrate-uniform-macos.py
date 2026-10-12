@@ -81,6 +81,12 @@ def check_identity(proof, expected):
         assert proof['uuid'] == expected['registration_uuid'], 'Forge registration UUID differs'
 
 
+def target_spec(index, captured):
+    return dict(image=TEMPLATES[index], cpus='8', memory=16*GIB, disk_limit=100*GIB,
+                labels={'nomercy.provider': captured['expected']['provider']},
+                env=dict(captured['environment'], RUNNER_CACHE_MAX_BYTES=str(40*GIB)))
+
+
 def capture(index):
     config, guest, inner = source()
     stopped(inner)
@@ -163,11 +169,13 @@ def install(index):
         inner._fs.write_text(paths['reg'] + '/.runner', (directory / 'forgejo.runner').read_text(), mode=0o600)
     home = paths['reg'] + '/agent' if captured['expected']['provider'] == 'github' else paths['reg']
     assert registration(inner._fs, home, captured['expected']['provider']) == captured['registration']
-    spec = dict(image=TEMPLATES[index], cpus='8', memory=16*GIB, disk_limit=100*GIB,
-                env=dict(captured['environment'], RUNNER_CACHE_MAX_BYTES=str(40*GIB)))
+    spec = target_spec(index, captured)
     # No registration or listener start: a target must not briefly claim a
     # new job merely to prepare its launchd definition.
     inner.create(rid, spec, start=False)
+    if captured['expected']['provider'] == 'github':
+        guard = inner.origin_guard_report(rid)
+        assert guard and guard['version'] > 0, 'Target GitHub security hooks are not installed'
     pool._write(record, initialized=True)
     assert inner.status(rid).get('running') is False
     pool._write(record, listener_disabled=True)
