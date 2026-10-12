@@ -29,7 +29,9 @@ class Dashboard:
         config.write_text(json.dumps({"origin": origin, "actor": actor, "peer_actor": peer_actor,
             "access": access, "broker_port": courier.server.server_port, "certificate": certificate, "private": private}))
         # Do not inherit host GH/PAT/SSO/agent/runtime configuration into tests.
-        environment = {key: os.environ[key] for key in ("PATH", "SystemRoot", "SystemDrive", "TEMP", "TMP", "WINDIR", "LANG") if key in os.environ}
+        # setup-python's shared libpython needs its own loader path; omitting it
+        # can resolve the system interpreter prefix and lose installed packages.
+        environment = {key: os.environ[key] for key in ("PATH", "SystemRoot", "SystemDrive", "TEMP", "TMP", "WINDIR", "LANG", "LD_LIBRARY_PATH") if key in os.environ}
         environment.update(DASH_DATA=str(directory), ENV_PATH=str(directory / ".env"),
                            PYTHONPATH=str(Path(__file__).resolve().parents[1]), PYTHONUNBUFFERED="1")
         (directory / ".env").write_text("")
@@ -40,7 +42,12 @@ class Dashboard:
         self.lines = queue.Queue()
         self.reader = threading.Thread(target=self.read_lines, daemon=True)
         self.reader.start()
-        ready = self.read()
+        try:
+            ready = self.read()
+            assert Path(ready["python_prefix"]).resolve() == Path(sys.prefix).resolve(), "Child used a different interpreter installation"
+        except BaseException:
+            self.close()
+            raise
         courier.routes[origin.removeprefix("https://")] = ready["port"]
         self.transport = Transport(certificate, courier.routes)
         self.headers = {"Cookie": "session=" + ready["cookie"], "X-CSRF-Token": ready["csrf"]}

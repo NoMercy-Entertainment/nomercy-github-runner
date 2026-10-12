@@ -310,7 +310,7 @@ def dashboard(config):
     csrf = "isolated-csrf"
     cookie = dashboard_app.app.session_interface.get_signing_serializer(dashboard_app.app).dumps(
         {"sub": config["actor"], "federation_csrf": csrf})
-    print(json.dumps({"port": server.server_port, "cookie": cookie, "csrf": csrf}), flush=True)
+    print(json.dumps({"port": server.server_port, "cookie": cookie, "csrf": csrf, "python_prefix": sys.prefix}), flush=True)
 
     def owned():
         with schema.connect(path) as c:
