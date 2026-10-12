@@ -18,6 +18,12 @@ from . import naming, protocol
 from .job_event_stream import DirectoryChanges, read_events, safe_directory, validate_event
 
 
+# Source initialization can verify owned storage and ACLs before a native watch
+# exists. Wait for that work to release its handles on every platform; this is
+# a maintenance bound, independent of the runner's job timeout.
+SOURCE_STOP_TIMEOUT = 300
+
+
 class JobEventSender:
     def __init__(self, host_id, runtime, link, root, watch_factory=DirectoryChanges):
         self.host_id, self.runtime, self.link = host_id, runtime, link
@@ -213,7 +219,10 @@ class _RunnerSource:
             except Exception:
                 # No exception detail: it may contain private paths. A failed
                 # source remains unknown and never falls back to log polling.
-                self.owner.failed_sources.add(self.runner_id)
+                with self.owner._lock:
+                    if self.owner._sources.get(self.runner_id) is not self:
+                        return
+                    self.owner.failed_sources.add(self.runner_id)
                 if self.stop_event.wait(pause):
                     return
                 pause = min(pause * 2, 30)
@@ -230,7 +239,8 @@ class _RunnerSource:
                         return
                     self.owner.record(self.runner_id, event)
                     self.watch.spool.acknowledge(filename, event)
-                self.owner.failed_sources.discard(self.runner_id)
+                if not self._mark_ready():
+                    return
                 if not self.watch.wait():
                     return
         finally:
@@ -250,7 +260,8 @@ class _RunnerSource:
                     raise ValueError("remote event exceeded its bounded frame")
                 event = json.loads(content)
                 if event == {"ready": self.runner_id}:
-                    self.owner.failed_sources.discard(self.runner_id)
+                    if not self._mark_ready():
+                        return
                     continue
                 self.owner.record(self.runner_id, event)
                 self.remote.stdin.write(event["event_id"] + "\n")
@@ -266,11 +277,23 @@ class _RunnerSource:
                 stream.close()
             self.remote = None
 
+    def _mark_ready(self):
+        # A pause marks the cached job unknown before stopping this thread.
+        # Late replay/guest readiness must not clear that mark during teardown.
+        with self.owner._lock:
+            if (self.owner._sources.get(self.runner_id) is not self or
+                    self.stop_event.is_set() or self.runner_id in self.owner._paused):
+                return False
+            self.owner.failed_sources.discard(self.runner_id)
+            return True
+
     def stop(self):
         self.stop_event.set()
-        if self.watch:
-            self.watch.wake()
-        if self.remote:
-            self.remote.terminate()
+        # The source thread may close and clear either reference concurrently.
+        watch, remote = self.watch, self.remote
+        if watch:
+            watch.wake()
+        if remote:
+            remote.terminate()
         if self.thread:
-            self.thread.join(timeout=10)
+            self.thread.join(timeout=SOURCE_STOP_TIMEOUT)

@@ -5,6 +5,13 @@ Linux uses inotify, Windows uses native change-notification handles, and macOS
 uses a persistent host-key-pinned SSH stream backed by guest kqueue. Watches
 are registered before the bounded initial replay. Delivery retries after a
 failed mTLS send use backoff; they do not query the job or forge for its result.
+Storage maintenance first cancels the owned watcher and waits up to 300 seconds
+for its thread to finish, uniformly on all platforms. This includes cold
+storage/ACL verification before a watch exists; late initialization exits and
+releases its handles before maintenance begins. Late native/guest readiness
+cannot clear the paused source's unknown state. A timeout still holds storage
+work and retains the source; the maintenance wrapper balances its pause lease
+even on failure. This bound does not change job runtime limits or add polling.
 The dashboard projects the same durable ledger into history with a committed
 cursor. Workers advertise job_events=1 only while their native event service
 is active. History then uses received samples and database-change notifications
