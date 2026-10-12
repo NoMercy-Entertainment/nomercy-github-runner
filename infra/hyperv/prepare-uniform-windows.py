@@ -68,6 +68,10 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('mode', choices=('prepare', 'activate', 'rollback'))
     parser.add_argument('--runner', required=True)
+    parser.add_argument('--drained', action='store_true',
+                        help='Prepare an already drained service without starting it')
+    parser.add_argument('--cpu-offset', type=int, choices=(0, 8),
+                        help='Stage one of two disjoint eight-core windows before VM expansion')
     args = parser.parse_args()
     rid = str(UUID(args.runner))
     config = load(r'C:\ProgramData\nomercy\agent\agent.json')
@@ -78,7 +82,11 @@ def main():
     unit_path = reg / 'unit.json'
     saved_path = ROOT / (rid + '.json')
     if args.mode == 'prepare':
-        assert runtime.status(rid).get('running') is True
+        running = runtime.status(rid).get('running')
+        if args.drained:
+            assert running is False and (reg / 'drain.request').is_file(), 'Drain must be locally confirmed'
+        else:
+            assert running is True
         original = json.loads(unit_path.read_text())
         assert original['runner_id'] == rid
         spec = {'image': (reg / '.template').read_text().strip(),
@@ -86,6 +94,8 @@ def main():
                 'cpus': '8', 'cpuset': cpu_window(original.get('cpuset')),
                 'disk_limit': 100 * GIB}
         spec['env']['RUNNER_CACHE_MAX_BYTES'] = str(40 * GIB)
+        if args.cpu_offset is not None:
+            spec['cpuset'] = ','.join(str(v) for v in range(args.cpu_offset, args.cpu_offset+8))
         ROOT.mkdir(exist_ok=True)
         subprocess.run(['icacls', str(ROOT), '/inheritance:r', '/grant:r',
                         '*S-1-5-18:(OI)(CI)F', '*S-1-5-32-544:(OI)(CI)F', '/Q'],
@@ -105,10 +115,16 @@ def main():
     spec = saved['spec']
     if args.mode == 'activate':
         assert physical_memory() >= 34 * GIB, 'Both 16-GiB runners need backed guest memory'
+        assert os.cpu_count() > max(int(v) for v in spec['cpuset'].split(',')), 'Staged CPU window is unavailable'
     else:
         original = saved['original']
         spec = dict(spec, env=original['env'], memory=str(original['memory_bytes']),
                     cpus=str(original['cpus'] or ''), cpuset=original['cpuset'])
+    runtime._acl(paths['root'], 'rnr-' + rid)
+    if config.tools.get('short_workspaces'):
+        from agent.windows_workspace import ensure_alias
+        ensure_alias(config.tools['short_workspaces'], rid, paths['work'],
+                     runtime._run, runtime._tools['icacls'], runtime._tools['powershell'])
     runtime._configure('rnr-' + rid, paths, spec)
     runtime._fs.write_text(str(unit_path), json.dumps(runtime._unit(rid, spec, paths)))
     runtime._lock_from_jobs('rnr-' + rid, paths, spec['image'].startswith('actions-runner'))
