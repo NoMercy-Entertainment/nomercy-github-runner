@@ -1,0 +1,16 @@
+{
+  "source_commit": "6095cb17bfdbded5aa4ea84c18a4b69fd9574cca",
+  "go": "1.26.7",
+  "toolchain_image": "sha256:e30143be198ab04cf7ba25fba83ab3a692ca584c994aad0bf131fa0eb32dd8c1",
+  "admission_version": 1,
+  "job_events": 1,
+  "version": "v13.1.0-nomercy-admission.1",
+  "artifacts": {
+    "linux-amd64": "42736f6bf24ef7f5c2994c904da7a70d03829e1380b05c7e93651850f6847276",
+    "linux-arm64": "9a40ef26567787c589aeced7bc96db989e0308f201711f00d54cd687576f2799",
+    "windows-amd64": "4126e175477791f1092515c383d0382e8e105b05001cddd62fc5deba61c6abf5",
+    "windows-arm64": "08c7f63d879102d3dc193ca978dbda96588b0d34b084e92b179e5ef929243bac",
+    "darwin-amd64": "d550845297f2dd1d250c445c9959cb9a1cb3bd50e4f2a2c944a399a9a2336484",
+    "darwin-arm64": "8775a548930e37a653bcc90a4eeedd60dd8654c6e82635ccd83c197841f277f9"
+  }
+}

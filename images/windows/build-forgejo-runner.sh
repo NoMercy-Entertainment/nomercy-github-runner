@@ -5,6 +5,7 @@
 #
 #   docker run --rm -v <out dir>:/out -v <this dir>:/build:ro \
 #     -v <images/forgejo-events>:/events:ro \
+#     -v <images/forgejo-admission>:/admission:ro \
 #     golang:1.26.7 bash /build/build-forgejo-runner.sh v13.1.0
 #
 # The Go version is the tag's own `toolchain` line (go.mod), so the image is
@@ -28,6 +29,10 @@ git apply --check /events/reporter.patch
 git apply /events/reporter.patch
 cp /events/event.go /events/event_test.go internal/pkg/report/
 gofmt -w internal/pkg/report/event.go internal/pkg/report/event_test.go internal/pkg/report/reporter.go
+git apply --check /admission/runner.patch
+git apply /admission/runner.patch
+cp /admission/admission.go /admission/admission_test.go internal/app/run/
+gofmt -w internal/app/run/runner.go internal/app/run/admission.go internal/app/run/admission_test.go
 WANT="$(sed -n 's/^toolchain //p' go.mod)"
 HAVE="$(go env GOVERSION)"
 if [ -n "$WANT" ] && [ "$WANT" != "$HAVE" ]; then
@@ -36,23 +41,28 @@ if [ -n "$WANT" ] && [ "$WANT" != "$HAVE" ]; then
 fi
 
 go test ./internal/pkg/report
+go test ./internal/app/run -run '^TestAdmission' -count=1 -timeout=60s
+VERSION="${TAG}-nomercy-admission.1"
 for target in linux/amd64 linux/arm64 windows/amd64 windows/arm64 darwin/amd64 darwin/arm64; do
   os="${target%/*}" arch="${target#*/}"
   ext=""; [ "$os" = windows ] && ext=".exe"
-  out="/out/forgejo-runner-${TAG}-${os}-${arch}${ext}"
+  out="/out/forgejo-runner-${VERSION}-${os}-${arch}${ext}"
   GOOS="$os" GOARCH="$arch" CGO_ENABLED=0 go build -trimpath \
     -tags 'netgo osusergo' \
-    -ldflags "-s -w -X code.forgejo.org/forgejo/runner/${MAJOR}/internal/pkg/ver.version=${TAG}" \
+    -ldflags "-s -w -X code.forgejo.org/forgejo/runner/${MAJOR}/internal/pkg/ver.version=${VERSION}" \
     -o "$out" .
 done
 
 cd /out
-sha256sum forgejo-runner-"${TAG}"-* > SHA256SUMS
+sha256sum forgejo-runner-"${VERSION}"-* > SHA256SUMS
 {
   echo "tag=${TAG}"
   echo "commit=${COMMIT}"
   echo 'job_events=1'
+  echo 'admission_version=1'
+  echo "version=${VERSION}"
   sha256sum /events/reporter.patch /events/event.go /events/event_test.go
+  sha256sum /admission/runner.patch /admission/admission.go /admission/admission_test.go
   echo "go=${HAVE}"
   echo "built=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   echo "flags=CGO_ENABLED=0 -trimpath -tags 'netgo osusergo' -ldflags '-s -w -X .../ver.version=${TAG}'"

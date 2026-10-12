@@ -708,7 +708,11 @@ class _Forgejo(Provider):
         token = (env.get("FORGEJO_API_TOKEN") or "").strip()
         if not (url and token):
             return None
-        return forgejo_api.Forgejo(url, token)
+        from forgejo_admission import configured_policy
+        configured_policy(env)
+        scope = env.get("FORGEJO_RUNNER_SCOPE", "user")
+        return (forgejo_api.Forgejo(url, token) if scope == "user"
+                else forgejo_api.Forgejo(url, token, scope))
 
     #: Forgejo publishes linux/amd64 and linux/arm64 and nothing else. Release
     #: v13.1.0 carries twelve assets, all Linux. The project's Makefile has a

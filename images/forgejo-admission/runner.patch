@@ -1,0 +1,68 @@
+diff --git a/internal/app/run/runner.go b/internal/app/run/runner.go
+index 4327d61..2d1bfb8 100644
+--- a/internal/app/run/runner.go
++++ b/internal/app/run/runner.go
+@@ -11,6 +11,7 @@ import (
+ 	"fmt"
+ 	"io"
+ 	"maps"
++	"os"
+ 	"path/filepath"
+ 	"strconv"
+ 	"strings"
+@@ -47,6 +48,8 @@ type Runner struct {
+ 	cacheProxy *cacheproxy.Handler
+ 
+ 	runningTasks sync.Map
++	admission    *admissionPolicy
++	admissionErr error
+ }
+ 
+ //mockery:generate: true
+@@ -78,13 +81,16 @@ func NewRunner(cfg *config.Config, name string, ls labels.Labels, cli client.Cli
+ 	envs["FORGEJO_ACTIONS"] = "true"
+ 	envs["FORGEJO_ACTIONS_RUNNER_VERSION"] = ver.Version()
+ 
++	policy, policyErr := loadAdmissionPolicy(os.Getenv(admissionPolicyEnvironment), cli.Address())
+ 	return &Runner{
+-		name:       name,
+-		cfg:        cfg,
+-		client:     cli,
+-		labels:     ls,
+-		envs:       envs,
+-		cacheProxy: cacheProxy,
++		admission:    policy,
++		admissionErr: policyErr,
++		name:         name,
++		cfg:          cfg,
++		client:       cli,
++		labels:       ls,
++		envs:         envs,
++		cacheProxy:   cacheProxy,
+ 	}
+ }
+ 
+@@ -151,6 +157,11 @@ func SetupCache(cfg *config.Config) *cacheproxy.Handler {
+ }
+ 
+ func (r *Runner) Run(ctx context.Context, task *runnerv1.Task) {
++	task = admissionReportableTask(task)
++	if task == nil {
++		log.Error("admission refused a missing task")
++		return
++	}
+ 	if _, loaded := r.runningTasks.LoadOrStore(task.Id, struct{}{}); loaded {
+ 		// Normally the responsibility of Run() is to ensure that, no matter what occurs within running the job, a
+ 		// reporter is created that will report the job status to the server. But in this case, for some reason another
+@@ -236,6 +247,11 @@ func (r *Runner) run(ctx context.Context, task *runnerv1.Task, reporter *report.
+ 		}
+ 	}()
+ 
++	if err := r.admit(task); err != nil {
++		reporter.Logf("Runner admission refused this task: %s", err)
++		return err
++	}
++
+ 	reporter.Logf("Runner %s (version:%s) received task %v of job %v, triggered by event: %s", r.name, ver.Version(), task.Id, task.Context.Fields["job"].GetStringValue(), task.Context.Fields["event_name"].GetStringValue())
+ 
+ 	workflow, jobID, err := generateWorkflow(task)

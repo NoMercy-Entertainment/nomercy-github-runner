@@ -78,6 +78,7 @@ class AgentWiring:
     #: runner (its job-started hook reads it). Given to every GitHub unit;
     #: see docs/operations/runner-job-hooks.md, "Outside code".
     trusted_owners: str = ""
+    forgejo_admission_policy: str = ""
     deadline: float = DEADLINE
 
     def call(self, host_id, verb, body=None, operation_id=None):
@@ -180,6 +181,10 @@ class AgentRuntime:
         if spec.get("disk_limit"):
             unit["disk_limit"] = int(spec["disk_limit"])
         env = {}
+        admission = getattr(self.wiring, "forgejo_admission_policy", "")
+        if spec.get("provider") == "forgejo" and admission:
+            from forgejo_admission import ENVIRONMENT
+            env[ENVIRONMENT] = admission
         policy = spec.get("cache_policy") or {}
         if (spec.get('platform') != 'linux' and isinstance(policy, dict)
                 and policy.get('enabled') is True and type(policy.get('max_bytes')) is int

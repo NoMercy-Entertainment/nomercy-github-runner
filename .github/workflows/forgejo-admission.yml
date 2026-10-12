@@ -1,0 +1,32 @@
+name: Forgejo admission
+
+on:
+  pull_request:
+    paths:
+      - 'images/forgejo-admission/**'
+      - 'images/forgejo-events/**'
+      - 'images/windows/build-forgejo-runner.sh'
+      - '.github/workflows/forgejo-admission.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  guarded-build:
+    runs-on: [self-hosted, Linux, X64, beast-unit]
+    timeout-minutes: 7200
+    container:
+      image: golang:1.26.7
+      options: --cpus 2 --memory 4g --memory-swap 4g
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Build and test the reviewed guarded runner for every platform
+        shell: bash
+        run: |
+          mkdir /out
+          ln -s "$GITHUB_WORKSPACE/images/forgejo-events" /events
+          ln -s "$GITHUB_WORKSPACE/images/forgejo-admission" /admission
+          bash images/windows/build-forgejo-runner.sh v13.1.0
