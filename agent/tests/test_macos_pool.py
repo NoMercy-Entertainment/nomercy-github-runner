@@ -194,6 +194,37 @@ def test_two_guests_have_distinct_disk_port_and_guest_commands(pool, host):
     assert len(pool.instances()) == 2
     assert host.guests[RID] is not host.guests[OTHER]
 
+def test_guest_status_reads_overlap_and_keep_unknown_state(pool, monkeypatch):
+    import threading
+    pool.create(RID, SPEC)
+    pool.create(OTHER, SPEC)
+    rendezvous = threading.Barrier(2)
+
+    def status(rid):
+        rendezvous.wait(timeout=2)
+        return {"exists": True, "running": True} if rid == RID else {
+            "exists": None, "running": None}
+
+    monkeypatch.setattr(pool, "status", status)
+    observed = {unit["runner_id"]: unit["state"] for unit in pool.instances()}
+    assert observed == {RID: "running", OTHER: "unknown"}
+
+
+def test_heartbeat_telemetry_reads_overlap_and_keep_other_guest_on_failure(pool, monkeypatch):
+    import threading
+    from agent.heartbeat import _telemetry
+    rendezvous = threading.Barrier(2)
+
+    def telemetry(rid):
+        rendezvous.wait(timeout=2)
+        if rid == OTHER:
+            raise RuntimeError("guest did not answer")
+        return {"cpu_percent": 12.5, "mem_used_bytes": 1024}
+
+    monkeypatch.setattr(pool, "telemetry", telemetry)
+    assert _telemetry(pool, [RID, OTHER]) == {
+        RID: {"cpu_percent": 12.5, "mem_used_bytes": 1024}}
+
 
 def test_debloated_guests_keep_independent_nvram(tmp_path, host):
     disk, system, seed = (tmp_path / name for name in ("base.qcow2", "BaseSystem.img", "seed.fd"))

@@ -146,11 +146,12 @@ class MacApplianceRuntime:
     kind = "macos-appliance"
 
     def __init__(self, run=None, fs=None, appliance=None, tools=None, remote=False,
-                 storage_limit=None):
+                 storage_limit=None, allow_adoption=True):
         self._run = run or _exec
         self._fs = fs or LocalFs()
         self._appliance = appliance
         self._remote = remote
+        self._allow_adoption = allow_adoption
         self._storage_limit = storage_limit
         self._tools = dict(TOOLS, **(tools or {}))
         self._storage = None
@@ -189,6 +190,8 @@ class MacApplianceRuntime:
         made it itself. Read from the guest, so an agent restart does not
         forget which job a spec means."""
         rid = naming.check(runner_id)
+        if not self._allow_adoption:
+            return None
         areas = naming.names(rid, "macos")
         marker = posixpath.join(posixpath.dirname(areas["work"]),
                                 ADOPTED_MARKER)
@@ -243,6 +246,8 @@ class MacApplianceRuntime:
         if type(start) is not bool:
             raise ValueError("start must be a boolean")
         if (spec or {}).get("adopt"):
+            if not self._allow_adoption:
+                raise ValueError("owned appliances do not allow legacy adoption")
             if not start:
                 raise ValueError("a serving adoption cannot be prepared offline")
             return self._adopt(rid, spec["adopt"])
