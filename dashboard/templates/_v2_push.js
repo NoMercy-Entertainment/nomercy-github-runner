@@ -14,17 +14,36 @@ function subscribeFleet(onSnapshot, onFallback) {
 }
 
 async function watchOperation(id, report) {
-  for(let attempt=0;attempt<360;attempt++) {
-    const response=await fetch('/api/v2/operations/'+encodeURIComponent(id),{cache:'no-store'});
-    const data=await response.json();if(!response.ok)throw new Error(data.error||('HTTP '+response.status));
-    const op=data.operation;
-    let result=op.result;try{if(typeof result==='string')result=JSON.parse(result);}catch(e){}
-    const freed = result && Number.isFinite(Number(result.total_bytes)) && Number(result.total_bytes) > 0
-      ? ' · freed ' + (Number(result.total_bytes) / 1e9).toFixed(1) + ' GB' : '';
-    report(op.verb.replaceAll('_',' ') + ' · ' + op.state +
-      (op.error ? ' · ' + op.error : '') + freed, op.state === 'failed', op);
-    if(['succeeded','failed','cancelled'].includes(op.state))return op;
-    await new Promise(resolve=>setTimeout(resolve,3000));
-  }
-  report('Still in progress; view its runner for details.',false,{state:'running'});
+  return new Promise((resolve, reject) => {
+    let socket, retry, finished = false;
+    const cleanup = () => {
+      finished = true;
+      clearTimeout(retry);
+      window.removeEventListener('pagehide', cleanup);
+      if (socket) { socket.onclose = null; socket.close(); }
+    };
+    function connect() {
+      socket = new WebSocket((location.protocol === 'https:' ? 'wss://' : 'ws://') +
+        location.host + '/ws/v2/operations/' + encodeURIComponent(id));
+      socket.onmessage = event => {
+        try {
+          const frame = JSON.parse(event.data);
+          if (frame.type !== 'operation') return;
+          if (frame.error) { cleanup(); reject(new Error(frame.error)); return; }
+          const op = frame.data;
+          let result = op.result;
+          try { if (typeof result === 'string') result = JSON.parse(result); } catch(e) {}
+          const freed = result && Number.isFinite(Number(result.total_bytes)) && Number(result.total_bytes) > 0
+            ? ' · freed ' + (Number(result.total_bytes) / 1e9).toFixed(1) + ' GB' : '';
+          report(op.verb.replaceAll('_',' ') + ' · ' + op.state +
+            (op.error ? ' · ' + op.error : '') + freed, op.state === 'failed', op);
+          if (['succeeded','failed','cancelled'].includes(op.state)) { cleanup(); resolve(op); }
+        } catch(e) { cleanup(); reject(e); }
+      };
+      socket.onclose = () => { if (!finished) retry = setTimeout(connect, 5000); };
+      socket.onerror = () => socket.close();
+    }
+    window.addEventListener('pagehide', cleanup);
+    connect();
+  });
 }
