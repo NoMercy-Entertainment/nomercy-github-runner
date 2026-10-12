@@ -17,7 +17,9 @@ requires an exact enrolled worker identity and recognized VM hardware, refuses
 BEAST-UNIT, preserves the original registry values once in the agent directory
 and proves the new policy by readback. A configured update deadline stops the
 change for review. It does not reboot, stop a service or change host settings.
-Newly enrolled Windows guests must receive the same policy before accepting jobs.
+Both guest installers request this policy before starting their agent, so newly
+enrolled Windows guests receive it before accepting jobs. The common installer
+does not apply it unless the guest-only option is explicitly supplied.
 
 `NoAutoUpdate=1` keeps automatic Windows updates disabled; manual Windows Update
 remains available. `AUOptions=2` records the notify mode if automatic updates are

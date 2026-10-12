@@ -143,10 +143,9 @@ foreach (`$pin in @(@('forgejo-runner.exe', '$($arm.ForgejoSha256)'), @('nssm.ex
     Architecture = 'arm64'; FirewallRemoteAddress = @('10.0.2.2', '$cp')
     MaxRunners = $($arm.MaxRunners); RunnerMemGB = $($arm.RunnerMemGB)
     WindowsStorage = `$true; StorageRoot = 'D:\runner-disks'
+    ManualUpdateMaintenance = `$true
 }
 & (Join-Path `$sourceRoot 'infra\hyperv\Install-WindowsWorker.ps1') @install
-& 'C:\ProgramData\nomercy\agent\python\python.exe' (Join-Path `$sourceRoot 'infra\windows\guest\set_runner_update_policy.py') --worker '$($arm.HostId)' --apply
-if (`$LASTEXITCODE -ne 0) { throw 'Could not establish manual Windows guest update maintenance.' }
 "@
     Invoke-ArmGuest $install | Write-Host
 

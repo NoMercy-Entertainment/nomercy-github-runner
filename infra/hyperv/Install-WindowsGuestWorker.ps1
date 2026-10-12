@@ -233,10 +233,7 @@ try {
         $ErrorActionPreference = 'Stop'
         & $Installer -HostId $HostId -ListenAddress $ListenAddress -TlsBundle $TlsBundlePath `
             -NssmSource $NssmPath -RunnerBinary $RunnerPath -WindowsStorage -StorageRoot $StorageRootPath `
-            -MaxRunners $MaxRunnersValue -RunnerMemGB $RunnerMemGBValue
-        $policy = Join-Path (Split-Path (Split-Path $Installer)) 'windows\guest\set_runner_update_policy.py'
-        & 'C:\ProgramData\nomercy\agent\python\python.exe' $policy --worker $HostId --apply
-        if ($LASTEXITCODE -ne 0) { throw 'Could not establish manual Windows guest update maintenance.' }
+            -MaxRunners $MaxRunnersValue -RunnerMemGB $RunnerMemGBValue -ManualUpdateMaintenance
     } -ArgumentList $guestInstaller, $Name, $spec.Address, $guestBundle, $guestNssm, $guestRunnerBinary, $g.StorageRoot,
         $g.MaxRunners, $g.RunnerMemGB
 
