@@ -32,7 +32,7 @@ uses queued request/result pushes and short-lived RSA assertions bound to
 issuer, fleet, actor, purpose, exact body, request, nonce and expiry. Account
 bearers are never forwarded to peer callbacks. Receivers trust only their
 configured issuer's public keys and their own person grants. Both transports
-check public DNS, pin the address, keep TLS hostname/SNI verification and refuse
+check public DNS by default, pin the address, keep TLS hostname/SNI verification and refuse
 redirects/environment proxies. Receipt credentials cover one request only.
 
 The requester chooses a permitted NoMercy fleet. Its own GitHub credential
@@ -45,7 +45,7 @@ an explicit owner action after transport/feature recovery.
 Generic direct ingress is an optional independent fallback with an expiring,
 revocable credential for bounded intents only. It cannot impersonate broker
 identity or inspect/operate normal runners. The owner can save an independent
-peer's public HTTPS origin and narrow `nrf_` request credential in the Sharing
+peer's verified HTTPS origin and narrow `nrf_` request credential in the Sharing
 screen, then choose that connection when requesting capacity. The credential
 is encrypted server-side, expires within 90 days and is never returned by an
 API. Disconnect removes the saved credential and stops new requests; the
@@ -54,9 +54,14 @@ cannot use another owner's saved connection.
 
 A direct submission makes one fresh capacity preflight and sends the same
 restricted short GitHub registration credential as courier mode. The callback
-origin comes from the deployment's configured DASH_PUBLIC_URL, never an HTTP
-request header or submission field. Both dashboards need public HTTPS origins
-for this independent fallback; it does not configure a tunnel.
+origin comes from deployment-owned FEDERATION_DIRECT_CALLBACK_URL when set,
+otherwise DASH_PUBLIC_URL, never an HTTP request header or submission field.
+Private direct peers require an exact locally configured HTTPS origin, pinned
+RFC1918 address and peer CA in FEDERATION_DIRECT_PRIVATE_PEERS. Other peers
+still require public DNS. This setting cannot be supplied by incoming intents
+or result receipts; removing it fences further private connections. It does not
+configure a tunnel. See [Stoney LAN enrollment](stoney-lan-enrollment.md) for the
+prepared routed tunnel, private listener and two-site acceptance procedure.
 
 The submission also carries a random `nrr_` result credential scoped to exactly
 that request, its callback origin and a bounded expiry. The requester stores
@@ -140,10 +145,12 @@ avoided so native notifications cannot repeatedly trigger their own cleanup.
 - Configure the existing OIDC client to obtain the NoMercy API's required
   audience. The API refuses dashboard-only tokens; no account/PAT delegation
   fallback is available.
-- Each dashboard needs an existing public verified HTTPS DASH_PUBLIC_URL.
+- NoMercy courier requires an existing public verified HTTPS DASH_PUBLIC_URL.
   Automatic runner-fleet hostname/Cloudflare tunnel handoff is not implemented.
   NAT-only fleets need that transport dependency; media tunnel jobs are not
   repurposed as runner administration.
+- Direct federation can instead use owner-pinned private HTTPS over a LAN-only
+  routed tunnel. This deployment is prepared, not live two-fleet verified.
 - Prepare guarded templates and separate private groups without modifying
   normal Fillz. Keep lending and courier disabled until per-runtime negative
   fork/always-step probes and actual two-dashboard request/approval/register/

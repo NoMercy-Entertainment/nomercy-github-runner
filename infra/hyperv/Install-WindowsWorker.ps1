@@ -65,7 +65,8 @@ param(
     [string] $RunnerSha256,
     [string[]] $FirewallRemoteAddress,
     [int] $MaxRunners,
-    [int] $RunnerMemGB
+    [int] $RunnerMemGB,
+    [switch] $ManualUpdateMaintenance
 )
 . "$PSScriptRoot\lib.ps1"
 $s = Get-RunnerPlatformSettings
@@ -285,6 +286,11 @@ foreach ($setting in @(@('AppDirectory', $appDir), @('AppStdout', $log), @('AppS
                        @('DisplayName', 'Runner platform agent'))) {
     & $nssm set $service @setting | Out-Null
     if ($LASTEXITCODE -ne 0) { throw "nssm set $($setting[0]) failed" }
+}
+if ($ManualUpdateMaintenance) {
+    $policy = Join-Path (Split-Path $PSScriptRoot) 'windows\guest\set_runner_update_policy.py'
+    & $python $policy --worker $HostId --apply
+    if ($LASTEXITCODE -ne 0) { throw 'Could not establish manual Windows guest update maintenance.' }
 }
 & $nssm start $service | Out-Null
 Start-Sleep -Seconds 3

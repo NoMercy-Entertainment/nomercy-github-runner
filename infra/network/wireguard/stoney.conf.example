@@ -1,0 +1,12 @@
+# Stoney gateway VM only. Generate its private key on this VM; never commit it.
+# 10.77.0.10 is the Fillz controller VM, not the physical Windows server.
+[Interface]
+Address = 10.203.0.2/30
+ListenPort = 51820
+PrivateKey = <STONEY_GATEWAY_PRIVATE_KEY>
+
+[Peer]
+PublicKey = <FILLZ_GATEWAY_PUBLIC_KEY>
+Endpoint = <FILLZ_REACHABLE_UDP_HOST>:51820
+AllowedIPs = 10.203.0.1/32, 192.168.178.0/24, 10.77.0.10/32
+PersistentKeepalive = 25
