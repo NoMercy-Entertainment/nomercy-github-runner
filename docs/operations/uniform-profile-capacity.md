@@ -1,10 +1,38 @@
-# Remaining uniform-profile capacity, 2026-10-11
+# Uniform runner profile: verified 2026-10-12
 
 The requested profile is 8 cores, 16 GiB memory, 100 GiB owned storage and
-40 GiB cache per runner. It is verified live for the 13 Linux runners and
-the two Windows x64 runners. The two ARM and two macOS runners still need
-their resource cutovers; their current, smaller allocations are not the
-requested profile.
+40 GiB cache per runner. All 19 managed runners now report that profile:
+13 Linux, two Windows x64, two Windows ARM64 and two macOS. Each has its own
+100-GiB filesystem; filesystem metadata slightly reduces usable capacity.
+The 40-GiB cache ceiling is inside that owned filesystem, not an additional
+disk allocation. CPU and memory figures are enforced ceilings per runner.
+
+Both macOS runners have separate QEMU guests. Windows ARM64 runs on its own
+Hyper-V appliance host, independent of macOS. Its outer host has 40 GiB RAM
+and 16 vCPU; its Windows guest has 36 GiB RAM and 16 emulated CPUs. The two
+Windows services have disjoint eight-CPU windows and separate fixed
+100-GiB VHDXs on the new 320-GiB aggregate data disk. That aggregate disk is
+not the capacity exposed to either runner. The previous data disk remains
+offline for rollback. Both original registration identities were preserved.
+
+The final native continuation completed the ARM live resource checks and
+returned both listeners to idle. The independent non-ARM check has no
+pending runners. All 13 GitHub origin guards are proven, with no missing or
+unread reports; all four GitHub fleets have live Fillz group policy allowing
+every organization repository, including public repositories. The public
+dashboard returns HTTP 200 through its sign-in route. Complete CI on
+`7ec286c` passed before these final read-only checks.
+
+Both owned macOS guests also passed live toolchain checks: Xcode 16.4
+(16F6), completed first-launch initialization, Apple Clang 17, Swift 6.1.2,
+Apple platform SDKs, CMake, Ninja, Git, Make, Python and Homebrew. FFmpeg is
+not preinstalled.
+
+The physical host must not be restarted or have its pagefile settings
+changed. The old host-maintenance automation is revoked. The final ARM
+cutover restarted only its VM and guest; it did not restart the physical
+host or modify paging. The capacity measurements below are historical
+preflight records, not current maintenance authorization.
 
 ## Host constraint
 
@@ -80,22 +108,12 @@ must be staged one at a time beside the existing guest, with normal CPU
 weight, before their registrations are moved. The requested per-runner
 profile remains unchanged.
 
-## Authorized maintenance route
+## Revoked host-maintenance route
 
-The operator approved a 64-GiB pagefile on the host SSD and a controlled host
-restart after all active jobs finish. The read-only preflight measured
-95.9 GiB SSD free, leaving 31.9 GiB after paging allocation. The earlier
-combined plan predicted 43.1 GiB commit headroom after a 44-GiB VM increase;
-it is superseded by the macOS-first work order above. Commit headroom must
-be measured again for the smaller expansion. The pagefile is not active
-and the pending VM cutovers are not complete.
-
-The maintenance checkpoint records all 19 runner and registration identities.
-A native database watcher waits for actual idle jobs, closes the fleet through
-the existing provider drain, and requires confirmed drained states before
-host shutdown. Recovery restores serving capacity as each worker becomes
-healthy. Physical memory and active pagefile usage are checked again after
-the restart; changing paging settings alone does not pass that gate.
+An earlier plan proposed a 64-GiB SSD pagefile and a physical-host restart.
+The operator explicitly forbids further physical-host restarts and pagefile
+changes. Its watchers and recovery automation must not be executed. The
+saved 19-runner identity checkpoint is retained as recovery evidence only.
 
 ## Origin-policy verification
 
@@ -133,8 +151,8 @@ database commits were observed making progress on the HDD.
 Following workflow runs use a bounded 4-GiB tmpfs for temporary test data,
 retain the same test suites and 7200-minute job timeout, and unmount that
 temporary storage after completion. A real Linux runner verified the mount
-and cleanup route. All 30 separately published timeout-only PRs are merged;
-the runner isolation PR remains open until the live cutovers pass.
+and cleanup route. The timeout changes are published separately; a failing
+product test is not sufficient evidence to merge its PR.
 
 Asynchronous agent operations now advertise native completion waiting.
 The first request remains fast; an authenticated repeat with the same
@@ -155,9 +173,8 @@ Mac tool downloads now use the owned cache rather than a shared toolcache.
 The runtime, APFS storage, guest pool and job hooks passed 177 targeted tests.
 These are preparation checks; the live cutover has not yet passed.
 
-The revised host watcher selects the 17 non-ARM runners. A fresh forge
-observation must also report no active ARM job, but ARM is not drained,
-expanded or reconfigured. The already approved whole-host restart saves its
-VM state. Offline is accepted only as the forge's explicit non-busy record;
-an unknown observation still blocks maintenance. Each provider is queried
-once per gate, rather than once per runner.
+The historical host watcher is revoked. Remaining work must stay within
+the runner VMs and guests. Forgejo event production, the legacy job-log
+sampling path, Stoney's LAN-dependent enrollment and the federation RFC
+remain separate outstanding work; this resource verification does not
+claim they are complete.
