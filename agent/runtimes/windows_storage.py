@@ -6,10 +6,12 @@ outside the runner-writable volume. Every startup also proves the expected
 volume through an unprivileged Win32 query in jobhost.
 """
 import ctypes
+from concurrent.futures import Future
 import json
 import ntpath
 from pathlib import Path
 import re
+import threading
 
 from .. import naming
 from ..windows_timeouts import shell_timeout
@@ -41,6 +43,8 @@ class WindowsStorage:
         if type(self.reserve) is not int or self.reserve < 0:
             raise ValueError("reserve_bytes must be a nonnegative integer")
         self._run, self._powershell = run, powershell
+        self._verification_lock = threading.Lock()
+        self._verifications = {}
 
     @staticmethod
     def _limit(value):
@@ -84,7 +88,28 @@ class WindowsStorage:
         return self._call("mount", runner_id)
 
     def verify(self, runner_id):
-        return self._call("verify", runner_id)
+        rid = naming.check(runner_id)
+        # Concurrent readers share one complete identity check. No result is
+        # retained after it finishes: a later request always checks again.
+        with self._verification_lock:
+            pending = self._verifications.get(rid)
+            owner = pending is None
+            if owner:
+                pending = Future()
+                self._verifications[rid] = pending
+        if not owner:
+            return dict(pending.result())
+        try:
+            answer = self._call("verify", rid)
+            pending.set_result(answer)
+            return dict(answer)
+        except BaseException as error:
+            pending.set_exception(error)
+            raise
+        finally:
+            with self._verification_lock:
+                if self._verifications.get(rid) is pending:
+                    del self._verifications[rid]
 
     def remove(self, runner_id):
         return self._call("remove", runner_id)
