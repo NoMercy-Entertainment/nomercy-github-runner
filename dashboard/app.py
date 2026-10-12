@@ -1010,6 +1010,9 @@ def ws_operation_v2(ws, operation_id):
                     transport.shutdown(socket.SHUT_RDWR)
                 except OSError:
                     pass
+                # Let EOF wake the library reader before closing its selector
+                # descriptor. Closing it first can discard the wake on Linux.
+                ws.thread.join(timeout=1)
                 transport.close()
                 ws.connected = False
                 ws.event.set()
