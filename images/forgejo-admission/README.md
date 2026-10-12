@@ -71,28 +71,21 @@ policy cases. All six platform binaries built successfully with networking
 disabled after the pinned module dependencies had been cached. No live runner
 was changed by that build. Artifact hashes are in `PROVENANCE.json`.
 The build explicitly disables embedded VCS metadata; the reviewed source commit
-is recorded separately. The binary hashes are identical with this option in the
-private offline build, so a containing checkout cannot change the release.
+is recorded separately. These hashes identify the private offline build only;
+CI artifacts require their own build provenance and are not asserted identical.
 
 Owner IDs must be verified on the configured instance. On the deployment
-instance FiLL has ID 1 and NoMercy-Entertainment has organisation ID 7. Other
-users remain untrusted until explicitly selected by the operator and verified.
+instance FiLL has ID 1. The operator selected FiLL only: the deployment candidate
+allows owner ID 1 and has no additional trusted source owners.
 GitHub logins are never substituted for Forgejo identities.
 
-`FORGEJO_RUNNER_SCOPE=user` remains the default. Explicit `instance` scope
-uses the administrator endpoint for listing, registration and deletion; it is
-refused without a valid protected policy. It requires `read:admin` and
-`write:admin` on the controller token. Set this scope only after all affected
-units carry the verified guarded binary, protected startup configuration and
-the policy. Changing scope does not convert existing user registrations.
-Installing a policy alone does not grant server-side scheduling availability.
-
-Every instance registration also carries a mandatory guard requirement over
-the closed agent protocol. The worker refuses registration unless its own
-measurement confirms the Forgejo binary, protected startup authority and exact
-policy fingerprint. Old workers refuse the new field; compatibility handling
-never removes it. The runtime measurements and live deployment remain pending,
-so current workers cannot activate instance scheduling through this draft.
+Listing, registration and deletion use only `/api/v1/user/actions/runners`
+with the FiLL token. Organization and instance registration are not supported;
+an explicit non-user scope is rejected. No administrator token grant is needed.
+The six existing registrations have `owner_id=1` and `repo_id=0`, making them
+available to FiLL's repositories only. The guarded build and policy propagation
+remain preparation; protected runtime measurements and live guard rollout are
+still required before claiming that outside-fork admission is enforced.
 
 Primary source: [reviewed Forgejo runner](https://code.forgejo.org/forgejo/runner/src/commit/6095cb17bfdbded5aa4ea84c18a4b69fd9574cca/internal/app/run/runner.go).
 Forgejo 16.0.5's [IssueCommentPayload](https://codeberg.org/forgejo/forgejo/src/tag/v16.0.5/modules/structs/hook.go)

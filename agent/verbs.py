@@ -23,7 +23,6 @@ The runtime and registrar are passed in. Phase 4 builds the real ones; here
 they are whatever implements the two protocols below.
 """
 import re
-import hashlib
 from types import MappingProxyType
 from typing import Any, Mapping, Protocol
 
@@ -152,7 +151,7 @@ SPEC_FIELDS = frozenset({"image", "env", "labels", "cpus", "memory", "memory_swa
 #: launchd's answer and the worker asks it (T-0802).
 ADOPT_FIELDS = frozenset({"label", "template"})
 PLAN_FIELDS = frozenset({"url", "token", "name", "labels", "runner_group",
-                         "replace", "forgejo_admission_policy"})
+                         "replace"})
 POLICY_FIELDS = frozenset({"max_bytes", "scopes", "on_clear", "timeout"})
 
 
@@ -277,15 +276,8 @@ def _plan(value):
     replace = plan.get("replace", False)
     if not isinstance(replace, bool):
         raise Refused("plan.replace is a flag, not a value")
-    out = {"url": url, "token": token, "name": name, "labels": labels,
-           "runner_group": group, "replace": replace}
-    if "forgejo_admission_policy" in plan:
-        admission = plan["forgejo_admission_policy"]
-        if (not isinstance(admission, str) or not admission or len(admission.encode("utf-8")) > 16384
-                or any(c in admission for c in "\x00\r\n")):
-            raise Refused("plan.forgejo_admission_policy must be bounded single-line text")
-        out["forgejo_admission_policy"] = admission
-    return out
+    return {"url": url, "token": token, "name": name, "labels": labels,
+            "runner_group": group, "replace": replace}
 
 
 def _policy(value):
@@ -421,18 +413,7 @@ def _register(agent, body):
     rid, plan = _runner_id(body), _plan(body.get("plan"))
 
     def work():
-        expected = plan.get("forgejo_admission_policy")
-        if expected:
-            measure = getattr(agent.runtime, "origin_guard_report", None)
-            guard = measure(rid) if measure else None
-            if (not isinstance(guard, dict) or type(guard.get("version")) is not int
-                    or guard["version"] != 1 or guard.get("provider") != "forgejo"
-                    or guard.get("protected_control") is not True
-                    or guard.get("verified_binary") is not True
-                    or guard.get("policy_sha256") != hashlib.sha256(expected.encode("utf-8")).hexdigest()):
-                raise Refused("instance registration requires verified protected Forgejo admission")
-        result = agent.registrar.register(rid, {k: v for k, v in plan.items()
-                                               if k != "forgejo_admission_policy"})
+        result = agent.registrar.register(rid, plan)
         # Only the forge's identifiers go back. The plan, and its token, stay
         # here.
         return {"registration_id": str((result or {}).get("registration_id")

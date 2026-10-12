@@ -48,13 +48,9 @@ REQUEST_TIMEOUT = 20
 
 
 class Forgejo:
-    def __init__(self, base_url, token, runner_scope="user"):
-        if runner_scope not in ("user", "instance"):
-            raise ValueError("Forgejo runner scope must be user or instance")
+    def __init__(self, base_url, token):
         self.base = (base_url or "").rstrip("/")
         self.token = token
-        self.runners_path = ("/api/v1/admin/actions/runners" if runner_scope == "instance"
-                             else "/api/v1/user/actions/runners")
 
     # ----------------------------------------------------------------- http
     def _request(self, path, method="GET", params=None, timeout=REQUEST_TIMEOUT):
@@ -104,10 +100,12 @@ class Forgejo:
 
         The endpoint returns a BARE ARRAY, not an object with a "runners" key.
 
-        User scope remains the default. Explicit instance scope requires a
-        protected admission policy before the controller provisions runners.
+        This calls the user-scoped endpoint, not the admin one: a runner
+        registered under /admin/actions/runners is available to every
+        repository and every user on the instance, which is not the scope
+        this dashboard wants. See docs/forgejo-runners-decisions.md.
         """
-        data = self._get(self.runners_path,
+        data = self._get("/api/v1/user/actions/runners",
                          {"limit": 100})
         if not isinstance(data, list):
             return None
@@ -124,7 +122,7 @@ class Forgejo:
         the page parameter answers the first page again; that is the end."""
         out, seen, page = [], set(), 1
         while True:
-            data = self._get(self.runners_path,
+            data = self._get("/api/v1/user/actions/runners",
                              {"limit": self.PAGE, "page": page})
             if not isinstance(data, list):
                 return None
@@ -138,14 +136,14 @@ class Forgejo:
 
     def runner_ids(self):
         """{uuid: id}, for deregistration. None if the call failed."""
-        data = self.all_runners()
+        data = self._get("/api/v1/user/actions/runners", {"limit": 100})
         if not isinstance(data, list):
             return None
         return {r["uuid"]: r.get("id")
                 for r in data if isinstance(r, dict) and r.get("uuid")}
 
     def registration_token(self):
-        data = self._get(self.runners_path + "/registration-token")
+        data = self._get("/api/v1/user/actions/runners/registration-token")
         if not isinstance(data, dict):
             return None
         return data.get("token") or None
@@ -161,7 +159,7 @@ class Forgejo:
         if not rid.isdigit():
             return False
         req = urllib.request.Request(
-            f"{self.base}{self.runners_path}/{rid}", method="DELETE",
+            f"{self.base}/api/v1/user/actions/runners/{rid}", method="DELETE",
             headers={"Authorization": f"token {self.token}",
                      "Accept": "application/json",
                      "User-Agent": "nomercy-runner-dashboard"})

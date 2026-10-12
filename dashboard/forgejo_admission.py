@@ -53,7 +53,9 @@ def policy(raw, instance):
 
 
 def configured_policy(env):
+    if (env or {}).get("FORGEJO_RUNNER_SCOPE", "user") != "user":
+        raise ValueError("Forgejo runners must remain scoped to the token's user")
     raw = (env or {}).get(ENVIRONMENT)
-    if not raw and (env or {}).get("FORGEJO_RUNNER_SCOPE", "user") == "user":
+    if not raw:
         return ""
     return policy(raw, (env or {}).get("FORGEJO_INSTANCE_URL"))
