@@ -705,8 +705,13 @@ class MacApplianceRuntime:
         p = self.paths(runner_id)
         volume = {}
         if probe == "disk_usage":
-            value = self._fs.du(p["root"])
-            volume = self._volume(p["root"])
+            if self._storage_limit:
+                owned = self._owned_storage(runner_id)
+                value = owned['CapacityInUse']
+                volume = {'total_bytes': owned['CapacityQuota']}
+            else:
+                value = self._fs.du(p["root"])
+                volume = self._volume(p["root"])
         elif probe == "cache_size":
             value = self._fs.du(p["cache"])
             volume = self._volume(p["cache"])
@@ -730,10 +735,6 @@ class MacApplianceRuntime:
             return {"ok": False, "error": "unknown probe"}
         if value is None:
             return {"ok": False, "error": "could not be measured"}
-        if self._storage_limit and probe == 'disk_usage':
-            owned = self._owned_storage(runner_id)
-            value = owned['CapacityInUse']
-            volume = {'total_bytes': owned['CapacityQuota']}
         return {"ok": True, "value": value, **volume}
 
     def instances(self):

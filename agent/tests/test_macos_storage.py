@@ -10,6 +10,14 @@ ROOT = '/Users/runner/runners/' + RID
 LIMIT = 100 * 1024 ** 3
 
 
+def test_owned_disk_measurement_does_not_walk_protected_apfs_metadata():
+    from agent.runtimes.macos_appliance import MacApplianceRuntime
+    fs = SimpleNamespace(du=lambda path: pytest.fail('must not walk APFS system directories'))
+    runtime=MacApplianceRuntime(fs=fs,storage_limit=LIMIT)
+    runtime._owned_storage=lambda rid: {'CapacityInUse':4096,'CapacityQuota':LIMIT}
+    assert runtime.probe(RID,'disk_usage')=={'ok':True,'value':4096,'total_bytes':LIMIT}
+
+
 @pytest.mark.parametrize('quota,name,entries,nonempty,accepted', [
     (LIMIT, 'rnr-' + RID, 1, False, True),
     (LIMIT - 1, 'rnr-' + RID, 1, False, False),

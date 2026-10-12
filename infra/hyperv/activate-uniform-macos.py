@@ -12,8 +12,10 @@ s=importlib.util.spec_from_file_location('migration','/tmp/migrate-uniform-macos
 ROOT=Path('/var/lib/runner-appliances/uniform-activation-20261011');ROOT.mkdir(mode=0o700,parents=True,exist_ok=True);os.chmod(ROOT,0o700)
 CONFIG=Path('/etc/runner-agent/agent.json');ORIGINAL=ROOT/'agent.original.json'
 LIVE=Path('/opt/runner-agent/agent')
-MODULES=('runner_environment.py','heartbeat.py','server.py','runtimes/macos_appliance.py',
-         'runtimes/macos_storage.py','runtimes/macos_pool.py')
+STAGED=Path('/opt/uniform-resources/agent')
+MODULES=tuple(sorted(str(p.relative_to(STAGED)) for p in STAGED.rglob('*')
+ if p.is_file() and not any(part in ('tests','__pycache__','.pytest_cache') for part in p.parts)
+ and p.suffix in ('.py','.ps1','.js')))
 def command(args):subprocess.run(args,check=True,timeout=180)
 def save(name,data):
  temp=ROOT/(name+'.writing')
@@ -48,9 +50,10 @@ def prepared():
  new=load('/etc/runner-agent/agent.uniform-pool.json')
  assert new.runtime=='macos-appliance' and dict(new.appliance_pool)==config['appliance_pool']
  for relative in MODULES:
-  staged=Path('/opt/uniform-resources/agent')/relative
+  staged=STAGED/relative
   assert staged.is_file(), 'Required staged module is missing'
-  compile(staged.read_bytes(),str(staged),'exec')
+  if staged.suffix=='.py':compile(staged.read_bytes(),str(staged),'exec')
+ assert {'__main__.py','config.py','runtimes/macos_pool.py','runtimes/macos_storage.py'}.issubset(MODULES)
  return config,pool
 
 def switch():
@@ -76,6 +79,7 @@ def switch():
   for relative in MODULES:
    live=LIVE/relative
    backup_module(relative)
+   live.parent.mkdir(parents=True,exist_ok=True)
    temporary=live.with_name(live.name+'.uniform-prepared')
    shutil.copy2(Path('/opt/uniform-resources/agent')/relative,temporary);os.replace(temporary,live)
   staged=CONFIG.with_suffix('.uniform-switching')
