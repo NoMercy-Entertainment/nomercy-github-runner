@@ -15,6 +15,11 @@ from store import schema
 from .federation import Refused, _integer
 from .federation_broker import Broker, ISSUERS, http_json
 from .secrets import SecretStore
+from . import retry
+
+# Bound group validation and the single-use token mint as one operation. Never
+# retry either: a refusal stays Refused, and a timeout cannot mint twice.
+REGISTRATION_ONCE = retry.Policy(retry.FORGE_REGISTRATION.name, retry.FORGE_REGISTRATION.timeout, 0)
 
 TABLES = """
 CREATE TABLE IF NOT EXISTS federation_identities (
@@ -110,10 +115,35 @@ class Outbound:
             raise Refused("Choose capacity from the permitted fleet directory")
         if intent["profile"] not in (known.get("capabilities") or {}).get("profiles", []):
             raise Refused("The peer does not advertise this profile")
+        credential = retry.call(REGISTRATION_ONCE, self.registration, intent, group)
+        key = str(uuid.uuid4())
+        with schema.connect(self.path) as c:
+            c.execute("INSERT INTO federation_outgoing(request_key,actor,target_fleet_id,intent,created_at) VALUES(?,?,?,?,?)",
+                      (key, subject, target_id, json.dumps(intent), int(self.clock())))
+        try:
+            reply = self.call(subject, f"/{target_id}/requests", {"source_fleet_id": settings["fleet_id"], "request_key": key,
+                "intent": intent, "credential": credential})
+            remote = reply.get("request") if isinstance(reply, dict) else None
+            if not isinstance(remote, dict) or not isinstance(remote.get("id"), str):
+                raise Refused("The broker did not acknowledge this bounded capacity intent")
+            with schema.connect(self.path) as c:
+                c.execute("UPDATE federation_outgoing SET broker_request_id=? WHERE request_key=?", (remote["id"], key))
+        except Exception:
+            with schema.connect(self.path) as c:
+                c.execute("UPDATE federation_outgoing SET state='delivery-unknown' WHERE request_key=? AND sequence=0", (key,))
+            raise Refused("Delivery was not acknowledged; its local request remains recorded for a signed result") from None
+        return key
+
+    def registration(self, intent, group):
+        """Mint the same restricted short credential for either transport."""
+        if not self.service or not isinstance(intent, dict) or set(intent) != {"profile", "organization", "count", "lease_minutes"}:
+            raise Refused("An intent contains only profile, organization, count and lease_minutes")
+        if not isinstance(intent["profile"], str) or intent["profile"] not in {"github-linux-x64", "github-windows-x64", "github-windows-arm64", "github-macos-x64"}:
+            raise Refused("Choose a supported local GitHub profile")
         _integer(intent["count"], 1, 100, "count")
         _integer(intent["lease_minutes"], 1, 7200, "lease_minutes")
         client = providers.by_key("github").forge_client(self.service.env)
-        if not client or intent["organization"] != client.org or not isinstance(group, str) or group.casefold() in {"fillz", "default", "stoney"}:
+        if not client or intent["organization"] != client.org or not isinstance(group, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_. -]{0,99}", group) or group.casefold() in {"fillz", "default", "stoney"}:
             raise Refused("Request only the local GitHub organisation using a separate restricted group")
         observed = next((row for row in client.runner_groups() or [] if row.get("name") == group), None)
         if not observed or observed.get("visibility") != "selected" or observed.get("allows_public_repositories") is not False or observed.get("inherited") is not False or observed.get("default") is not False:
@@ -126,23 +156,7 @@ class Outbound:
             raise Refused("GitHub did not mint a short registration credential")
         from .redact import remember
         remember(token)
-        key = str(uuid.uuid4())
-        with schema.connect(self.path) as c:
-            c.execute("INSERT INTO federation_outgoing(request_key,actor,target_fleet_id,intent,created_at) VALUES(?,?,?,?,?)",
-                      (key, subject, target_id, json.dumps(intent), int(self.clock())))
-        try:
-            reply = self.call(subject, f"/{target_id}/requests", {"source_fleet_id": settings["fleet_id"], "request_key": key,
-                "intent": intent, "credential": {"registration_token": token, "expires_at": int(self.clock()) + 1800, "runner_group": group}})
-            remote = reply.get("request") if isinstance(reply, dict) else None
-            if not isinstance(remote, dict) or not isinstance(remote.get("id"), str):
-                raise Refused("The broker did not acknowledge this bounded capacity intent")
-            with schema.connect(self.path) as c:
-                c.execute("UPDATE federation_outgoing SET broker_request_id=? WHERE request_key=?", (remote["id"], key))
-        except Exception:
-            with schema.connect(self.path) as c:
-                c.execute("UPDATE federation_outgoing SET state='delivery-unknown' WHERE request_key=? AND sequence=0", (key,))
-            raise Refused("Delivery was not acknowledged; its local request remains recorded for a signed result") from None
-        return key
+        return {"registration_token": token, "expires_at": int(self.clock()) + 1800, "runner_group": group}
 
     def results(self, subject):
         with schema.connect(self.path) as c:

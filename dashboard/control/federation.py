@@ -225,9 +225,14 @@ class Federation:
         remember(token)
         return SecretStore(self.path)._fernet(create=True).encrypt(json.dumps(value).encode()), expires
 
-    def submit(self, peer_id, request_key, intent, credential):
+    def submit(self, peer_id, request_key, intent, credential, receipt=None):
         if not isinstance(request_key, str) or not re.fullmatch(r"[A-Za-z0-9_-]{16,100}", request_key):
             raise Refused("A request idempotency key of 16 to 100 characters is required")
+        direct = None
+        if receipt is not None:
+            from .federation_direct import Direct
+            direct = Direct(self.path, clock=self.clock)
+            direct.validate_receipt(request_key, receipt)
         with schema.connect(self.path) as c:
             c.execute("BEGIN IMMEDIATE")
             peer = c.execute("SELECT * FROM federation_peers WHERE id=? AND enabled=1", (peer_id,)).fetchone()
@@ -240,12 +245,16 @@ class Federation:
             if old:
                 if json.loads(old["intent"]) != clean:
                     raise Refused("Idempotency key was already used for a different intent")
+                if direct:
+                    direct.receipt(self._request(old), receipt, connection=c)
                 return self._request(old)
             sealed, expires = self._seal(credential)
             identity = str(uuid.uuid4())
             c.execute("INSERT INTO federation_requests(id,peer_id,request_key,intent,state,created_at,"
                       "sealed_credential,credential_expires_at) VALUES(?,?,?,?,'pending',?,?,?)",
                       (identity, peer_id, request_key, json.dumps(clean), self._now(), sealed, expires))
+            if direct:
+                direct.receipt({"id": identity, "request_key": request_key}, receipt, connection=c)
             self._event(c, peer_id, identity, peer["subject"], "requested")
         if limits["automatic"]:
             try:
@@ -377,6 +386,8 @@ class Federation:
                 self._tick()
                 from .federation_broker import Broker
                 Broker(self.path, self.clock).publish()
+                from .federation_direct import Direct
+                Direct(self.path, clock=self.clock).publish()
 
     def _tick(self):
         now = self._now()
@@ -516,6 +527,8 @@ class Federation:
         return self.get(identity)
 
     def next_deadline(self):
+        from .federation_direct import Direct
+        direct_deadline = Direct(self.path, clock=self.clock).next_deadline()
         with schema.connect(self.path) as c:
             row = c.execute("SELECT MIN(deadline) FROM (SELECT expires_at AS deadline FROM federation_requests "
                             "WHERE state IN ('approved','activating','active') UNION ALL "
@@ -530,7 +543,7 @@ class Federation:
             identity = c.execute("SELECT MIN(expires_at) FROM federation_identities WHERE sealed_access IS NOT NULL").fetchone() if identity_table else None
             quiet = [json.loads(value[0])["quiet_hours"] for value in c.execute("SELECT DISTINCT peer.policy FROM federation_peers peer "
                      "JOIN federation_requests request ON request.peer_id=peer.id WHERE request.state IN ('approved','activating','active')")]
-        deadlines = [value for value in (row[0] if row else None, receipt[0] if receipt else None, allocation[0] if allocation else None, identity[0] if identity else None) if value is not None]
+        deadlines = [value for value in (row[0] if row else None, receipt[0] if receipt else None, allocation[0] if allocation else None, identity[0] if identity else None, direct_deadline) if value is not None]
         now = self._now()
         for hours in quiet:
             if time.gmtime(now).tm_hour in hours:
