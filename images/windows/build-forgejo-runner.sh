@@ -20,6 +20,9 @@ SOURCE="${FORGEJO_BUILD_SOURCE:-/src}"
 OUTPUT="${FORGEJO_BUILD_OUTPUT:-/out}"
 EVENTS="${FORGEJO_BUILD_EVENTS:-/events}"
 ADMISSION="${FORGEJO_BUILD_ADMISSION:-/admission}"
+# Let the selected Go executable resolve its own standard library and tools.
+# A runner image's GOROOT may still name its preinstalled older SDK.
+unset GOROOT
 
 git clone -q --depth 1 --branch "$TAG" https://code.forgejo.org/forgejo/runner.git "$SOURCE"
 cd "$SOURCE"
@@ -39,6 +42,10 @@ cp "$ADMISSION/admission.go" "$ADMISSION/admission_test.go" internal/app/run/
 gofmt -w internal/app/run/runner.go internal/app/run/admission.go internal/app/run/admission_test.go
 WANT="$(sed -n 's/^toolchain //p' go.mod)"
 HAVE="$(go env GOVERSION)"
+if [ "$(go tool compile -V)" != "compile version ${HAVE}" ]; then
+  echo 'the selected Go command and compiler do not match' >&2
+  exit 1
+fi
 if [ -n "$WANT" ] && [ "$WANT" != "$HAVE" ]; then
   echo "the tag asks for $WANT; this image has $HAVE" >&2
   exit 1
