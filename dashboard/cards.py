@@ -30,7 +30,7 @@ import providers
 #: Design 14.1, in its order. Every card carries every one of these keys.
 FIELDS = ("runner_id", "display_name", "provider", "platform",
           "architecture", "labels", "worker", "runtime", "state", "job", "cpu",
-          "memory", "storage", "cache", "reachable", "last_seen_at",
+          "memory", "storage", "cache", "reachable", "readiness_note", "last_seen_at",
           "current_operation", "last_error", "last_note",
           "capabilities")
 
@@ -133,7 +133,21 @@ def _card(**fields):
     card["fleet_id"] = fields.pop("fleet_id", None) or fleet_of(
         card["provider"], card["platform"], card["architecture"])
     card.update(fields)
+    verified = (card.get("readiness") or {}).get("ready")
+    card["online"] = (card["state"] in ("idle", "busy") and card["reachable"] is True
+                      and (verified is True if "readiness" in card else True))
+    card["attention"] = (card["reachable"] is False or card["state"] in
+                         ("unknown", "failed", "offline", "stopped") or
+                         ("readiness" in card and card["state"] in ("idle", "busy", "draining")
+                          and verified is not True))
     return card
+
+
+def summary(runners):
+    """One meaning of Online/Attention for cards, headings and totals."""
+    return {"total": len(runners), "online": sum(c.get("online") is True for c in runners),
+            "busy": sum(c.get("state") == "busy" for c in runners),
+            "attention": sum(c.get("attention") is True for c in runners)}
 
 
 def _action(verb, visible=True, enabled=True, reason=None, method="POST",
@@ -540,6 +554,8 @@ def from_spec(spec, telemetry=None, worker_reachable=None, now=None,
     caps = dict(spec.get("capabilities") or {})
     state = spec.get("actual_state") or "unknown"
     ready = readiness(spec, now)
+    shown = (spec.get("forge_state") if state in ("idle", "busy") and ready["ready"]
+             else state)
     forge = {"github": "GitHub", "forgejo": "Forgejo"}.get(
         spec.get("provider"), spec.get("provider"))
     who = spec.get("display_name") or f"rnr-{rid[:8]}"
@@ -576,14 +592,17 @@ def from_spec(spec, telemetry=None, worker_reachable=None, now=None,
         label_drift=_drift(spec.get("last_note")),
         worker=spec.get("host_id"),
         runtime=caps.get("kind"),
-        state=_shown_state(state, ready),
-        job=_job(state, _job_telemetry(spec, telemetry, now)),
+        state=_shown_state(shown, ready),
+        job=_job(shown, _job_telemetry(spec, telemetry, now)),
         cpu=cpu,
         memory=memory,
         storage=storage,
         cache=cache,
         reachable=reachable,
         readiness=ready,
+        readiness_note=(f"{forge} registration status is unverified" +
+                        (f"; last confirmed {spec['forge_seen_at']}" if spec.get("forge_seen_at") else ""))
+        if ready["process"] == "up" and ready["forge"] == "unknown" else None,
         last_seen_at=spec.get("last_seen_at"),
         current_operation=spec.get("current_operation"),
         last_error=spec.get("last_error"),

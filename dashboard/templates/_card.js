@@ -13,7 +13,7 @@
 
 const CARD_FIELDS = ['runner_id', 'display_name', 'provider', 'platform',
   'architecture', 'labels', 'worker', 'runtime', 'state', 'job', 'cpu', 'memory',
-  'storage', 'cache', 'reachable', 'last_seen_at', 'current_operation',
+  'storage', 'cache', 'reachable', 'readiness_note', 'last_seen_at', 'current_operation',
   'last_error', 'last_note', 'capabilities'];
 
 function esc(v) {
@@ -115,6 +115,7 @@ function cardHTML(c) {
   const seen = c.reachable === false ? 'not reachable'
              : c.reachable == null ? 'reachability unknown' : 'reachable';
   const status = `<div class="creg cstatus"><span>${esc(seen)}</span>` +
+    (c.readiness_note ? `<span>${esc(c.readiness_note)}</span>` : '') +
     (c.last_seen_at ? `<span>seen ${esc(String(c.last_seen_at).replace('T', ' ').replace('Z', ' UTC'))}</span>` : '') +
     (c.current_operation ? `<span>operation ${esc(c.current_operation)}</span>` : '') +
     `</div>`;
@@ -217,8 +218,8 @@ function fleetHeadHTML(f) {
     ? `<div class="flabels">runs-on: ${f.labels.map(l => `<span class="chip">${esc(l)}</span>`).join('')}</div>`
     : '';
   const summary = f.summary || {};
-  const running = summary.running == null ? '' :
-    `<span class="fleet-ready">${summary.running} online</span>`;
+  const running = summary.online == null ? '' :
+    `<span class="fleet-ready">${summary.online} online</span>`;
   return `<div class="fleet-heading"><div><h2 class="fleet-head">${esc(f.title)}</h2>` +
     `<div class="fleet-summary"><span class="fcount">${count} runner${count === 1 ? '' : 's'}</span>${running}</div>` +
     `</div><div class="fleet-actions">${buttons}</div></div>` +

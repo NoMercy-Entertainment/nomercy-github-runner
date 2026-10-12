@@ -370,6 +370,7 @@ def fleet_list(service, note, all_runner_cards):
                      f"{PLATFORM_NAMES.get(platform, platform)} · {arch}",
             "available": available, "reason": reason or None,
             "desired": desired, "runners": members,
+            "summary": cards.summary([c for c in all_runner_cards if c["key"] in members]),
             "actions": fleet_actions(fid, provider_key, platform, available,
                                      reason, service is not None, note,
                                      env_configured.get(provider_key),
@@ -482,6 +483,7 @@ def fleet_snapshot():
         workers=service.inventory.summary() if service else [],
         fleets=fleet_list(service, note, runner_cards),
         runners=runner_cards,
+        summary=cards.summary(runner_cards),
         disk=snap.get("disk"))
 
 

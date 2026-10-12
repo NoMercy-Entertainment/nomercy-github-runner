@@ -1007,7 +1007,17 @@ class Reconciler:
         except Exception:                       # noqa: BLE001
             return
         finally:
+            stamps = getattr(self.executor, "forge_observed_at", None)
+            captured = stamps.get(spec["runner_id"]) if isinstance(stamps, dict) else None
             self._record_forge(spec)
+        if captured is not None:
+            current = self.service.specs.get(spec["runner_id"])
+            from .forge_health import event_marker
+            if (current is None or current.get("registration_id") != spec.get("registration_id")
+                    or current.get("registration_uuid") != spec.get("registration_uuid")
+                    or (current.get("forge_seen_at") or "") > captured
+                    or event_marker(current) != event_marker(spec)):
+                return
         if not seen or seen == spec["actual_state"]:
             return
         edge = (spec["actual_state"], seen)
@@ -1042,22 +1052,41 @@ class Reconciler:
             return
         word = words.pop(spec["runner_id"]) if has_word else None
         names = labels.pop(spec["runner_id"]) if has_labels else None
+        stamps = getattr(self.executor, "forge_observed_at", None)
+        sampled = isinstance(stamps, dict) and spec["runner_id"] in stamps
+        stamp = stamps.pop(spec["runner_id"]) if sampled else _iso(_now())
+        if sampled and stamp is None:
+            # The independent observer has not answered yet. It owns failure
+            # evidence too; an uninitialized cache is not a new forge reply.
+            return
+        identity = (spec["runner_id"], spec.get("provider"),
+                    spec.get("registration_id"), spec.get("registration_uuid"))
+        fence = (" WHERE runner_id=? AND provider IS ? AND registration_id IS ?"
+                 " AND registration_uuid IS ?")
         from store import schema
         with schema.connect(self.service.specs.path) as c:
+            c.execute("BEGIN IMMEDIATE")
+            if sampled:
+                current = c.execute("SELECT telemetry FROM runner_specs WHERE runner_id=?", (spec["runner_id"],)).fetchone()
+                from .forge_health import event_marker
+                import json
+                if current is None or event_marker({"telemetry": json.loads(current[0] or "{}")}) != event_marker(spec):
+                    return
             if has_word:
                 if word in self.FORGE_ANSWERS:
                     c.execute("UPDATE runner_specs SET forge_state = ?,"
-                              " forge_seen_at = ? WHERE runner_id = ?",
-                              (word, _iso(_now()), spec["runner_id"]))
+                              " forge_seen_at = ?" + fence +
+                              " AND (forge_seen_at IS NULL OR forge_seen_at<=?)",
+                              (word, stamp, *identity, stamp))
                 else:
-                    c.execute("UPDATE runner_specs SET forge_state = ?"
-                              " WHERE runner_id = ?",
-                              ("unknown", spec["runner_id"]))
+                    c.execute("UPDATE runner_specs SET forge_state = ?" + fence +
+                              " AND (forge_seen_at IS NULL OR forge_seen_at<=?)",
+                              ("unknown", *identity, stamp))
             if has_labels and names is not None:
                 import json
-                c.execute("UPDATE runner_specs SET forge_labels = ?, forge_labels_at = ?"
-                          " WHERE runner_id = ?",
-                          (json.dumps(names), _iso(_now()), spec["runner_id"]))
+                c.execute("UPDATE runner_specs SET forge_labels = ?, forge_labels_at = ?" + fence +
+                          " AND (forge_labels_at IS NULL OR forge_labels_at<=?)",
+                          (json.dumps(names), stamp, *identity, stamp))
 
     # ---- operations --------------------------------------------------------
 

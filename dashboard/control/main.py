@@ -216,6 +216,11 @@ class Controller:
         self.reconciler = Reconciler(
             self.service, self.flow,
             holder=f"controller-{socket.gethostname()}-{os.getpid()}")
+        from .forge_health import ForgeHealth
+        from .secrets import SecretStore
+        self.forge_health = ForgeHealth(self.service,
+            lambda: SecretStore(self.db).overlay(self.base_env), interval=self.interval)
+        self.flow.registration_health = self.forge_health
         self.receiver = rcv.Receiver(
             inventory,
             rcv.server_context(*certificates.resolve_paths(tls_dir, "receiver")),
@@ -296,6 +301,12 @@ class Controller:
         heartbeat = threading.Thread(target=self._heartbeat_loop,
                                      name="controller-heartbeat", daemon=True)
         heartbeat.start()
+        health = None
+        if getattr(self, "forge_health", None) is not None:
+            self.forge_health.active = True
+            health = threading.Thread(target=self.forge_health.run, args=(self._stop, log),
+                                      name="controller-forge-health", daemon=True)
+            health.start()
         federation = None
         if getattr(self, "federation", None) is not None:
             federation = threading.Thread(target=self._federation_events, args=(log,),
@@ -322,6 +333,8 @@ class Controller:
         finally:
             self._stop.set()
             heartbeat.join(timeout=15)
+            if health is not None:
+                health.join(timeout=retry_health_stop_bound())
             try:
                 self._heartbeat("stopped")
             finally:
@@ -334,6 +347,11 @@ class Controller:
 
     def stop(self):
         self._stop.set()
+
+
+def retry_health_stop_bound():
+    from .retry import FORGE_STATUS
+    return FORGE_STATUS.timeout + 5
 
 
 class Refused(Exception):
