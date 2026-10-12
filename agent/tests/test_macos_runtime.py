@@ -54,6 +54,19 @@ def test_unknown_launchd_state_is_not_proof_of_quiescence(runtime, guest):
     assert runtime.status(RID)["running"] is None
     assert runtime.instances()[0]["state"] == "unknown"
 
+def test_owned_guest_never_reads_or_accepts_legacy_adoption(guest, monkeypatch):
+    runtime = MacApplianceRuntime(run=guest, fs=guest, tools=TOOLS,
+                                  allow_adoption=False)
+
+    def unexpected_read(path):
+        raise AssertionError("owned appliance must not read legacy adoption markers")
+
+    monkeypatch.setattr(guest, "read_text", unexpected_read)
+    assert runtime.adopted(RID) is None
+    assert runtime._target(RID).endswith(runtime.label(RID))
+    with pytest.raises(ValueError, match="legacy adoption"):
+        runtime.create(RID, {"adopt": {"label": "legacy"}})
+
 
 def test_offline_registered_preparation_never_starts_listener(runtime, guest):
     paths = runtime.paths(RID)

@@ -308,7 +308,8 @@ class MacAppliancePoolRuntime:
                                   control_dir=str(self._directory(rid) / "ssh.sock"))
                 fs = GuestFs(guest)
                 inner = MacApplianceRuntime(run=guest, fs=fs, tools=self._tools, remote=True,
-                                            storage_limit=self._runner_storage_limit)
+                                            storage_limit=self._runner_storage_limit,
+                                            allow_adoption=False)
                 self._contexts[rid] = (guest, inner, MacRegistrar(run=guest, fs=fs))
         return self._contexts[rid]
 
