@@ -91,9 +91,6 @@ if ($Architecture -eq 'arm64' -and -not ($PSBoundParameters.ContainsKey('RunnerT
         $PSBoundParameters.ContainsKey('RunnerBinary') -and $PSBoundParameters.ContainsKey('RunnerSha256'))) {
     throw 'An ARM64 worker requires explicit -RunnerTemplate, -RunnerBinary and -RunnerSha256.'
 }
-if ($Architecture -eq 'arm64' -and $WindowsStorage) {
-    throw 'WindowsStorage requires Hyper-V VHD cmdlets inside the worker; this QEMU guest does not have them.'
-}
 if ($TlsBundle -and -not (Test-Path -LiteralPath $TlsBundle)) {
     throw "-TlsBundle $TlsBundle does not exist."
 }

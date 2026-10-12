@@ -8,11 +8,12 @@ iso="$root/Windows11Arm64-github-0db35390-arm64-20260929.iso"
 drivers="$root/virtio-win.iso"
 disk="$root/windows-arm64.qcow2"
 runner_disk="$root/windows-arm64-runners.qcow2"
+uniform_disk="$root/windows-arm64-runners-uniform.qcow2"
 vars="$root/AAVMF_VARS.fd"
 tpm_root=/var/lib/swtpm/windows-arm64-runner
 tpm_socket="$tpm_root/swtpm.sock"
 
-for file in "$firmware" "$iso" "$disk" "$runner_disk" "$vars"; do
+for file in "$firmware" "$iso" "$disk" "$runner_disk" "$uniform_disk" "$vars"; do
     if [[ ! -f "$file" ]]; then
         echo "Missing $file" >&2
         exit 1
@@ -36,7 +37,7 @@ exec /opt/nomercy-qemu-11.1.2/bin/qemu-system-aarch64 \
     -machine virt-8.2,gic-version=3 \
     -accel tcg,thread=multi \
     -cpu max,pauth-impdef=on \
-    -smp 8 -m 8G \
+    -smp 16 -m 36G \
     -rtc base=localtime,clock=host \
     -drive "if=pflash,format=raw,unit=0,readonly=on,file=$firmware" \
     -drive "if=pflash,format=raw,unit=1,file=$vars" \
@@ -52,6 +53,8 @@ exec /opt/nomercy-qemu-11.1.2/bin/qemu-system-aarch64 \
     -netdev 'user,id=net0,hostfwd=tcp:127.0.0.1:52222-:22,hostfwd=tcp:127.0.0.1:53389-:3389,hostfwd=tcp:0.0.0.0:8445-:8443' \
     -device virtio-net-pci,netdev=net0 \
     -device nvme,drive=runnerdata,serial=RNRARM64DATA \
+    -drive "if=none,id=uniformdata,format=qcow2,file=$uniform_disk" \
+    -device nvme,drive=uniformdata,serial=RNRARM64UNIFORM \
     -chardev "socket,id=chrtpm,path=$tpm_socket" \
     -tpmdev emulator,id=tpm0,chardev=chrtpm \
     -device tpm-tis-device,tpmdev=tpm0 \

@@ -21,7 +21,7 @@ foreach ($file in @($base, $seed)) {
 }
 $dir = Join-Path $s.Root "vms\$name"
 if (Test-Path -LiteralPath $dir) { throw "Target directory exists: $dir" }
-if (-not $PSCmdlet.ShouldProcess($name, 'create dedicated 12 GB / 8 vCPU ARM64 appliance host')) { return }
+if (-not $PSCmdlet.ShouldProcess($name, "create dedicated $($spec.MemoryGB) GiB / $($spec.Cpus) vCPU ARM64 appliance host")) { return }
 New-Item -ItemType Directory -Path $dir | Out-Null
 $osDisk = Join-Path $dir "$name.vhdx"
 $dataDisk = Join-Path $dir "$name-data.vhdx"

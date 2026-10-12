@@ -212,8 +212,8 @@
         Appliance = @{
             Name = 'rnr-windows-arm64'
             Address = '10.77.0.50'
-            MemoryGB = 12
-            Cpus = 8
+            MemoryGB = 40
+            Cpus = 16
             DiskGB = 64
             # Expanded online on 2026-10-10; the guest filesystem is 629 GiB.
             # Keep room for the original disk and the staged per-runner disks.
@@ -226,7 +226,7 @@
         Endpoint = 'https://10.77.0.50:8445'
         GuestAddress = '10.0.2.15'
         MaxRunners = 2
-        RunnerMemGB = 3
+        RunnerMemGB = 16
         ForgejoTemplate = 'forgejo-runner-v13.1.0-windows-arm64'
         ForgejoBinary = 'D:\HyperV\runner-platform\artefacts\forgejo-runner-v13.1.0\forgejo-runner-v13.1.0-windows-arm64.exe'
         ForgejoSha256 = 'cd59d117346c32419ddb62679150ba2f11ff7f6fbbf64b7400830287c4b15b07'

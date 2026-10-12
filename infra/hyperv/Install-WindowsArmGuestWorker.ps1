@@ -141,6 +141,7 @@ foreach (`$pin in @(@('forgejo-runner.exe', '$($arm.ForgejoSha256)'), @('nssm.ex
     RunnerTemplate = '$($arm.ForgejoTemplate)'; RunnerSha256 = '$($arm.ForgejoSha256)'
     Architecture = 'arm64'; FirewallRemoteAddress = @('10.0.2.2', '$cp')
     MaxRunners = $($arm.MaxRunners); RunnerMemGB = $($arm.RunnerMemGB)
+    WindowsStorage = `$true; StorageRoot = 'D:\runner-disks'
 }
 & (Join-Path `$sourceRoot 'infra\hyperv\Install-WindowsWorker.ps1') @install
 "@
