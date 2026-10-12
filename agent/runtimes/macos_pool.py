@@ -18,9 +18,10 @@ from pathlib import Path
 
 from .. import hardware, naming
 from .appliance_host import BOOT_CLEANUP_LABEL, BOOT_ENTRYPOINT, DockerApplianceHost
-from .guest_ssh import GuestExec, GuestFs
+from .guest_ssh import GuestFs
 from .linux_container import LinuxContainerRuntime, memory_bytes
 from .macos_appliance import MacApplianceRuntime, MacRegistrar, SUPPORTED_SCOPES, _exec
+from .macos_native import NativeProvisioner, PinnedGuestExec
 
 GIB = 1024 ** 3
 OVERHEAD_BYTES = 2 * GIB
@@ -299,7 +300,8 @@ class MacAppliancePoolRuntime:
                 self._contexts[rid] = self._guest_factory(record)
             else:
                 opts = self._guest
-                guest = GuestExec(host="127.0.0.1", user=opts["user"], port=record["port"],
+                guest = PinnedGuestExec(known_hosts=self._directory(rid) / "guest_known_hosts",
+                                  host="127.0.0.1", user=opts["user"], port=record["port"],
                                   key=opts.get("key"), password=opts.get("password"),
                                   ssh=opts.get("ssh", "ssh"), sshpass=opts.get("sshpass", "sshpass"),
                                   control_dir=str(self._directory(rid) / "ssh.sock"))
@@ -324,7 +326,7 @@ class MacAppliancePoolRuntime:
         if power == "stopped" and not self._port_free(record["port"]):
             raise RuntimeError("assigned appliance SSH port is occupied")
         host.boot()
-        if maintenance and record.get("initialized"):
+        if maintenance and (record.get("initialized") or record.get("native_files")):
             # Never stop a job merely to perform a supposedly stopped cache clear.
             if inner.status(rid).get("running") is not False:
                 raise RuntimeError("maintenance guest is not provably quiescent")
@@ -338,7 +340,7 @@ class MacAppliancePoolRuntime:
         if power != "running":
             raise RuntimeError("cannot shut down an unobserved appliance")
         guest, inner, _ = self._context(record)
-        if record.get("initialized") and inner.status(rid).get("running") is not False:
+        if (record.get("initialized") or record.get("native_files")) and inner.status(rid).get("running") is not False:
             raise RuntimeError("guest runner is not provably stopped; refusing poweroff")
         # launchctl disable persists in the guest across this graceful shutdown.
         ok, out, err = guest(["/usr/bin/sudo", "-n", "/sbin/shutdown", "-h", "now"], timeout=15)
@@ -364,7 +366,7 @@ class MacAppliancePoolRuntime:
             if overlay.is_symlink():
                 raise RuntimeError("appliance overlay is not an owned regular file")
             if not overlay.exists():
-                if power != "absent" or record.get("initialized"):
+                if power != "absent" or record.get("initialized") or record.get("native_files"):
                     raise RuntimeError("existing appliance lost its owned disk; refusing to replace data")
                 temporary = overlay.with_suffix(".creating")
                 if temporary.exists():
@@ -388,7 +390,7 @@ class MacAppliancePoolRuntime:
                 if nvram.is_symlink():
                     raise RuntimeError("appliance NVRAM is not an owned regular file")
                 if not nvram.exists():
-                    if power != "absent" or record.get("initialized"):
+                    if power != "absent" or record.get("initialized") or record.get("native_files"):
                         raise RuntimeError("existing appliance lost its NVRAM; refusing to replace it")
                     temporary = nvram.with_suffix(".creating")
                     if temporary.exists():
@@ -429,8 +431,37 @@ class MacAppliancePoolRuntime:
 
     def create(self, runner_id, spec):
         with self._locked(runner_id) as rid:
+            existing = self._read(rid, required=False)
+            fresh = existing is None or not existing["initialized"]
+            native = NativeProvisioner(self.base_disk, self.image) if fresh else None
             record = self.prepare(rid, spec)
+            if native is not None:
+                self._inspect(rid)  # Prove this exact owned image, disk and SSH mapping.
+                native.pin(record, self._directory(rid))
             inner, _ = self._boot(record)
+            if native is not None:
+                guest = self._context(record)[0]
+                account = self._tools.get("runner_user") or self._guest["user"]
+                if record.get("native_files"):
+                    # A cut-off first start must never re-copy the old template.
+                    native.verify(guest, record, inner.paths(rid), account)
+                else:
+                    self._write(record, listener_disabled=True)
+                    inner.create(rid, spec, start=False)
+                    installed = native.install(guest, record, inner.paths(rid), account)
+                    self._write(record, native_files=installed)
+                state = inner.status(rid).get("running")
+                if state is None:
+                    raise RuntimeError("prepared native listener state is unknown; first start is held")
+                # An attempted enable may succeed before SSH loses its reply.
+                # Do not claim a persistent disable if the start is ambiguous.
+                self._write(record, listener_disabled=False)
+                if state is False:
+                    inner.start(rid)
+                self._write(record, initialized=True)
+                return naming.unit_name(rid)
+            if inner.status(rid).get("running") is True:
+                return naming.unit_name(rid)  # A retry must not rewrite a busy unit.
             # Mark before enabling: a crash must never leave a false disabled proof.
             self._write(record, listener_disabled=False)
             inner.create(rid, spec)
@@ -500,7 +531,7 @@ class MacAppliancePoolRuntime:
                 self._write(record, removing_keep_data=True)
                 inner, _ = self._boot(record, maintenance=True)
                 inner.remove(rid, keep_data=True)
-                self._write(record, initialized=False, listener_disabled=True)
+                self._write(record, initialized=False, listener_disabled=True, native_files=None)
                 self._shutdown(record)
                 # Durable before rm: retry after host crash retains exactly this disk.
                 self._write(record, retained=True, removing_keep_data=False)

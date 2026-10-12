@@ -171,19 +171,23 @@ def test_an_available_pool_does_not_prove_limits_on_a_legacy_runner(client, plan
 
 
 @pytest.fixture
-def provisioned_pool(plane, tmp_path):
-    """Real provision, verb validation and appliance runtime; fake only OS/transport."""
+def provisioned_pool(plane, tmp_path, monkeypatch):
+    """Real provision/resource rules; simulated OS, SSH and native artifact delivery."""
     # The agent package sits beside dashboard/; importing the harness puts the
     # repository root on the path, so this runs on its own and not only after
     # a test that happened to import it first.
     import tests.agent_harness  # noqa: F401
     from agent import heartbeat, verbs
     from agent.runtimes.macos_pool import MacPoolRegistrar
-    from agent.tests.test_macos_pool import Host, TEMPLATE, pool as pool_fixture
+    from agent.tests.test_macos_pool import Host, TEMPLATE, pool as pool_fixture, native_fixture
     from control.agent_runtime import AgentWiring, FlowAgent
     from control.provision import ProvisioningFlow
 
     host = Host()
+    # Directly calling the pool fixture does not run its module's autouse
+    # native-delivery fixture. Supply that same explicit simulation here;
+    # production still requires authenticated base evidence and pinned files.
+    native_fixture.__wrapped__(monkeypatch)
     pool = pool_fixture.__wrapped__(tmp_path, host)
     agent = verbs.Agent("pool", pool, MacPoolRegistrar(pool))
     service, _ = api_v2.control_plane()

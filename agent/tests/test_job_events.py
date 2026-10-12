@@ -145,6 +145,52 @@ def test_future_event_kept_as_evidence_cannot_freeze_cache(tmp_path):
         sender.stop()
 
 
+def test_incomplete_worker_evidence_keeps_identified_cache_and_durable_outbox(tmp_path):
+    sender = JobEventSender("worker-a", Runtime(tmp_path), Link(), tmp_path / "private").start()
+    try:
+        sender.record(RID, event())
+        sender.record(RID, event(job=None, run_id=None))
+        sender.record(RID, event("finished", job=None, run_id=None))
+        assert sender.jobs([RID]) == {RID: "test"}
+        with sender._connect() as connection:
+            assert connection.execute("SELECT COUNT(*) FROM events").fetchone()[0] == 3
+        sender.record(RID, event("finished"))
+        assert sender.jobs([RID]) == {}
+    finally:
+        sender.stop()
+
+
+def test_identified_worker_replaces_preexisting_incomplete_cache(tmp_path):
+    sender = JobEventSender("worker-a", Runtime(tmp_path), Link(), tmp_path / "private").start()
+    try:
+        stale = event(job=None, run_id=None, at="9999-01-01T00:00:00Z")
+        sender._jobs[RID] = stale
+        with sender._connect() as connection:
+            connection.execute("INSERT OR REPLACE INTO current_jobs VALUES(?,?)", (RID, json.dumps(stale)))
+        assert sender.jobs([RID]) == {}
+        sender.record(RID, event())
+        assert sender.jobs([RID]) == {RID: "test"}
+    finally:
+        sender.stop()
+
+
+def test_hook_tests_cannot_inherit_the_ci_runner_event_spool(tmp_path):
+    import subprocess
+    import sys
+    import shutil
+    if not shutil.which("node"):
+        pytest.skip("Node is required to exercise the real hook subprocess")
+    spool = tmp_path / "production-spool"
+    spool.mkdir()
+    env = dict(os.environ, NOMERCY_RUNNER_ID=RID, NOMERCY_JOB_EVENT_DIR=str(spool))
+    root = Path(__file__).resolve().parents[2]
+    done = subprocess.run([sys.executable, "-m", "pytest", "-q",
+                           "agent/tests/test_windows_job_hooks.py::TestNode::test_plenty_of_room_lets_the_job_run"],
+                          cwd=root, env=env, capture_output=True, text=True, timeout=60)
+    assert done.returncode == 0, done.stdout + done.stderr
+    assert not list(spool.iterdir())  # neither .active-job nor forged events reach the live path
+
+
 def test_failed_or_stopped_source_never_returns_stale_job(tmp_path):
     sender = JobEventSender("worker-a", Runtime(tmp_path), Link(), tmp_path / "private").start()
     try:

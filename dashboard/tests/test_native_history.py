@@ -83,6 +83,18 @@ def test_future_worker_event_does_not_poison_history_but_cursor_advances(project
     assert len(history.list_runs(runner_id=RID)) == 1
 
 
+def test_incomplete_worker_evidence_does_not_create_phantom_history(projector):
+    projector.record(spec(), event(1, source="forge", job_id="456"))
+    projector.record(spec(), event(2, job=None, run_id=None, job_id="hook:" + "a" * 32))
+    projector.record(spec(), event(3, "finished", job=None, run_id=None, job_id="hook:" + "a" * 32))
+    assert projector.sequence() == 3
+    runs = history.list_runs(runner_id=RID)
+    assert len(runs) == 1 and runs[0]["job_name"] == "verify"
+    assert not runs[0]["ended_at"]
+    projector.record(spec(), event(4, "finished", source="forge", job_id="456", result="success"))
+    assert history.list_runs(runner_id=RID)[0]["result"] == "Succeeded"
+
+
 def test_deleted_runner_identity_is_retained_when_projection_replays(projector):
     projector.record(None, event(1, "finished", source="forge", result="success"))
     runs = history.list_runs(runner_id=RID)

@@ -39,11 +39,17 @@ def _within_worker_clock(item, received):
         return False
 
 
+def _has_job_context(item):
+    return bool(item.get("run_id") and item.get("job"))
+
+
 def _display_newer(event, current, received, current_received):
-    if event["source"] == "worker" and not _within_worker_clock(event, received):
+    if event["source"] == "worker" and (not _has_job_context(event) or not _within_worker_clock(event, received)):
         return False
     if not current:
         return True
+    if current.get("source") == "worker" and not _has_job_context(current):
+        return True  # Repair a display written before incomplete observations were fenced.
     same = _same_execution(event, current)
     if current.get("source") == "forge" and event["source"] == "worker":
         if same and current.get("state") == "finished":
@@ -52,7 +58,7 @@ def _display_newer(event, current, received, current_received):
     if event["source"] == "forge" and current.get("source") != "forge":
         # A genuinely later, distinct running worker observation can retain
         # its display name. It never controls the separate authoritative state.
-        return not (not same and current.get("state") == "started"
+        return not (not same and current.get("state") == "started" and _has_job_context(current)
                     and _within_worker_clock(current, current_received or received)
                     and _rank(current) > _rank(event))
     if same and current.get("state") == "finished" and event["state"] == "started":

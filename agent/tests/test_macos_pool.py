@@ -18,6 +18,25 @@ from .test_macos_runtime import RID, OTHER, SPEC, PLAN
 IMAGE = "sha256:" + "a" * 64
 
 
+@pytest.fixture(autouse=True)
+def native_fixture(monkeypatch):
+    """Existing power/storage tests simulate the separately tested native installer."""
+    class Native:
+        def __init__(self, base_disk, image):
+            self.image = image
+
+        def pin(self, record, directory):
+            (directory / "guest_known_hosts").write_text("test-owned-pin")
+
+        def install(self, guest, record, paths, runner_user):
+            return {"test-native-files": "verified"}
+
+        def verify(self, guest, record, paths, runner_user):
+            return record["native_files"]
+
+    monkeypatch.setattr("agent.runtimes.macos_pool.NativeProvisioner", Native)
+
+
 def test_port_check_refuses_a_real_active_listener():
     from agent.runtimes.macos_pool import _port_free
     with socket.socket() as listener:

@@ -2,6 +2,7 @@ import hashlib
 import io
 import subprocess
 import tarfile
+from pathlib import Path
 
 import pytest
 
@@ -31,6 +32,50 @@ def test_only_guard_content_changes_are_reported_and_baseline_is_cached():
     assert [c[0] for c in calls] == ["create", "rm"]
     assert calls[1] == ["rm", BASELINE]
     assert "start" not in calls[0] and "--read-only" in calls[0]
+
+
+def test_native_guard_pins_match_reviewed_repository_payloads():
+    root = Path(__file__).resolve().parents[2]
+    assert hashlib.sha256((root / "images/linux/unit/runner/job-started.sh").read_bytes()).hexdigest() == linux_guard.NATIVE_START_SHA256
+    assert hashlib.sha256((root / "agent/hooks/job_event.py").read_bytes()).hexdigest() == linux_guard.NATIVE_PUBLISHER_SHA256
+    assert hashlib.sha256((root / "images/linux/unit/runner/job_event.py").read_bytes()).hexdigest() == linux_guard.NATIVE_PUBLISHER_SHA256
+
+
+@pytest.mark.parametrize("native_image", [False, True])
+@pytest.mark.parametrize("tampered", [None, "/runner/job-started.sh", "/runner/job_event.py",
+                                    "/runner/job_started.py", "/runner/runner_guard.py", "/runner/run"])
+def test_native_wrapper_requires_approved_publisher_and_unchanged_core_guard(native_image, tampered):
+    from agent.runtimes.linux_container import ORIGIN_GUARD_FILES
+    original = {path: hashlib.sha256(path.encode()).hexdigest() for path in ORIGIN_GUARD_FILES}
+    if native_image:
+        original[linux_guard.NATIVE_START] = linux_guard.NATIVE_START_SHA256
+    current = {**original, linux_guard.NATIVE_START: linux_guard.NATIVE_START_SHA256,
+               linux_guard.NATIVE_PUBLISHER: linux_guard.NATIVE_PUBLISHER_SHA256}
+    if tampered:
+        current[tampered] = hashlib.sha256(b"tampered hook or guard").hexdigest()
+    calls = []
+    def run(args, **kwargs):
+        calls.append(args)
+        return True, BASELINE, ""
+    def read(container, path):
+        return (original if container == BASELINE else current)[path]
+    checker = linux_guard.ImageGuardFiles(run, read)
+    assert checker("managed", IMAGE, ORIGIN_GUARD_FILES) == ([tampered] if tampered else [])
+    assert [call[0] for call in calls] == ["create", "rm"]
+
+
+@pytest.mark.parametrize("error", [ValueError("publisher is a link"), RuntimeError("publisher unreadable")])
+def test_native_wrapper_cannot_report_protection_without_regular_readable_publisher(error):
+    from agent.runtimes.linux_container import ORIGIN_GUARD_FILES
+    def read(container, path):
+        if container != BASELINE and path == linux_guard.NATIVE_PUBLISHER:
+            raise error
+        if path == linux_guard.NATIVE_START:
+            return linux_guard.NATIVE_START_SHA256 if container != BASELINE else "old-wrapper"
+        return "original"
+    checker = linux_guard.ImageGuardFiles(lambda *args, **kwargs: (True, BASELINE, ""), read)
+    got = checker("managed", IMAGE, ORIGIN_GUARD_FILES)
+    assert got == ([linux_guard.NATIVE_PUBLISHER] if isinstance(error, ValueError) else None)
 
 
 @pytest.mark.parametrize("failure", [RuntimeError("unreadable"), subprocess.TimeoutExpired("cp", 30)])

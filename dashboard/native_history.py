@@ -2,7 +2,7 @@
 from datetime import datetime, timezone
 
 import history
-from control.job_events import _within_worker_clock
+from control.job_events import _has_job_context, _within_worker_clock
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS native_job_runs (
@@ -95,7 +95,8 @@ class NativeHistory:
             row = connection.execute("SELECT sequence FROM native_job_cursors WHERE control_path=?", (self.path,)).fetchone()
             if row and row[0] >= event["sequence"]:
                 return
-            if event.get("source") == "forge" or _within_worker_clock(event, event["received_at"]):
+            if event.get("source") == "forge" or (
+                    _has_job_context(event) and _within_worker_clock(event, event["received_at"])):
                 # A runner removed between receipt and projection still owns
                 # its durable historical identity; its audit must not disappear.
                 self._project(connection, spec or {"display_name": event["runner_id"]}, event)
