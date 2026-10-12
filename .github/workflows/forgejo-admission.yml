@@ -1,0 +1,46 @@
+name: Forgejo admission
+
+on:
+  pull_request:
+    paths:
+      - 'images/forgejo-admission/**'
+      - 'images/forgejo-events/**'
+      - 'images/windows/build-forgejo-runner.sh'
+      - '.github/workflows/forgejo-admission.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  guarded-build:
+    runs-on: [self-hosted, Linux, X64, beast-unit]
+    timeout-minutes: 7200
+    env:
+      GOMAXPROCS: '2'
+      GOMEMLIMIT: '3GiB'
+      GOTOOLCHAIN: local
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version: '1.26.7'
+          cache: false
+      - name: Build and test native-events and guarded runners for every platform
+        shell: bash
+        run: |
+          export FORGEJO_BUILD_EVENTS="$GITHUB_WORKSPACE/images/forgejo-events"
+          export FORGEJO_BUILD_ADMISSION="$GITHUB_WORKSPACE/images/forgejo-admission"
+          for mode in native-events guarded; do
+            export FORGEJO_BUILD_SOURCE="$RUNNER_TEMP/forgejo-$mode-source"
+            export FORGEJO_BUILD_OUTPUT="$RUNNER_TEMP/forgejo-$mode-output"
+            mkdir "$FORGEJO_BUILD_OUTPUT"
+            if [ "$mode" = native-events ]; then
+              # Exercise the default invocation without an admission mount.
+              FORGEJO_BUILD_ADMISSION=/missing-admission bash images/windows/build-forgejo-runner.sh v13.1.0
+            else
+              bash images/windows/build-forgejo-runner.sh v13.1.0 guarded
+            fi
+          done

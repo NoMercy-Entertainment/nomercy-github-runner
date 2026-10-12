@@ -204,10 +204,12 @@ class Controller:
                              audit_path=self.db)
         self.service = RunnerService(self.db, runtimes=agent_runtime.TABLE,
                                      env=env)
+        from forgejo_admission import configured_policy
         self.service.agents = agent_runtime.AgentWiring(
             client, operations=self.service.operations,
             images=unit_images(env), memory=unit_memory(env),
-            trusted_owners=trusted_owners(env))
+            trusted_owners=trusted_owners(env),
+            forgejo_admission_policy=configured_policy(env))
         self.flow = ProvisioningFlow(self.service,
                                      agent_runtime.FlowAgent(
                                          self.service.agents),

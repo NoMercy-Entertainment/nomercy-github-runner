@@ -708,6 +708,8 @@ class _Forgejo(Provider):
         token = (env.get("FORGEJO_API_TOKEN") or "").strip()
         if not (url and token):
             return None
+        from forgejo_admission import configured_policy
+        configured_policy(env)
         return forgejo_api.Forgejo(url, token)
 
     #: Forgejo publishes linux/amd64 and linux/arm64 and nothing else. Release
