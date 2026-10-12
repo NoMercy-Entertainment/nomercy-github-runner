@@ -193,6 +193,9 @@ class Receiver(ThreadingHTTPServer):
     def take(self, what, host_id, body):
         if what == "heartbeat":
             return self.inventory.accept_heartbeat(host_id, body)
+        if isinstance(body, dict) and body.get("kind") == "job":
+            from .job_events import JobEvents
+            return JobEvents(self.inventory.path).apply(host_id, body)
         if self.on_event is None:
             raise ValueError("events are not accepted here")
         return self.on_event(host_id, body)

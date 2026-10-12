@@ -42,6 +42,31 @@ def sender():
 
 
 class TestABeatIsNeverHeldUpByMeasuring:
+    def test_guard_evidence_arrives_while_storage_is_blocked(self, sender):
+        held = threading.Event()
+        entered = threading.Event()
+
+        def slow_probe(rid, name):
+            entered.set()
+            held.wait(5)
+            return {}
+
+        sender.agent.runtime.probe = slow_probe
+        sender.agent.runtime.origin_guard_report = lambda rid: {
+            "version": 1, "note": None, "last": {"result": "allowed", "at": hb._stamp()}}
+        sender.measure_once()
+        storage = threading.Thread(target=lambda: sender.measure_depth_once(include_guards=False), daemon=True)
+        storage.start()
+        try:
+            assert entered.wait(1)
+            sender.measure_guards_once()
+            assert storage.is_alive()
+            beat = sender.measure_once()
+            assert all(unit["origin_guard"]["version"] == 1 for unit in beat["instances"])
+        finally:
+            held.set()
+            storage.join(timeout=5)
+
     def test_one_sent_before_anything_was_measured_says_so(self, sender):
         sender.send_once()
         beat = sender.link.posted[-1]

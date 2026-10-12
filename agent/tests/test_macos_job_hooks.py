@@ -48,6 +48,16 @@ def posix(path):
     return Path(path).as_posix()
 
 
+def _command(script, env):
+    args = [BASH, "--noprofile", "--norc", "-e", "-o", "pipefail"]
+    if sys.platform == "win32":
+        # Git Bash prepends /usr/bin at startup. Restore the fixture PATH
+        # inside the shell so the fake df is used rather than the host disk.
+        return [*args, "-c", 'PATH="$1"; export PATH; . "$2"',
+                "test-hook", env["PATH"], posix(script)]
+    return [*args, posix(script)]
+
+
 class Guest:
     """A runner's tree, a home with Xcode's DerivedData, a Gradle home, and a
     `df` that reports one free figure after another."""
@@ -123,13 +133,15 @@ class Guest:
                     "HOME": posix(self.work / ".home"),
                     "RUNNER_HOOK_USER_HOME": posix(self.home),
                     "GRADLE_USER_HOME": posix(self.gradle)})
+        if sys.platform == "win32":
+            env["PATH"] = _msys(self.bin) + ":/usr/bin:/bin"
         env.update(extra)
         return env
 
     def run(self, name, **extra):
         # As the runner does it: bash with -e and pipefail on.
-        return subprocess.run([BASH, "--noprofile", "--norc", "-e", "-o", "pipefail",
-                               posix(HOOKS / name)], env=self.env(**extra),
+        env = self.env(**extra)
+        return subprocess.run(_command(HOOKS / name, env), env=env,
                               capture_output=True, text=True, timeout=120)
 
 
@@ -293,8 +305,8 @@ def _msys(path):
 
 
 def _run(script, env):
-    result = subprocess.run([BASH, "--noprofile", "--norc", "-e", "-o", "pipefail",
-                             posix(script)], env=env, capture_output=True, timeout=120)
+    result = subprocess.run(_command(script, env), env=env,
+                            capture_output=True, timeout=120)
     return result.returncode, result.stdout.decode("utf-8") + result.stderr.decode("utf-8")
 
 

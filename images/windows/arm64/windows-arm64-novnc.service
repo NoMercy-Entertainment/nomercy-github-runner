@@ -1,0 +1,15 @@
+[Unit]
+Description=Windows ARM64 noVNC console on dedicated appliance host
+After=network-online.target windows-arm64-runner.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+DynamicUser=yes
+ExecStart=/usr/local/bin/arm-easy-novnc --addr :8898 --host 127.0.0.1 --port 5903 --no-url-password --basic-ui
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=yes
+
+[Install]
+WantedBy=multi-user.target

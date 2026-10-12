@@ -15,7 +15,7 @@ from . import protocol, tls
 
 
 class ControllerLink:
-    def __init__(self, base_url, ssl_context, timeout=5,
+    def __init__(self, base_url, ssl_context, timeout=20,
                  protocol_major=None):
         parts = urlsplit(base_url)
         #: Replaceable so a test can be an older or a newer agent. Compared

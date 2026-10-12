@@ -55,7 +55,7 @@ def _load():
     except (OSError, ValueError) as error:
         raise Unreadable(f"{PATH}: {error}") from error
     if not isinstance(data, dict) or not all(
-            isinstance(data.get(k, {}), dict) for k in ("users", "pending")):
+            isinstance(data.get(k, {}), dict) for k in ("users", "pending", "machines")):
         raise Unreadable(f"{PATH}: not an allowlist")
     data.setdefault("users", {})
     data.setdefault("pending", {})

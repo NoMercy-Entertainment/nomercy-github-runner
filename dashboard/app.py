@@ -33,6 +33,7 @@ import history
 import oidc
 import providers
 import users
+import machines
 
 DATA = os.environ.get("DASH_DATA", "/data")
 PORT = int(os.environ.get("DASH_PORT", "9200"))
@@ -169,7 +170,8 @@ def _forbid(why):
 
 
 # Reachable without a session: the sign-in page and the round trip to the IdP.
-OPEN_PATHS = {"/login", "/auth/start", "/callback", "/auth/pending"}
+OPEN_PATHS = {"/login", "/auth/start", "/callback", "/auth/pending",
+              "/hooks/github/jobs", "/hooks/forgejo/jobs"}
 
 #: API versions served. v1 is the existing surface, aliased so the new
 #: id-keyed API can land beside it instead of replacing it in one step.
@@ -326,6 +328,19 @@ def guard():
     # rule below rather than slipping past the ones that match on a prefix.
     path = policy_path(request.path)
 
+    authorization = request.headers.get("Authorization")
+    if authorization is not None:
+        # A bad bearer never falls back to a privileged browser cookie.
+        scheme, _, credential = authorization.partition(" ")
+        account = machines.authenticate(credential) if scheme.lower() == "bearer" else None
+        if account is None:
+            return jsonify(error="not authenticated"), 401
+        if not machines.permits(account, request.method, path):
+            return jsonify(error="credential scope does not allow this request"), 403
+        g.machine = account
+        g.role = "operator" if "runners:operate" in account["scopes"] else "viewer"
+        return None
+
     role = g.role = current_role()
     if role is None:
         # API callers get JSON; a browser gets the login page.
@@ -398,6 +413,21 @@ _status = {"generated": "", "disk": {}, "runners": []}
 # sending".
 _status_lock = threading.Condition()
 _status_gen = 0
+
+
+def _database_publisher():
+    from dbwatch import DatabaseChanges
+    from store import schema
+    global _status_gen
+    watch = DatabaseChanges(schema.DB_PATH)
+    try:
+        while True:
+            if watch.wait():
+                with _status_lock:
+                    _status_gen += 1
+                    _status_lock.notify_all()
+    finally:
+        watch.close()
 
 
 def _controller_collector():
@@ -583,10 +613,10 @@ def auth_start():
             error="Single sign-on is not configured on this dashboard."), 500
     try:
         url, state, verifier = client.authorize_url()
-    except oidc.OIDCError as e:
+    except oidc.OIDCError:
         return render_template(
             "login.html", secure=request_is_secure(), oidc_ready=True,
-            error=f"Could not reach the identity provider: {e}"), 502
+            error="Could not reach the identity provider. Please try again."), 502
     session["oidc_state"] = state
     session["oidc_verifier"] = verifier
     return redirect(url)
@@ -617,8 +647,9 @@ def auth_callback():
 
     try:
         claims = _oidc().exchange(code, verifier)
-    except oidc.OIDCError as e:
-        return render_template("forbidden.html", why=str(e)), 400
+    except oidc.OIDCError:
+        return render_template("forbidden.html",
+                               why="Sign-in could not be verified. Please try again."), 400
 
     role = users.sign_in(claims["sub"],
                          claims.get("preferred_username", ""),
@@ -648,9 +679,88 @@ def auth_pending():
 
 @app.route("/users")
 def users_page():
+    session.setdefault("machine_csrf", secrets.token_urlsafe(32))
     return render_template("users.html", people=users.list_users(),
                            waiting=users.pending(), roles=users.ROLES,
-                           me=session.get("sub"))
+                           me=session.get("sub"), machines=machines.listing(),
+                           machine_scopes=machines.SCOPES, machine_csrf=session["machine_csrf"])
+
+
+@app.route("/api/users/machines", methods=["GET", "POST"])
+@app.route("/api/users/machines/<identity>/revoke", methods=["POST"])
+def api_machines(identity=None):
+    if request.method == "GET":
+        return jsonify(machines=machines.listing(), scopes=machines.SCOPES)
+    csrf = request.headers.get("X-CSRF-Token", "")
+    if not csrf or not hmac.compare_digest(csrf, session.get("machine_csrf", "")):
+        return jsonify(error="Reload the Access page before changing machine access."), 403
+    actor = session.get("sub")
+    try:
+        if identity:
+            machines.revoke(identity)
+            metadata = {"id": identity}
+            credential = None
+        else:
+            body = request.get_json(silent=True)
+            if not isinstance(body, dict):
+                return jsonify(error="A JSON object is required."), 400
+            metadata, credential = machines.create(body.get("name"), body.get("scopes"),
+                                                  body.get("days", 30), actor)
+        from store import schema
+        if os.path.exists(schema.DB_PATH):
+            from control import audit
+            audit.record(schema.DB_PATH, verb="machine-access", decision="revoked" if identity else "created",
+                         actor=actor, parameters=metadata)
+    except ValueError:
+        return jsonify(error="Invalid machine access request; check the name, scopes and expiry."), 400
+    except users.Unreadable:
+        return jsonify(error="Access store is unreadable; no credentials were changed."), 503
+    response = jsonify(ok=True, machine=metadata, credential=credential)
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
+
+@app.route("/hooks/<provider>/jobs", methods=["POST"])
+def receive_job_webhook(provider):
+    import webhook_jobs
+    if request.content_length is not None and request.content_length > webhook_jobs.MAX_BODY:
+        return jsonify(error="Delivery is too large"), 413
+    raw = request.stream.read(webhook_jobs.MAX_BODY + 1)
+    if len(raw) > webhook_jobs.MAX_BODY:
+        return jsonify(error="Delivery is too large"), 413
+    signature = request.headers.get("X-Hub-Signature-256", "") if provider == "github" else \
+        request.headers.get("X-Forgejo-Signature", request.headers.get("X-Gitea-Signature", ""))
+    if not webhook_jobs.verify(provider, raw, signature, DATA):
+        return jsonify(error="Invalid delivery signature"), 403
+    event_header = request.headers.get("X-GitHub-Event", "") if provider == "github" else \
+        request.headers.get("X-Forgejo-Event", request.headers.get("X-Gitea-Event", ""))
+    if event_header != "workflow_job":
+        return jsonify(ok=True, ignored=True)
+    delivery = request.headers.get("X-GitHub-Delivery", "") if provider == "github" else \
+        request.headers.get("X-Forgejo-Delivery", request.headers.get("X-Gitea-Delivery", ""))
+    try:
+        from store import schema
+        result = webhook_jobs.accept(provider, delivery, json.loads(raw), schema.DB_PATH)
+    except (ValueError, UnicodeDecodeError):
+        return jsonify(error="Invalid job-event delivery."), 400
+    return jsonify(ok=True, **result)
+
+
+@app.route("/api/users/job-events/<provider>", methods=["POST"])
+def enable_job_events(provider):
+    csrf = request.headers.get("X-CSRF-Token", "")
+    if not csrf or not hmac.compare_digest(csrf, session.get("machine_csrf", "")):
+        return jsonify(error="Reload the Access page before enabling events."), 403
+    import webhook_jobs
+    try:
+        result = webhook_jobs.configure(provider, read_env(), _public_url(), DATA)
+    except ValueError:
+        return jsonify(error="Could not configure job events; check the provider settings and public URL."), 400
+    from store import schema
+    if os.path.exists(schema.DB_PATH):
+        from control import audit
+        audit.record(schema.DB_PATH, verb="job-webhook", decision="configured", actor=session.get("sub"), parameters=result)
+    return jsonify(ok=True, **result)
 
 
 @app.route("/api/users/<action>", methods=["POST"])
@@ -765,6 +875,8 @@ def ws_fleet_v2(ws):
     previous = None
     try:
         while True:
+            with _status_lock:
+                observed_generation = _status_gen
             role = users.role_of(sub)
             if role is None:
                 return
@@ -775,7 +887,7 @@ def ws_fleet_v2(ws):
                 ws.send(encode_frame({"type": "snapshot", "data": snapshot}))
                 previous = comparable
             with _status_lock:
-                _status_lock.wait(timeout=5)
+                _status_lock.wait_for(lambda: _status_gen != observed_generation)
     except Exception:
         pass
 
@@ -878,6 +990,7 @@ if __name__ == "__main__":
     from control import redact as _redact
     _redact.install_log_redaction(_secret_values)
     history.init()
+    threading.Thread(target=_database_publisher, name="dashboard-db-events", daemon=True).start()
     # History is written from the workers' own logs, read over the agent
     # protocol. There is no local engine to collect from, and losing this
     # thread is losing the job history for every controller-managed runner.

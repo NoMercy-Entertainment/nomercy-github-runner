@@ -56,6 +56,7 @@ from pathlib import Path
 from typing import Protocol
 
 from .. import naming
+from ..runner_environment import CHANNEL_TIMEOUT_KEY, CHANNEL_TIMEOUT_SECONDS, channel_dotenv
 from ..jobs import current_job
 from .localfs import LocalFs
 
@@ -144,12 +145,19 @@ def _exec(args, input=None, timeout=30):
 class MacApplianceRuntime:
     kind = "macos-appliance"
 
-    def __init__(self, run=None, fs=None, appliance=None, tools=None, remote=False):
+    def __init__(self, run=None, fs=None, appliance=None, tools=None, remote=False,
+                 storage_limit=None):
         self._run = run or _exec
         self._fs = fs or LocalFs()
         self._appliance = appliance
         self._remote = remote
+        self._storage_limit = storage_limit
         self._tools = dict(TOOLS, **(tools or {}))
+        self._storage = None
+        if storage_limit:
+            from .macos_storage import MacStorage
+            self._storage = MacStorage(self._run, self._fs, storage_limit,
+                                       self._tools['runner_user'])
         if self._tools["domain"] == "system" and not self._tools["runner_user"]:
             raise ValueError("system launchd jobs require an explicit runner_user")
 
@@ -228,9 +236,13 @@ class MacApplianceRuntime:
 
     # ---- lifecycle -----------------------------------------------------------
 
-    def create(self, runner_id, spec):
+    def create(self, runner_id, spec, *, start=True):
         rid = naming.check(runner_id)
+        if type(start) is not bool:
+            raise ValueError("start must be a boolean")
         if (spec or {}).get("adopt"):
+            if not start:
+                raise ValueError("a serving adoption cannot be prepared offline")
             return self._adopt(rid, spec["adopt"])
         image = (spec or {}).get("image")
         if not image:
@@ -241,6 +253,13 @@ class MacApplianceRuntime:
             raise RuntimeError(f"no runner template {image!r} in this "
                                f"appliance")
         p = self.paths(rid)
+        if not start and self._loaded(rid):
+            raise RuntimeError("offline preparation refuses a loaded launchd job")
+
+        if self._storage_limit:
+            if spec.get('disk_limit') != self._storage_limit:
+                raise ValueError('runner disk limit differs from its provisioned APFS quota')
+            self._ensure_storage(rid)
 
         # 1. Storage, private to this user before anything is in it.
         self._fs.makedirs(p["root"])
@@ -257,6 +276,12 @@ class MacApplianceRuntime:
         # 2b. GitHub's job hooks, before the job that points at them, and on
         #     every create, so a redeployed agent's copy reaches the guest.
         if _serves_github(spec):
+            home = posixpath.join(p["reg"], "agent")
+            self._fs.makedirs(home)
+            dotenv = posixpath.join(home, ".env")
+            before = self._fs.read_text(dotenv) if self._fs.exists(dotenv) else ""
+            self._fs.write_text(dotenv, channel_dotenv(before))
+            self._fs.chmod(dotenv, 0o600)
             self._install_hooks(p, rid)
 
         # 3. The launchd job. Its environment can carry a token, so the file
@@ -274,6 +299,12 @@ class MacApplianceRuntime:
             self._fs.remove(stage)
         else:
             self._fs.write_text(p["plist"], plist_text, mode=0o600)
+
+        if not start:
+            # Migration prepares a registered definition without briefly
+            # enabling it to claim a job. The disable survives guest reboot.
+            self._check(self._launchctl("disable", self._target(rid)))
+            return naming.unit_name(rid)
 
         # 4. Loaded and running, from whatever state a cut-off create left.
         self._check(self._launchctl("enable", self._target(rid)))
@@ -381,6 +412,7 @@ class MacApplianceRuntime:
 
     def _plist(self, rid, spec, p):
         env = dict(spec.get("env") or {})
+        env[CHANNEL_TIMEOUT_KEY] = CHANNEL_TIMEOUT_SECONDS
         for area, key in LAYOUT_ENV_KEYS.items():
             env[key] = p[area]
         env["TMPDIR"] = p["tmp"] + "/"
@@ -392,6 +424,7 @@ class MacApplianceRuntime:
             "NUGET_PACKAGES": "nuget", "NUGET_HTTP_CACHE_PATH": "nuget-http",
             "NUGET_SCRATCH": "nuget-scratch", "GRADLE_USER_HOME": "gradle",
             "NPM_CONFIG_CACHE": "npm", "PIP_CACHE_DIR": "pip",
+            "RUNNER_TOOL_CACHE": "toolcache", "AGENT_TOOLSDIRECTORY": "toolcache",
             "GOCACHE": "go-build", "GOMODCACHE": "go-mod", "GOPATH": "go",
             "XDG_DATA_HOME": "xdg-data", "XDG_CONFIG_HOME": "xdg-config",
         }.items():
@@ -458,6 +491,8 @@ class MacApplianceRuntime:
     def start(self, runner_id):
         rid = naming.check(runner_id)
         self._appliance_up()
+        if self._storage_limit:
+            self._owned_storage(rid)
         self._check(self._launchctl("enable", self._target(rid)))
         self._load(rid)
         self._check(self._launchctl("kickstart", self._target(rid)))
@@ -660,15 +695,33 @@ class MacApplianceRuntime:
                 continue
         return ""
 
+    def _ensure_storage(self, runner_id):
+        self._storage.ensure(runner_id)
+
+    def _owned_storage(self, runner_id):
+        return self._storage.verify(runner_id)
+
     def probe(self, runner_id, probe):
         p = self.paths(runner_id)
         volume = {}
         if probe == "disk_usage":
-            value = self._fs.du(p["root"])
-            volume = self._volume(p["root"])
+            if self._storage_limit:
+                owned = self._owned_storage(runner_id)
+                value = owned['CapacityInUse']
+                volume = {'total_bytes': owned['CapacityQuota']}
+            else:
+                value = self._fs.du(p["root"])
+                volume = self._volume(p["root"])
         elif probe == "cache_size":
             value = self._fs.du(p["cache"])
             volume = self._volume(p["cache"])
+            try:
+                job = plistlib.loads(self._fs.read_text(p['plist']).encode())
+                cap = int(job.get('EnvironmentVariables', {}).get('RUNNER_CACHE_MAX_BYTES', 0))
+                if cap > 0:
+                    volume['cap_bytes'] = cap
+            except (OSError, ValueError, TypeError, plistlib.InvalidFileException):
+                pass
         elif probe == "agent_version":
             try:
                 value = self._fs.read_text(
@@ -724,6 +777,8 @@ class MacApplianceRuntime:
     # ---- cache ---------------------------------------------------------------
 
     def clear_cache(self, runner_id, policy):
+        if self._storage_limit:
+            self._owned_storage(runner_id)
         where = self.scope_locations(runner_id)
         scopes = list((policy or {}).get("scopes") or DEFAULT_SCOPES)
         per_scope, errors, measured = {}, {}, True
@@ -775,6 +830,7 @@ class MacApplianceRuntime:
                 # OPEN-7: a graceful stop that stays stopped.
                 "supports_drain": True,
                 "clear_cache": True,
+                "cache_budget": True,
                 "cache_scopes": sorted(SUPPORTED_SCOPES),
                 "notes": "one launchd job per runner inside the macOS "
                          "appliance, over a directory tree only its user "

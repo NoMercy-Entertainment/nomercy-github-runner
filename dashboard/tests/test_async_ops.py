@@ -67,7 +67,22 @@ class Counting(AgentServer):
 
     def handle_verb(self, handler, verb, body):
         type(self).handled += 1
+        release = getattr(self, "release_on_wait", None)
+        if release is not None and handler.headers.get("X-Wait-Seconds"):
+            release.set()
         return super().handle_verb(handler, verb, body)
+
+
+class BlockedCreate(FakeRuntime):
+    """Completion is controlled by the test, independently of disk speed."""
+
+    def __init__(self):
+        super().__init__()
+        self.release = threading.Event()
+
+    def create(self, runner_id, spec):
+        self.release.wait()
+        return super().create(runner_id, spec)
 
 
 def an_agent(pki, db, receiver=None, runtime=None, host_id="linux-1"):
@@ -109,23 +124,23 @@ def wait_for(condition, timeout=5.0):
 
 class TestASlowVerbIsAnsweredAtOnce:
     def test_it_comes_back_202_long_before_the_work_is_done(self, pki, db):
-        runtime = FakeRuntime()
-        runtime.delay = 2
+        runtime = BlockedCreate()
+        release = runtime.release
         server, _ = an_agent(pki, db, runtime=runtime)
         runner_id = SpecStore(db).create(provider="github", platform="linux",
                                          host_id="linux-1")
         try:
-            started = time.monotonic()
             answer = controller(pki, db).call(
                 "linux-1", "exec_unit.create",
                 {"runner_id": runner_id, "spec": {"image": "node:20"}})
-            took = time.monotonic() - started
+            assert runtime.calls == []
+            assert not release.is_set()
         finally:
+            release.set()
             server.stop()
         assert answer["accepted"] is True
         assert answer["state"] == "running"
         assert answer["handle"]
-        assert took < 1.0
 
     def test_the_work_still_happens_afterwards(self, pki, db):
         runtime = FakeRuntime()
@@ -311,7 +326,7 @@ class TestWaitingForAnOutcome:
             server.stop()
         assert result["handle"] == f"rnr-{runner_id}"
 
-    def test_an_event_ends_the_wait_without_asking_again(self, pki, db,
+    def test_completion_ends_the_wait_without_a_polling_timer(self, pki, db,
                                                          receiver,
                                                          operations):
         server, _ = an_agent(pki, db, receiver=receiver)
@@ -331,7 +346,8 @@ class TestWaitingForAnOutcome:
         finally:
             server.stop()
         assert result["handle"] == f"rnr-{runner_id}"
-        assert Counting.handled <= 1 + len(slept)
+        assert Counting.handled <= 2
+        assert not slept
 
     def test_a_failure_is_raised_with_its_reason(self, pki, db):
         server, _ = an_agent(pki, db,
@@ -388,17 +404,32 @@ class TestWaitingForAnOutcome:
         server, _ = an_agent(pki, db, runtime=runtime)
         runner_id = SpecStore(db).create(provider="github", platform="linux",
                                          host_id="linux-1")
-        now = {"t": 0.0}
         try:
             with pytest.raises(TimeoutError):
                 controller(pki, db).call_and_wait(
                     "linux-1", "exec_unit.create",
                     {"runner_id": runner_id, "spec": {"image": "node:20"}},
-                    deadline=5, poll=1,
-                    sleep=lambda s: now.__setitem__("t", now["t"] + s),
-                    clock=lambda: now["t"])
+                    deadline=0.15,
+                    sleep=lambda s: pytest.fail("healthy operation used a polling timer"))
         finally:
             runtime.delay.set()
+            server.stop()
+
+    def test_native_completion_without_receiver_uses_one_wait_request(self, pki, db):
+        runtime = BlockedCreate()
+        server, _ = an_agent(pki, db, runtime=runtime)
+        server.release_on_wait = runtime.release
+        runner_id = SpecStore(db).create(provider="github", platform="linux", host_id="linux-1")
+        try:
+            result = controller(pki, db).call_and_wait(
+                "linux-1", "exec_unit.create",
+                {"runner_id": runner_id, "spec": {"image": "node:20"}},
+                deadline=10, sleep=lambda s: pytest.fail("native completion polled"))
+            assert result["handle"] == f"rnr-{runner_id}"
+            assert Counting.handled == 2
+            assert len(runtime.calls) == 1
+        finally:
+            runtime.release.set()
             server.stop()
 
 

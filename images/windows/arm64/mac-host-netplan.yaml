@@ -1,4 +1,4 @@
-# Static management NIC for the Ubuntu host shared by macOS and Windows QEMU.
+# Legacy macOS host management NIC. The dedicated ARM64 host uses its own seed.
 network:
   version: 2
   ethernets:

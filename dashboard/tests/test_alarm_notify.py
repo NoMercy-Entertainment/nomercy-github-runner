@@ -151,6 +151,11 @@ class TestFormats:
         ("https://discord.com/api/webhooks/1/abc", "discord"),
         ("https://hooks.slack.com/services/T/B/x", "slack"),
         ("https://ntfy.sh/topic", "ntfy"),
+        ("https://hooks.slack.com.attacker.example/services/T/B/x", "json"),
+        ("https://example.com/hooks.slack.com", "json"),
+        ("https://hooks.slack.com@example.com/services/T/B/x", "json"),
+        ("https://example.com/discord.com/api/webhooks/1/abc", "json"),
+        ("https://discord.com.attacker.example/api/webhooks/1/abc", "json"),
         ("https://example.com/hook", "json"),
     ])
     def test_the_format_follows_the_url_unless_named(self, url, fmt):

@@ -458,6 +458,7 @@ class Reconciler:
                 return
         action = decide(spec, operation, progress)
         if action is None:
+            self._queue_cache_budget(spec, report)
             return
         if operation and operation["verb"] == "recreate" and action in {"deregister", "remove"}:
             try:
@@ -511,6 +512,8 @@ class Reconciler:
             return
 
         getattr(self, f"_do_{action}")(spec, operation, report)
+        if action == 'observe' and operation is None:
+            self._queue_cache_budget(self.service.specs.get(spec['runner_id']), report)
 
     def _recreate_turn(self, spec, operation, report):
         """Only one replacement per fleet; preserve capacity after a failure."""
@@ -543,6 +546,27 @@ class Reconciler:
                 report.errors.append((spec["runner_id"], str(error)))
                 return False
         return True
+
+    def _queue_cache_budget(self, spec, report):
+        """Native cache GC uses the existing fresh-idle drain/clear/resume flow."""
+        if (spec.get('platform') not in ('windows', 'macos')
+                or spec.get('actual_state') != 'idle'
+                or spec.get('desired_state') != 'running' or spec.get('current_operation')):
+            return
+        policy, telemetry = spec.get('cache_policy') or {}, spec.get('telemetry') or {}
+        maximum, used, stamp = policy.get('max_bytes'), telemetry.get('cache_bytes'), telemetry.get('cache_at')
+        if (policy.get('enabled') is not True or type(maximum) is not int or maximum <= 0
+                or type(used) is not int or used <= maximum or not stamp):
+            return
+        try:
+            at = datetime.strptime(stamp, '%Y-%m-%dT%H:%M:%SZ').replace(tzinfo=timezone.utc)
+        except (ValueError, TypeError):
+            return
+        if not 0 <= (_now() - at).total_seconds() <= 90:
+            return
+        self.service.clear_cache(spec['runner_id'], requested_by='cache-budget',
+                                 idempotency_key='cache-budget:%s:%s' % (spec['runner_id'], stamp))
+        report.did('cache_budget', spec['runner_id'])
 
     def _cache_turn(self, spec, operation, report):
         """One cache clear per fleet at a time. A clear drains its runner

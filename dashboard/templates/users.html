@@ -102,11 +102,94 @@ h2.section-title{margin:32px 0 16px;font-size:var(--type-title);font-weight:600}
   </table>
 </div>
 
+<h2 class="section-title">Job notifications</h2>
+<div class="panel">
+  <p>Receive signed job starts and results from the forges. Applications subscribe with a machine credential that has jobs:read permission.</p>
+  <button data-enable-job-events="github">Enable GitHub events</button>
+  <button data-enable-job-events="forgejo">Enable Forgejo events</button>
+</div>
+
+<h2 class="section-title">Machine accounts</h2>
+<div class="panel">
+  <p>Give an application only the permissions it needs. Revoking a credential takes effect on its next request.</p>
+  <form id="machine-form">
+    <label>Name <input id="machine-name" required maxlength="80" placeholder="Arcanum"></label>
+    <label>Expires in days <input id="machine-days" type="number" min="1" max="365" value="30" required></label>
+    <fieldset><legend>Permissions</legend>
+      {% for scope in machine_scopes %}
+      <label><input name="machine-scope" type="checkbox" value="{{ scope }}"> {{ scope }}</label>
+      {% endfor %}
+    </fieldset>
+    <button type="submit">Create credential</button>
+  </form>
+  <div id="machine-secret" hidden>
+    <p>Copy this credential now. It is shown once. Use the HTTPS dashboard address.</p>
+    <pre id="machine-credential" style="white-space:pre-wrap;overflow-wrap:anywhere"></pre>
+  </div>
+  <table class="tbl">
+    <tr><th>Name</th><th>Permissions</th><th>Expires</th><th></th></tr>
+    {% for machine in machines %}
+    <tr>
+      <td>{{ machine.name }}</td><td>{{ machine.scopes | join(', ') }}</td>
+      <td class="machine-expiry" data-expiry="{{ machine.expires_at }}"></td>
+      <td><button class="danger" data-machine-revoke="{{ machine.id }}">Revoke</button></td>
+    </tr>
+    {% endfor %}
+  </table>
+</div>
+
 <div id="toast" class="toast" role="status" aria-live="polite"></div>
 
 </main>
 <script>
 const $ = id => document.getElementById(id);
+const machineCsrf = {{ machine_csrf | tojson }};
+document.querySelectorAll('[data-enable-job-events]').forEach(button => {
+  button.addEventListener('click', async () => {
+    button.disabled = true;
+    try {
+      const data = await machineCall('/api/users/job-events/' + button.dataset.enableJobEvents, {});
+      toast(data.provider + ' job events enabled.');
+    } catch (error) { toast(error.message, true); }
+    finally { button.disabled = false; }
+  });
+});
+document.querySelectorAll('.machine-expiry').forEach(el => {
+  el.textContent = new Date(Number(el.dataset.expiry) * 1000).toLocaleString();
+});
+async function machineCall(path, body) {
+  const res = await fetch(path, {method: 'POST', headers: {
+    'Content-Type': 'application/json', 'X-CSRF-Token': machineCsrf
+  }, body: JSON.stringify(body)});
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || ('HTTP ' + res.status));
+  return data;
+}
+$('machine-form').addEventListener('submit', async event => {
+  event.preventDefault();
+  const button = event.target.querySelector('button');
+  button.disabled = true;
+  try {
+    const data = await machineCall('/api/users/machines', {
+      name: $('machine-name').value, days: Number($('machine-days').value),
+      scopes: Array.from(document.querySelectorAll('[name="machine-scope"]:checked')).map(el => el.value)
+    });
+    $('machine-credential').textContent = data.credential;
+    $('machine-secret').hidden = false;
+    toast('Credential created. Copy it before leaving this page.');
+  } catch (error) { toast(error.message, true); }
+  finally { button.disabled = false; }
+});
+document.querySelectorAll('[data-machine-revoke]').forEach(button => {
+  button.addEventListener('click', async () => {
+    button.disabled = true;
+    try {
+      await machineCall('/api/users/machines/' + button.dataset.machineRevoke + '/revoke', {});
+      button.closest('tr').remove();
+      toast('Credential revoked.');
+    } catch (error) { toast(error.message, true); button.disabled = false; }
+  });
+});
 
 function toast(msg, bad) {
   const t = $('toast');

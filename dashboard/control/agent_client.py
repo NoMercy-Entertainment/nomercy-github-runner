@@ -23,6 +23,7 @@ until all three checks have passed.
 """
 import http.client
 import json
+import math
 import ssl
 import uuid
 from urllib.parse import urlsplit
@@ -183,13 +184,17 @@ class AgentClient:
     # ---- calling -----------------------------------------------------------
 
     def call(self, host_id, verb, body=None, idempotency_key=None,
-             operation_id=None, timeout=None):
+             operation_id=None, timeout=None, wait_seconds=None):
         """Ask one agent for one verb. Returns the verb's result.
 
         Raises AgentRefused when identity or policy stops the call - recorded
         in the audit trail - AgentUnreachable when nothing answers, and
         AgentError when the right agent answered with a refusal of its own.
         """
+        if wait_seconds is not None and (isinstance(wait_seconds, bool)
+                or not isinstance(wait_seconds, (int, float))
+                or not math.isfinite(wait_seconds) or not 0 < wait_seconds <= 1800):
+            raise ValueError("completion wait must be between 0 and 1800 seconds")
         if verb not in VERB_NAMES:
             self._refuse(host_id, verb, UNKNOWN_VERB, "not a protocol verb")
         worker, endpoint = self._worker(host_id, verb)
@@ -216,6 +221,11 @@ class AgentClient:
                    "Idempotency-Key": idempotency_key or str(uuid.uuid4())}
         if operation_id:
             headers["X-Operation-Id"] = operation_id
+        if wait_seconds is not None:
+            headers["X-Wait-Seconds"] = str(wait_seconds)
+            # Connection, certificate and ownership checks remain fast.
+            # Only the authenticated completion wait holds this socket.
+            conn.sock.settimeout(wait_seconds + 5)
         try:
             conn.request("POST", OP_PATH + verb, body=payload, headers=headers)
             response = conn.getresponse()
@@ -266,13 +276,11 @@ class AgentClient:
         """Ask for a verb and return its outcome, however long it takes.
 
         A read comes back at once. An asynchronous verb comes back 202, and
-        this then waits: for the agent's event, when `operations` is given and
-        the event arrives, or by asking again with the same Idempotency-Key -
-        which returns the state so far and never starts the work twice. So a
-        lost event delays the answer and cannot lose it.
-
-        No single request stays open longer than the fast timeout; the
-        waiting happens here, between requests, bounded by `deadline`.
+        the next request waits on the agent's completion event using the same
+        Idempotency-Key. It never starts the work twice, and no periodic status
+        request is needed. The authenticated socket wait is bounded by
+        `deadline`; connection and identity checks retain their fast timeout.
+        Older agents use the previous retry behavior during rolling upgrades.
         """
         import time
         sleep = sleep or time.sleep
@@ -283,6 +291,7 @@ class AgentClient:
         if not (isinstance(answer, dict) and answer.get("accepted")):
             return answer
         handle = answer["handle"]
+        native_wait = answer.get("completion_wait_supported") is True
         give_up = clock() + deadline
         while True:
             state, outcome = answer.get("state"), answer
@@ -294,13 +303,16 @@ class AgentClient:
                 return outcome.get("result") or {}
             if state == "failed":
                 raise AgentError(500, outcome.get("error", "failed"))
-            if clock() >= give_up:
+            remaining = give_up - clock()
+            if remaining <= 0:
                 raise TimeoutError(
                     f"{verb} on {host_id} not finished within {deadline}s")
-            sleep(poll)
+            if not native_wait:
+                sleep(poll)  # compatibility while older agents are upgraded
             try:
+                waiting = {"wait_seconds": min(1800, remaining)} if native_wait else {}
                 answer = self.call(host_id, verb, body, idempotency_key=key,
-                                   operation_id=operation_id)
+                                   operation_id=operation_id, **waiting)
             except (TimeoutError, AgentUnreachable) as not_now:
                 # Asking again is not the work - the agent is doing that -
                 # so a poll that did not answer says nothing about the verb.
@@ -310,3 +322,7 @@ class AgentClient:
                 # (2026-09-20). The deadline above still ends it.
                 answer = {"accepted": True, "handle": handle,
                           "state": "running", "unanswered": str(not_now)}
+                if native_wait:
+                    # A broken connection is retried with backoff; healthy
+                    # operations wait on their completion event, never a timer.
+                    sleep(min(poll, max(0, give_up - clock())))

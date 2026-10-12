@@ -23,10 +23,10 @@ function esc(v) {
 
 function fmtBytes(b) {
   if (b == null || isNaN(Number(b))) return 'unknown';
-  const g = Number(b) / 1e9;
-  if (g >= 10) return Math.round(g) + ' GB';
-  if (g >= 0.01) return g.toFixed(2) + ' GB';
-  return (Number(b) / 1e6).toFixed(1) + ' MB';
+  const g = Number(b) / 1073741824;
+  if (g >= 10) return Math.round(g) + ' GiB';
+  if (g >= 0.01) return g.toFixed(2) + ' GiB';
+  return (Number(b) / 1048576).toFixed(1) + ' MiB';
 }
 
 function fmtCores(n) {
@@ -177,10 +177,14 @@ function runnerGroupHTML(g, og) {
   } else if (runners === 0) {
     guard = 'No runners to check yet: whether outside pull requests are refused is said once one runs';
   } else if (covered < runners) {
-    guard = covered === 0
-      ? `${forks} are not refused by these runners yet: recreate them to put the check in place`
-      : `${forks} are refused by ${covered} of ${runners} runners; recreate the others to put the check in place`;
-    if (n('unknown')) guard += ` (${n('unknown')} could not be checked lately)`;
+    if (n('missing')) {
+      guard = covered === 0
+        ? `${forks} are not refused by these runners yet: recreate the ${n('missing')} runners missing the check`
+        : `${forks} are refused by ${covered} of ${runners} runners; recreate the ${n('missing')} runners missing the check`;
+      if (n('unknown')) guard += ` (${n('unknown')} could not be checked lately)`;
+    } else {
+      guard = `${forks}: protection is currently unverified (${n('unknown')} could not be checked lately)`;
+    }
   } else {
     const why = [];
     if (n('unproven')) why.push(`${n('unproven')} of ${runners} have not run a job with it yet`);

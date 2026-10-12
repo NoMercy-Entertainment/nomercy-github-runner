@@ -49,6 +49,7 @@ import time
 from pathlib import Path
 
 from .. import cpu, hardware, naming
+from ..runner_environment import CHANNEL_TIMEOUT_KEY, CHANNEL_TIMEOUT_SECONDS, channel_dotenv
 from ..jobs import current_job
 from ..windows_timeouts import registration_limits
 from .localfs import LocalFs
@@ -115,7 +116,11 @@ def service_sid(service_name):
     """The SID Windows gives a service's virtual account: S-1-5-80 followed by
     the SHA-1 of the upper-cased name in UTF-16LE, as five little-endian
     words. Checked against `sc.exe showsid` in the tests."""
-    digest = hashlib.sha1(service_name.upper().encode("utf-16-le")).digest()
+    # Windows fixes this identifier format; this hashes a public service name,
+    # not a password or authentication credential. See Microsoft's service SID
+    # description: https://techcommunity.microsoft.com/blog/askperf/ws2008-windows-service-hardening/372702
+    digest = hashlib.sha1(service_name.upper().encode("utf-16-le"),
+                          usedforsecurity=False).digest()
     return "S-1-5-80-" + "-".join(str(w) for w in struct.unpack("<5I",
                                                                  digest))
 
@@ -275,6 +280,11 @@ class WindowsProcessRuntime:
         # 4b. GitHub's job hooks, before the unit file that points at them,
         #     and on every create, so a redeployed agent's copy is the one used.
         if _serves_github(spec):
+            home = ntpath.join(p["reg"], "agent")
+            self._fs.makedirs(home)
+            dotenv = ntpath.join(home, ".env")
+            before = self._fs.read_text(dotenv) if self._fs.exists(dotenv) else ""
+            self._fs.write_text(dotenv, channel_dotenv(before))
             hooks = ntpath.join(p["reg"], "hooks")
             self._fs.makedirs(hooks)
             for hook in HOOK_FILES:
@@ -300,6 +310,7 @@ class WindowsProcessRuntime:
 
     def _unit(self, rid, spec, p):
         env = dict(spec.get("env") or {})
+        env[CHANNEL_TIMEOUT_KEY] = CHANNEL_TIMEOUT_SECONDS
         for area, key in LAYOUT_ENV_KEYS.items():
             env[key] = p[area]
         env["TEMP"] = env["TMP"] = p["tmp"]
@@ -679,6 +690,13 @@ class WindowsProcessRuntime:
         elif probe == "cache_size":
             value = self._fs.du(p["cache"])
             volume = self._volume(p["cache"], disk)
+            try:
+                cap = int(json.loads(self._fs.read_text(ntpath.join(p['reg'], 'unit.json')))
+                          .get('env', {}).get('RUNNER_CACHE_MAX_BYTES', 0))
+                if cap > 0:
+                    volume['cap_bytes'] = cap
+            except (OSError, ValueError, TypeError):
+                pass
             if disk is not None:
                 # No cap, but on the runner's own disk: that disk, its alone,
                 # is what bounds the cache.
@@ -808,6 +826,7 @@ class WindowsProcessRuntime:
                 "resettable_os": False,
                 "disk_limit_enforced": self._storage is not None,
                 "disk_quota": self._storage is not None,
+                "cache_budget": True,
                 # OPEN-7: a graceful stop that stays stopped.
                 "supports_drain": True,
                 "clear_cache": True,

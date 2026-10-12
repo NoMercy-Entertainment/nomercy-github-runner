@@ -334,7 +334,7 @@ class TestTheSameCardEverywhere:
         mac = {m[0]: m[1:] for m in _meters(html[0])}
         linux = {m[0]: m[1:] for m in _meters(html[1])}
         assert mac["cpu"] == ("5.0%", "0.3 / 6 cores shared", 5.0)
-        assert mac["memory"][1] == "2.00 GB / 17 GB shared"
+        assert mac["memory"][1] == "1.86 GiB / 16 GiB shared"
         for meter in METERS:
             assert "shared" not in linux[meter][1], meter
 
@@ -344,20 +344,20 @@ class TestTheSameCardEverywhere:
         the volume it shares. The runner's own bytes are said too."""
         html = render("cardHTML", [card(WINDOWS_PLAIN)])[0]
         storage = {m[0]: m[1:] for m in _meters(html)}["storage"]
-        assert storage == ("45.0%", "40 GB own · 900 GB / 2000 GB shared",
+        assert storage == ("45.0%", "37 GiB own · 838 GiB / 1863 GiB shared",
                            45.0)
 
     def test_an_own_disk_fills_with_the_runners_own_use(self):
         html = render("cardHTML", [card(WINDOWS_VHD)])[0]
         got = {m[0]: m[1:] for m in _meters(html)}
-        assert got["storage"] == ("11.2%", "12 GB / 107 GB", 11.2)
-        assert got["cache"] == ("11.2%", "3.00 GB own · 12 GB / 107 GB",
+        assert got["storage"] == ("11.2%", "11 GiB / 100 GiB", 11.2)
+        assert got["cache"] == ("11.2%", "2.79 GiB own · 11 GiB / 100 GiB",
                                 11.2)
 
     def test_an_own_guest_disk_fills_with_the_disk_and_is_not_shared(self):
         html = render("cardHTML", [card(MACOS_POOL)])[0]
         got = {m[0]: m[1:] for m in _meters(html)}
-        assert got["storage"] == ("30.0%", "12 GB own · 30 GB / 100 GB",
+        assert got["storage"] == ("30.0%", "11 GiB own · 28 GiB / 93 GiB",
                                   30.0)
         for meter in METERS:
             assert "shared" not in got[meter][1], meter
@@ -368,7 +368,7 @@ class TestTheSameCardEverywhere:
                                    card(ARM64)])
         linux = {m[0]: m[1:] for m in _meters(html[0])}
         arm = {m[0]: m[1:] for m in _meters(html[1])}
-        assert linux["storage"] == ("unknown", "unknown / 107 GB", 0.0)
+        assert linux["storage"] == ("unknown", "unknown / 100 GiB", 0.0)
         assert arm["storage"] == ("unknown", "unknown / unknown shared", 0.0)
 
 
@@ -420,13 +420,13 @@ class TestEverySourceHasTheSameMeters:
         got = {m[0]: m[1:] for m in _meters(legacy)}
         assert [m[0] for m in _meters(legacy)] == list(METERS)
         assert got["cpu"] == ("50.8%", "8.1 / 16 cores", 50.8)
-        assert got["memory"][1] == "12 GB / 34 GB"
-        assert got["cache"] == ("31.3%", "13 GB / 40 GB", 31.3)
+        assert got["memory"][1] == "11 GiB / 32 GiB"
+        assert got["cache"] == ("31.3%", "12 GiB / 37 GiB", 31.3)
         got = {m[0]: m[1:] for m in _meters(unmanaged)}
         assert [m[0] for m in _meters(unmanaged)] == list(METERS)
         assert got["cpu"][1] == "0.0 / 56 cores"
         assert got["storage"] == ("60.0%",
-                                  "unknown own · 600 GB / 1000 GB shared",
+                                  "unknown own · 559 GiB / 931 GiB shared",
                                   60.0)
 
 

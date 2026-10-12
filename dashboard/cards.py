@@ -517,6 +517,9 @@ def _job(lifecycle, telemetry):
     whose job nobody named says it is running one - "no active job" on a
     busy card would be false (T-1803). Naming the job needs the forge's job
     API, which is still to be added."""
+    event = (telemetry or {}).get("job_event")
+    if isinstance(event, dict):
+        return event.get("job") if event.get("state") == "started" and lifecycle in ("idle", "busy", "draining") else None
     if lifecycle not in ("busy", "draining"):
         return None
     named = (telemetry or {}).get("job")

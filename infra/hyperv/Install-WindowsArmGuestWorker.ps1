@@ -5,7 +5,7 @@
 .DESCRIPTION
     Run after Windows Setup and images/windows/arm64/Prepare-WindowsArm.ps1
     finish. The QEMU guest must have SSH forwarded on the appliance host's
-    localhost:52222 and the agent port forwarded on 10.77.0.40:8445.
+    localhost:52222 and the agent port forwarded on 10.77.0.50:8445.
     The guest payload ISO provides the checked Forgejo binary and NSSM.
 #>
 [CmdletBinding()]
@@ -18,7 +18,7 @@ $arm = $s.WindowsArm
 $repo = $script:RepoRoot
 $ssh = 'C:\Windows\System32\OpenSSH\ssh.exe'
 $scp = 'C:\Windows\System32\OpenSSH\scp.exe'
-$hostKey = Join-Path $env:USERPROFILE '.ssh\macos_runner'
+$hostKey = Join-Path $s.Root 'ssh\id_ed25519'
 $guestKey = Join-Path $s.Root 'ssh\id_ed25519'
 foreach ($path in @($ssh, $scp, $hostKey, $guestKey)) {
     if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "Missing $path" }
@@ -40,20 +40,22 @@ if (& git -C $repo status --porcelain -- agent infra/hyperv infra/windows/templa
 
 $configText = @"
 Host rnr-arm-host
-    HostName 10.77.0.40
-    HostKeyAlias 172.19.136.46
-    User runner
+    HostName $($arm.Appliance.Address)
+    User $($s.AdminUser)
     IdentityFile $($hostKey.Replace('\', '/'))
     IdentitiesOnly yes
     StrictHostKeyChecking accept-new
+    UserKnownHostsFile $($s.Root.Replace('\', '/'))/ssh/known_hosts
 Host rnr-arm-guest
     HostName 127.0.0.1
     Port 52222
+    ConnectTimeout 60
     User admin
     ProxyJump rnr-arm-host
     IdentityFile $($guestKey.Replace('\', '/'))
     IdentitiesOnly yes
     StrictHostKeyChecking accept-new
+    UserKnownHostsFile $($s.Root.Replace('\', '/'))/ssh/known_hosts
 "@
 [IO.File]::WriteAllText($sshConfig, $configText, [Text.UTF8Encoding]::new($false))
 
@@ -139,6 +141,7 @@ foreach (`$pin in @(@('forgejo-runner.exe', '$($arm.ForgejoSha256)'), @('nssm.ex
     RunnerTemplate = '$($arm.ForgejoTemplate)'; RunnerSha256 = '$($arm.ForgejoSha256)'
     Architecture = 'arm64'; FirewallRemoteAddress = @('10.0.2.2', '$cp')
     MaxRunners = $($arm.MaxRunners); RunnerMemGB = $($arm.RunnerMemGB)
+    WindowsStorage = `$true; StorageRoot = 'D:\runner-disks'
 }
 & (Join-Path `$sourceRoot 'infra\hyperv\Install-WindowsWorker.ps1') @install
 "@

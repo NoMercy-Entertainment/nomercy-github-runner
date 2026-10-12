@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
     [string]$ListenAddress = '192.168.178.19',
-    [string]$ConnectAddress = '10.77.0.40',
+    [string]$ConnectAddress = '10.77.0.50',
     [int]$Port = 8898,
     [string]$ResultPath = 'D:\HyperV\runner-platform\stage\windows-arm-novnc-result.json'
 )

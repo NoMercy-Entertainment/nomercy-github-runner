@@ -39,7 +39,8 @@ def docker():
 
 @pytest.fixture
 def runtime(docker):
-    return LinuxContainerRuntime(run=docker)
+    return LinuxContainerRuntime(run=docker, guard_check=lambda name, image, paths: [
+        path for path in paths if path in docker.containers[name].get("changed", {})])
 
 
 @pytest.fixture
@@ -49,6 +50,11 @@ def registrar(docker):
 
 def run_argv(docker):
     return next(c for c in docker.calls if c[0] == "run")
+
+
+def test_worker_startup_margin_cannot_be_lowered_by_a_spec(runtime, docker):
+    runtime.create(RID, dict(SPEC, env={'GITHUB_ACTIONS_RUNNER_CHANNEL_TIMEOUT': '30'}))
+    assert docker.containers[naming.unit_name(RID)]['env']['GITHUB_ACTIONS_RUNNER_CHANNEL_TIMEOUT'] == '300'
 
 
 class TestTheArgv:
@@ -476,6 +482,21 @@ class TestObserving:
         states = {u["runner_id"]: u["state"] for u in runtime.instances()}
         assert states == {RID: "running", OTHER: "stopped"}
 
+    def test_staged_and_rollback_copies_cannot_override_the_active_unit(self, runtime, docker):
+        from copy import deepcopy
+        runtime.create(RID, SPEC)
+        live = docker.containers[naming.unit_name(RID)]
+        for prefix in ('uniform-stage-', 'uniform-rollback-'):
+            copy = deepcopy(live)
+            copy['state'] = 'exited'
+            docker.containers[prefix + RID] = copy
+        assert runtime.instances() == [{'runner_id': RID, 'state': 'running'}]
+
+    def test_a_prepared_copy_alone_is_not_an_active_runner(self, runtime, docker):
+        runtime.create(RID, SPEC)
+        docker.containers['uniform-stage-' + RID] = docker.containers.pop(naming.unit_name(RID))
+        assert runtime.instances() == []
+
     GITHUB = dict(SPEC, labels={"nomercy.provider": "github", "nomercy.fleet": "f"})
 
     def test_a_unit_from_an_image_with_the_check_reports_it(self, runtime, docker):
@@ -559,6 +580,15 @@ class TestObserving:
             docker.put(volume, "data", 100)
         docker.engine(naming.names(RID, "linux")["docker"], build_cache=300, images=200)
         assert runtime.probe(RID, "disk_usage")["value"] == 1000
+
+    def test_legacy_disk_scan_has_a_guest_deadline_and_low_io_priority(self, runtime, docker):
+        runtime.create(RID, SPEC)
+        docker.calls.clear()
+        assert runtime.probe(RID, "disk_usage")["ok"] is True
+        scans = [call for call in docker.calls if "du" in call]
+        assert len(scans) == 1
+        assert scans[0][2:11] == ["timeout", "--signal=KILL", "10s",
+                                 "nice", "-n", "19", "ionice", "-c", "3"]
 
     @pytest.mark.parametrize("limit", ["20GB", "40GB", "123456B"])
     def test_cache_cap_is_read_from_the_unit(self, runtime, docker, limit):

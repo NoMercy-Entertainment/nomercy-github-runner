@@ -68,8 +68,30 @@ class TestSetNeverReadBack:
             if not rule.rule.startswith("/api/") or "GET" not in \
                     rule.methods or "<" in rule.rule:
                 continue
-            body = client.get(rule.rule).get_data(as_text=True)
-            assert SENTINEL not in body, rule.rule
+            if rule.rule == "/api/v2/events/jobs":
+                from control.inventory import Inventory
+                from control.job_events import JobEvents
+                from store.specs import SpecStore
+                Inventory(plane).register_worker("event-worker", "hyperv-linux")
+                rid = SpecStore(plane).create(provider="github", platform="linux",
+                                              host_id="event-worker")
+                JobEvents(plane).apply("event-worker", {
+                    "event_id": "secret-test", "runner_id": rid,
+                    "state": "finished", "job": "test", "repo": "NoMercy/example",
+                    "commit": "a" * 40, "at": "2026-10-11T01:00:00Z", "result": "success"})
+            response = client.get(rule.rule, buffered=False)
+            try:
+                if response.mimetype == "text/event-stream":
+                    # A subscription has no EOF. Inspect a real replayed job
+                    # frame and close it instead of buffering it indefinitely.
+                    iterator = iter(response.response)
+                    body = (next(iterator) + next(iterator)).decode()
+                    assert "event: job" in body
+                else:
+                    body = response.get_data(as_text=True)
+                assert SENTINEL not in body, rule.rule
+            finally:
+                response.close()
 
     def test_the_controller_can_still_use_it(self, client, plane):
         set_it(client)

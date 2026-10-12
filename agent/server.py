@@ -17,6 +17,7 @@ rule is kept absolute so it does not depend on remembering which verb that is.
 """
 import collections
 import json
+import math
 import socket
 import ssl
 import threading
@@ -107,7 +108,8 @@ class AgentServer(ThreadingHTTPServer):
     before the body is read. `handle_verb` runs an admitted request: a read
     is answered directly, and a verb in `protocol.ASYNC_VERBS` is validated
     while the caller waits, answered 202 with a handle, and carried out on a
-    thread of its own (T-0405). No request stays open for the work itself.
+    thread of its own (T-0405). A repeated request can opt into waiting on
+    its completion event, without periodically querying the operation.
 
     `emit` is where progress goes - an `EventSender` in production. Events are
     a courtesy, not the record: the operation's state is kept here, and a
@@ -209,6 +211,12 @@ class AgentServer(ThreadingHTTPServer):
         key = handler.headers.get("Idempotency-Key") or ""
         if not key or len(key) > 128:
             raise Refused("an asynchronous verb needs an Idempotency-Key")
+        try:
+            wait = float(handler.headers.get("X-Wait-Seconds") or 0)
+        except ValueError:
+            raise Refused("completion wait must be a number") from None
+        if not math.isfinite(wait) or not 0 <= wait <= 1800:
+            raise Refused("completion wait must be between 0 and 1800 seconds")
         with self._ops_lock:
             existing = self.operations.get(key)
             if existing is not None:
@@ -217,15 +225,20 @@ class AgentServer(ThreadingHTTPServer):
                                   "verb", status=409)
                 # The lost-reply case: the same handle and the state so far.
                 # The work is not started again.
-                return 202, _answer(existing)
-            op = {"handle": str(uuid.uuid4()), "verb": verb, "key": key,
-                  "operation_id": handler.headers.get("X-Operation-Id"),
-                  "runner_id": body.get("runner_id"),
-                  "state": "running", "secrets": secrets_in(body)}
-            self.operations[key] = op
-            self._forget_oldest()
-        threading.Thread(target=self._carry_out, args=(op, work),
-                         name=f"op:{verb}", daemon=True).start()
+                op = existing
+            else:
+                op = {"handle": str(uuid.uuid4()), "verb": verb, "key": key,
+                      "operation_id": handler.headers.get("X-Operation-Id"),
+                      "runner_id": body.get("runner_id"),
+                      "state": "running", "secrets": secrets_in(body),
+                      "completion": threading.Event()}
+                self.operations[key] = op
+                self._forget_oldest()
+        if existing is None:
+            threading.Thread(target=self._carry_out, args=(op, work),
+                             name=f"op:{verb}", daemon=True).start()
+        if wait:
+            op["completion"].wait(wait)
         return 202, _answer(op)
 
     def _forget_oldest(self):
@@ -253,6 +266,7 @@ class AgentServer(ThreadingHTTPServer):
                                 op["secrets"])[:500]
             op["state"] = "failed"
         op["secrets"] = []                  # not needed once it is over
+        op["completion"].set()
         self._event(op)
 
     def _event(self, op):
@@ -297,7 +311,7 @@ def _close(sock):
 def _answer(op):
     """What the caller is told about an operation. Never its secrets."""
     out = {"ok": True, "accepted": True, "handle": op["handle"],
-           "state": op["state"]}
+           "state": op["state"], "completion_wait_supported": True}
     if "result" in op:
         out["result"] = op["result"]
     if "error" in op:

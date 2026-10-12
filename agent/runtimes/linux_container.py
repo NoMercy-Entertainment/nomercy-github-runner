@@ -51,6 +51,7 @@ from decimal import Decimal
 from concurrent.futures import ThreadPoolExecutor
 
 from .. import cpu, hardware, naming
+from ..runner_environment import CHANNEL_TIMEOUT_KEY, CHANNEL_TIMEOUT_SECONDS
 from ..jobs import current_job
 from .adopted import Adopted
 from .localfs import df_figures
@@ -80,7 +81,7 @@ RUNNER_LABEL = "nomercy.runner_id"
 #: whose code a job runs (images/linux/unit/runner/runner_guard.py) it ships.
 ORIGIN_GUARD_LABEL = "nomercy.origin_guard"
 #: The image's files the check is made of, and the one that sets the hook: a
-#: unit whose copy of any has changed since it was made (`docker diff`) is
+#: unit whose copy of any differs from the immutable image is
 #: not trusted to refuse anything.
 ORIGIN_GUARD_FILES = ("/runner/job-started.sh", "/runner/job_started.py",
                       "/runner/runner_guard.py", "/runner/run")
@@ -232,8 +233,10 @@ def memory_bytes(value):
 class LinuxContainerRuntime:
     kind = "linux-container"
 
-    def __init__(self, run=None, adopted=None, storage=None, readonly_root=None):
+    def __init__(self, run=None, adopted=None, storage=None, readonly_root=None, guard_check=None):
         self._run = run or _docker
+        from .linux_guard import ImageGuardFiles
+        self._guard_check = guard_check or ImageGuardFiles(self._run)
         from .linux_storage import LinuxStorage
         # `storage` doubles as a config.py mapping (production, via
         # __main__.runtime_for) and as an already-built LinuxStorage (every
@@ -347,6 +350,7 @@ class LinuxContainerRuntime:
 
         env = dict(spec.get("env") or {})
         env.update(LAYOUT_ENV)
+        env[CHANNEL_TIMEOUT_KEY] = CHANNEL_TIMEOUT_SECONDS
         env_file = _env_file(env)
         try:
             args += ["--env-file", env_file, image]
@@ -733,9 +737,19 @@ class LinuxContainerRuntime:
     def probe(self, runner_id, probe):
         name = self._unit(runner_id)
         if probe == "disk_usage":
+            if self._storage:
+                try:
+                    usage = self._storage.telemetry(naming.check(runner_id))
+                except (OSError, RuntimeError, ValueError) as error:
+                    return {"ok": False, "value": None, "error": str(error)}
+                if usage.get("disk_limit_enforced"):
+                    return {"ok": True, "value": usage["disk_used_bytes"],
+                            "total_bytes": usage["disk_limit_bytes"], "error": ""}
             paths = list(MOUNTS.values())
             ok, out, err = self._run(
-                ["exec", name, "du", "-sx", "-B1", *paths], timeout=45)
+                ["exec", name, "timeout", "--signal=KILL", "10s",
+                 "nice", "-n", "19", "ionice", "-c", "3",
+                 "du", "-sx", "-B1", *paths], timeout=15)
             try:
                 measured = dict((line.split("\t", 1)[1],
                                  int(line.split("\t", 1)[0]))
@@ -788,28 +802,25 @@ class LinuxContainerRuntime:
 
     def origin_guard_report(self, runner_id):
         """Whether this unit's job-started hook refuses outside code
-        (agent/origin_guard.py): the image's label for the version, `docker
-        diff` for any change to the files the check is made of since the
-        unit was made, and the hook's own record of its last run. None for a
+        (agent/origin_guard.py): the image's label for the version, a bounded
+        content comparison of the four guard files against that image,
+        and the hook's own record of its last run. None for a
         unit that is not GitHub's, or not running, or cannot be read now."""
         from ..origin_guard import LAST_RESULT, last_result, report
         name = naming.unit_name(naming.check(runner_id))
         ok, out, _ = self._run(["inspect", "--type", "container", "--format",
                                 '{{index .Config.Labels "nomercy.provider"}}\t'
                                 '{{index .Config.Labels "' + ORIGIN_GUARD_LABEL + '"}}\t'
-                                "{{.State.Running}}", name], timeout=30)
+                                "{{.State.Running}}\t{{.Image}}", name], timeout=30)
         if not ok:
             return None
-        provider, guard, running = (out.strip().split("\t") + ["", "", ""])[:3]
+        provider, guard, running, image = (out.strip().split("\t") + ["", "", "", ""])[:4]
         if provider != "github" or running != "true":
             return None
-        ok, diff, _ = self._run(["diff", name], timeout=120)
-        if not ok:
+        changes = self._guard_check(name, image, ORIGIN_GUARD_FILES)
+        if changes is None:
             return None
-        changed = sorted({line.split(None, 1)[1].strip().rsplit("/", 1)[-1]
-                          for line in diff.splitlines()
-                          if len(line.split(None, 1)) == 2
-                          and line.split(None, 1)[1].strip() in ORIGIN_GUARD_FILES})
+        changed = sorted(path.rsplit("/", 1)[-1] for path in changes)
         ok, text, _ = self._run(["exec", name, "cat",
                                  f"{MOUNTS['logs']}/{LAST_RESULT}"], timeout=30)
         return report(int(guard) if guard.strip().isdigit() else 0, changed,
@@ -821,14 +832,18 @@ class LinuxContainerRuntime:
         worker runs nothing."""
         ok, out, err = self._run(["ps", "-a", "--filter",
                                   f"label={RUNNER_LABEL}", "--format",
-                                  '{{.Label "' + RUNNER_LABEL + '"}}\t'
+                                  '{{.Names}}\t{{.Label "' + RUNNER_LABEL + '"}}\t'
                                   "{{.State}}"], timeout=30)
         if not ok:
             raise RuntimeError(err or "docker ps failed")
         found, seen = [], set()
         for line in out.splitlines():
-            rid, _, state = line.partition("\t")
-            if not rid:
+            name, _, rest = line.partition("\t")
+            rid, _, state = rest.partition("\t")
+            if not rid or name != self._unit(rid):
+                # A stopped rollback copy or a never-started preparation may
+                # retain ownership labels and volumes. Only the execution
+                # unit addressed by this runtime may report this UUID's state.
                 continue
             seen.add(rid)
             found.append({"runner_id": rid, "state": _state_word(state)})
