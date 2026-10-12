@@ -39,7 +39,9 @@ jobs:
             os: macOS
             arch: X64
             shell: bash
-    runs-on: [self-hosted, '${{ matrix.os }}', '${{ matrix.arch }}']
+    runs-on:
+      group: Fillz
+      labels: [self-hosted, '${{ matrix.os }}', '${{ matrix.arch }}']
     timeout-minutes: 7200
     defaults:
       run:
