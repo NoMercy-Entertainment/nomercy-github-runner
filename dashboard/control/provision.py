@@ -870,7 +870,7 @@ class ProvisioningFlow:
         ref = self._ref(spec, handle=spec.get("exec_unit_ref") or
                         storage.unit_name(spec["runner_id"]))
         try:
-            return retry.call(retry.agent_fast_for(spec), self.agent.running,
+            return retry.call(AGENT_SLOW, self.agent.running,
                               spec["host_id"], ref) is False
         except Exception:
             return False
@@ -892,7 +892,10 @@ class ProvisioningFlow:
         if provider.drain_plan(spec).via_forge:
             retry.call(FORGE_DRAIN, self.forges.drain, provider, spec)
         else:
-            retry.call(retry.agent_fast_for(spec), self.agent.drain, spec.get("host_id"),
+            # This waits for asynchronous maintenance completion, including
+            # native watcher/storage teardown. A short read deadline would
+            # abandon that work and retry while its original request runs.
+            retry.call(AGENT_SLOW, self.agent.drain, spec.get("host_id"),
                        self._ref(spec))
         seen = provider.job_state(spec, self._records(provider, fresh=True))
         if provider.drain_plan(spec).via_forge and seen == providers.IDLE:
@@ -914,7 +917,7 @@ class ProvisioningFlow:
         if seen not in (providers.IDLE, providers.OFFLINE):
             return False
         try:
-            running = retry.call(retry.agent_fast_for(spec), self.agent.running,
+            running = retry.call(AGENT_SLOW, self.agent.running,
                                  spec.get("host_id"), self._ref(spec))
         except Exception:               # noqa: BLE001 - unknown is not down
             return False
