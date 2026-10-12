@@ -5,8 +5,9 @@
 #
 #   docker run --rm -v <out dir>:/out -v <this dir>:/build:ro \
 #     -v <images/forgejo-events>:/events:ro \
-#     -v <images/forgejo-admission>:/admission:ro \
 #     golang:1.26.7 bash /build/build-forgejo-runner.sh v13.1.0
+# Add the admission mount and second argument 'guarded' only for a deployment
+# with a protected admission policy. The default retains native events alone.
 #
 # The Go version is the tag's own `toolchain` line (go.mod), so the image is
 # pinned to it. CGO off and -trimpath keep the build independent of the
@@ -14,7 +15,9 @@
 # not `dev`, which is what the binary running on BEAST-UNIT today prints.
 # Writes each binary, SHA256SUMS, and PROVENANCE: tag, commit, Go version.
 set -euo pipefail
-TAG="${1:?usage: build-forgejo-runner.sh <tag, e.g. v13.1.0>}"
+TAG="${1:?usage: build-forgejo-runner.sh <tag, e.g. v13.1.0> [native-events|guarded]}"
+MODE="${2:-native-events}"
+case "$MODE" in native-events|guarded) ;; *) echo 'unknown Forgejo build mode' >&2; exit 1 ;; esac
 MAJOR="${TAG%%.*}"
 SOURCE="${FORGEJO_BUILD_SOURCE:-/src}"
 OUTPUT="${FORGEJO_BUILD_OUTPUT:-/out}"
@@ -36,10 +39,18 @@ git apply --check "$EVENTS/reporter.patch"
 git apply "$EVENTS/reporter.patch"
 cp "$EVENTS/event.go" "$EVENTS/event_test.go" internal/pkg/report/
 gofmt -w internal/pkg/report/event.go internal/pkg/report/event_test.go internal/pkg/report/reporter.go
-git apply --check "$ADMISSION/runner.patch"
-git apply "$ADMISSION/runner.patch"
-cp "$ADMISSION/admission.go" "$ADMISSION/admission_test.go" internal/app/run/
-gofmt -w internal/app/run/runner.go internal/app/run/admission.go internal/app/run/admission_test.go
+VERSION="$TAG"
+ADMISSION_VERSION=0
+BUILD_FLAGS=()
+if [ "$MODE" = guarded ]; then
+  git apply --check "$ADMISSION/runner.patch"
+  git apply "$ADMISSION/runner.patch"
+  cp "$ADMISSION/admission.go" "$ADMISSION/admission_test.go" internal/app/run/
+  gofmt -w internal/app/run/runner.go internal/app/run/admission.go internal/app/run/admission_test.go
+  VERSION="${TAG}-nomercy-admission.1"
+  ADMISSION_VERSION=1
+  BUILD_FLAGS=(-buildvcs=false)
+fi
 WANT="$(sed -n 's/^toolchain //p' go.mod)"
 HAVE="$(go env GOVERSION)"
 if [ "$(go tool compile -V)" != "compile version ${HAVE}" ]; then
@@ -52,13 +63,14 @@ if [ -n "$WANT" ] && [ "$WANT" != "$HAVE" ]; then
 fi
 
 go test ./internal/pkg/report
-go test ./internal/app/run -run '^TestAdmission' -count=1 -timeout=60s
-VERSION="${TAG}-nomercy-admission.1"
+if [ "$MODE" = guarded ]; then
+  go test ./internal/app/run -run '^TestAdmission' -count=1 -timeout=60s
+fi
 for target in linux/amd64 linux/arm64 windows/amd64 windows/arm64 darwin/amd64 darwin/arm64; do
   os="${target%/*}" arch="${target#*/}"
   ext=""; [ "$os" = windows ] && ext=".exe"
   out="${OUTPUT}/forgejo-runner-${VERSION}-${os}-${arch}${ext}"
-  GOOS="$os" GOARCH="$arch" CGO_ENABLED=0 go build -buildvcs=false -trimpath \
+  GOOS="$os" GOARCH="$arch" CGO_ENABLED=0 go build "${BUILD_FLAGS[@]}" -trimpath \
     -tags 'netgo osusergo' \
     -ldflags "-s -w -X code.forgejo.org/forgejo/runner/${MAJOR}/internal/pkg/ver.version=${VERSION}" \
     -o "$out" .
@@ -70,13 +82,16 @@ sha256sum forgejo-runner-"${VERSION}"-* > SHA256SUMS
   echo "tag=${TAG}"
   echo "commit=${COMMIT}"
   echo 'job_events=1'
-  echo 'admission_version=1'
-  echo 'buildvcs=false'
+  echo "admission_version=${ADMISSION_VERSION}"
+  echo "build_mode=${MODE}"
+  if [ "$MODE" = guarded ]; then echo 'buildvcs=false'; else echo 'buildvcs=auto'; fi
   echo "version=${VERSION}"
   sha256sum "$EVENTS/reporter.patch" "$EVENTS/event.go" "$EVENTS/event_test.go"
-  sha256sum "$ADMISSION/runner.patch" "$ADMISSION/admission.go" "$ADMISSION/admission_test.go"
+  if [ "$MODE" = guarded ]; then
+    sha256sum "$ADMISSION/runner.patch" "$ADMISSION/admission.go" "$ADMISSION/admission_test.go"
+  fi
   echo "go=${HAVE}"
   echo "built=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-  echo "flags=CGO_ENABLED=0 -buildvcs=false -trimpath -tags 'netgo osusergo' -ldflags '-s -w -X .../ver.version=${VERSION}'"
+  echo "flags=CGO_ENABLED=0 ${BUILD_FLAGS[*]} -trimpath -tags 'netgo osusergo' -ldflags '-s -w -X .../ver.version=${VERSION}'"
 } > PROVENANCE
 cat PROVENANCE SHA256SUMS

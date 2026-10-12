@@ -1,8 +1,12 @@
 # Forgejo admission
 
 This source patch targets only Forgejo Runner v13.1.0, commit
-`6095cb17bfdbded5aa4ea84c18a4b69fd9574cca`. The common release build applies
-both native job events and admission. The controller validates the configured
+`6095cb17bfdbded5aa4ea84c18a4b69fd9574cca`. The default release build applies
+native job events and retains the existing artifact names and version. Admission
+requires the explicit second build argument `guarded`, produces separately
+named `v13.1.0-nomercy-admission.1` artifacts, and fails closed without a policy.
+CI builds both modes for all six targets; the default runs without admission files.
+The controller validates the configured
 policy and sends the same immutable snapshot to Linux, Windows and macOS.
 Existing live templates and registrations require a controlled rollout.
 
