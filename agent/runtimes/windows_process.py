@@ -651,11 +651,18 @@ class WindowsProcessRuntime:
             logs = ntpath.join(disk["volume_guid"], "logs")
         else:
             logs = self.paths(rid)["logs"]
-        from ..job_event_stream import safe_directory
+        from ..job_event_stream import OwnedSpool, safe_directory
         safe_directory(logs)
         directory = Path(logs) / "job-events"
         directory.mkdir(mode=0o700, exist_ok=True)
-        safe_directory(directory)
+        # Python 3.13 makes mode=0700 a protected Windows DACL. Explicitly
+        # admit this unit's service identity, including spools made previously.
+        # Pin all directory components while the privileged ACL tool runs.
+        spool = OwnedSpool(directory)
+        try:
+            self._acl(str(directory), naming.unit_name(rid))
+        finally:
+            spool.close()
         return {"directory": str(directory)}
 
     def logs(self, runner_id, since_seconds, max_bytes=256 * 1024):

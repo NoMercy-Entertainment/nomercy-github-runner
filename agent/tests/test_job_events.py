@@ -267,6 +267,92 @@ def test_partial_native_registration_failure_closes_native_watch_and_spool(tmp_p
     directory.rename(tmp_path / "renamed")
 
 
+def darwin_watch(tmp_path, monkeypatch, registration_error=False):
+    """Apple Python's select API deliberately excludes USER/TRIGGER constants."""
+    import agent.job_event_stream as module
+    from types import SimpleNamespace
+
+    class Spool:
+        def __init__(self, directory):
+            self.path = directory
+            self.fd, self.writer = os.pipe()
+            self.directories = [self.fd]
+            self.closed = False
+        def close(self):
+            self.closed = True
+            os.close(self.fd)
+            os.close(self.writer)
+
+    class Queue:
+        def __init__(self):
+            self.closed = False
+            self.registered = []
+            self.events = []
+        def control(self, changes, count):
+            if changes is not None:
+                self.registered.extend(changes)
+                if registration_error:
+                    raise OSError("kqueue registration failed")
+                return []
+            return self.events
+        def close(self):
+            self.closed = True
+
+    queue = Queue()
+    select = SimpleNamespace(kqueue=lambda: queue,
+                             kevent=lambda ident, **values: SimpleNamespace(ident=ident, **values),
+                             KQ_FILTER_VNODE=-4, KQ_FILTER_READ=-1, KQ_EV_ADD=1, KQ_EV_CLEAR=32,
+                             KQ_NOTE_RENAME=32, KQ_NOTE_DELETE=1, KQ_NOTE_WRITE=2)
+    monkeypatch.setattr(module, "select", select)
+    monkeypatch.setattr(module.sys, "platform", "darwin")
+    monkeypatch.setattr(module, "OwnedSpool", Spool)
+    return module, queue, select
+
+
+def test_apple_select_without_user_filter_keeps_native_watch_and_pipe_cancellation(tmp_path, monkeypatch):
+    module, queue, select = darwin_watch(tmp_path, monkeypatch)
+    watch = module.DirectoryChanges(tmp_path)
+    fds = [watch.fd, watch.stop_read, watch.stop_write]
+    try:
+        assert [row.filter for row in queue.registered] == [select.KQ_FILTER_VNODE, select.KQ_FILTER_READ]
+        queue.events = [select.kevent(watch.spool.fd, filter=select.KQ_FILTER_VNODE, fflags=select.KQ_NOTE_WRITE)]
+        assert watch.wait() is True
+        watch.wake()
+        assert os.read(watch.stop_read, 1) == b"x"
+        # Repeated cancellation stays bounded even if the pipe is already full.
+        while True:
+            try:
+                os.write(watch.stop_write, b"x" * 4096)
+            except BlockingIOError:
+                break
+        watch.wake()
+        queue.events = [select.kevent(watch.stop_read, filter=select.KQ_FILTER_READ, fflags=0)]
+        assert watch.wait() is False
+    finally:
+        watch.close()
+    assert queue.closed and watch.spool.closed
+    for fd in fds:
+        with pytest.raises(OSError):
+            os.fstat(fd)
+
+
+def test_apple_pipe_registration_failure_closes_all_resources(tmp_path, monkeypatch):
+    module, queue, _ = darwin_watch(tmp_path, monkeypatch, registration_error=True)
+    opened = []
+    original = module.DirectoryChanges._register
+    def register(self):
+        opened.append(self)
+        original(self)
+    monkeypatch.setattr(module.DirectoryChanges, "_register", register)
+    with pytest.raises(OSError, match="kqueue registration"):
+        module.DirectoryChanges(tmp_path)
+    watch = opened[0]
+    assert watch.closed and watch.spool.closed and queue.closed
+    for fd in (watch.fd, watch.stop_read, watch.stop_write):
+        with pytest.raises(OSError):
+            os.fstat(fd)
+
+
 def test_guest_stream_enforces_pin_and_cannot_reuse_insecure_ssh_master(tmp_path, monkeypatch):
     from agent.runtimes.guest_ssh import GuestExec
     import agent.runtimes.guest_ssh as module
