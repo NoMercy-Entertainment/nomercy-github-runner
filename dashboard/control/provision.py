@@ -406,6 +406,10 @@ class ProvisioningFlow:
             # Raising inside the retried call is what lets a transient failure
             # be retried at all: `registration` reports failure as (None,
             # reason), which the retry loop would otherwise take as an answer.
+            from .federation_provision import registration_for
+            requested = registration_for(self.service, spec)
+            if requested is not None:
+                return requested
             plan, error = provider.registration(spec, self.env)
             if plan is None:
                 raise RuntimeError(error or "no registration plan")
@@ -435,6 +439,8 @@ class ProvisioningFlow:
             "registration_id": str(result.get("registration_id") or ""),
             "registration_uuid": result.get("registration_uuid"),
         }
+        from .federation_provision import registration_consumed
+        registration_consumed(self.service, spec)
         # What was asked for, kept to compare with what the forge then shows
         # (T-0902). Labels and group only - not the token.
         state["expect"] = {"labels": state["plan"].labels,
@@ -660,6 +666,8 @@ class ProvisioningFlow:
         still found and removed.
         """
         from store import storage
+        from .federation_provision import retirement_safe
+        retirement_safe(self.service, spec, require_absent=True)
         ref = state.get("ref")
         if ref is None and spec.get("exec_unit_ref"):
             ref = self._ref(spec)
@@ -685,6 +693,8 @@ class ProvisioningFlow:
     # ---- the rest of the executor protocol ----------------------------------
 
     def _deregister(self, spec, ref=None):
+        from .federation_provision import retirement_safe
+        retirement_safe(self.service, spec)
         provider = self._provider(spec)
         plan = provider.deregistration(spec)
         if plan.via_api:
@@ -849,6 +859,11 @@ class ProvisioningFlow:
 
     def quiescent(self, spec):
         """A fresh worker answer fences every destructive controller step."""
+        from .federation_provision import retirement_safe
+        try:
+            retirement_safe(self.service, spec)
+        except Exception:
+            return False
         if not spec.get("host_id"):
             return True
         from store import storage
@@ -929,6 +944,8 @@ class ProvisioningFlow:
         done.
         """
         from store import storage
+        from .federation_provision import retirement_safe
+        retirement_safe(self.service, spec, require_absent=True)
         if spec.get("exec_unit_ref"):
             ref = self._ref(spec)
         elif spec.get("host_id"):

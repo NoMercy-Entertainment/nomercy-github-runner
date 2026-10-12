@@ -77,7 +77,7 @@ def _http_json(url, data=None, headers=None, timeout=15):
 
 
 class OIDC:
-    def __init__(self, issuer, client_id, client_secret, redirect_uri):
+    def __init__(self, issuer, client_id, client_secret, redirect_uri, access_observer=None):
         self.issuer = (issuer or "").rstrip("/")
         self.client_id = client_id or ""
         self.client_secret = client_secret or ""
@@ -86,6 +86,7 @@ class OIDC:
         # X-Forwarded-Host are attacker-controlled, and a forged one would
         # send the authorization code to another host.
         self.redirect_uri = redirect_uri or ""
+        self.access_observer = access_observer
 
     def configured(self):
         return bool(self.issuer and self.client_id
@@ -159,4 +160,9 @@ class OIDC:
             # authorise - and an empty key would collide with every other
             # subless login.
             raise OIDCError("userinfo returned no sub")
+        if self.access_observer:
+            try:
+                self.access_observer(claims, token)
+            except Exception:
+                raise OIDCError("Capacity-sharing sign-in could not retain its expiring API identity") from None
         return claims

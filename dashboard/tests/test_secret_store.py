@@ -79,6 +79,11 @@ class TestSetNeverReadBack:
                     "event_id": "secret-test", "runner_id": rid,
                     "state": "finished", "job": "test", "repo": "NoMercy/example",
                     "commit": "a" * 40, "at": "2026-10-11T01:00:00Z", "result": "success"})
+            elif rule.rule == "/api/v2/federation/events":
+                from control.federation import Federation
+                Federation(plane).add_peer("Secret exclusion probe", "peer-probe", {
+                    "max_runners": 0, "max_lease_minutes": 90, "profiles": ["github-linux-x64"],
+                    "organizations": ["NoMercy-Entertainment"]}, "test")
             response = client.get(rule.rule, buffered=False)
             try:
                 if response.mimetype == "text/event-stream":
@@ -86,7 +91,7 @@ class TestSetNeverReadBack:
                     # frame and close it instead of buffering it indefinitely.
                     iterator = iter(response.response)
                     body = (next(iterator) + next(iterator)).decode()
-                    assert "event: job" in body
+                    assert ("event: change" if rule.rule == "/api/v2/federation/events" else "event: job") in body
                 else:
                     body = response.get_data(as_text=True)
                 assert SENTINEL not in body, rule.rule

@@ -177,7 +177,7 @@ class Controller:
     """The parts of a running controller, built and stopped together."""
 
     def __init__(self, env, db=None, tls_dir=None, receiver=RECEIVER,
-                 interval=INTERVAL):
+                 interval=INTERVAL, federation_adapter=None):
         import socket
 
         from store import schema
@@ -223,6 +223,30 @@ class Controller:
             on_event=self.service.operations.apply_event,
             audit_path=self.db)
         self._stop = threading.Event()
+        from .federation import Federation
+        from .federation_provision import LocalProvisioner
+        if federation_adapter is None:
+            federation_adapter = LocalProvisioner(self.service)
+        self.federation = Federation(self.db, adapter=federation_adapter)
+
+    def _federation_state(self, state):
+        from store import schema
+        with schema.connect(self.db) as c:
+            c.execute("INSERT INTO platform_settings(key,value) VALUES('federation_runtime',?) "
+                      "ON CONFLICT(key) DO UPDATE SET value=excluded.value", (state,))
+
+    def _federation_events(self, log):
+        from .federation import run_events
+        try:
+            run_events(self.federation, self._stop,
+                       ready=lambda: self._federation_state("running"))
+        except Exception:
+            # This optional capability must never interrupt ordinary runners.
+            # An adapter exception can contain a credential; publish no text.
+            self._federation_state("failed")
+            log("controller: capacity-sharing expiry worker unavailable")
+        else:
+            self._federation_state("stopped")
 
     def pass_once(self):
         from .secrets import SecretStore
@@ -272,6 +296,11 @@ class Controller:
         heartbeat = threading.Thread(target=self._heartbeat_loop,
                                      name="controller-heartbeat", daemon=True)
         heartbeat.start()
+        federation = None
+        if getattr(self, "federation", None) is not None:
+            federation = threading.Thread(target=self._federation_events, args=(log,),
+                                          name="controller-federation-events", daemon=True)
+            federation.start()
         host, port = self.receiver.server_address[:2]
         log(f"controller: receiving on {host}:{port}, a pass every "
             f"{self.interval:g}s")
@@ -296,6 +325,10 @@ class Controller:
             try:
                 self._heartbeat("stopped")
             finally:
+                # The final heartbeat changes the WAL and wakes the native
+                # event wait, so shutdown does not wait for its stop timeout.
+                if federation is not None:
+                    federation.join(timeout=5)
                 self.receiver.stop()
             log("controller: stopped")
 

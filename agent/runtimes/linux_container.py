@@ -49,6 +49,7 @@ import uuid
 from contextlib import contextmanager
 from decimal import Decimal
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 
 from .. import cpu, hardware, naming
 from ..runner_environment import CHANNEL_TIMEOUT_KEY, CHANNEL_TIMEOUT_SECONDS
@@ -283,6 +284,12 @@ class LinuxContainerRuntime:
             raise ValueError("a unit needs an image")
         if self._storage:
             image = self._readonly_image(image)
+        if (spec.get("env") or {}).get("RUNNER_REFUSE_ALL_FORKS") == "1":
+            if not self._readonly_root or self._storage is None:
+                raise RuntimeError("Lent hooks require an owned readonly execution unit; mutable ordinary workers cannot lend")
+            ok, guard, _ = self._run(["image", "inspect", "--format", '{{index .Config.Labels "nomercy.federation_guard"}}', image], timeout=30)
+            if not ok or guard.strip() != "1":
+                raise RuntimeError("Lent capacity requires the curated immutable federation guard image")
         memory = str(spec.get("memory") or "").strip()
         memory_swap = spec.get("memory_swap")
         if memory_swap is not None and (not memory or memory_bytes(memory) <= 0
@@ -817,14 +824,25 @@ class LinuxContainerRuntime:
         provider, guard, running, image = (out.strip().split("\t") + ["", "", "", ""])[:4]
         if provider != "github" or running != "true":
             return None
-        changes = self._guard_check(name, image, ORIGIN_GUARD_FILES)
+        lent = False
+        read, environment, _ = self._run(["inspect", "--type", "container", "--format", "{{json .Config.Env}}", name], timeout=30)
+        try:
+            lent = read and "RUNNER_REFUSE_ALL_FORKS=1" in json.loads(environment)
+        except (ValueError, TypeError):
+            pass
+        changes = self._guard_check(name, image, (*ORIGIN_GUARD_FILES, "/runner/federation-started.js") if lent else ORIGIN_GUARD_FILES)
         if changes is None:
             return None
         changed = sorted(path.rsplit("/", 1)[-1] for path in changes)
         ok, text, _ = self._run(["exec", name, "cat",
                                  f"{MOUNTS['logs']}/{LAST_RESULT}"], timeout=30)
-        return report(int(guard) if guard.strip().isdigit() else 0, changed,
-                      last=last_result(text) if ok else None)
+        answer = report(int(guard) if guard.strip().isdigit() else 0, changed,
+                        last=last_result(text) if ok else None)
+        if lent:
+            verified, installed, _ = self._run(["exec", name, "cat", "/runner/federation-started.js"], timeout=30)
+            expected = (Path(__file__).resolve().parents[1] / "hooks" / "federation-started.js").read_text(encoding="utf-8")
+            answer["federation_guard"] = answer["version"] > 0 and verified and installed.replace("\r\n", "\n") == expected.replace("\r\n", "\n")
+        return answer
 
     def instances(self):
         """Every unit on this engine that belongs to a runner, and its state.
@@ -1018,7 +1036,12 @@ class LinuxContainerRuntime:
             return None
 
     def capabilities(self):
+        ok, images = False, ""
+        if self._readonly_root and self._storage is not None:
+            ok, images, _ = self._run(["image", "ls", "--filter", "label=nomercy.federation_guard=1", "--format", "{{.Repository}}:{{.Tag}}"], timeout=30)
         return {"kind": self.kind,
+                "federation_fork_guard": self._readonly_root and self._storage is not None,
+                "federation_templates": sorted(set(images.splitlines())) if ok and self._readonly_root and self._storage is not None else [],
                 # Any image this engine can pull, so no list: what a unit is
                 # made from is a reference, not something installed here.
                 "builds_from": "image",

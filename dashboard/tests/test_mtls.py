@@ -296,6 +296,11 @@ class TestNoCodePathReachesAnAgentUnverified:
         for name, source in self.sources():
             if name == "agent_client.py":
                 continue
+            if name == "federation_broker.py":
+                # This is the separate fixed-origin NoMercy courier, never an
+                # agent dialer. Its TLS/SNI/public-DNS/redirect boundaries are
+                # exercised by test_federation_broker.py.
+                continue
             outbound = ["HTTPSConnection(", "urlopen(", "create_connection("]
             if name != "receiver.py":
                 outbound.append("wrap_socket(")

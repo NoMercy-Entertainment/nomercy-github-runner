@@ -111,6 +111,18 @@ class SpecStore:
         rests on identity being unrelated to anything a caller can guess or
         reconstruct, and the cheapest place to hold that line is here.
         """
+        return self._create_in(None, fields)
+
+    def create_in(self, connection, **fields):
+        """Mint a spec in an owner's transaction, alongside its private claim.
+
+        Federation uses this to publish neither an unowned execution spec nor
+        a credential claim without the spec it belongs to. Validation and ID
+        minting are identical to ordinary creation.
+        """
+        return self._create_in(connection, fields)
+
+    def _create_in(self, connection, fields):
         if "runner_id" in fields:
             raise ValueError(
                 "runner_id is minted by the store; a caller that chooses it "
@@ -129,10 +141,12 @@ class SpecStore:
         params = [runner_id, now(), 1] + [values[k] for k in values]
         placeholders = ", ".join("?" * len(columns))
 
-        with self._conn() as c:
-            c.execute(
-                f"INSERT INTO runner_specs ({', '.join(columns)}) "
-                f"VALUES ({placeholders})", params)
+        statement = f"INSERT INTO runner_specs ({', '.join(columns)}) VALUES ({placeholders})"
+        if connection is not None:
+            connection.execute(statement, params)
+        else:
+            with self._conn() as c:
+                c.execute(statement, params)
         return runner_id
 
     def adopt(self, capacity, **fields):

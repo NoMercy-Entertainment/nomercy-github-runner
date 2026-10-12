@@ -22,7 +22,7 @@ import secrets
 import threading
 import time
 
-from flask import (Flask, g, jsonify, redirect, render_template, request,
+from flask import (Flask, g, has_request_context, jsonify, redirect, render_template, request,
                    session, url_for)
 from flask.sessions import SecureCookieSessionInterface
 from flask_sock import Sock
@@ -148,9 +148,16 @@ def _public_url():
 
 def _oidc():
     base = _public_url()
+    observer = None
+    if has_request_context() and session.get("federation_login"):
+        def observer(claims, token):
+            if users.role_of(claims["sub"]) == "admin":
+                import api_v2
+                from control.federation_outbound import Outbound
+                Outbound(api_v2._db_path()).retain_identity(claims, token)
     return oidc.OIDC(_conf("OIDC_ISSUER"), _conf("OIDC_CLIENT_ID"),
                      _conf("OIDC_CLIENT_SECRET"),
-                     f"{base}/callback" if base else "")
+                     f"{base}/callback" if base else "", access_observer=observer)
 
 
 def current_role():
@@ -327,6 +334,15 @@ def guard():
     # Judged on the version-stripped path, so an /api/v1 alias inherits every
     # rule below rather than slipping past the ones that match on a prefix.
     path = policy_path(request.path)
+
+    # Federation credentials authorise bounded intents only. They can never
+    # fall through to machine credentials or an existing admin browser cookie.
+    import federation_api
+    peer_auth = federation_api.guard()
+    if peer_auth is True:
+        return None
+    if peer_auth is not None:
+        return peer_auth
 
     authorization = request.headers.get("Authorization")
     if authorization is not None:
@@ -660,12 +676,13 @@ def auth_callback():
 
     # Cleared first: a session that changes who it belongs to must not carry
     # anything the previous holder put in it.
+    sharing = bool(session.get("federation_login"))
     session.clear()
     session["sub"] = claims["sub"]
     session["name"] = (claims.get("name")
                        or claims.get("preferred_username") or "")
     session.permanent = True
-    return redirect(url_for("index"))
+    return redirect("/federation" if sharing and role == "admin" else url_for("index"))
 
 
 @app.route("/auth/pending")
@@ -963,6 +980,8 @@ def _status_snapshot():
 
 # Registered after the aliases, so no v2 route is ever served again under v1.
 api_v2.init(app, _status_snapshot)
+import federation_api
+federation_api.init(app, public_origin=_public_url)
 
 
 @app.route("/v2")

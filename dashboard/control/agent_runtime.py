@@ -193,6 +193,15 @@ class AgentRuntime:
             if policy.get("enabled") is False:
                 env["RUNNER_CLEANUP_ENABLED"] = "0"
         trusted = _names(getattr(self.wiring, "trusted_owners", ""))
+        claimed = (spec.get("capabilities") or {}).get("federation_owned") is True
+        path = getattr(getattr(self.wiring, "operations", None), "path", None)
+        if not claimed and path:
+            from store import schema
+            with schema.connect(path) as c:
+                table = c.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='federation_allocations'").fetchone()
+                claimed = bool(table and c.execute("SELECT 1 FROM federation_allocations WHERE runner_id=?", (spec["runner_id"],)).fetchone())
+        if spec.get("provider") == "github" and claimed:
+            env["RUNNER_REFUSE_ALL_FORKS"] = "1"
         if spec.get("provider") == "github" and trusted:
             # Read by the job-started hook, which only GitHub units have.
             env["RUNNER_TRUSTED_OWNERS"] = trusted
