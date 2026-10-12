@@ -90,3 +90,23 @@ def test_unknown_scope_is_refused():
     from forgejo_api import Forgejo
     with pytest.raises(ValueError):
         Forgejo(INSTANCE, "test", "organization")
+
+
+def test_instance_registration_plan_keeps_its_guard_requirement_for_old_workers():
+    from control.agent_client import AgentError
+    from control.agent_runtime import AgentWiring, FlowAgent
+    from providers import RegistrationPlan
+    from runtime.base import ExecUnitKind, ExecUnitRef
+    class OldWorker:
+        def __init__(self): self.calls = []
+        def call_and_wait(self, host, verb, body, **kwargs):
+            self.calls.append(body)
+            raise AgentError(400, "plan carries fields this verb does not take: ['forgejo_admission_policy']")
+    client = OldWorker()
+    plan = RegistrationPlan(INSTANCE, "registration", "runner", "linux-x64",
+                            extra=(("forgejo_admission_policy", json.dumps(DOCUMENT)),))
+    ref = ExecUnitRef(ExecUnitKind.LINUX_CONTAINER, "rnr-3f2504e0-4f89-41d3-9a0c-0305e82c3301")
+    with pytest.raises(AgentError):
+        FlowAgent(AgentWiring(client)).register("worker", ref, plan)
+    assert len(client.calls) == 1
+    assert client.calls[0]["plan"]["forgejo_admission_policy"] == json.dumps(DOCUMENT)

@@ -325,6 +325,9 @@ class FlowAgent:
         sent = {k: getattr(plan, k) or "" for k in self.PLAN_FIELDS}
         sent.update({k: bool(getattr(plan, k, False))
                      for k in self.PLAN_FLAGS})
+        admission = dict(getattr(plan, "extra", ()) or ()).get("forgejo_admission_policy")
+        if admission:
+            sent["forgejo_admission_policy"] = admission
         try:
             got = self._call("runner.register", host_id, ref, plan=sent)
         except AgentError as refused:

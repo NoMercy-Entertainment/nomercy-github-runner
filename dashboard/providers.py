@@ -858,9 +858,12 @@ class _Forgejo(Provider):
         if not token:
             return None, ("could not mint a registration token - check "
                           "FORGEJO_API_TOKEN and that Forgejo is reachable")
+        from forgejo_admission import configured_policy
         return RegistrationPlan(url=url, token=token, name=_forge_name(spec),
                                 labels=labels,
-                                replace=not spec.get("registration_id")), None
+                                replace=not spec.get("registration_id"),
+                                extra=(("forgejo_admission_policy", configured_policy(env)),)
+                                if env.get("FORGEJO_RUNNER_SCOPE", "user") == "instance" else ()), None
 
     #: Forgejo's words for a runner's state, and what each means here. Any
     #: word not in this table reads as unknown - from a future release or a

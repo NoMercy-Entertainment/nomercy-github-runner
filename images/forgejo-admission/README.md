@@ -84,6 +84,13 @@ units carry the verified guarded binary, protected startup configuration and
 the policy. Changing scope does not convert existing user registrations.
 Installing a policy alone does not grant server-side scheduling availability.
 
+Every instance registration also carries a mandatory guard requirement over
+the closed agent protocol. The worker refuses registration unless its own
+measurement confirms the Forgejo binary, protected startup authority and exact
+policy fingerprint. Old workers refuse the new field; compatibility handling
+never removes it. The runtime measurements and live deployment remain pending,
+so current workers cannot activate instance scheduling through this draft.
+
 Primary source: [reviewed Forgejo runner](https://code.forgejo.org/forgejo/runner/src/commit/6095cb17bfdbded5aa4ea84c18a4b69fd9574cca/internal/app/run/runner.go).
 Forgejo 16.0.5's [IssueCommentPayload](https://codeberg.org/forgejo/forgejo/src/tag/v16.0.5/modules/structs/hook.go)
 contains `issue`, optional `pull_request`, and `is_pull`; its
