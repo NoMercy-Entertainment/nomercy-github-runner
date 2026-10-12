@@ -58,7 +58,7 @@ for target in linux/amd64 linux/arm64 windows/amd64 windows/arm64 darwin/amd64 d
   os="${target%/*}" arch="${target#*/}"
   ext=""; [ "$os" = windows ] && ext=".exe"
   out="${OUTPUT}/forgejo-runner-${VERSION}-${os}-${arch}${ext}"
-  GOOS="$os" GOARCH="$arch" CGO_ENABLED=0 go build -trimpath \
+  GOOS="$os" GOARCH="$arch" CGO_ENABLED=0 go build -buildvcs=false -trimpath \
     -tags 'netgo osusergo' \
     -ldflags "-s -w -X code.forgejo.org/forgejo/runner/${MAJOR}/internal/pkg/ver.version=${VERSION}" \
     -o "$out" .
@@ -71,11 +71,12 @@ sha256sum forgejo-runner-"${VERSION}"-* > SHA256SUMS
   echo "commit=${COMMIT}"
   echo 'job_events=1'
   echo 'admission_version=1'
+  echo 'buildvcs=false'
   echo "version=${VERSION}"
   sha256sum "$EVENTS/reporter.patch" "$EVENTS/event.go" "$EVENTS/event_test.go"
   sha256sum "$ADMISSION/runner.patch" "$ADMISSION/admission.go" "$ADMISSION/admission_test.go"
   echo "go=${HAVE}"
   echo "built=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-  echo "flags=CGO_ENABLED=0 -trimpath -tags 'netgo osusergo' -ldflags '-s -w -X .../ver.version=${TAG}'"
+  echo "flags=CGO_ENABLED=0 -buildvcs=false -trimpath -tags 'netgo osusergo' -ldflags '-s -w -X .../ver.version=${VERSION}'"
 } > PROVENANCE
 cat PROVENANCE SHA256SUMS

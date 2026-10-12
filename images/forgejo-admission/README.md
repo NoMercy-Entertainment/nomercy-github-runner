@@ -70,6 +70,9 @@ workflow steps for outside-owner, nil-context, missing-policy and malformed-
 policy cases. All six platform binaries built successfully with networking
 disabled after the pinned module dependencies had been cached. No live runner
 was changed by that build. Artifact hashes are in `PROVENANCE.json`.
+The build explicitly disables embedded VCS metadata; the reviewed source commit
+is recorded separately. The binary hashes are identical with this option in the
+private offline build, so a containing checkout cannot change the release.
 
 Owner IDs must be verified on the configured instance. On the deployment
 instance FiLL has ID 1 and NoMercy-Entertainment has organisation ID 7. Other
