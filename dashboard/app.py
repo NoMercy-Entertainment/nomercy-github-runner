@@ -1001,11 +1001,25 @@ def ws_operation_v2(ws, operation_id):
         pass  # Disconnects reconnect through the browser's native socket.
     finally:
         if disconnect is not None:
+            # Interrupt the owned reader before close() changes connected:
+            # simple_websocket otherwise exits its reader without waking receive.
+            import socket
+            transport = getattr(ws, "sock", None)
+            if transport is not None:
+                try:
+                    transport.shutdown(socket.SHUT_RDWR)
+                except OSError:
+                    pass
+                transport.close()
+                ws.connected = False
+                ws.event.set()
+            else:
+                ws.close()
+            disconnect.join(timeout=1)
             try:
                 ws.close()
             except Exception:
                 pass
-            disconnect.join(timeout=1)
 
 
 @app.route("/api/control/workers")

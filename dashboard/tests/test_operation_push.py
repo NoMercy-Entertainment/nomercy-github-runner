@@ -185,6 +185,55 @@ def test_anonymous_websocket_handshake_is_rejected(anon_client):
                                headers={"Origin": "https://runner.example"})
     assert response.status_code == 401
 
+def test_terminal_completion_releases_actual_transport_without_peer_ack(socket_context, monkeypatch):
+    import socket
+    from simple_websocket import Server
+    dash = socket_context
+    left, right = socket.socketpair()
+    ws = Server({"werkzeug.socket": left, "HTTP_HOST": "review.invalid",
+        "HTTP_UPGRADE": "websocket", "HTTP_CONNECTION": "Upgrade",
+        "HTTP_SEC_WEBSOCKET_KEY": "dGhlIHNhbXBsZSBub25jZQ==", "HTTP_SEC_WEBSOCKET_VERSION": "13"},
+        ping_interval=25)
+    receiving, released, finished = threading.Event(), threading.Event(), threading.Event()
+    original_receive = ws.receive
+    def receive():
+        receiving.set()
+        try:
+            return original_receive()
+        finally:
+            released.set()
+    monkeypatch.setattr(ws, "receive", receive)
+    current = {"operation_id": "op-1", "verb": "restart", "state": "running"}
+    service = SimpleNamespace(operations=SimpleNamespace(get=lambda oid: dict(current)))
+    monkeypatch.setattr(dash.api_v2, "control_plane", lambda: (service, None))
+    def serve():
+        with dash.app.test_request_context("/ws/v2/operations/op-1", headers={"Origin": "https://runner.example"}):
+            dash.session["sub"] = "observer"
+            dash.app.view_functions["ws_operation_v2"].__wrapped__(ws, "op-1")
+        finished.set()
+    thread = threading.Thread(target=serve)
+    thread.start()
+    try:
+        assert receiving.wait(2)
+        assert not released.wait(.05)
+        current["state"] = "succeeded"
+        with dash._status_lock:
+            dash._status_gen += 1
+            dash._status_lock.notify_all()
+        # right deliberately stays open and never answers the close frame.
+        assert finished.wait(2)
+        assert released.wait(2), {"connected": ws.connected, "reader_alive": ws.thread.is_alive(),
+                                  "event_set": ws.event.is_set()}
+        ws.thread.join(2)
+        assert not ws.thread.is_alive()
+    finally:
+        right.close()
+        left.close()
+        thread.join(2)
+        ws.thread.join(2)
+    assert not thread.is_alive()
+
+
 def test_browser_receives_and_reconnects_without_operation_requests():
     node = shutil.which("node")
     if node is None:
