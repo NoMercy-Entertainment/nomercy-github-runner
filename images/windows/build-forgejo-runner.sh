@@ -16,22 +16,26 @@
 set -euo pipefail
 TAG="${1:?usage: build-forgejo-runner.sh <tag, e.g. v13.1.0>}"
 MAJOR="${TAG%%.*}"
+SOURCE="${FORGEJO_BUILD_SOURCE:-/src}"
+OUTPUT="${FORGEJO_BUILD_OUTPUT:-/out}"
+EVENTS="${FORGEJO_BUILD_EVENTS:-/events}"
+ADMISSION="${FORGEJO_BUILD_ADMISSION:-/admission}"
 
-git clone -q --depth 1 --branch "$TAG" https://code.forgejo.org/forgejo/runner.git /src
-cd /src
+git clone -q --depth 1 --branch "$TAG" https://code.forgejo.org/forgejo/runner.git "$SOURCE"
+cd "$SOURCE"
 COMMIT="$(git rev-parse HEAD)"
 if [ "$TAG" != v13.1.0 ] || [ "$COMMIT" != 6095cb17bfdbded5aa4ea84c18a4b69fd9574cca ]; then
   echo 'job event patch requires the reviewed v13.1.0 source commit' >&2
   exit 1
 fi
 # Mount images/forgejo-events read-only at /events beside this script.
-git apply --check /events/reporter.patch
-git apply /events/reporter.patch
-cp /events/event.go /events/event_test.go internal/pkg/report/
+git apply --check "$EVENTS/reporter.patch"
+git apply "$EVENTS/reporter.patch"
+cp "$EVENTS/event.go" "$EVENTS/event_test.go" internal/pkg/report/
 gofmt -w internal/pkg/report/event.go internal/pkg/report/event_test.go internal/pkg/report/reporter.go
-git apply --check /admission/runner.patch
-git apply /admission/runner.patch
-cp /admission/admission.go /admission/admission_test.go internal/app/run/
+git apply --check "$ADMISSION/runner.patch"
+git apply "$ADMISSION/runner.patch"
+cp "$ADMISSION/admission.go" "$ADMISSION/admission_test.go" internal/app/run/
 gofmt -w internal/app/run/runner.go internal/app/run/admission.go internal/app/run/admission_test.go
 WANT="$(sed -n 's/^toolchain //p' go.mod)"
 HAVE="$(go env GOVERSION)"
@@ -46,14 +50,14 @@ VERSION="${TAG}-nomercy-admission.1"
 for target in linux/amd64 linux/arm64 windows/amd64 windows/arm64 darwin/amd64 darwin/arm64; do
   os="${target%/*}" arch="${target#*/}"
   ext=""; [ "$os" = windows ] && ext=".exe"
-  out="/out/forgejo-runner-${VERSION}-${os}-${arch}${ext}"
+  out="${OUTPUT}/forgejo-runner-${VERSION}-${os}-${arch}${ext}"
   GOOS="$os" GOARCH="$arch" CGO_ENABLED=0 go build -trimpath \
     -tags 'netgo osusergo' \
     -ldflags "-s -w -X code.forgejo.org/forgejo/runner/${MAJOR}/internal/pkg/ver.version=${VERSION}" \
     -o "$out" .
 done
 
-cd /out
+cd "$OUTPUT"
 sha256sum forgejo-runner-"${VERSION}"-* > SHA256SUMS
 {
   echo "tag=${TAG}"
@@ -61,8 +65,8 @@ sha256sum forgejo-runner-"${VERSION}"-* > SHA256SUMS
   echo 'job_events=1'
   echo 'admission_version=1'
   echo "version=${VERSION}"
-  sha256sum /events/reporter.patch /events/event.go /events/event_test.go
-  sha256sum /admission/runner.patch /admission/admission.go /admission/admission_test.go
+  sha256sum "$EVENTS/reporter.patch" "$EVENTS/event.go" "$EVENTS/event_test.go"
+  sha256sum "$ADMISSION/runner.patch" "$ADMISSION/admission.go" "$ADMISSION/admission_test.go"
   echo "go=${HAVE}"
   echo "built=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   echo "flags=CGO_ENABLED=0 -trimpath -tags 'netgo osusergo' -ldflags '-s -w -X .../ver.version=${TAG}'"

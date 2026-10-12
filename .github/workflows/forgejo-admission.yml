@@ -16,17 +16,24 @@ jobs:
   guarded-build:
     runs-on: [self-hosted, Linux, X64, beast-unit]
     timeout-minutes: 7200
-    container:
-      image: golang:1.26.7
-      options: --cpus 2 --memory 4g --memory-swap 4g
+    env:
+      GOMAXPROCS: '2'
+      GOMEMLIMIT: '3GiB'
+      GOTOOLCHAIN: local
     steps:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version: '1.26.7'
+          cache: false
       - name: Build and test the reviewed guarded runner for every platform
         shell: bash
         run: |
-          mkdir /out
-          ln -s "$GITHUB_WORKSPACE/images/forgejo-events" /events
-          ln -s "$GITHUB_WORKSPACE/images/forgejo-admission" /admission
+          export FORGEJO_BUILD_SOURCE="$RUNNER_TEMP/forgejo-admission-source"
+          export FORGEJO_BUILD_OUTPUT="$RUNNER_TEMP/forgejo-admission-output"
+          export FORGEJO_BUILD_EVENTS="$GITHUB_WORKSPACE/images/forgejo-events"
+          export FORGEJO_BUILD_ADMISSION="$GITHUB_WORKSPACE/images/forgejo-admission"
+          mkdir "$FORGEJO_BUILD_OUTPUT"
           bash images/windows/build-forgejo-runner.sh v13.1.0
