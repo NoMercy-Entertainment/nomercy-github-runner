@@ -11,6 +11,7 @@ import importlib.util
 s=importlib.util.spec_from_file_location('migration','/tmp/migrate-uniform-macos.py');m=importlib.util.module_from_spec(s);s.loader.exec_module(m)
 ROOT=Path('/var/lib/runner-appliances/uniform-activation-20261011');ROOT.mkdir(mode=0o700,parents=True,exist_ok=True);os.chmod(ROOT,0o700)
 CONFIG=Path('/etc/runner-agent/agent.json');ORIGINAL=ROOT/'agent.original.json'
+LIVE=Path('/opt/runner-agent/agent')
 MODULES=('runner_environment.py','heartbeat.py','server.py','runtimes/macos_appliance.py',
          'runtimes/macos_storage.py','runtimes/macos_pool.py')
 def command(args):subprocess.run(args,check=True,timeout=180)
@@ -18,6 +19,21 @@ def save(name,data):
  temp=ROOT/(name+'.writing')
  with temp.open('w') as f:os.chmod(temp,0o600);json.dump(data,f);f.flush();os.fsync(f.fileno())
  os.replace(temp,ROOT/name)
+
+def backup_module(relative):
+ before=ROOT/(relative.replace('/','-')+'.before')
+ absent=ROOT/(relative.replace('/','-')+'.absent')
+ live=LIVE/relative
+ if before.exists() or absent.exists():return
+ if live.exists():shutil.copy2(live,before)
+ else:absent.write_text('Module did not exist before this rollout.\n');absent.chmod(0o600)
+
+def restore_modules():
+ for relative in MODULES:
+  before=ROOT/(relative.replace('/','-')+'.before')
+  absent=ROOT/(relative.replace('/','-')+'.absent')
+  if before.exists():shutil.copy2(before,LIVE/relative)
+  elif absent.exists():(LIVE/relative).unlink(missing_ok=True)
 def prepared():
  assert json.loads(Path('/var/lib/runner-appliances/uniform-preparation-20261011/ready.json').read_text())['guests']==2
  for rid in m.IDS:
@@ -27,7 +43,14 @@ def prepared():
  config,pool=m.build()
  for rid in m.IDS:
   r=pool._read(rid);assert r['initialized'] and r['listener_disabled'] and pool._power(rid)=='stopped'
- new=load('/etc/runner-agent/agent.uniform-pool.json');runtime_for(new)
+ # build() already owns the pool's exclusive lock. Validate the staged
+ # configuration without constructing a second owner in this process.
+ new=load('/etc/runner-agent/agent.uniform-pool.json')
+ assert new.runtime=='macos-appliance' and dict(new.appliance_pool)==config['appliance_pool']
+ for relative in MODULES:
+  staged=Path('/opt/uniform-resources/agent')/relative
+  assert staged.is_file(), 'Required staged module is missing'
+  compile(staged.read_bytes(),str(staged),'exec')
  return config,pool
 
 def switch():
@@ -51,8 +74,8 @@ def switch():
  try:
   command(['python3','/tmp/maintenance-macos-shutdown.py','shutdown'])
   for relative in MODULES:
-   live=Path('/opt/runner-agent/agent')/relative;before=ROOT/(relative.replace('/','-')+'.before')
-   if not before.exists():shutil.copy2(live,before)
+   live=LIVE/relative
+   backup_module(relative)
    temporary=live.with_name(live.name+'.uniform-prepared')
    shutil.copy2(Path('/opt/uniform-resources/agent')/relative,temporary);os.replace(temporary,live)
   staged=CONFIG.with_suffix('.uniform-switching')
@@ -62,9 +85,7 @@ def switch():
   print('Verified pool activated with both listeners still disabled.',flush=True)
  except Exception:
   if ORIGINAL.exists():shutil.copy2(ORIGINAL,CONFIG)
-  for relative in MODULES:
-   before=ROOT/(relative.replace('/','-')+'.before')
-   if before.exists():shutil.copy2(before,Path('/opt/runner-agent/agent')/relative)
+  restore_modules()
   command(['python3','/tmp/maintenance-macos-shutdown.py','recover'])
   command(['systemctl','start','runner-agent.service'])
   raise
@@ -80,9 +101,7 @@ def rollback():
   assert pool._power(rid)=='stopped'
  command(['systemctl','stop','runner-agent.service'])
  shutil.copy2(ORIGINAL,CONFIG)
- for relative in MODULES:
-  before=ROOT/(relative.replace('/','-')+'.before')
-  if before.exists():shutil.copy2(before,Path('/opt/runner-agent/agent')/relative)
+ restore_modules()
  command(['python3','/tmp/maintenance-macos-shutdown.py','recover'])
  command(['systemctl','start','runner-agent.service'])
  save('rolled-back.json',{'source_restored':True,'targets_retained':True})
