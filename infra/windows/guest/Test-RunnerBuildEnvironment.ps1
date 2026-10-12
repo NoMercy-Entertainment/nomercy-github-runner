@@ -7,7 +7,9 @@ param(
 $ErrorActionPreference = 'Stop'
 $failures = [Collections.Generic.List[string]]::new()
 $results = [Collections.Generic.List[object]]::new()
-$smoke = Join-Path $Workspace ('runner-build-health-' + [guid]::NewGuid().ToString('N'))
+# Keep NMake dependency paths within its limit on deeply nested checkouts.
+$scratchRoot = if ($env:RUNNER_TEMP) { $env:RUNNER_TEMP } else { $Workspace }
+$smoke = Join-Path $scratchRoot ('bh-' + [guid]::NewGuid().ToString('N').Substring(0, 12))
 New-Item -ItemType Directory -Path $smoke | Out-Null
 
 function Invoke-Checked([string] $Command, [string[]] $Arguments) {

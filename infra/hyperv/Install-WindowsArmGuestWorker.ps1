@@ -82,6 +82,7 @@ try {
         infra/windows/guest/Install-RunnerTools.ps1 `
         infra/windows/guest/Install-CppBuildTools.ps1 `
         infra/windows/guest/Install-AndroidSdk.ps1 `
+        infra/windows/guest/set_runner_update_policy.py `
         infra/windows/templates/actions-runner-v2.338.0-windows-arm64 `
         infra/windows/templates/forgejo-runner-v13.1.0-windows-arm64
     if ($LASTEXITCODE -ne 0) { throw 'Could not pack the ARM worker source.' }
@@ -144,6 +145,8 @@ foreach (`$pin in @(@('forgejo-runner.exe', '$($arm.ForgejoSha256)'), @('nssm.ex
     WindowsStorage = `$true; StorageRoot = 'D:\runner-disks'
 }
 & (Join-Path `$sourceRoot 'infra\hyperv\Install-WindowsWorker.ps1') @install
+& 'C:\ProgramData\nomercy\agent\python\python.exe' (Join-Path `$sourceRoot 'infra\windows\guest\set_runner_update_policy.py') --worker '$($arm.HostId)' --apply
+if (`$LASTEXITCODE -ne 0) { throw 'Could not establish manual Windows guest update maintenance.' }
 "@
     Invoke-ArmGuest $install | Write-Host
 

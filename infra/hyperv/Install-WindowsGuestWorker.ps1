@@ -122,7 +122,7 @@ try {
     $dirty = & git -C $script:RepoRoot status --porcelain -- agent infra/hyperv infra/windows/templates
     if ($dirty) { Write-Warning "uncommitted changes are not deployed; HEAD $version is" }
     $codeTar = Join-Path $hostStage 'code.tar'
-    & git -C $script:RepoRoot archive --format=tar -o $codeTar HEAD agent infra/hyperv
+    & git -C $script:RepoRoot archive --format=tar -o $codeTar HEAD agent infra/hyperv infra/windows/guest/set_runner_update_policy.py
     if ($LASTEXITCODE -ne 0) { throw 'git archive failed' }
 
     Write-Host "opening PowerShell Direct to $Name..."
@@ -234,6 +234,9 @@ try {
         & $Installer -HostId $HostId -ListenAddress $ListenAddress -TlsBundle $TlsBundlePath `
             -NssmSource $NssmPath -RunnerBinary $RunnerPath -WindowsStorage -StorageRoot $StorageRootPath `
             -MaxRunners $MaxRunnersValue -RunnerMemGB $RunnerMemGBValue
+        $policy = Join-Path (Split-Path (Split-Path $Installer)) 'windows\guest\set_runner_update_policy.py'
+        & 'C:\ProgramData\nomercy\agent\python\python.exe' $policy --worker $HostId --apply
+        if ($LASTEXITCODE -ne 0) { throw 'Could not establish manual Windows guest update maintenance.' }
     } -ArgumentList $guestInstaller, $Name, $spec.Address, $guestBundle, $guestNssm, $guestRunnerBinary, $g.StorageRoot,
         $g.MaxRunners, $g.RunnerMemGB
 

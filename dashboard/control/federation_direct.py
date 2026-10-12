@@ -7,11 +7,13 @@ publishes on database events and exact delivery/credential deadlines.
 """
 import hashlib
 import hmac
+import ipaddress
 import json
 import multiprocessing
 import os
 import re
 import secrets
+import ssl
 import time
 import threading
 import uuid
@@ -101,7 +103,12 @@ def _validate_exchange(endpoint, path, credential, body):
 def _http_exchange(endpoint, path, credential, body=None):
     """Blocking exchange, run only inside the deadline-owned worker."""
     host = urlsplit(endpoint).hostname
-    connection = PinnedHTTPS(host, public_addresses(host)[0])
+    private = private_peer(endpoint)
+    connection = PinnedHTTPS(host, private["address"] if private else public_addresses(host)[0])
+    if private:
+        # Trust applies to this exact locally configured peer, not the broker
+        # or other dashboard traffic. SNI/hostname verification stays enabled.
+        connection._context = ssl.create_default_context(cafile=private["ca_file"])
     try:
         raw = None if body is None else canonical(body)
         if raw is not None and len(raw) > 32768:
@@ -118,6 +125,29 @@ def _http_exchange(endpoint, path, credential, body=None):
         return raw
     finally:
         connection.close()
+
+
+def private_peer(endpoint):
+    """Owner-pinned LAN destinations; incoming intents cannot expand trust."""
+    raw = os.environ.get("FEDERATION_DIRECT_PRIVATE_PEERS", "{}")
+    try:
+        if len(raw) > 8192:
+            raise ValueError()
+        peers = json.loads(raw)
+        if not isinstance(peers, dict) or len(peers) > 16:
+            raise ValueError()
+        networks = tuple(ipaddress.ip_network(n) for n in ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"))
+        for target, value in peers.items():
+            if origin(target) != target or not isinstance(value, dict) or set(value) != {"address", "ca_file"}:
+                raise ValueError()
+            address = ipaddress.ip_address(value["address"])
+            if address.version != 4 or not any(address in network for network in networks):
+                raise ValueError()
+            if not isinstance(value["ca_file"], str) or not os.path.isabs(value["ca_file"]):
+                raise ValueError()
+        return peers.get(endpoint)
+    except (ValueError, TypeError, Refused):
+        raise Refused("Private peers require exact HTTPS origins, RFC1918 addresses and absolute CA paths") from None
 
 
 def _exchange_worker(connection, exchange):

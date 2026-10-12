@@ -280,7 +280,7 @@ def direct_outgoing():
         raise Refused("Choose an existing direct connection, bounded intent and restricted group")
     from control.federation_direct import Direct
     local = outbound()
-    public = public_origin_provider() if public_origin_provider else ""
+    public = os.environ.get("FEDERATION_DIRECT_CALLBACK_URL") or (public_origin_provider() if public_origin_provider else "")
     key = Direct(local.path, local.service).submit(session["sub"], value["target_id"], value["intent"], value["runner_group"], public)
     return jsonify(request_key=key), 202
 

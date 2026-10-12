@@ -1,0 +1,12 @@
+# Fillz gateway VM only. Generate its private key on this VM; never commit it.
+# Select a reachable UDP endpoint tomorrow. This file is a template, not active.
+[Interface]
+Address = 10.203.0.1/30
+ListenPort = 51820
+PrivateKey = <FILLZ_GATEWAY_PRIVATE_KEY>
+
+[Peer]
+PublicKey = <STONEY_GATEWAY_PUBLIC_KEY>
+Endpoint = <STONEY_REACHABLE_UDP_HOST>:51820
+AllowedIPs = 10.203.0.2/32, 192.168.2.0/24
+PersistentKeepalive = 25
