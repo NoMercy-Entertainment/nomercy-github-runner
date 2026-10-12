@@ -37,6 +37,15 @@ def test_fresh_forge_busy_updates_display_without_changing_lifecycle():
     assert cards.summary([card])["busy"] == 1
 
 
+@pytest.mark.parametrize("state", ["draining", "drained"])
+@pytest.mark.parametrize("error", [None, "service start was not confirmed: unknown"])
+def test_reachable_confirmed_drains_keep_actual_errors_in_attention(state, error):
+    card = cards.from_spec(spec(actual_state=state, last_error=error), worker_reachable=True, now=NOW)
+    assert card["reachable"] is True and card["readiness"]["ready"] is True
+    assert card["attention"] is bool(error)
+    assert cards.summary([card])["attention"] == int(bool(error))
+
+
 def test_api_and_fleet_headings_share_card_summary(monkeypatch):
     runners = [cards.from_spec(spec(fleet_id="github-linux-x64", forge_seen_at=at(121)),
                               worker_reachable=True, now=NOW)]

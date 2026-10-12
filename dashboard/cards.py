@@ -136,7 +136,7 @@ def _card(**fields):
     verified = (card.get("readiness") or {}).get("ready")
     card["online"] = (card["state"] in ("idle", "busy") and card["reachable"] is True
                       and (verified is True if "readiness" in card else True))
-    card["attention"] = (card["reachable"] is False or card["state"] in
+    card["attention"] = (bool(card.get("last_error")) or card["reachable"] is False or card["state"] in
                          ("unknown", "failed", "offline", "stopped") or
                          ("readiness" in card and card["state"] in ("idle", "busy", "draining")
                           and verified is not True))
