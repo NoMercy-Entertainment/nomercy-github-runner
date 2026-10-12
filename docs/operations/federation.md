@@ -122,6 +122,23 @@ requester-token registration, unknown/busy retirement, monotonic actor-bound
 results, CSRF and native cleanup. Hook tests end an isolated real Worker while
 its Listener survives. These are component proofs, not live deployment proof.
 
+`dashboard/tests/test_federation_http_lifecycle.py` also starts two independent
+Flask dashboard processes and a test-only courier over actual HTTPS, verified
+with a temporary test CA. It exercises owner-initiated callback proof,
+known-person permission, manual approval, standalone fixed-resource claims,
+requester-token consumption, signed active/terminal result callbacks and SSE.
+It refuses body/audience/purpose tampering, preserves idempotent exact retries,
+holds busy or unknown retirement, and proves native lease expiry and terminal
+credential erasure without repeated status requests. Normal specs and fleet
+rows remain unchanged. Every connection is routed to registered loopback test
+ports; no production endpoint or agent is contacted.
+
+That transport proof uses simulated GitHub/worker observations and a courier
+wire-contract fixture. It does not replace the separate Laravel queue tests,
+real OIDC audience validation, immutable per-runtime hook probes, or a live
+two-dashboard GitHub allocation/job/drain/removal proof. The live gate above
+therefore remains in force.
+
 The strict-template eligibility gate also excludes current mutable-root Linux
 workers. Linux lending requires owned readonly units and the opt-in guarded
 image. Privileged DIND still assumes trusted admitted organisation code and is
