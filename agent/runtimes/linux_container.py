@@ -357,6 +357,8 @@ class LinuxContainerRuntime:
 
         env = dict(spec.get("env") or {})
         env.update(LAYOUT_ENV)
+        env["NOMERCY_RUNNER_ID"] = rid
+        env["NOMERCY_JOB_EVENT_DIR"] = "/runner/logs/job-events"
         env[CHANNEL_TIMEOUT_KEY] = CHANNEL_TIMEOUT_SECONDS
         env_file = _env_file(env)
         try:
@@ -732,6 +734,30 @@ class LinuxContainerRuntime:
         with ThreadPoolExecutor(max_workers=8) as pool:
             return {rid: job for rid, job in pool.map(read, sorted(names))
                     if job}
+
+    def job_event_source(self, runner_id):
+        rid = naming.check(runner_id)
+        if self.status(rid).get("running") is not True:
+            raise RuntimeError("owned Linux event unit is not running")
+        if self._storage:
+            self._storage.existing(rid)
+            self._storage_volumes(rid, require_all=True)
+            from .linux_storage import AREA_DIRS
+            directory = self._storage._paths(rid)[3] / AREA_DIRS["logs"] / "job-events"
+        else:
+            # Once per source attachment: actual owned volume, never job data.
+            name = naming.names(rid)["logs"]
+            ok, text, _ = self._run(["volume", "inspect", name], timeout=30)
+            info = json.loads(text)[0] if ok else {}
+            labels = info.get("Labels") or {}
+            if info.get("Name") != name or labels.get(RUNNER_LABEL) != rid:
+                raise RuntimeError("job log volume ownership could not be proved")
+            directory = Path(info["Mountpoint"]) / "job-events"
+        from ..job_event_stream import safe_directory
+        safe_directory(directory.parent)
+        directory.mkdir(mode=0o700, exist_ok=True)
+        safe_directory(directory)
+        return {"directory": str(directory)}
 
     def logs(self, runner_id, since_seconds):
         """The unit's own output, stdout and stderr merged in order - the

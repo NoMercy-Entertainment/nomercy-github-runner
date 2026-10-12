@@ -16,6 +16,7 @@ import argparse
 import signal
 import sys
 import threading
+from pathlib import Path
 
 from . import tls
 from .config import ConfigError, load
@@ -139,14 +140,21 @@ class Running:
         self.heartbeat = HeartbeatSender(
             self.agent, config.controller + HEARTBEAT_PATH, outbound,
             server=self.server)
+        from .job_events import JobEventSender
+        self.job_events = JobEventSender(config.host_id, runtime,
+                                         ControllerLink(config.controller, outbound),
+                                         Path(config.cert).parent / "job-events")
+        runtime.job_event_cache = self.job_events
 
     def start(self):
+        self.job_events.start()
         self.server.start()
         self.heartbeat.start()
         return self
 
     def stop(self):
         self.heartbeat.stop()
+        self.job_events.stop()
         self.server.stop()
 
 

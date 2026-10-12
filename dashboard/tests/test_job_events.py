@@ -78,6 +78,60 @@ def test_worker_event_cannot_change_forge_state_or_release_a_drain(events):
     assert specs.get(rid)["actual_state"] == "draining"
 
 
+def test_later_worker_completion_preserves_signed_result(events):
+    store, rid = events
+    store.apply("worker-a", record(rid, "finished", result="failure"), source="forge")
+    store.apply("worker-a", record(rid, "finished", event_id="hook-finished", job_id=None,
+                                  job="short-hook-job", result=None, at="2026-10-11T01:00:05Z"))
+    telemetry = SpecStore(store.path).get(rid)["telemetry"]
+    assert telemetry["job_event"]["result"] == "failure"
+    assert telemetry["forge_job_event"]["result"] == "failure"
+    assert len(store.after(0)) == 2
+
+
+def test_opaque_hook_identity_cannot_erase_signed_numeric_job_result(events):
+    store, rid = events
+    store.apply("worker-a", record(rid, "finished", result="failure"), source="forge")
+    store.apply("worker-a", record(rid, "finished", event_id="opaque-hook-finished", job_id="hook:" + "a" * 32,
+                                  job="short-hook-job", result=None, at="2026-10-11T01:00:05Z"))
+    telemetry = SpecStore(store.path).get(rid)["telemetry"]
+    assert telemetry["job_event"]["result"] == "failure"
+    assert telemetry["forge_job_event"]["result"] == "failure"
+    assert len(store.after(0)) == 2
+
+
+def test_future_worker_timestamp_cannot_freeze_signed_forge_state(events):
+    store, rid = events
+    store.apply("worker-a", record(rid, event_id="future-worker", at="9999-01-01T00:00:00Z"))
+    store.apply("worker-a", record(rid), source="forge")
+    assert SpecStore(store.path).get(rid)["forge_state"] == "busy"
+    store.apply("worker-a", record(rid, "finished", result="success", at="2026-10-11T01:01:00Z"), source="forge")
+    spec = SpecStore(store.path).get(rid)
+    assert spec["forge_state"] == "idle"
+    assert spec["telemetry"]["job_event"]["result"] == "success"
+    assert len(store.after(0)) == 3
+
+
+def test_distinct_running_worker_job_does_not_lose_name_to_prior_forge_result(events):
+    store, rid = events
+    store.apply("worker-a", record(rid, event_id="new-worker", run_id="124", job_id="999", job="next job",
+                                  at="2026-10-11T01:02:00Z"))
+    store.apply("worker-a", record(rid, "finished", result="success", at="2026-10-11T01:01:00Z"), source="forge")
+    spec = SpecStore(store.path).get(rid)
+    assert spec["telemetry"]["job"] == "next job"
+    assert spec["forge_state"] == "idle"
+    assert spec["telemetry"]["forge_job_event"]["result"] == "success"
+
+
+def test_older_forge_result_cannot_overwrite_newer_signed_job(events):
+    store, rid = events
+    store.apply("worker-a", record(rid, event_id="new-forge", job_id="999", at="2026-10-11T01:02:00Z"), source="forge")
+    store.apply("worker-a", record(rid, "finished", result="success", at="2026-10-11T01:01:00Z"), source="forge")
+    spec = SpecStore(store.path).get(rid)
+    assert spec["forge_state"] == "busy"
+    assert spec["telemetry"]["forge_job_event"]["job_id"] == "999"
+
+
 @pytest.mark.parametrize("fields", [
     {"event_id": "../../secret"}, {"at": "not a timestamp"}, {"at": "2026-10-11T01:00:00"},
     {"result": {}}, {"result": "success"}, {"state": "made-up"}, {"job": "a" * 201},

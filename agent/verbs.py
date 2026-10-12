@@ -460,7 +460,19 @@ def prepare(agent, verb, body):
     if verb not in agent.permitted:
         raise Refused("not permitted on this worker", status=403)
     _closed(body, FIELDS[verb], "body")
-    return handler(agent, body)
+    work = handler(agent, body)
+    cache = getattr(agent.runtime, "job_event_cache", None)
+    if cache is None or not cache.active or verb not in {
+            "exec_unit.stop", "exec_unit.restart", "exec_unit.remove", "exec_unit.clear_cache"}:
+        return work
+    rid = _runner_id(body)
+    def observed_work():
+        try:
+            cache.pause(rid)
+            return work()
+        finally:
+            cache.unpause(rid)
+    return observed_work
 
 
 def dispatch(agent, verb, body):

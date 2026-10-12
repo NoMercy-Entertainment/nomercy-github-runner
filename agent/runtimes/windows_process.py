@@ -79,7 +79,7 @@ TEMPLATE_FILES = ("run.cmd", "register.ps1", "deregister.ps1")
 HOOK_SOURCE = Path(__file__).resolve().parents[1] / "hooks" / "windows"
 HOOK_SCRIPTS = {"ACTIONS_RUNNER_HOOK_JOB_STARTED": "job-started.js",
                 "ACTIONS_RUNNER_HOOK_JOB_COMPLETED": "job-completed.js"}
-HOOK_FILES = ("run_hook.js", "runner_disk.py", "runner_guard.py", *HOOK_SCRIPTS.values())
+HOOK_FILES = ("run_hook.js", "runner_disk.py", "runner_guard.py", "job_event.py", *HOOK_SCRIPTS.values())
 
 #: The file that asks the job host to drain the runner (see agent/jobhost.py).
 DRAIN_REQUEST = "drain.request"
@@ -296,7 +296,7 @@ class WindowsProcessRuntime:
 
         # 5. What the job host reads: limits and environment, never argv.
         self._fs.write_text(ntpath.join(p["reg"], "unit.json"),
-                            json.dumps(self._unit(rid, spec, p)))
+                            json.dumps(self._unit(rid, spec, p, disk)))
 
         # 5b. Out of a job's reach: a job runs as this service's account,
         #     which may change anything else in its tree. The hooks, and the
@@ -311,9 +311,15 @@ class WindowsProcessRuntime:
             self._service_command(rid, "start")
         return name
 
-    def _unit(self, rid, spec, p):
+    def _unit(self, rid, spec, p, disk=None):
         env = dict(spec.get("env") or {})
         env[CHANNEL_TIMEOUT_KEY] = CHANNEL_TIMEOUT_SECONDS
+        env["NOMERCY_RUNNER_ID"] = rid
+        if self._storage and disk is None:
+            disk = self._storage.verify(rid)
+        # The validated volume GUID avoids traversing the legitimate NTFS
+        # mount-point reparse at D:\runners\UUID in privileged spool readers.
+        env["NOMERCY_JOB_EVENT_DIR"] = ntpath.join(disk["volume_guid"], "logs", "job-events") if disk else ntpath.join(p["logs"], "job-events")
         for area, key in LAYOUT_ENV_KEYS.items():
             env[key] = p[area]
         env["TEMP"] = env["TMP"] = p["tmp"]
@@ -377,7 +383,7 @@ class WindowsProcessRuntime:
             f"*{service_sid(name)}:(OI)(CI)M", "/Q"], timeout=120))
 
     def _jobhost_args(self, rid, spec, p, disk=None):
-        unit = self._unit(rid, spec, p)
+        unit = self._unit(rid, spec, p, disk)
         limits = {key: unit[key] for key in ("memory_bytes", "cpus", "cpuset")}
         from ..jobhost import checked_limits
         checked_limits(limits)
@@ -635,6 +641,22 @@ class WindowsProcessRuntime:
         beat's measurement well past the dashboard's 30s freshness window,
         the same failure Task 18 fixed for `telemetry()` (2026-09-22)."""
         return {rid: current_job(self._tail_log(rid, 86400)) for rid in runner_ids}
+
+    def job_event_source(self, runner_id):
+        rid = naming.check(runner_id)
+        if self.status(rid).get("running") is not True:
+            raise RuntimeError("owned Windows event unit is not running")
+        if self._storage:
+            disk = self._storage.verify(rid)
+            logs = ntpath.join(disk["volume_guid"], "logs")
+        else:
+            logs = self.paths(rid)["logs"]
+        from ..job_event_stream import safe_directory
+        safe_directory(logs)
+        directory = Path(logs) / "job-events"
+        directory.mkdir(mode=0o700, exist_ok=True)
+        safe_directory(directory)
+        return {"directory": str(directory)}
 
     def logs(self, runner_id, since_seconds, max_bytes=256 * 1024):
         """The tail of the runner's own output, for an operator's log

@@ -236,6 +236,14 @@ def main(argv=None, env=None):
     argv = sys.argv[1:] if argv is None else argv
     env = os.environ if env is None else env
     stage = argv[0] if argv else ""
+    if stage in ("started", "completed"):
+        try:
+            spec = importlib.util.spec_from_file_location("job_event", os.path.join(os.path.dirname(__file__), "job_event.py"))
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+            module.emit("started" if stage == "started" else "finished", env)
+        except Exception:
+            print("::warning title=Runner events::local job observation could not be stored")
     try:
         if stage == "started":
             return started(env)

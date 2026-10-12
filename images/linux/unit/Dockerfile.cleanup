@@ -5,8 +5,8 @@ FROM ${BASE}
 # the post-job cleanup, and the job-started hook that refuses a pull request
 # from an outside fork, restores the Android SDK and guards the disk (#13,
 # #7). `run` is what sets the hooks.
-COPY runner/cleanup.py runner/job_started.py runner/runner_guard.py /runner/
-COPY runner/cleanup runner/job-started.sh runner/run /runner/
+COPY runner/cleanup.py runner/job_started.py runner/runner_guard.py runner/job_event.py /runner/
+COPY runner/cleanup runner/cleanup.sh runner/job-started.sh runner/run /runner/
 RUN chmod 0755 /runner/cleanup /runner/job-started.sh /runner/run \
     && chmod 0644 /runner/cleanup.py /runner/job_started.py /runner/runner_guard.py
 # Which version of runner_guard.py's check (GUARD_VERSION) the hook carries;

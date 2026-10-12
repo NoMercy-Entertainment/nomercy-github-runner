@@ -66,6 +66,9 @@ def _jobs(runtime, runner_ids):
     """Which job each running unit says it has, where the runtime can read
     that. Display only, and never worth a beat: a runtime that cannot say,
     or fails trying, names none."""
+    cache = getattr(runtime, "job_event_cache", None)
+    if cache is not None and cache.active:
+        return cache.jobs(runner_ids)
     if not runner_ids or not hasattr(runtime, "jobs"):
         return {}
     try:
@@ -183,6 +186,9 @@ def build(agent, server=None, deep=False):
         observed_instances = pool.submit(agent.runtime.instances)
         try:
             beat["capabilities"] = dict(capabilities.result() or {})
+            cache = getattr(agent.runtime, "job_event_cache", None)
+            if cache is not None and cache.active:
+                beat["capabilities"]["job_events"] = 1
         except Exception:                   # noqa: BLE001
             beat["capabilities_error"] = True
         try:
@@ -200,6 +206,9 @@ def build(agent, server=None, deep=False):
             # Not an empty list: that would say "I run nothing".
             beat["instances_error"] = True
     if "instances" in beat:
+        cache = getattr(agent.runtime, "job_event_cache", None)
+        if cache is not None and cache.active:
+            cache.reconcile(beat["instances"])
         # What each unit uses (T-1803): CPU and memory every beat for the
         # running ones, storage and cache on a deep beat for every one.
         running = [u["runner_id"] for u in beat["instances"]
