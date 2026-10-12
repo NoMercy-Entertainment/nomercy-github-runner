@@ -123,6 +123,36 @@ def test_distinct_running_worker_job_does_not_lose_name_to_prior_forge_result(ev
     assert spec["telemetry"]["forge_job_event"]["result"] == "success"
 
 
+@pytest.mark.parametrize("state", ["started", "finished"])
+@pytest.mark.parametrize("fields", [{"job": None}, {"run_id": None}, {"job": None, "run_id": None}])
+def test_incomplete_worker_observation_retains_signed_active_job_and_evidence(events, state, fields):
+    store, rid = events
+    signed = record(rid)
+    store.apply("worker-a", signed, source="forge")
+    body = record(rid, state, event_id="incomplete", at="2026-10-11T01:00:05Z", **fields)
+    store.apply("worker-a", body)
+    spec = SpecStore(store.path).get(rid)
+    assert spec["forge_state"] == "busy"
+    assert spec["telemetry"]["job"] == signed["job"]
+    assert spec["telemetry"]["job_event"]["source"] == "forge"
+    assert len(store.after(0)) == 2
+    assert store.after(1)[0]["job"] == body["job"]
+
+
+def test_signed_completion_repairs_preexisting_incomplete_display(events):
+    store, rid = events
+    stale = record(rid, event_id="old-incomplete", source="worker", job=None, run_id=None,
+                   at="2026-10-11T01:02:00+00:00")
+    with schema.connect(store.path) as connection:
+        connection.execute("UPDATE runner_specs SET telemetry=? WHERE runner_id=?",
+                           (json.dumps({"job_event": stale, "job": None,
+                                        "job_event_received_at": "2026-10-11T01:02:01+00:00"}), rid))
+    store.apply("worker-a", record(rid, "finished", result="failure", at="2026-10-11T01:01:00Z"), source="forge")
+    telemetry = SpecStore(store.path).get(rid)["telemetry"]
+    assert telemetry["job_event"]["result"] == "failure"
+    assert telemetry["job_event"]["source"] == "forge"
+
+
 def test_older_forge_result_cannot_overwrite_newer_signed_job(events):
     store, rid = events
     store.apply("worker-a", record(rid, event_id="new-forge", job_id="999", at="2026-10-11T01:02:00Z"), source="forge")

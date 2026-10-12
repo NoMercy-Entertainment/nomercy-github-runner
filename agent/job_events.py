@@ -113,7 +113,9 @@ class JobEventSender:
                 event.get("job_id") == current.get("job_id") if event.get("job_id") and current.get("job_id") else
                 event.get("job") == current.get("job"))
             terminal_start = same_execution and current["state"] == "finished" and event["state"] == "started"
-            if bounded_clock and not terminal_start and (current is None or rank(event) >= rank(current)):
+            identified = bool(event.get("job") and event.get("run_id"))
+            current_identified = bool(current and current.get("job") and current.get("run_id"))
+            if identified and bounded_clock and not terminal_start and (not current_identified or rank(event) >= rank(current)):
                 connection.execute("INSERT OR REPLACE INTO current_jobs VALUES(?,?)", (runner_id, payload))
                 connection.commit()  # durable before cache update or producer acknowledgement
                 self._jobs[runner_id] = event
@@ -144,7 +146,8 @@ class JobEventSender:
     def jobs(self, runner_ids):
         with self._lock:
             return {rid: event.get("job") for rid in runner_ids
-                    if rid not in self.failed_sources and (event := self._jobs.get(rid)) and event["state"] == "started"}
+                    if rid not in self.failed_sources and (event := self._jobs.get(rid)) and event["state"] == "started"
+                    and event.get("job") and event.get("run_id")}
 
     def _deliver(self):
         pause = 1
