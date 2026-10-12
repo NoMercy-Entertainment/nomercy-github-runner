@@ -22,8 +22,9 @@ from urllib.parse import urlsplit
 from store import schema
 from .federation import PROFILE, Refused, _integer
 from .federation_broker import PinnedHTTPS, canonical, public_addresses, _uuid
-from .federation_outbound import Outbound
+from .federation_outbound import Outbound, REGISTRATION_ONCE
 from .secrets import SecretStore
+from . import retry
 
 TABLES = """
 CREATE TABLE IF NOT EXISTS federation_direct_targets (
@@ -337,7 +338,7 @@ class Direct:
         capacity = self.capacity(actor, identity)  # One fresh preflight before a new intent, never a status loop.
         if not isinstance(intent, dict) or intent.get("profile") not in capacity["available_profiles"]:
             raise Refused("The peer has no safe lending support for this profile")
-        credential = Outbound(self.path, self.service, self.clock).registration(intent, group)
+        credential = retry.call(REGISTRATION_ONCE, Outbound(self.path, self.service, self.clock).registration, intent, group)
         key = str(uuid.uuid4())
         receipt = "nrr_" + key + "." + secrets.token_urlsafe(32)
         from .redact import remember

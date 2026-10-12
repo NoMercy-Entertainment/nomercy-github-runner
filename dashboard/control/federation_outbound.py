@@ -15,6 +15,11 @@ from store import schema
 from .federation import Refused, _integer
 from .federation_broker import Broker, ISSUERS, http_json
 from .secrets import SecretStore
+from . import retry
+
+# Bound group validation and the single-use token mint as one operation. Never
+# retry either: a refusal stays Refused, and a timeout cannot mint twice.
+REGISTRATION_ONCE = retry.Policy(retry.FORGE_REGISTRATION.name, retry.FORGE_REGISTRATION.timeout, 0)
 
 TABLES = """
 CREATE TABLE IF NOT EXISTS federation_identities (
@@ -110,7 +115,7 @@ class Outbound:
             raise Refused("Choose capacity from the permitted fleet directory")
         if intent["profile"] not in (known.get("capabilities") or {}).get("profiles", []):
             raise Refused("The peer does not advertise this profile")
-        credential = self.registration(intent, group)
+        credential = retry.call(REGISTRATION_ONCE, self.registration, intent, group)
         key = str(uuid.uuid4())
         with schema.connect(self.path) as c:
             c.execute("INSERT INTO federation_outgoing(request_key,actor,target_fleet_id,intent,created_at) VALUES(?,?,?,?,?)",
