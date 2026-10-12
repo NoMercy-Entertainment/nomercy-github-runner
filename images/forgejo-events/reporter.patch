@@ -1,0 +1,35 @@
+--- a/internal/pkg/report/reporter.go
++++ b/internal/pkg/report/reporter.go
+@@ -31,6 +31,7 @@
+ )
+ 
+ type Reporter struct {
++	localEvent *localJobEvent
+ 	ctx    context.Context
+ 	cancel context.CancelFunc
+ 
+@@ -92,6 +93,10 @@
+ 		rv.debugOutputEnabled = true
+ 	}
+ 
++	rv.localEvent = localEventFor(task)
++	if err := rv.localEvent.emit("started", nil); err != nil {
++		rv.log.Warn("local job start event could not be stored")
++	}
+ 	return rv
+ }
+ 
+@@ -317,6 +322,13 @@
+ 	r.state.StoppedAt = timestamppb.Now()
+ 	r.stateMu.Unlock()
+ 
++	r.stateMu.RLock()
++	result := localResult(r.state.Result)
++	r.stateMu.RUnlock()
++	if err := r.localEvent.emit("finished", result); err != nil {
++		r.log.Warn("local job completion event could not be stored")
++	}
++
+ 	return retry.Do(func() error {
+ 		if err := r.ReportLog(true); err != nil {
+ 			r.log.Warnf("uploading final logs failed, but will be retried: %v", err)

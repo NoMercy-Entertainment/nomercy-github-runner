@@ -1,0 +1,10 @@
+# Build from each runner's verified existing image; preserve its toolchain.
+# The context contains the pinned patched binary produced by the common Go build.
+ARG BASE
+FROM ${BASE}
+COPY runner/job_event.py runner/job-started.sh runner/cleanup.sh /runner/
+COPY forgejo-runner-v13.1.0-linux-amd64 /usr/local/bin/nomercy-forgejo-runner
+RUN chmod 0755 /runner/job-started.sh /runner/cleanup.sh /usr/local/bin/nomercy-forgejo-runner \
+    && chmod 0644 /runner/job_event.py
+ENV FORGEJO_RUNNER_BIN=/usr/local/bin/nomercy-forgejo-runner
+LABEL nomercy.job_events="1"

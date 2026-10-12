@@ -1,5 +1,12 @@
 # Forgejo runner for Windows: a self-built artefact
 
+The current common build also includes the reviewed native job-event patch
+for the exact v13.1.0 source commit. Mount `images/forgejo-events` read-only
+at `/events` beside `/build`; the script tests the reporter and records patch
+hashes in PROVENANCE. [Native event rollout](../../docs/native-job-events.md)
+describes all Linux, Windows and macOS targets and the owned spool environment.
+The measurements below describe earlier binaries, not this new build.
+
 Forgejo publishes no Windows runner. Release v13.1.0 has twelve assets, all
 `linux-amd64` or `linux-arm64` (design 9.2, 9.4). A Windows runner therefore
 has to be cross-compiled from source and maintained here. OPEN-4 in the

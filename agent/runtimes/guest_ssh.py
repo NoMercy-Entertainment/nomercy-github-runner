@@ -111,6 +111,47 @@ class GuestExec:
                 pass
         return code == 0, out, err
 
+    def job_event_stream(self, directory, runner_id, known_hosts):
+        """Persistent native guest stream, with the owned guest's pinned key.
+
+        The executable is installed by the management agent under root's
+        protected directory. No runner-writable code runs through this API.
+        """
+        from .. import naming
+        from ..job_event_stream import safe_directory
+        naming.check(runner_id)
+        known_hosts = os.path.abspath(known_hosts)
+        safe_directory(os.path.dirname(known_hosts))
+        info = os.lstat(known_hosts)
+        import stat
+        if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or (os.name == "posix" and (
+                info.st_mode & 0o077 or info.st_uid != os.geteuid())):
+            raise ValueError("guest event stream requires a private owned host-key pin")
+        # Remove replaced options. Use explicit
+        # argv so a guest path and key are never interpreted by a local shell.
+        filtered = []
+        index = 0
+        original = self._options()
+        while index < len(original):
+            if original[index] == "-o" and (original[index + 1] in (
+                    "StrictHostKeyChecking=no", "UserKnownHostsFile=/dev/null") or
+                    original[index + 1].startswith(("ControlMaster=", "ControlPath=", "ControlPersist="))):
+                index += 2
+                continue
+            filtered.append(original[index])
+            index += 1
+        args = ["/usr/bin/python3", "/Library/NoMercy/job-events/job_event_stream.py", directory, runner_id]
+        remote = " ".join(shlex.quote(str(value)) for value in args)
+        argv = [self._ssh, *filtered, "-o", "StrictHostKeyChecking=yes", "-o", "UserKnownHostsFile=" + known_hosts,
+                "-o", "GlobalKnownHostsFile=/dev/null", "-o", "ControlPath=none", "-o", "ControlMaster=no",
+                "-o", "ServerAliveInterval=30", "-o", "ServerAliveCountMax=2", "%s@%s" % (self.user, self.host), remote]
+        env = dict(os.environ)
+        if self._password:
+            argv = [self._sshpass, "-e", *argv]
+            env["SSHPASS"] = self._password
+        return subprocess.Popen([*argv], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                stderr=subprocess.DEVNULL, text=True, encoding="utf-8", env=env)
+
 
 class GuestFs:
     """The `fs` of `macos_appliance`, acting inside the guest.

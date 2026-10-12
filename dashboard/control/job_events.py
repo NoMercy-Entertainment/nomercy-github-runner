@@ -1,12 +1,63 @@
 """Durable, ordered job events, fenced to the runner's owning worker."""
 import json
 import re
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from store import schema
 
 RESULTS = frozenset({"success", "failure", "cancelled", "timed_out", "skipped", "neutral",
                      "action_required", "stale"})
+
+
+def _rank(item):
+    job_id = item.get("job_id") or ""
+    return (item.get("at", ""), int(job_id) if job_id.isdigit() else 0,
+            item.get("state") == "finished")
+
+
+def _same_execution(left, right):
+    if not left.get("run_id") or left.get("run_id") != right.get("run_id"):
+        return False
+    if (left.get("run_attempt") or "1") != (right.get("run_attempt") or "1"):
+        return False
+    if left.get("job_id") and right.get("job_id") and (
+            left["job_id"].startswith("hook:") == right["job_id"].startswith("hook:")):
+        return left["job_id"] == right["job_id"]
+    # GitHub's hooks do not expose the numeric job ID. A completion from
+    # that same execution cannot erase a signed result by naming it differently.
+    if left.get("state") == "finished" and right.get("state") == "finished":
+        return True
+    return bool(left.get("job")) and left.get("job") == right.get("job")
+
+
+def _within_worker_clock(item, received):
+    try:
+        at = datetime.fromisoformat(item["at"].replace("Z", "+00:00"))
+        receipt = datetime.fromisoformat(received.replace("Z", "+00:00"))
+        return at <= receipt + timedelta(seconds=30)
+    except (KeyError, ValueError, TypeError):
+        return False
+
+
+def _display_newer(event, current, received, current_received):
+    if event["source"] == "worker" and not _within_worker_clock(event, received):
+        return False
+    if not current:
+        return True
+    same = _same_execution(event, current)
+    if current.get("source") == "forge" and event["source"] == "worker":
+        if same and current.get("state") == "finished":
+            return False
+        return _rank(event) >= _rank(current)
+    if event["source"] == "forge" and current.get("source") != "forge":
+        # A genuinely later, distinct running worker observation can retain
+        # its display name. It never controls the separate authoritative state.
+        return not (not same and current.get("state") == "started"
+                    and _within_worker_clock(current, current_received or received)
+                    and _rank(current) > _rank(event))
+    if same and current.get("state") == "finished" and event["state"] == "started":
+        return False
+    return _rank(event) >= _rank(current)
 
 
 def _at(value):
@@ -73,16 +124,17 @@ class JobEvents:
                                         row["provider"], received, payload))
             telemetry = json.loads(row["telemetry"] or "{}")
             current = telemetry.get("job_event") or {}
-            def rank(item):
-                job_id = item.get("job_id") or ""
-                return (item.get("at", ""), int(job_id) if job_id.isdigit() else 0,
-                        item.get("state") == "finished")
-            if rank(event) >= rank(current):
+            if _display_newer(event, current, received, telemetry.get("job_event_received_at")):
                 telemetry["job_event"] = event
+                telemetry["job_event_received_at"] = received
                 telemetry["job"] = event["job"] if event["state"] == "started" else None
-                connection.execute("UPDATE runner_specs SET telemetry=? WHERE runner_id=?",
-                                   (json.dumps(telemetry), event["runner_id"]))
-                if source == "forge":
+            if source == "forge":
+                previous_forge = telemetry.get("forge_job_event") or (
+                    current if current.get("source") == "forge" else {})
+                if (not previous_forge or _rank(event) >= _rank(previous_forge)) and not (
+                        _same_execution(event, previous_forge) and previous_forge.get("state") == "finished"
+                        and event["state"] == "started"):
+                    telemetry["forge_job_event"] = event
                     # Signed forge events are authoritative observations;
                     # worker log events never grant themselves this right.
                     state = "busy" if event["state"] == "started" else "idle"
@@ -90,6 +142,8 @@ class JobEvents:
                     connection.execute("UPDATE runner_specs SET forge_state=?,forge_seen_at=?,"
                                        "actual_state=CASE WHEN actual_state IN ('idle','busy') THEN ? ELSE actual_state END "
                                        "WHERE runner_id=?", (state, stamp, state, event["runner_id"]))
+            connection.execute("UPDATE runner_specs SET telemetry=? WHERE runner_id=?",
+                               (json.dumps(telemetry), event["runner_id"]))
             connection.execute("INSERT INTO audit(at,actor,verb,runner_id,decision,parameters) VALUES(?,?,?,?,?,?)",
                                (received, ("forge:" + row["provider"] if source == "forge" else "worker:" + host_id),
                                 "job", event["runner_id"], event["state"], payload))

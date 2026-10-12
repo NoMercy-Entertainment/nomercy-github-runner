@@ -431,30 +431,59 @@ def _database_publisher():
 
 
 def _controller_collector():
-    """Collect history through authenticated worker agents, independently of the UI."""
+    """Replay native job history; retain fallback only for unupgraded workers."""
     from concurrent.futures import ThreadPoolExecutor
+    from control.job_events import JobEvents
+    from dbwatch import DatabaseChanges
+    from native_history import NativeHistory
     last_read = {}
     mapped = False
+    watch, projection, watched_path = None, None, None
     global _status_gen
     with ThreadPoolExecutor(max_workers=4) as pool:
         while True:
             try:
                 service, _ = api_v2.control_plane()
                 if service is not None:
+                    if watched_path != service.specs.path:
+                        if watch:
+                            watch.close()
+                        # Native registration precedes replay, closing the
+                        # query-before-watch race without a periodic ledger read.
+                        watch = DatabaseChanges(service.specs.path)
+                        projection = NativeHistory(service.specs.path)
+                        watched_path = service.specs.path
                     specs = [s for s in service.specs.list() if s.get("exec_unit_ref")
                              and s.get("actual_state") != "absent"]
                     if not mapped:
                         for spec in specs:
                             history.record_controller_logs(spec, "")
+                    by_id = {spec["runner_id"]: spec for spec in service.specs.list()}
+                    while True:
+                        events = JobEvents(service.specs.path).after(projection.sequence())
+                        if not events:
+                            break
+                        for event in events:
+                            projection.record(by_id.get(event["runner_id"]), event)
                     now = time.time()
                     stamp = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now))
+                    native = set()
+                    for spec in specs:
+                        worker = service.inventory.get(spec.get("host_id")) or {}
+                        if (worker.get("capabilities") or {}).get("job_events") == 1:
+                            native.add(spec["runner_id"])
+                            # Reuse only the already-received resource sample;
+                            # no worker operation or forge request is made.
+                            history.record_controller_logs(spec, "", stamp)
                     def collect(spec):
                         rid = spec["runner_id"]
                         since = min(86400, max(60, int(now - last_read.get(rid, now - 86400)) + 30))
                         text = service.fetch_logs(rid, since_seconds=since)
                         history.record_controller_logs(spec, text, stamp)
                         return rid
-                    futures = [pool.submit(collect, spec) for spec in specs]
+                    legacy = [spec for spec in specs if spec["runner_id"] not in native
+                              and now - last_read.get(spec["runner_id"], 0) >= 5]
+                    futures = [pool.submit(collect, spec) for spec in legacy]
                     for future in futures:
                         try:
                             last_read[future.result()] = now
@@ -468,9 +497,16 @@ def _controller_collector():
                 with _status_lock:
                     _status_gen += 1
                     _status_lock.notify_all()
+                if watch:
+                    watch.wait(None if service is not None and len(native) == len(specs) else 5)
+                else:
+                    threading.Event().wait(5)
             except Exception as e:
                 print(f"[controller-collector] {type(e).__name__}: {e}")
-            time.sleep(5)
+                if watch:
+                    watch.close()
+                watch, projection, watched_path = None, None, None
+                threading.Event().wait(5)
 
 
 def _enricher():
