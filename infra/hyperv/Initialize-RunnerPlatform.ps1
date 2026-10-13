@@ -116,6 +116,9 @@ try {
         "RUNNER_UNIT_IMAGE_GITHUB_WINDOWS_ARM64=$($arm.GitHubTemplate)",
         "RUNNER_UNIT_MEMORY_GITHUB_WINDOWS_ARM64=$($arm.RunnerMemGB)g",
         "CONTROL_INTERVAL=15")
+    if (-not $arm.Enabled) {
+        $controllerEnv = @($controllerEnv | Where-Object { ($_ -split '=', 2)[0] -notlike '*_WINDOWS_ARM64' })
+    }
 
     # --- the control plane ------------------------------------------------------
     Write-Host "waiting for $($control[0]) ($cp)..."

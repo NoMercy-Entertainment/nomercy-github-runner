@@ -206,6 +206,7 @@
     }
 
     WindowsArm = @{
+        Enabled = $false
         HostId = 'windows-arm64-1'
         # Dedicated Hyper-V Linux host. Windows ARM64 stays a QEMU guest
         # with its existing disks, firmware, TPM and runner identities.
