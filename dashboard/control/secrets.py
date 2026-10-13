@@ -30,7 +30,11 @@ NAMES = ("GH_TOKEN", "FORGEJO_API_TOKEN", "ALARM_WEBHOOK_URL")
 
 
 class SecretRefused(ValueError):
-    pass
+    """A public validation result; never an underlying storage exception."""
+
+    def __init__(self, reason):
+        self.public_reason = reason
+        super().__init__(reason)
 
 
 def http_url(value):
