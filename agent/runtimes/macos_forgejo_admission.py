@@ -9,6 +9,7 @@ from .. import naming
 
 ENVIRONMENT = "NOMERCY_FORGEJO_ADMISSION_POLICY"
 DIGEST = "76ed71522d4fd6c16287c71db0fa5a5020832c7bf339bc70fc8bd3ebcf23b9c4"
+ARTIFACT = "/var/lib/runner-platform/forgejo-admission/forgejo-runner-darwin-amd64"
 
 INSTALL = r'''
 import base64,hashlib,json,os,stat,sys,tempfile
@@ -67,10 +68,9 @@ def program(rid):
 
 
 def install(runtime, rid):
-    artifact = runtime._tools.get("forgejo_admission_binary")
-    if not artifact:
+    artifact = Path(ARTIFACT)
+    if not artifact.exists():
         raise RuntimeError("Forgejo admission needs a reviewed protected artifact")
-    artifact = Path(artifact)
     for path in (artifact, *artifact.parents):
         info = path.lstat()
         if stat.S_ISLNK(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o022:
