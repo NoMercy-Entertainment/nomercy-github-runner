@@ -96,6 +96,12 @@ class WindowsStorage:
     def mount(self, runner_id):
         return self._call("mount", runner_id)
 
+    def measure(self, runner_id):
+        """Fresh read-only device identity and capacity; no PowerShell startup."""
+        from .windows_disk_read import measure
+        with self._helper_lock:
+            return measure(self.root, runner_id)
+
     def verify(self, runner_id):
         rid = naming.check(runner_id)
         # Concurrent readers share one complete identity check. No result is
