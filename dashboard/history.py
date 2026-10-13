@@ -22,6 +22,8 @@ import sqlite3
 import threading
 from datetime import datetime
 
+from db_connections import ClosingConnection
+
 DB_PATH = os.path.join(os.environ.get("DASH_DATA", "/data"), "history.db")
 
 _lock = threading.Lock()
@@ -72,7 +74,7 @@ CREATE INDEX IF NOT EXISTS idx_samples_run ON samples(run_id);
 
 
 def _conn():
-    c = sqlite3.connect(DB_PATH, timeout=15)
+    c = sqlite3.connect(DB_PATH, timeout=15, factory=ClosingConnection)
     c.row_factory = sqlite3.Row
     # WAL: the collector writes every 5s while the UI reads. Without it a
     # read can block a write long enough to stall the poll loop.
