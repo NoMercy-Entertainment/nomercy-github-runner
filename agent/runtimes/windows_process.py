@@ -593,18 +593,15 @@ class WindowsProcessRuntime:
         return result
 
     def status(self, runner_id):
+        """SCM process state; disk readiness is measured by the storage probe.
+
+        A slow or failed disk query cannot determine whether Windows has a
+        running service. Startup and filesystem mutations keep their own
+        mandatory storage verification.
+        """
         result = self._service_status(runner_id)
-        running = result.get("running")
-        if self._storage and result.get("exists") is True and running is False:
-            result["storage_ready"] = None  # Not examined; stopped is not storage-ready.
-        if self._storage and result.get("exists") is True and running is not False:
-            try:
-                self._storage.verify(runner_id)
-                result["storage_ready"] = True
-            except (OSError, RuntimeError, ValueError) as exc:
-                result.update(storage_ready=False, storage_error=str(exc))
-                if running is not False:
-                    result.update(running=None, state="unknown")
+        if self._storage and result.get("exists") is True:
+            result["storage_ready"] = None
         return result
 
     def telemetry(self, runner_id):
