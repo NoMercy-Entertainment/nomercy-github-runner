@@ -31,6 +31,7 @@ concurrency, soft delete - and none of the three apply here. A `FleetStore`
 inside a module called `specs` would be a name that lies.
 """
 import json
+import os
 
 import providers
 
@@ -49,6 +50,15 @@ CELLS = tuple(
 def fleet_id(provider_key, platform, architecture):
     """The coordinate, written down. See the module docstring."""
     return f"{provider_key}-{platform}-{architecture}"
+
+
+def _disabled_ids(connection):
+    row = connection.execute(
+        "SELECT value FROM platform_settings WHERE key='disabled_fleets'").fetchone()
+    ids = json.loads(row[0]) if row else []
+    if not isinstance(ids, list) or any(not isinstance(fid, str) for fid in ids):
+        raise ValueError("disabled_fleets must be a list of fleet ids")
+    return set(ids)
 
 
 class FleetStore:
@@ -75,10 +85,13 @@ class FleetStore:
         """
         env = env if env is not None else {}
         with self._conn() as c:
+            disabled = _disabled_ids(c)
             for provider_key, platform, arch in CELLS:
                 provider = providers.by_key(provider_key)
                 support = provider.supports(platform, arch, env)
                 fid = fleet_id(provider_key, platform, arch)
+                available = bool(support) and fid not in disabled
+                reason = "Fleet is disabled" if fid in disabled else support.reason or None
 
                 existing = c.execute(
                     "SELECT fleet_id FROM fleets WHERE fleet_id = ?",
@@ -93,13 +106,13 @@ class FleetStore:
                         (fid, provider_key, platform, arch,
                          json.dumps([]), self._template(provider, platform,
                                                         arch, env),
-                         1 if support else 0, support.reason or None))
+                         int(available), reason))
                 else:
                     # Availability only. Capacity is not seeding's business.
                     c.execute(
                         "UPDATE fleets SET available = ?,"
                         " unavailable_reason = ? WHERE fleet_id = ?",
-                        (1 if support else 0, support.reason or None, fid))
+                        (int(available), reason, fid))
 
     def _template(self, provider, platform, architecture, env):
         """What this fleet's runners are built from, when that is knowable.
@@ -115,16 +128,28 @@ class FleetStore:
 
     def get(self, fid):
         with self._conn() as c:
+            if fid in _disabled_ids(c):
+                return None
             row = c.execute("SELECT * FROM fleets WHERE fleet_id = ?",
                             (fid,)).fetchone()
         return _decode(row)
 
     def list(self):
         with self._conn() as c:
+            disabled = _disabled_ids(c)
             rows = c.execute(
                 "SELECT * FROM fleets ORDER BY provider, platform,"
                 " architecture").fetchall()
-        return [_decode(r) for r in rows]
+        return [_decode(r) for r in rows if r['fleet_id'] not in disabled]
+
+    def disabled_ids(self):
+        if not os.path.exists(self.path):
+            return set()
+        with self._conn() as connection:
+            if not connection.execute(
+                    "SELECT 1 FROM sqlite_master WHERE name='platform_settings'").fetchone():
+                return set()
+            return _disabled_ids(connection)
 
     # ---- capacity ----------------------------------------------------------
 
