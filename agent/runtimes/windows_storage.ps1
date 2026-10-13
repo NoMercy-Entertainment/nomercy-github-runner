@@ -124,7 +124,10 @@ if (-not (Test-Path function:Add-VirtualDisk)) {
     # attach path now for both hosts - no fallback to the old one anywhere.
     # Guarded so a test double can replace Add-VirtualDisk before this file
     # is dot-sourced, the same seam every other privileged cmdlet here uses.
-    Add-Type -Namespace Rnr -Name VirtDisk -MemberDefinition @'
+    function Add-VirtualDisk([string]$Path, [string]$Sddl, [switch]$ReadOnly) {
+        # Verification and already attached images need no C# compilation.
+        if (-not ('Rnr.VirtDisk' -as [type])) {
+            Add-Type -Namespace Rnr -Name VirtDisk -MemberDefinition @'
 [StructLayout(LayoutKind.Sequential)]
 public struct VIRTUAL_STORAGE_TYPE { public uint DeviceId; public Guid VendorId; }
 
@@ -141,8 +144,7 @@ public static extern int AttachVirtualDisk(
 [DllImport("kernel32.dll", SetLastError = true)]
 public static extern bool CloseHandle(IntPtr h);
 '@
-
-    function Add-VirtualDisk([string]$Path, [string]$Sddl, [switch]$ReadOnly) {
+        }
         $type = New-Object Rnr.VirtDisk+VIRTUAL_STORAGE_TYPE
         $type.DeviceId = 3   # VHDX
         $type.VendorId = [Guid]'EC984AEC-A0F9-47e9-901F-71415A66345B'   # Microsoft
