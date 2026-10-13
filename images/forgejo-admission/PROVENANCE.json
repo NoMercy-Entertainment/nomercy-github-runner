@@ -7,11 +7,13 @@
   "buildvcs": false,
   "version": "v13.1.0-nomercy-admission.1",
   "artifacts": {
-    "linux-amd64": "42736f6bf24ef7f5c2994c904da7a70d03829e1380b05c7e93651850f6847276",
-    "linux-arm64": "9a40ef26567787c589aeced7bc96db989e0308f201711f00d54cd687576f2799",
-    "windows-amd64": "4126e175477791f1092515c383d0382e8e105b05001cddd62fc5deba61c6abf5",
-    "windows-arm64": "08c7f63d879102d3dc193ca978dbda96588b0d34b084e92b179e5ef929243bac",
-    "darwin-amd64": "d550845297f2dd1d250c445c9959cb9a1cb3bd50e4f2a2c944a399a9a2336484",
-    "darwin-arm64": "8775a548930e37a653bcc90a4eeedd60dd8654c6e82635ccd83c197841f277f9"
-  }
+    "darwin-amd64": "76ed71522d4fd6c16287c71db0fa5a5020832c7bf339bc70fc8bd3ebcf23b9c4",
+    "linux-arm64": "b86705e28673591706790ac548fe1e78e19ce84c880f7375fb470f59cc3d9a31",
+    "linux-amd64": "ffcba8ec6aa88f5e94aa22ba9b15528c7e540464d4eb8982b7735c65cb18bf51",
+    "windows-arm64": "858b760880af539347e86ecb222eb5f49ac156df9950b4dbe5d1971845168163",
+    "darwin-arm64": "dd76be1469b4bec55c6525ae5570d75880468b8de01cfa94299593c2e6afbb3b",
+    "windows-amd64": "b335d5590eb61e59accb78c19ef8790f7c8ffe708242e6f1ed519e33797cb5f7"
+  },
+  "security_corrections": true,
+  "startup_proof": true
 }

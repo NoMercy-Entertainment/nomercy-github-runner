@@ -19,11 +19,14 @@ index 4327d61..2d1bfb8 100644
  }
  
  //mockery:generate: true
-@@ -78,13 +81,16 @@ func NewRunner(cfg *config.Config, name string, ls labels.Labels, cli client.Cli
+@@ -78,13 +81,19 @@ func NewRunner(cfg *config.Config, name string, ls labels.Labels, cli client.Cli
  	envs["FORGEJO_ACTIONS"] = "true"
  	envs["FORGEJO_ACTIONS_RUNNER_VERSION"] = ver.Version()
  
 +	policy, policyErr := loadAdmissionPolicy(os.Getenv(admissionPolicyEnvironment), cli.Address())
++	if policyErr == nil {
++		policyErr = admissionStartupProof(policy, os.Getenv(admissionPolicyEnvironment))
++	}
  	return &Runner{
 -		name:       name,
 -		cfg:        cfg,
@@ -42,7 +45,7 @@ index 4327d61..2d1bfb8 100644
  	}
  }
  
-@@ -151,6 +157,11 @@ func SetupCache(cfg *config.Config) *cacheproxy.Handler {
+@@ -151,6 +160,11 @@ func SetupCache(cfg *config.Config) *cacheproxy.Handler {
  }
  
  func (r *Runner) Run(ctx context.Context, task *runnerv1.Task) {
@@ -54,7 +57,7 @@ index 4327d61..2d1bfb8 100644
  	if _, loaded := r.runningTasks.LoadOrStore(task.Id, struct{}{}); loaded {
  		// Normally the responsibility of Run() is to ensure that, no matter what occurs within running the job, a
  		// reporter is created that will report the job status to the server. But in this case, for some reason another
-@@ -236,6 +247,11 @@ func (r *Runner) run(ctx context.Context, task *runnerv1.Task, reporter *report.
+@@ -236,6 +250,11 @@ func (r *Runner) run(ctx context.Context, task *runnerv1.Task, reporter *report.
  		}
  	}()
  

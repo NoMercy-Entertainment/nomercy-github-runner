@@ -372,6 +372,14 @@ class WindowsProcessRuntime:
         self._check(self._run([
             self._tools["icacls"], ntpath.join(p["reg"], "unit.json"), "/deny",
             f"*{sid}:({self.DENY_WRITE})", "/Q"], timeout=120))
+        # The admission snapshot and executable cannot be replaced by a job.
+        leaves = ("forgejo-runner.exe", "run.cmd", "run.bat") if self._fs.exists(
+            ntpath.join(p["reg"], "forgejo-runner.exe")) else ()
+        for leaf in leaves:
+            path = ntpath.join(p["reg"], leaf)
+            if self._fs.exists(path):
+                self._check(self._run([self._tools["icacls"], path, "/deny",
+                                      f"*{sid}:({self.DENY_WRITE})", "/Q"], timeout=120))
 
     def _acl(self, root, name):
         """Only LocalSystem, Administrators and this runner's own account, and

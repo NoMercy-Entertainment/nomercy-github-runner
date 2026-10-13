@@ -16,7 +16,7 @@ text = path.read_text(encoding="utf-8")
 replacements = (
     ('\t"maps"\n', '\t"maps"\n\t"os"\n'),
     ("\trunningTasks sync.Map\n", "\trunningTasks sync.Map\n\tadmission *admissionPolicy\n\tadmissionErr error\n"),
-    ("\treturn &Runner{\n", "\tpolicy, policyErr := loadAdmissionPolicy(os.Getenv(admissionPolicyEnvironment), cli.Address())\n\treturn &Runner{\n\t\tadmission: policy,\n\t\tadmissionErr: policyErr,\n"),
+    ("\treturn &Runner{\n", "\tpolicy, policyErr := loadAdmissionPolicy(os.Getenv(admissionPolicyEnvironment), cli.Address())\n\tif policyErr == nil {\n\t\tpolicyErr = admissionStartupProof(policy, os.Getenv(admissionPolicyEnvironment))\n\t}\n\treturn &Runner{\n\t\tadmission: policy,\n\t\tadmissionErr: policyErr,\n"),
     ("func (r *Runner) Run(ctx context.Context, task *runnerv1.Task) {\n", "func (r *Runner) Run(ctx context.Context, task *runnerv1.Task) {\n\ttask = admissionReportableTask(task)\n\tif task == nil {\n\t\tlog.Error(\"admission refused a missing task\")\n\t\treturn\n\t}\n"),
     ('\treporter.Logf("Runner %s (version:%s) received task', '\tif err := r.admit(task); err != nil {\n\t\treporter.Logf("Runner admission refused this task: %s", err)\n\t\treturn err\n\t}\n\n\treporter.Logf("Runner %s (version:%s) received task'),
 )

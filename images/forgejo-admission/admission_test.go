@@ -22,6 +22,19 @@ import (
 const testAdmissionInstance = "https://forgejo.example.test"
 const testAdmissionPolicy = `{"version":1,"instance":"https://forgejo.example.test","allowed_owner_ids":[1001],"trusted_source_owner_ids":[2001]}`
 
+func TestAdmissionStartupProofExercisesCapturedOwnerAndForkPolicy(t *testing.T) {
+	policy, err := loadAdmissionPolicy(testAdmissionPolicy, testAdmissionInstance)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := admissionStartupProof(policy, testAdmissionPolicy); err != nil {
+		t.Fatal(err)
+	}
+	if admissionStartupProof(nil, "") == nil || admissionStartupProof(&admissionPolicy{}, "") == nil {
+		t.Fatal("missing protected policy must fail the startup proof")
+	}
+}
+
 func testAdmissionRepo(id, owner float64, login string) map[string]any {
 	return map[string]any{"id": id, "full_name": login + "/project", "owner": map[string]any{"id": owner, "login": login}}
 }
