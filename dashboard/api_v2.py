@@ -315,7 +315,7 @@ def fleet_list(service, note, all_runner_cards):
     """The six fleets - rows, not code (design 14.4). From the controller's
     table when it exists, else from what each provider says it supports, so
     the page shows the same six before the control plane has run."""
-    from store.fleets import CELLS, fleet_id
+    from store.fleets import CELLS, FleetStore, fleet_id
     snap = _status["fn"]() or {}
     env_configured = snap.get("providers_configured") or {}
     rows = {}
@@ -331,6 +331,9 @@ def fleet_list(service, note, all_runner_cards):
     coordinates = [(f["provider"], f["platform"], f["architecture"])
                    for f in rows.values()] or list(CELLS)
     coordinates += [c for c in CELLS if c not in coordinates]
+    store = FleetStore(getattr(service.fleets, 'path', _db_path())) if service is not None else FleetStore(_db_path())
+    disabled = store.disabled_ids()
+    coordinates = [c for c in coordinates if fleet_id(*c) not in disabled]
     out = []
     for provider_key, platform, arch in coordinates:
         fid = fleet_id(provider_key, platform, arch)
