@@ -1,4 +1,5 @@
 from concurrent.futures import ThreadPoolExecutor
+import json
 import threading
 import pytest
 
@@ -79,3 +80,59 @@ def test_different_runners_never_share_a_volume_proof():
         both_entered.wait(5)
         assert one.result(5)['volume_guid']==RID
         assert two.result(5)['volume_guid']==other
+
+
+@pytest.mark.parametrize('first_fails', [False, True])
+def test_helpers_queue_before_shell_start_and_release_after_failure(first_fails):
+    other = '4f2504e0-4f89-41d3-9a0c-0305e82c3301'
+    entered, queued, release = (threading.Event() for _ in range(3))
+    calls = []
+
+    class ObservedLock:
+        def __init__(self):
+            self.lock = threading.Lock()
+            self.entries = 0
+
+        def __enter__(self):
+            self.entries += 1
+            if self.entries == 2:
+                queued.set()
+            self.lock.acquire()
+
+        def __exit__(self, *exc):
+            self.lock.release()
+
+    def run(args, *, input, timeout):
+        request = json.loads(input)
+        calls.append((request['action'], request['runner_id']))
+        if request['runner_id'] == RID:
+            entered.set()
+            assert release.wait(5)
+            if first_fails:
+                return False, '', 'volume identity changed'
+        return True, json.dumps({
+            'runner_id': request['runner_id'],
+            'volume_guid': '\\\\?\\Volume{' + request['runner_id'] + '}\\',
+            'virtual_bytes': 100 * 1024**3,
+            'capacity_bytes': 99 * 1024**3,
+            'free_bytes': 98 * 1024**3,
+        }), ''
+
+    backend = WindowsStorage({}, run, 'powershell')
+    backend._helper_lock = ObservedLock()
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        first = pool.submit(backend.mount, RID)
+        assert entered.wait(5)
+        second = pool.submit(backend.verify, other)
+        try:
+            assert queued.wait(5)
+            assert calls == [('mount', RID)]
+        finally:
+            release.set()
+        if first_fails:
+            with pytest.raises(RuntimeError, match='volume identity changed'):
+                first.result(5)
+        else:
+            assert first.result(5)['runner_id'] == RID
+        assert second.result(5)['runner_id'] == other
+    assert calls == [('mount', RID), ('verify', other)]
