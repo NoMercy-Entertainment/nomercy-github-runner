@@ -479,6 +479,24 @@ def _ps1_functions_only():
     return text.split(marker, 1)[0]
 
 
+def test_loading_storage_protocol_does_not_compile_native_attachment():
+    if sys.platform != "win32":
+        pytest.skip("actual PowerShell declarations run on Windows")
+    script = """
+$ErrorActionPreference = 'Stop'
+function Add-Type { throw 'A storage read loaded the native attachment compiler' }
+""" + _ps1_functions_only() + """
+if (-not (Get-Command Add-VirtualDisk -ErrorAction SilentlyContinue)) {
+    throw 'Native attachment function is missing'
+}
+'declarations-ready'
+"""
+    result = subprocess.run([PS, "-NoProfile", "-NonInteractive", "-Command", script],
+                            capture_output=True, text=True, timeout=30)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "declarations-ready"
+
+
 @pytest.mark.parametrize("failure", [None, "create", "attach", "initialize", "partition", "format", "mount", "protect-volume"])
 def test_actual_helper_resumes_each_creation_stage_without_reformatting(helper, failure):
     invoke, request, model = helper
