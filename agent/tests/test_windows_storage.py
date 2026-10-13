@@ -207,6 +207,23 @@ def test_active_service_still_requires_storage_proof_before_drain_writes(managed
     assert not host.exists(ntpath.join(runtime.paths(RID)["reg"], "drain.request"))
 
 
+def test_running_service_and_failed_disk_have_independent_observations(managed):
+    runtime, host, disks = managed
+    runtime.create(RID, {"image": TEMPLATE})
+    disks.events.clear()
+    disks.error = "volume identity changed"
+    state = runtime.status(RID)
+    assert state["exists"] is True and state["running"] is True
+    assert state["state"] == "running" and state["storage_ready"] is None
+    assert not disks.events
+    with pytest.raises(RuntimeError, match="volume identity changed"):
+        runtime.probe(RID, "disk_usage")
+    with pytest.raises(RuntimeError, match="volume identity changed"):
+        runtime.start(RID)
+    with pytest.raises(RuntimeError, match="volume identity changed"):
+        runtime.clear_cache(RID, {})
+
+
 def test_service_identity_is_configured_before_executable_files_are_copied(managed):
     runtime, host, disks = managed
     copy = host.copytree
