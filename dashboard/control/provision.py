@@ -845,6 +845,15 @@ class ProvisioningFlow:
         """A host reboot is down only with fresh agreement from both sides."""
         if not self.service.inventory.accepts_destructive_verbs(spec.get("host_id")):
             return False
+        try:
+            unit = retry.call(retry.agent_fast_for(spec), self._runtime(spec).status, self._ref(spec))
+        except Exception:
+            return False
+        if unit.exists is not True or unit.running is not False:
+            return False
+        # Capture forge agreement after the potentially slow worker read.
+        # Routine health can advance while ARM/storage is answering; a stamp
+        # from before that wait is rejected by the atomic observation fence.
         records = self._records(provider, fresh=True, spec=spec)
         seen = provider.job_state(spec, records)
         self.forge_words[spec["runner_id"]] = seen
@@ -853,11 +862,7 @@ class ProvisioningFlow:
         if (records is None or provider.record_for(spec, records) is None
                 or seen != providers.OFFLINE):
             return False
-        try:
-            unit = retry.call(retry.agent_fast_for(spec), self._runtime(spec).status, self._ref(spec))
-        except Exception:
-            return False
-        return unit.exists is True and unit.running is False
+        return True
 
     def observe_fresh(self, spec):
         return self.observe(spec, fresh=True)
