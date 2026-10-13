@@ -670,7 +670,7 @@ class WindowsProcessRuntime:
         if self.status(rid).get("running") is not True:
             raise RuntimeError("owned Windows event unit is not running")
         if self._storage:
-            disk = self._storage.verify(rid)
+            disk = self._storage.measure(rid)
             logs = ntpath.join(disk["volume_guid"], "logs")
         else:
             logs = self.paths(rid)["logs"]
@@ -690,10 +690,9 @@ class WindowsProcessRuntime:
 
     def logs(self, runner_id, since_seconds, max_bytes=256 * 1024):
         """The tail of the runner's own output, for an operator's log
-        request - this keeps verifying the runner's volume through the
-        storage helper."""
+        request, with a fresh native proof of the owned volume."""
         if self._storage:
-            self._storage.verify(runner_id)
+            self._storage.measure(runner_id)
         return self._tail_log(runner_id, since_seconds, max_bytes)
 
     def _tail_log(self, runner_id, since_seconds, max_bytes=256 * 1024):

@@ -405,7 +405,7 @@ def test_reading_the_job_name_never_waits_on_the_storage_lock_but_logs_does(mana
 
     logs = runtime.logs(RID, 300)
 
-    assert disks.events == ["verify"]
+    assert disks.events == ["measure"]
     assert "Running job" in logs
 
 
