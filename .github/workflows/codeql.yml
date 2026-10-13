@@ -1,0 +1,74 @@
+name: CodeQL
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+  schedule:
+    - cron: '23 4 * * 2'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  analyze:
+    name: Analyze (${{ matrix.language }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    permissions:
+      contents: read
+      actions: read
+      security-events: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - language: actions
+            build-mode: none
+          - language: javascript-typescript
+            build-mode: none
+          - language: python
+            build-mode: none
+          - language: go
+            build-mode: manual
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        if: matrix.language == 'go'
+        with:
+          go-version: '1.26.7'
+          cache: false
+      - name: Prepare the reviewed Forgejo build context
+        if: matrix.language == 'go'
+        run: bash infra/ci/prepare-codeql-forgejo.sh
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@24c54180a607b1449ed407dd24f251e4e9147c8d # v4
+        with:
+          languages: ${{ matrix.language }}
+          build-mode: ${{ matrix.build-mode }}
+      - name: Build the complete Go packages
+        if: matrix.language == 'go'
+        working-directory: .codeql-forgejo-source
+        env:
+          CGO_ENABLED: '0'
+          GOTOOLCHAIN: local
+        run: go build -buildvcs=false ./internal/pkg/report ./internal/app/run
+      - name: Analyze
+        uses: github/codeql-action/analyze@24c54180a607b1449ed407dd24f251e4e9147c8d # v4
+        with:
+          category: /language:${{ matrix.language }}
+          upload: false
+          output: codeql-results
+      - name: Map compiled overlay locations back to repository files
+        if: matrix.language == 'go'
+        run: python3 infra/ci/map-codeql-forgejo.py codeql-results
+      - name: Upload results
+        if: vars.CODEQL_ADVANCED_ENABLED == 'true'
+        uses: github/codeql-action/upload-sarif@24c54180a607b1449ed407dd24f251e4e9147c8d # v4
+        with:
+          sarif_file: codeql-results
+          category: /language:${{ matrix.language }}
