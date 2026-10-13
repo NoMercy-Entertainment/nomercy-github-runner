@@ -33,7 +33,7 @@ def test_online_requires_verified_serving_state(state, forge, age, online):
 def test_fresh_forge_busy_updates_display_without_changing_lifecycle():
     card = cards.from_spec(spec(actual_state="idle", forge_state="busy"), worker_reachable=True, now=NOW)
     assert card["state"] == "busy" and card["lifecycle_state"] == "idle"
-    assert card["job"] == "running a job - the forge does not say which"
+    assert card["job"] == "runner is busy - job details unavailable"
     assert cards.summary([card])["busy"] == 1
 
 

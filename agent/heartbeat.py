@@ -168,7 +168,7 @@ def minimal(agent, server=None):
     }
 
 
-def build(agent, server=None, deep=False):
+def build(agent, server=None, deep=False, include_usage=True):
     """One heartbeat's payload. `deep` adds each unit's storage and cache."""
     beat = {
         "host_id": agent.host_id,
@@ -214,10 +214,11 @@ def build(agent, server=None, deep=False):
         running = [u["runner_id"] for u in beat["instances"]
                    if u["state"] == "running"]
         with ThreadPoolExecutor(max_workers=2) as pool:
-            used_future = pool.submit(_telemetry, agent.runtime, running)
-            jobs_future = pool.submit(_jobs, agent.runtime, running)
-            used = used_future.result()
-            jobs = jobs_future.result()
+            used_future = pool.submit(_telemetry, agent.runtime, running) if include_usage else None
+            cache = getattr(agent.runtime, "job_event_cache", None)
+            jobs_future = pool.submit(_jobs, agent.runtime, running) if include_usage or cache is not None and cache.active else None
+            used = used_future.result() if used_future else {}
+            jobs = jobs_future.result() if jobs_future else {}
         for unit in beat["instances"]:
             t = {k: v for k, v in (used.get(unit["runner_id"]) or {}).items()
                  if k in LIGHT_KEYS}
@@ -260,6 +261,8 @@ class HeartbeatSender:
         self._measuring = None
         self._deep_thread = None
         self._guard_thread = None
+        self._usage_thread = None
+        self._usage = None
         self._depths = {}
         #: runner_id -> its last origin guard report, with when it was
         #: measured; sent with every beat until the next deep pass.
@@ -274,10 +277,18 @@ class HeartbeatSender:
         """
         try:
             started = time.monotonic()
-            built = build(self.agent, self.server)
+            separate = getattr(self.agent.runtime, "separate_telemetry", False)
+            built = build(self.agent, self.server, include_usage=not separate)
         except Exception:                   # noqa: BLE001 - the next one may
             return None                     # do better; the beat goes anyway
         for unit in built.get("instances", []):
+            usage = self._usage
+            if (separate and usage and time.monotonic() - usage[0] <= STALE_AFTER
+                    and unit["state"] == "running"):
+                measured = {key: value for key, value in usage[1].get(unit["runner_id"], {}).items()
+                            if key in LIGHT_KEYS}
+                if measured:
+                    unit.setdefault("telemetry", {}).update(measured, at=usage[2])
             depth = self._depths.get(unit["runner_id"])
             if depth:
                 _with_depth(unit.setdefault("telemetry", {}), depth)
@@ -288,6 +299,24 @@ class HeartbeatSender:
         self._measured = (started, built)
         self._sample_ready.set()
         return built
+
+    def measure_usage_once(self):
+        """Slow guest counters cannot hold up current process observations."""
+        payload = self._measured
+        if not payload or time.monotonic() - payload[0] > STALE_AFTER:
+            return
+        ids = [unit["runner_id"] for unit in payload[1].get("instances", [])
+               if unit["state"] == "running"]
+        started, stamp = time.monotonic(), _stamp()
+        self._usage = (started, _telemetry(self.agent.runtime, ids), stamp)
+
+    def _usage_loop(self):
+        while not self._stop.is_set():
+            try:
+                self.measure_usage_once()
+            except Exception:
+                pass
+            self._stop.wait(self.interval)
 
     def measure_guards_once(self):
         """Publish security evidence independently of storage walks."""
@@ -391,6 +420,10 @@ class HeartbeatSender:
                                            name="agent-heartbeat-measure",
                                            daemon=True)
         self._measuring.start()
+        if getattr(self.agent.runtime, "separate_telemetry", False):
+            self._usage_thread = threading.Thread(target=self._usage_loop,
+                                                  name="agent-heartbeat-usage", daemon=True)
+            self._usage_thread.start()
         self._deep_thread = threading.Thread(target=self._deep_loop,
                                              name="agent-heartbeat-storage",
                                              daemon=True)

@@ -42,6 +42,46 @@ def sender():
 
 
 class TestABeatIsNeverHeldUpByMeasuring:
+    def test_slow_guest_counters_do_not_delay_process_observations(self, sender):
+        sender.agent.runtime.separate_telemetry = True
+        entered, released = threading.Event(), threading.Event()
+        original = sender.agent.runtime.telemetry_all
+
+        def slow(ids):
+            entered.set()
+            released.wait(5)
+            return original(ids)
+
+        sender.agent.runtime.telemetry_all = slow
+        sender.measure_once()
+        measuring = threading.Thread(target=sender.measure_usage_once, daemon=True)
+        measuring.start()
+        try:
+            assert entered.wait(1)
+            before = time.monotonic()
+            sender.measure_once()
+            sender.send_once()
+            assert time.monotonic() - before < 1
+            assert measuring.is_alive()
+            beat = sender.link.posted[-1]
+            assert len(beat["instances"]) == 2
+            assert "measuring" not in beat
+        finally:
+            released.set()
+            measuring.join(5)
+        beat = sender.measure_once()
+        assert beat["instances"][0]["telemetry"]["cpu_percent"] == 1.5
+
+    def test_old_guest_counters_are_not_freshened_by_a_new_process_sample(self, sender):
+        sender.agent.runtime.separate_telemetry = True
+        sender.measure_once()
+        sender.measure_usage_once()
+        started, usage, stamp = sender._usage
+        sender._usage = (started - hb.STALE_AFTER - 1, usage, stamp)
+        beat = sender.measure_once()
+        assert "instances" in beat
+        assert all("cpu_percent" not in unit.get("telemetry", {}) for unit in beat["instances"])
+
     def test_guard_evidence_arrives_while_storage_is_blocked(self, sender):
         held = threading.Event()
         entered = threading.Event()

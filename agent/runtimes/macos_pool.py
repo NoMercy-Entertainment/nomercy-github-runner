@@ -63,6 +63,7 @@ def _private_json(path, value):
 
 
 class MacAppliancePoolRuntime:
+    separate_telemetry = True
     kind = "macos-appliance"
 
     def __init__(self, *, image, base_disk, base_system, data_root, templates,
