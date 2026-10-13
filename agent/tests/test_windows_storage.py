@@ -224,6 +224,15 @@ def test_running_service_and_failed_disk_have_independent_observations(managed):
         runtime.clear_cache(RID, {})
 
 
+def test_start_of_running_undrained_service_verifies_without_remounting(managed):
+    runtime, host, disks = managed
+    runtime.create(RID, {"image": TEMPLATE})
+    disks.events.clear()
+    runtime.start(RID)
+    assert disks.events == ["verify"]
+    assert runtime.status(RID)["running"] is True
+
+
 def test_service_identity_is_configured_before_executable_files_are_copied(managed):
     runtime, host, disks = managed
     copy = host.copytree
