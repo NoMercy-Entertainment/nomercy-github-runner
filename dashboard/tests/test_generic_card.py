@@ -208,6 +208,12 @@ def render(fn, payload):
 
 @pytest.mark.skipif(NODE is None, reason="node is not installed")
 class TestTheRenderer:
+    def test_busy_without_job_details_never_claims_no_active_job(self):
+        card = dict(spec_cards()[0], state="busy", lifecycle_state="busy", job=None)
+        html = render("cardHTML", [card])[0]
+        assert "runner is busy - job details unavailable" in html
+        assert "no active job" not in html
+
     def test_same_state_registration_reason_changes_the_visible_card(self):
         before = dict(spec_cards()[0], state="unknown", readiness_note="GitHub registration status is unverified")
         after = dict(before, readiness_note="GitHub registration status is unverified; last confirmed 2026-10-12T16:00:00Z")

@@ -309,7 +309,22 @@ class TestTheJobField:
     def test_a_busy_runner_never_says_no_active_job(self):
         card = cards.from_spec(spec(actual_state="busy", forge_state="busy"),
                                now=NOW)
-        assert card["job"] and "running a job" in card["job"]
+        assert card["job"] == "runner is busy - job details unavailable"
+
+    @pytest.mark.parametrize("provider", ["github", "forgejo"])
+    @pytest.mark.parametrize("actual_state", ["idle", "busy"])
+    def test_completion_before_the_forge_releases_the_runner(self, provider, actual_state):
+        card = cards.from_spec(spec(provider=provider, actual_state=actual_state,
+                                    forge_state="busy"), telemetry={
+            "job": "previous build", "job_event": {
+                "state": "finished", "job": "previous build"}}, now=NOW)
+        assert card["state"] == "busy"
+        assert card["job"] == "runner is busy - job details unavailable"
+        released = cards.from_spec(spec(provider=provider, actual_state="idle",
+                                        forge_state="idle"), telemetry={
+            "job": "previous build", "job_event": {
+                "state": "finished", "job": "previous build"}}, now=NOW)
+        assert released["state"] == "idle" and released["job"] is None
 
     def test_a_named_job_is_shown_by_name(self):
         card = cards.from_spec(spec(actual_state="busy", forge_state="busy"),

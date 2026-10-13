@@ -111,7 +111,8 @@ function cardHTML(c) {
   const notes = (c.annotations || []).map(
     t => `<span class="annot">${esc(t)}</span>`).join('');
   const draining = c.lifecycle_state === 'draining' || c.state === 'draining';
-  const job = c.job || (draining ? 'draining' : 'no active job');
+  const job = c.job || (c.state === 'busy' ? 'runner is busy - job details unavailable'
+    : draining ? 'draining' : 'no active job');
   const seen = c.reachable === false ? 'not reachable'
              : c.reachable == null ? 'reachability unknown' : 'reachable';
   const status = `<div class="creg cstatus"><span>${esc(seen)}</span>` +

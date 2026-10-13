@@ -527,20 +527,23 @@ def _job_telemetry(spec, override, now):
 
 
 def _job(lifecycle, telemetry):
-    """The running job's name when something reported it. A busy runner
-    whose job nobody named says it is running one - "no active job" on a
-    busy card would be false (T-1803). Naming the job needs the forge's job
-    API, which is still to be added."""
+    """Keep the forge's busy state distinct from incomplete job details.
+
+    A completion hook can arrive before the forge releases the runner.
+    Never resurrect that completed job or claim the busy runner is free.
+    """
     event = (telemetry or {}).get("job_event")
     if isinstance(event, dict):
-        return event.get("job") if event.get("state") == "started" and lifecycle in ("idle", "busy", "draining") else None
+        if event.get("state") == "started" and lifecycle in ("idle", "busy", "draining") and event.get("job"):
+            return event["job"]
+        return "runner is busy - job details unavailable" if lifecycle == "busy" else None
     if lifecycle not in ("busy", "draining"):
         return None
     named = (telemetry or {}).get("job")
     if isinstance(named, str) and named:
         return named
     if lifecycle == "busy":
-        return "running a job - the forge does not say which"
+        return "runner is busy - job details unavailable"
     return None
 
 
