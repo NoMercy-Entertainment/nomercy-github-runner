@@ -184,6 +184,29 @@ def test_mount_failure_prevents_directory_creation_and_service_start(managed):
     assert not host.services
 
 
+def test_stopped_service_is_observable_and_drainable_without_an_attached_disk(managed):
+    runtime, host, disks = managed
+    runtime.create(RID, {"image": TEMPLATE})
+    runtime.stop(RID)
+    disks.events.clear()
+    disks.error = "disk detached after guest boot"
+    state = runtime.status(RID)
+    assert state["exists"] is True and state["running"] is False
+    assert state.get("storage_ready") is None
+    runtime.drain(RID)
+    assert not disks.events
+    assert not host.exists(ntpath.join(runtime.paths(RID)["reg"], "drain.request"))
+
+
+def test_active_service_still_requires_storage_proof_before_drain_writes(managed):
+    runtime, host, disks = managed
+    runtime.create(RID, {"image": TEMPLATE})
+    disks.error = "volume identity changed"
+    with pytest.raises(RuntimeError, match="volume identity changed"):
+        runtime.drain(RID)
+    assert not host.exists(ntpath.join(runtime.paths(RID)["reg"], "drain.request"))
+
+
 def test_service_identity_is_configured_before_executable_files_are_copied(managed):
     runtime, host, disks = managed
     copy = host.copytree
@@ -236,7 +259,7 @@ def test_missing_volume_keeps_stopped_state_but_blocks_start_and_cache_deletion(
     runtime.stop(RID)
     disks.error = "missing disk"
     assert runtime.status(RID)["running"] is False
-    assert runtime.status(RID)["storage_ready"] is False
+    assert runtime.status(RID)["storage_ready"] is None
     with pytest.raises(RuntimeError):
         runtime.start(RID)
     with pytest.raises(RuntimeError):
