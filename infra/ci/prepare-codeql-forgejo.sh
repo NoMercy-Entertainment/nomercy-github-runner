@@ -9,6 +9,7 @@ git clone --quiet --depth 1 --branch v13.1.0 https://code.forgejo.org/forgejo/ru
 test "$(git -C "$source" rev-parse HEAD)" = "$commit"
 python3 "$repository/images/forgejo-events/apply.py" "$source"
 python3 "$repository/images/forgejo-admission/apply.py" "$source"
+python3 "$repository/images/forgejo-security/apply.py" "$source"
 unset GOROOT
 test "$(go env GOVERSION)" = go1.26.7
 test "$(go tool compile -V)" = 'compile version go1.26.7'

@@ -57,6 +57,15 @@ jobs:
           CGO_ENABLED: '0'
           GOTOOLCHAIN: local
         run: go build -buildvcs=false ./internal/pkg/report ./internal/app/run
+      - name: Verify archive boundaries and provider hostnames
+        if: matrix.language == 'go'
+        working-directory: .codeql-forgejo-source
+        env:
+          GOTOOLCHAIN: local
+        run: |
+          go test ./act/filecollector -run '^TestNoMercy' -count=1
+          go test ./act/common/git -run '^TestFindSlug$|^TestNoMercy' -count=1
+          go test ./act/runner -run '^TestNoMercy' -count=1
       - name: Analyze
         uses: github/codeql-action/analyze@24c54180a607b1449ed407dd24f251e4e9147c8d # v4
         with:
