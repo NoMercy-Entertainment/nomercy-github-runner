@@ -5,6 +5,11 @@ for the exact v13.1.0 source commit. Mount `images/forgejo-events` read-only
 at `/events` beside `/build`; the script tests the reporter and records patch
 hashes in PROVENANCE. [Native event rollout](../../docs/native-job-events.md)
 describes all Linux, Windows and macOS targets and the owned spool environment.
+Both build modes also require `images/forgejo-security` at `/security` and
+Python 3 in the build environment. The build applies the reviewed security
+overlay, runs its archive, provider-host and local-action-link regressions,
+and records `security_overlay=1` and all overlay hashes in PROVENANCE.
+`FORGEJO_BUILD_SECURITY` selects an alternate read-only overlay location.
 The measurements below describe earlier binaries, not this new build.
 
 Forgejo publishes no Windows runner. Release v13.1.0 has twelve assets, all

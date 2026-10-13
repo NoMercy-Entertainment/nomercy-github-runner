@@ -5,6 +5,7 @@ on:
     paths:
       - 'images/forgejo-admission/**'
       - 'images/forgejo-events/**'
+      - 'images/forgejo-security/**'
       - 'images/windows/build-forgejo-runner.sh'
       - '.github/workflows/forgejo-admission.yml'
   workflow_dispatch:
@@ -33,6 +34,7 @@ jobs:
         run: |
           export FORGEJO_BUILD_EVENTS="$GITHUB_WORKSPACE/images/forgejo-events"
           export FORGEJO_BUILD_ADMISSION="$GITHUB_WORKSPACE/images/forgejo-admission"
+          export FORGEJO_BUILD_SECURITY="$GITHUB_WORKSPACE/images/forgejo-security"
           for mode in native-events guarded; do
             export FORGEJO_BUILD_SOURCE="$RUNNER_TEMP/forgejo-$mode-source"
             export FORGEJO_BUILD_OUTPUT="$RUNNER_TEMP/forgejo-$mode-output"
