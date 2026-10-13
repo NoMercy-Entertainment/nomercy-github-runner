@@ -40,7 +40,15 @@ def validate_event(body, runner_id):
     if not re.fullmatch(r"[A-Za-z0-9_.:-]{1,150}", body.get("event_id") or ""):
         raise ValueError("invalid event identity")
     at = body.get("at") or ""
-    if len(at) > 40 or datetime.fromisoformat(at.replace("Z", "+00:00")).tzinfo is None:
+    parsed_at = at
+    fraction = re.search(r"\.(\d+)(?=Z|[+-]\d{2}:\d{2}$)", at)
+    if fraction:
+        # Go's RFC3339Nano trims trailing zeros. Python 3.9 only accepts
+        # three or six fraction digits; normalize the parser input while
+        # retaining the immutable producer timestamp for delivery and ack.
+        parsed_at = (at[:fraction.start(1)] + fraction[1][:6].ljust(6, "0")
+                     + at[fraction.end(1):])
+    if len(at) > 40 or datetime.fromisoformat(parsed_at.replace("Z", "+00:00")).tzinfo is None:
         raise ValueError("event timestamp must include timezone")
     result = body.get("result")
     if result is not None and result not in RESULTS:

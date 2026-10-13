@@ -34,6 +34,25 @@ def write(directory, body):
     return filename
 
 
+@pytest.mark.parametrize("digits", range(1, 10))
+def test_go_timestamps_are_readable_by_python_39_without_rewriting_events(monkeypatch, digits):
+    import datetime as dates
+    import re
+    original = dates.datetime
+
+    class Python39DateTime(original):
+        @classmethod
+        def fromisoformat(cls, value):
+            fraction = re.search(r"\.(\d+)", value)
+            if fraction and len(fraction[1]) not in (3, 6):
+                raise ValueError("Python 3.9 fraction precision")
+            return original.fromisoformat(value)
+
+    body = event(at="2026-10-13T20:09:31." + "123456789"[:digits] + "Z")
+    monkeypatch.setattr(dates, "datetime", Python39DateTime)
+    assert validate_event(body, RID)["at"] == body["at"]
+
+
 class Link:
     timeout = 1
     def __init__(self, accepted=True):
