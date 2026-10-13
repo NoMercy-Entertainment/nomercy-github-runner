@@ -93,6 +93,9 @@ $lines = ($Settings | ForEach-Object { "$_=$($values[$_])" }) + @(
     "FORGEJO_RUNNER_LABELS_MACOS=$($mac.ForgejoLabels)",
     "RUNNER_UNIT_IMAGE_FORGEJO_MACOS=$($mac.ForgejoTemplate)",
     "RUNNER_UNIT_IMAGE_GITHUB_MACOS=$($mac.GitHubTemplate)")
+if (-not $arm.Enabled) {
+    $lines = @($lines | Where-Object { ($_ -split '=', 2)[0] -notlike '*_WINDOWS_ARM64' })
+}
 Write-LfFile (Join-Path $stage 'dashboard.env') (($lines -join "`n") + "`n")
 
 # --- the data, copied consistently while the old dashboard keeps serving ------

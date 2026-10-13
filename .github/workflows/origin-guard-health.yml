@@ -23,8 +23,6 @@ jobs:
         include:
           - os: macOS
             arch: X64
-          - os: Windows
-            arch: ARM64
     runs-on: [self-hosted, '${{ matrix.os }}', '${{ matrix.arch }}']
     timeout-minutes: 7200
     steps:

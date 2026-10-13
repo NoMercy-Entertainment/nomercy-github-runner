@@ -31,10 +31,6 @@ jobs:
             os: Windows
             arch: X64
             shell: pwsh
-          - platform: windows-arm64
-            os: Windows
-            arch: ARM64
-            shell: pwsh
           - platform: macos-x64
             os: macOS
             arch: X64

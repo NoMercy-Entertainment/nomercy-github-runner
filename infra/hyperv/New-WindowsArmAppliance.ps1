@@ -4,6 +4,7 @@
 param()
 . (Join-Path $PSScriptRoot 'lib.ps1')
 $s = Get-RunnerPlatformSettings
+if (-not $s.WindowsArm.Enabled) { throw 'Windows ARM runners are retired; provisioning is disabled.' }
 $spec = $s.WindowsArm.Appliance
 $name = $spec.Name
 if (-not (Test-Elevated)) { throw 'Hyper-V requires an administrator session.' }

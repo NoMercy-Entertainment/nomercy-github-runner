@@ -14,6 +14,7 @@ param()
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'lib.ps1')
 $s = Get-RunnerPlatformSettings
+if (-not $s.WindowsArm.Enabled) { throw 'Windows ARM runners are retired; enrollment is disabled.' }
 $arm = $s.WindowsArm
 $repo = $script:RepoRoot
 $ssh = 'C:\Windows\System32\OpenSSH\ssh.exe'
