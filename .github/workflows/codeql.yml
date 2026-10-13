@@ -17,6 +17,8 @@ jobs:
     name: Analyze (${{ matrix.language }})
     runs-on: ubuntu-latest
     timeout-minutes: 360
+    env:
+      CODEQL_EXTRACTOR_GO_OPTION_EXTRACT_TESTS: 'true'
     permissions:
       contents: read
       actions: read
