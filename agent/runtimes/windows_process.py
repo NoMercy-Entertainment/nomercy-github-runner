@@ -448,7 +448,11 @@ class WindowsProcessRuntime:
         name = naming.unit_name(runner_id)
         p = self.paths(runner_id)
         if self._storage:
-            self._storage.mount(runner_id)
+            if (self._service_status(runner_id).get("running") is True
+                    and not self._fs.exists(ntpath.join(p["reg"], DRAIN_REQUEST))):
+                self._storage.verify(runner_id)
+            else:
+                self._storage.mount(runner_id)
         self._fs.remove(ntpath.join(p["reg"], DRAIN_REQUEST))
         self._check(self._nssm("set", name, "AppExit", "Default", "Restart"))
         self._check(self._sc("config", name, "start=",
