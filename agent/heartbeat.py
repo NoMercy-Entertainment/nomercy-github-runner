@@ -289,6 +289,17 @@ class HeartbeatSender:
                             if key in LIGHT_KEYS}
                 if measured:
                     unit.setdefault("telemetry", {}).update(measured, at=usage[2])
+            enforcement = unit.get("resource_enforcement") or {}
+            if separate and unit["state"] == "running" and enforcement:
+                # Actual appliance limits are part of the fast inspection,
+                # even while guest usage counters are missing or too old.
+                limits = {}
+                if enforcement.get("cpu_enforcement") is True:
+                    limits["cpu_cores"] = enforcement.get("cpu_cores")
+                if enforcement.get("memory_enforcement") is True:
+                    limits["mem_limit_bytes"] = enforcement.get("memory_limit_bytes")
+                unit.setdefault("telemetry", {}).update(limits)
+                unit["telemetry"].setdefault("at", built["measured_at"])
             depth = self._depths.get(unit["runner_id"])
             if depth:
                 _with_depth(unit.setdefault("telemetry", {}), depth)

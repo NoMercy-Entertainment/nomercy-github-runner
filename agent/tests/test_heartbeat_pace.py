@@ -42,6 +42,27 @@ def sender():
 
 
 class TestABeatIsNeverHeldUpByMeasuring:
+    def test_verified_appliance_limits_remain_visible_without_usage_counters(self, sender):
+        sender.agent.runtime.separate_telemetry = True
+        instances = sender.agent.runtime.instances
+
+        def observed():
+            units = instances()
+            for unit in units:
+                if unit["state"] == "running":
+                    unit["resource_enforcement"] = {
+                        "cpu_enforcement": True, "cpu_cores": 8,
+                        "memory_enforcement": True, "memory_limit_bytes": 16 * 1024**3}
+            return units
+
+        sender.agent.runtime.instances = observed
+        beat = sender.measure_once()
+        running = next(unit for unit in beat["instances"] if unit["state"] == "running")
+        assert running["telemetry"]["cpu_cores"] == 8
+        assert running["telemetry"]["mem_limit_bytes"] == 16 * 1024**3
+        assert "cpu_percent" not in running["telemetry"]
+        assert "mem_used_bytes" not in running["telemetry"]
+
     def test_slow_guest_counters_do_not_delay_process_observations(self, sender):
         sender.agent.runtime.separate_telemetry = True
         entered, released = threading.Event(), threading.Event()
