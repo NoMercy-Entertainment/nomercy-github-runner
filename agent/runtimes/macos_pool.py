@@ -29,6 +29,7 @@ OVERHEAD_BYTES = 2 * GIB
 POOL_LABEL = "nomercy.appliance_pool"
 RUNNER_LABEL = "nomercy.runner_id"
 PINNED_IMAGE = re.compile(r"(?:sha256:[0-9a-f]{64}|[^\s]+@sha256:[0-9a-f]{64})\Z")
+NETWORK_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}\Z")
 
 
 def _port_free(port):
@@ -59,13 +60,16 @@ class MacAppliancePoolRuntime:
 
     def __init__(self, *, image, base_disk, base_system, data_root, templates,
                  base_guests_disabled, guest, tools=None, nvram_seed=None, ssh_port_base=51000,
-                 docker="docker", qemu_img="qemu-img", boot_timeout=600,
+                 docker="docker", qemu_img="qemu-img", boot_timeout=600, network=None,
                  shutdown_timeout=180, image_uid=1000, image_gid=1000,
                  run=None, guest_factory=None,
                  port_free=_port_free, sleep=time.sleep, clock=time.monotonic,
                  runner_storage_limit=None):
         if not PINNED_IMAGE.fullmatch(image):
             raise ValueError("appliance pool image must be pinned by sha256")
+        if network is not None and (not isinstance(network, str)
+                or not NETWORK_NAME.fullmatch(network) or network in ("bridge", "host", "none")):
+            raise ValueError("appliance pool network must name a user-defined Docker network")
         if base_guests_disabled is not True:
             raise ValueError("base must be verified to have all runner jobs disabled")
         if not templates or any(not isinstance(t, str) or not re.fullmatch(
@@ -101,6 +105,7 @@ class MacAppliancePoolRuntime:
                 self._owner_lock.close()
                 raise RuntimeError("another agent owns this appliance pool")
         self._docker, self._qemu = docker, qemu_img
+        self.network = network
         self._run, self._guest_factory = run or _exec, guest_factory
         self._guest, self._tools = dict(guest), dict(tools or {})
         if runner_storage_limit is not None and (type(runner_storage_limit) is not int
@@ -412,6 +417,7 @@ class MacAppliancePoolRuntime:
                 if not self._port_free(record["port"]):
                     raise RuntimeError("assigned appliance SSH port is occupied")
                 argv = [self._docker, "create", "--name", naming.unit_name(rid),
+                        *(["--network", self.network] if self.network else []),
                         "--label", RUNNER_LABEL + "=" + rid,
                         "--label", POOL_LABEL + "=" + str(self.root),
                         "--restart", "no", "--device", "/dev/kvm",

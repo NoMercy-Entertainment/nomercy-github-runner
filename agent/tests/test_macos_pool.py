@@ -116,8 +116,11 @@ class Host:
                                MemorySwap=int(argv[argv.index("--memory-swap") + 1]),
                                NanoCpus=int(argv[argv.index("--cpus") + 1]) * 1000000000,
                                PortBindings={"10022/tcp": [{"HostIp": "127.0.0.1", "HostPort": port}]})
+            network = argv[argv.index("--network") + 1] if "--network" in argv else "bridge"
+            host_config["NetworkMode"] = network
             self.units[name] = dict(Name="/" + name, Config=config,
                                     HostConfig=host_config, Mounts=mounts,
+                                    NetworkSettings={"Networks": {network: {"DNSNames": [name]}}},
                                     State=dict(Running=False, Status="created"))
             return True, name, ""
         name = argv[-1]
@@ -193,6 +196,24 @@ def test_two_guests_have_distinct_disk_port_and_guest_commands(pool, host):
     assert pool.status(RID)["running"] is True
     assert len(pool.instances()) == 2
     assert host.guests[RID] is not host.guests[OTHER]
+
+
+def test_recreated_guest_keeps_its_console_network_and_dns_name(pool, host):
+    pool.network = "macos_runner_default"
+    name = naming.unit_name(RID)
+    pool.create(RID, SPEC)
+    network = host.units[name]["NetworkSettings"]["Networks"]
+    assert network[pool.network]["DNSNames"] == [name]
+    disk = pool._directory(RID) / "disk.qcow2"
+    saved_disk = disk.read_bytes()
+    pool.stop(RID)
+    pool.remove(RID, keep_data=True)
+    assert name not in host.units
+    pool.create(RID, SPEC)
+    network = host.units[name]["NetworkSettings"]["Networks"]
+    assert network[pool.network]["DNSNames"] == [name]
+    assert disk.read_bytes() == saved_disk
+    assert pool.status(RID)["running"] is True
 
 def test_guest_status_reads_overlap_and_keep_unknown_state(pool, monkeypatch):
     import threading

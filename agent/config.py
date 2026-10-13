@@ -43,7 +43,7 @@ APPLIANCE_FIELDS = frozenset({"name", "docker", "boot_timeout"})
 POOL_FIELDS = frozenset({"image", "base_disk", "base_system", "nvram_seed", "data_root", "templates",
                          "base_guests_disabled", "ssh_port_base", "docker", "qemu_img",
                          "boot_timeout", "shutdown_timeout", "image_uid", "image_gid",
-                         "runner_storage_limit"})
+                         "runner_storage_limit", "network"})
 TOOLS_FIELDS = {
     "linux-container": frozenset(),
     "windows-process": frozenset({"nssm", "sc", "icacls", "powershell", "python", "templates", "short_workspaces"}),
@@ -229,9 +229,14 @@ def parse(data, exists=os.path.isfile):
             raise ConfigError("appliance_pool requires a macOS guest connection and excludes appliance")
         if not tools.get("domain"):
             raise ConfigError("appliance_pool requires explicit guest tools.domain")
-        from .runtimes.macos_pool import PINNED_IMAGE
+        from .runtimes.macos_pool import PINNED_IMAGE, NETWORK_NAME
         if not isinstance(pool.get("image"), str) or not PINNED_IMAGE.fullmatch(pool["image"]):
             raise ConfigError("appliance_pool.image must be pinned by sha256")
+        if "network" in pool:
+            network = pool["network"]
+            if (not isinstance(network, str) or not NETWORK_NAME.fullmatch(network)
+                    or network in ("bridge", "host", "none")):
+                raise ConfigError("appliance_pool.network must name a user-defined Docker network")
         for key in ("base_disk", "base_system", "data_root"):
             path = pool.get(key)
             if not isinstance(path, str) or not path.startswith("/") or any(c in path for c in (",", "\n", "\r")):

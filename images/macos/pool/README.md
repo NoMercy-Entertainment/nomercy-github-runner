@@ -87,8 +87,17 @@ Example fragment, alongside the existing `guest`, `tools`, mTLS and host identit
 }
 ```
 
-The image placeholder intentionally fails validation until replaced. Pool
-defaults are 4 vCPUs and 8 GiB guest RAM, with 2 GiB additional bounded QEMU
+The image placeholder intentionally fails validation until replaced.
+
+Workers with noVNC consoles on a user-defined Docker network should set
+`appliance_pool.network` to that network name, for example `macos_runner_default`.
+The agent creates every appliance on that network, so Docker DNS keeps its runner
+name reachable from noVNC after recreating the container. Create the network and
+attach the console proxies to it before configuring the worker. Existing running
+appliances can join it with `docker network connect` without restarting the guest.
+Omitting the setting preserves the existing Docker network behavior.
+
+Pool defaults are 4 vCPUs and 8 GiB guest RAM, with 2 GiB additional bounded QEMU
 overhead per instance. Docker CPU quota equals vCPU count; `RAM`, `SMP`, `CORES`
 and `NOPICKER=true` are set explicitly. `NOPICKER=true` removes the installer
 media from the QEMU launch so the installed macOS disk can boot. Host memory

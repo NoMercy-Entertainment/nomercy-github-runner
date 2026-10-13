@@ -75,6 +75,21 @@ def test_the_agent_loader_accepts_the_rendered_pool():
     assert parsed.capacity == {"max_runners": 2, "memory_bytes": 21474836480}
 
 
+def test_console_network_survives_agent_config_loading():
+    rendered = _rendered()
+    rendered["appliance_pool"]["network"] = "macos_runner_default"
+    parsed = config.parse(_agent_config(rendered), exists=lambda path: True)
+    assert parsed.appliance_pool["network"] == "macos_runner_default"
+
+
+@pytest.mark.parametrize("network", [None, 7, "", "--privileged", "host", "none", "bridge", "console\n"])
+def test_pool_refuses_invalid_or_builtin_console_networks(network):
+    rendered = _rendered()
+    rendered["appliance_pool"]["network"] = network
+    with pytest.raises(config.ConfigError, match="appliance_pool.network"):
+        config.parse(_agent_config(rendered), exists=lambda path: True)
+
+
 def test_the_loader_refuses_a_base_that_is_not_attested():
     rendered = _rendered()
     rendered["appliance_pool"]["base_guests_disabled"] = False
