@@ -14,11 +14,14 @@ import re
 import threading
 
 from .. import naming
-from ..windows_timeouts import shell_timeout
 
 DEFAULT_LIMIT = 100 * 1024 ** 3
 DEFAULT_RESERVE = 20 * 1024 ** 3
 MIN_LIMIT = 1024 ** 3
+# A full identity check includes shell startup and the storage CIM provider.
+# The real ARM check took 529 seconds with PowerShell 7. Keep one bound for
+# every Windows worker and below the default 1800-second operation deadline.
+VERIFY_TIMEOUT = 900
 #: What the helper says when a runner has no owned disk at all - a plain
 #: directory it will not adopt. The runtime measures such a runner as the
 #: plain directory it is; any other refusal stays an error.
@@ -67,7 +70,7 @@ class WindowsStorage:
             ok, out, err = self._run([
                 self._powershell, "-NoProfile", "-NonInteractive", "-ExecutionPolicy",
                 "Bypass", "-File", script], input=json.dumps(request),
-                timeout=shell_timeout() if action == "verify" else 3600)
+                timeout=VERIFY_TIMEOUT if action == "verify" else 3600)
         if not ok:
             raise RuntimeError("runner storage: " + (err or out or "helper failed"))
         try:
