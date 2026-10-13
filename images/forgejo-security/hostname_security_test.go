@@ -13,3 +13,10 @@ func TestNoMercyRejectsLookalikeProviderHosts(t *testing.T) {
         if err != nil || provider != "" || slug != value { t.Fatalf("lookalike host accepted: %s", value) }
     }
 }
+
+func TestNoMercyRejectsLookalikeConfiguredHosts(t *testing.T) {
+    for _, value := range []string{"https://exampleXcom/owner/repo", "https://example.com.attacker.test/owner/repo", "ssh://git@fakeexample.com/owner/repo"} {
+        provider, slug, err := findSlug(value, "example.com")
+        if err != nil || provider != "" || slug != value { t.Fatalf("configured host lookalike accepted: %s", value) }
+    }
+}

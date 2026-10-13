@@ -3,7 +3,7 @@ package runner
 import "testing"
 
 func TestNoMercyRelativeActionSymlinksStayWithinParent(t *testing.T) {
-    for _, link := range []string{"../outside", "../../outside", "/outside"} {
+    for _, link := range []string{"../outside", "../../outside", "/outside", `..\outside`, `C:\outside`, "C:/outside"} {
         if _, err := symlinkJoin("action.yml", link, "."); err == nil {
             t.Fatalf("outside local action link accepted: %s", link)
         }

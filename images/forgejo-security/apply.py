@@ -27,6 +27,12 @@ replace("act/common/git/git.go",
 replace("act/common/git/git.go",
     r"`github.com[:/](.+)/(.+?)(?:.git)?$`",
     r"`^(?:(?:git\+)?ssh://)?(?:[^/@:]+@)?github\.com[:/]([^/?#]+)/([^/?#]+?)(?:\.git)?$`")
+replace("act/common/git/git.go",
+    r'fmt.Sprintf(`^https?://%s/(.+)/(.+?)(?:.git)?$`, githubInstance)',
+    r'fmt.Sprintf(`^https?://%s/([^/?#]+)/([^/?#]+?)(?:\.git)?$`, regexp.QuoteMeta(githubInstance))')
+replace("act/common/git/git.go",
+    r'fmt.Sprintf(`%s(?::\d+/|:|/|:/)([^/].+)/(.+?)(?:.git)?$`, githubInstance)',
+    r'fmt.Sprintf(`^(?:(?:git\+)?ssh://)?(?:[^/@:]+@)?%s(?::\d+/|:|/|:/)([^/?#]+)/([^/?#]+?)(?:\.git)?$`, regexp.QuoteMeta(githubInstance))')
 
 replace("act/filecollector/file_collector.go",
     """\tfdestpath := filepath.Join(cc.DstDir, fpath)
@@ -64,7 +70,7 @@ replace("act/filecollector/file_collector.go",
 replace("act/runner/step.go", '\t"path"\n', '\t"path"\n\t"path/filepath"\n')
 replace("act/runner/step.go",
     'if strings.HasPrefix(dest, prefix) || prefix == "./" {',
-    'if !path.IsAbs(sym) && (strings.HasPrefix(dest, prefix) || (prefix == "./" && filepath.IsLocal(dest))) {')
+    r'if !path.IsAbs(sym) && !strings.ContainsAny(sym, `\:`) && (strings.HasPrefix(dest, prefix) || (prefix == "./" && filepath.IsLocal(dest))) {')
 
 tests = {"filecollector": "copy_security_test.go", "common/git": "hostname_security_test.go",
          "runner": "symlink_security_test.go"}
