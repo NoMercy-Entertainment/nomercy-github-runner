@@ -43,6 +43,7 @@ class WindowsStorage:
         if type(self.reserve) is not int or self.reserve < 0:
             raise ValueError("reserve_bytes must be a nonnegative integer")
         self._run, self._powershell = run, powershell
+        self._helper_lock = threading.Lock()
         self._verification_lock = threading.Lock()
         self._verifications = {}
 
@@ -57,11 +58,16 @@ class WindowsStorage:
                    "root": self.root, "runner_root": naming.WINDOWS_ROOT,
                    "reserve_bytes": self.reserve, "limit": limit}
         script = str(Path(__file__).with_name("windows_storage.ps1"))
-        ok, out, err = self._run([
-            self._powershell, "-NoProfile", "-NonInteractive", "-ExecutionPolicy",
-            "Bypass", "-File", script], input=json.dumps(request),
-            # A verify may wait up to 8 s for the host's storage lock first.
-            timeout=shell_timeout() if action == "verify" else 3600)
+        # The helper already serializes storage through a host-wide mutex.
+        # Queue locally before starting PowerShell, so our own concurrent
+        # readers do not exhaust its short verify wait or compete for shell
+        # startup CPU under emulation. The OS mutex still protects other
+        # processes, and every call retains its complete identity check.
+        with self._helper_lock:
+            ok, out, err = self._run([
+                self._powershell, "-NoProfile", "-NonInteractive", "-ExecutionPolicy",
+                "Bypass", "-File", script], input=json.dumps(request),
+                timeout=shell_timeout() if action == "verify" else 3600)
         if not ok:
             raise RuntimeError("runner storage: " + (err or out or "helper failed"))
         try:
