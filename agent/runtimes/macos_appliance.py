@@ -293,6 +293,11 @@ class MacApplianceRuntime:
 
         # 3. The launchd job. Its environment can carry a token, so the file
         #    is readable by this user alone.
+        if (spec.get("env") or {}).get("NOMERCY_FORGEJO_ADMISSION_POLICY"):
+            from .macos_forgejo_admission import install
+            if self._domain() != "system":
+                raise RuntimeError("Forgejo admission requires protected system launchd")
+            install(self, rid)
         self._fs.makedirs(self._tools["launch_agents"])
         plist_text = self._plist(rid, spec, p)
         if self._domain() == "system":
@@ -482,6 +487,9 @@ class MacApplianceRuntime:
                "KeepAlive": {"SuccessfulExit": False},
                "ExitTimeOut": STOP_TIMEOUT,
                "ProcessType": "Standard"}
+        if env.get("NOMERCY_FORGEJO_ADMISSION_POLICY"):
+            from .macos_forgejo_admission import program
+            job["ProgramArguments"] = [program(rid)]
         if self._domain() == "system":
             job["UserName"] = self._tools["runner_user"]
         return plistlib.dumps(job).decode("utf-8")
