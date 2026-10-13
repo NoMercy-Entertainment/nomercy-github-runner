@@ -1,6 +1,17 @@
 """Fleet actions and rows, including explicit runner additions and removal."""
 import pytest
 
+
+def test_internal_settings_failure_does_not_expose_backend_details(client, plane, monkeypatch):
+    from store.fleets import FleetStore
+    def fail(*args, **kwargs):
+        raise ValueError("PRIVATE_SETTINGS_BACKEND_PATH")
+    monkeypatch.setattr(FleetStore, "set_defaults", fail)
+    answer = client.post("/api/v2/settings/github-linux-x64", json={"cpu_limit": 8})
+    assert answer.status_code == 400
+    assert answer.json["error"] == "Invalid fleet settings"
+    assert "PRIVATE_" not in answer.get_data(as_text=True)
+
 import api_v2
 import providers as P
 from control.service import RunnerService

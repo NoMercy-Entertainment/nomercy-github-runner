@@ -1092,13 +1092,16 @@ def settings_save(fleet_id):
     if err:
         return err
     from store.fleets import UnknownFleet
+    from store.limits import InvalidSetting
     from control import audit
     try:
         fleet = service.fleets.set_defaults(fleet_id, request.get_json(silent=True))
-    except UnknownFleet as e:
-        return _refuse(404, str(e))
-    except ValueError as e:
-        return _refuse(400, str(e))
+    except UnknownFleet:
+        return _refuse(404, f"no fleet {fleet_id}")
+    except InvalidSetting as e:
+        return _refuse(400, e.public_reason)
+    except ValueError:
+        return _refuse(400, "Invalid fleet settings")
     audit.record(_db_path(), "set_defaults", "accepted", actor=requested_by(),
                  fleet_id=fleet_id, parameters=request.get_json())
     unverified = _limits_view(service, fleet)["hardware_unverified"]
