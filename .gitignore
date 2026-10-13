@@ -1,4 +1,6 @@
 .env
+.codeql-forgejo-source/
+codeql-results/
 .claude/settings.local.json
 
 # Python
