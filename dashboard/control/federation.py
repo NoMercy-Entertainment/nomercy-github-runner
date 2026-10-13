@@ -49,7 +49,11 @@ CREATE TABLE IF NOT EXISTS federation_activity (
 
 
 class Refused(ValueError):
-    pass
+    """A deliberately public policy refusal, separate from internal errors."""
+
+    def __init__(self, reason):
+        self.public_reason = reason
+        super().__init__(reason)
 
 
 class AllocationPending(Exception):

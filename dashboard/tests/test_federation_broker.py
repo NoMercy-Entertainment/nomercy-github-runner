@@ -18,6 +18,20 @@ def b64(value):
     return base64.urlsafe_b64encode(value).decode().rstrip("=")
 
 
+def test_courier_refusal_does_not_serialize_exception_diagnostics(client, plane, monkeypatch):
+    class RefusalWithPrivateDiagnostics(Refused):
+        def __str__(self):
+            return "PRIVATE_COURIER_DIAGNOSTICS"
+    def refuse(*args, **kwargs):
+        raise RefusalWithPrivateDiagnostics("Courier assertion is invalid")
+    monkeypatch.setattr(Broker, "verify", refuse)
+    answer = client.post("/api/v2/federation/broker/challenge", json={},
+                         headers={"Authorization": "Bearer nmc_test"})
+    assert answer.status_code == 403
+    assert answer.json["error"] == "Courier assertion is invalid"
+    assert "PRIVATE_" not in answer.get_data(as_text=True)
+
+
 @pytest.fixture(scope="module")
 def signing_key():
     key = rsa.generate_private_key(public_exponent=65537, key_size=2048)

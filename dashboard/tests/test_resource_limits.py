@@ -302,6 +302,17 @@ class TestARunnersOwnLimits:
         assert answer.status_code == 202 and answer.json["pending"] is True
         assert linux.specs.get(rid)["cpu_override"] == "8.0"
 
+    def test_internal_recreate_details_do_not_escape_pending_limit_response(self, client, linux, monkeypatch):
+        from control.service import RunnerService
+        def cannot_recreate(*args, **kwargs):
+            raise ValueError("PRIVATE_STORAGE_DRIVER_AND_PATH")
+        rid = a_runner(linux, cpu_limit="0-15", memory_limit=32 * GIB)
+        monkeypatch.setattr(RunnerService, "_act", cannot_recreate)
+        answer = set_limits(client, rid, {"cpu": 8})
+        assert answer.status_code == 202 and answer.json["pending"] is True
+        assert answer.json["why_pending"] == "Replacement cannot start yet; check the runner and retry"
+        assert "PRIVATE_" not in answer.get_data(as_text=True)
+
     def test_a_repeat_is_the_same_request(self, client, linux):
         rid = a_runner(linux, cpu_limit="0-15", memory_limit=32 * GIB)
         first = set_limits(client, rid, {"cpu": 8})

@@ -659,9 +659,9 @@ def runner_action(runner_id, verb):
     except UnknownRunner:
         return _refuse(404, f"no runner {runner_id}")
     except Refused as e:
-        return _refuse(409, str(e))
-    except ValueError as e:
-        return _refuse(400, str(e))
+        return _refuse(409, e.public_reason)
+    except ValueError:
+        return _refuse(400, "Invalid runner action parameters")
     return jsonify(ok=True, operation_id=op), 202
 
 
@@ -681,7 +681,7 @@ def runner_limits(runner_id):
     service, err = _need_plane()
     if err:
         return err
-    from control.service import Refused, UnknownRunner
+    from control.service import InvalidLimits, Refused, UnknownRunner
     if service.specs.get(runner_id) is None:
         return _refuse(404, f"no runner {runner_id}")
     try:
@@ -691,9 +691,11 @@ def runner_limits(runner_id):
     except UnknownRunner:
         return _refuse(404, f"no runner {runner_id}")
     except Refused as e:
-        return _refuse(409, str(e))
-    except ValueError as e:
-        return _refuse(400, str(e))
+        return _refuse(409, e.public_reason)
+    except InvalidLimits as e:
+        return _refuse(400, e.public_reason)
+    except ValueError:
+        return _refuse(400, "Invalid runner limits")
     if result["pending"]:
         note = ("Saved, pending recreate: it applies the next time this runner "
                 "is recreated" + (f" ({result['why_pending']})"
@@ -881,7 +883,7 @@ def _each_runner(service, fleet_id, verb, key, skip):
                             "operation_id": op})
         except Refused as e:
             results.append({"runner_id": rid, "ok": False,
-                            "error": str(e)})
+                            "error": e.public_reason})
     return results
 
 
