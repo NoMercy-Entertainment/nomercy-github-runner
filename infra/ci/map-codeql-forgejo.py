@@ -9,6 +9,9 @@ COPIES = {
     ".codeql-forgejo-source/internal/pkg/report/event_test.go": "images/forgejo-events/event_test.go",
     ".codeql-forgejo-source/internal/app/run/admission.go": "images/forgejo-admission/admission.go",
     ".codeql-forgejo-source/internal/app/run/admission_test.go": "images/forgejo-admission/admission_test.go",
+    ".codeql-forgejo-source/act/filecollector/copy_security_test.go": "images/forgejo-security/copy_security_test.go",
+    ".codeql-forgejo-source/act/common/git/hostname_security_test.go": "images/forgejo-security/hostname_security_test.go",
+    ".codeql-forgejo-source/act/runner/symlink_security_test.go": "images/forgejo-security/symlink_security_test.go",
 }
 
 def remap(document):
