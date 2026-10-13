@@ -71,7 +71,7 @@ def guard():
             from control.federation_broker import Broker
             peer = Broker(plane().path).verify(credential, _body(), courier_routes[request.path])
         except Refused as error:
-            return jsonify(error=str(error)), 403
+            return jsonify(error=error.public_reason), 403
         g.federation_peer = peer
         g.role = "federation-peer"
         return True
@@ -130,7 +130,7 @@ def policy_guard():
 
 @bp.errorhandler(Refused)
 def refused(error):
-    return jsonify(error=str(error)), 409
+    return jsonify(error=error.public_reason), 409
 
 
 @bp.route("/federation")
@@ -140,7 +140,7 @@ def screen():
         ready = any(value["provisioning_available"] for value in (plane().capacity(peer["id"]) for peer in plane().peers() if peer["enabled"]))
         note = None
     except Refused as error:
-        ready, note = False, str(error)
+        ready, note = False, error.public_reason
     import users
     return render_template("federation.html", csrf=session["federation_csrf"], people=users.list_users(),
                            provisioning_ready=ready, unavailable=note)

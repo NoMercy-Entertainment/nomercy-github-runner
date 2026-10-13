@@ -120,9 +120,21 @@ class Refused(Exception):
     failure they will report as a bug.
     """
 
+    def __init__(self, reason):
+        self.public_reason = reason
+        super().__init__(reason)
+
 
 class UnknownRunner(Exception):
     pass
+
+
+class InvalidLimits(ValueError):
+    """A public capacity validation result, not an internal exception."""
+
+    def __init__(self, reason):
+        self.public_reason = reason
+        super().__init__(reason)
 
 
 def forget_adoption(specs, spec):
@@ -884,8 +896,8 @@ class RunnerService:
                 spec["fleet_id"], host_id=spec.get("host_id") or None)
             if any(changes.get(key) is not None and not support[f"{key}_limit_supported"]
                    for key in ("cpu", "memory")):
-                raise ValueError("CPU/RAM changes require a healthy macOS worker "
-                                 "confirming per-runner appliance enforcement")
+                raise InvalidLimits("CPU/RAM changes require a healthy macOS worker "
+                                    "confirming per-runner appliance enforcement")
         values = {}
         if "cpu" in changes:
             values["cpu_override"] = limits.normalize_cpu(changes["cpu"], spec["platform"])
@@ -900,7 +912,7 @@ class RunnerService:
         verdict = hardware.check(float(cpu) if cpu is not None else None, memory,
                                  [host] if host else [])
         if verdict not in (None, hardware.UNVERIFIED):
-            raise ValueError(verdict)
+            raise InvalidLimits(verdict)
         return values, verdict == hardware.UNVERIFIED
 
     def _set_limits(self, runner_id, changes, requested_by, idempotency_key):
@@ -946,8 +958,10 @@ class RunnerService:
                 # the one that is queued is audited as a recreate of its own.
                 recreate = self._act(runner_id, "recreate", requested_by,
                                      f"{idempotency_key}:recreate" if idempotency_key else None)
-            except (Refused, ValueError, StaleSpec) as e:
-                why = str(e)
+            except Refused as e:
+                why = e.public_reason
+            except (ValueError, StaleSpec):
+                why = "Replacement cannot start yet; check the runner and retry"
             else:
                 self._audit("recreate", "accepted", requested_by, runner_id=runner_id,
                             fleet_id=spec.get("fleet_id"), operation_id=recreate,

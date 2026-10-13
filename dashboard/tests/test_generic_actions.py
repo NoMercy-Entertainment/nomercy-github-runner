@@ -57,6 +57,24 @@ def post(client, url, key="k-1", body=None):
     return client.post(url, json=body or {}, headers=headers)
 
 
+@pytest.mark.parametrize("kind", ["refusal", "internal-value-error"])
+def test_action_exposes_only_public_refusal_or_generic_validation(client, plane, monkeypatch, kind):
+    from control.service import Refused
+    class RefusalWithPrivateDiagnostics(Refused):
+        def __str__(self):
+            return "PRIVATE_BACKEND_PATH_AND_DETAILS"
+    def refuse(*args, **kwargs):
+        if kind == "refusal":
+            raise RefusalWithPrivateDiagnostics("Runner is draining")
+        raise ValueError("PRIVATE_BACKEND_PATH_AND_DETAILS")
+    monkeypatch.setattr(RunnerService, "act", refuse)
+    rid = plane[1][("github", "linux")]
+    response = post(client, f"/api/v2/runners/{rid}/actions/stop")
+    assert response.status_code == (409 if kind == "refusal" else 400)
+    assert response.json["error"] == ("Runner is draining" if kind == "refusal" else "Invalid runner action parameters")
+    assert "PRIVATE_" not in response.get_data(as_text=True)
+
+
 class TestOneDoor:
     def test_every_verb_of_every_platform_reaches_the_same_handler(self):
         import app as dash

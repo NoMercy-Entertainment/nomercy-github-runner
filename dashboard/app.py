@@ -834,8 +834,8 @@ def api_users(action):
     if action == "approve":
         try:
             users.approve(sub, (body.get("role") or "").strip())
-        except ValueError as e:
-            return jsonify(ok=False, error=str(e)), 400
+        except ValueError:
+            return jsonify(ok=False, error="Choose viewer, operator or admin"), 400
     elif action == "deny":
         users.deny(sub)
     elif action == "revoke":
