@@ -65,7 +65,10 @@ def test_nssm_pending_exit_waits_for_confirmed_final_state(runtime, monkeypatch,
         {"exists": True, "running": action == "start", "state": "running" if action == "start" else "exited"},
     ])
     monkeypatch.setattr(runtime, "_nssm", lambda *a, **kw: (False, f"SERVICE_{action.upper()}_PENDING", ""))
-    monkeypatch.setattr(runtime, "status", lambda rid: next(observations))
+    monkeypatch.setattr(runtime, "_service_status", lambda rid: next(observations))
+    def storage_aware_status(rid):
+        pytest.fail("SCM confirmation must not depend on a disk probe")
+    monkeypatch.setattr(runtime, "status", storage_aware_status)
     monkeypatch.setattr("agent.runtimes.windows_process.time.sleep", lambda delay: None)
     runtime._service_command(RID, action)
     assert list(observations) == []
@@ -74,7 +77,7 @@ def test_nssm_pending_exit_waits_for_confirmed_final_state(runtime, monkeypatch,
 @pytest.mark.parametrize("action", ["start", "stop"])
 def test_nssm_pending_exit_does_not_accept_unknown_state(runtime, monkeypatch, action):
     monkeypatch.setattr(runtime, "_nssm", lambda *a, **kw: (False, f"SERVICE_{action.upper()}_PENDING", ""))
-    monkeypatch.setattr(runtime, "status", lambda rid: {"exists": None, "running": None, "state": "unknown"})
+    monkeypatch.setattr(runtime, "_service_status", lambda rid: {"exists": None, "running": None, "state": "unknown"})
     with pytest.raises(RuntimeError, match="was not confirmed: unknown"):
         runtime._service_command(RID, action)
 
@@ -85,7 +88,7 @@ def test_nssm_pending_exit_has_a_bounded_wait(runtime, monkeypatch, action):
     ticks = iter([0, 1000])
     monkeypatch.setattr("agent.runtimes.windows_process.time.monotonic", lambda: next(ticks))
     monkeypatch.setattr(runtime, "_nssm", lambda *a, **kw: (False, f"SERVICE_{action.upper()}_PENDING", ""))
-    monkeypatch.setattr(runtime, "status", lambda rid: {"exists": True, "running": None, "state": pending})
+    monkeypatch.setattr(runtime, "_service_status", lambda rid: {"exists": True, "running": None, "state": pending})
     with pytest.raises(RuntimeError, match="final state was not confirmed"):
         runtime._service_command(RID, action)
 

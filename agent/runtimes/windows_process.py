@@ -205,7 +205,7 @@ class WindowsProcessRuntime:
         # final state before treating the operation as failed or complete.
         deadline = time.monotonic() + STOP_TIMEOUT + 30
         while True:
-            state = self.status(runner_id)
+            state = self._service_status(runner_id)
             if state.get("exists") is True and state.get("running") is (action == "start"):
                 return
             if state.get("state") != pending:
