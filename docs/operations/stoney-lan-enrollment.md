@@ -100,8 +100,8 @@ LAN-only. Expose those paths only on the tunnel/private HTTPS listener. Test
 that denial from outside the tunnel before exchanging any peer credentials.
 Do not activate NoMercy courier delivery over public callbacks for this setup.
 
-The private transport source change must be reviewed and deployed before this
-configuration is used. Existing production currently has lending disabled.
+The private transport source change is reviewed and deployed in the existing
+controller/dashboard image (2026-10-13). Production still has lending disabled.
 Adding a tunnel does not enable lending, grant hardware control or complete #5.
 
 ## Machines and SSH
