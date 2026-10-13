@@ -494,6 +494,13 @@ class WindowsProcessRuntime:
         is written."""
         name = naming.unit_name(runner_id)
         p = self.paths(runner_id)
+        state = self._service_status(runner_id)
+        if state.get("exists") is True and state.get("running") is False:
+            # After boot an owned disk may be detached. A stopped service
+            # has no job host to signal, so do not write through that path.
+            self._check(self._sc("config", name, "start=", "demand"))
+            self._check(self._nssm("set", name, "AppExit", "Default", "Exit"))
+            return
         if self._storage:
             self._storage.verify(runner_id)
         self._check(self._sc("config", name, "start=", "demand"))
@@ -563,7 +570,7 @@ class WindowsProcessRuntime:
 
     # ---- observation ---------------------------------------------------------
 
-    def status(self, runner_id):
+    def _service_status(self, runner_id):
         """Whether the service exists and runs. `exists` is None - unknown -
         when the service manager could not be asked."""
         ok, out, err = self._nssm("status", naming.unit_name(runner_id),
@@ -583,7 +590,14 @@ class WindowsProcessRuntime:
                           "SERVICE_START_PENDING": "starting",
                           "SERVICE_STOP_PENDING": "stopping"}.get(state,
                                                                   "unknown")}
-        if self._storage:
+        return result
+
+    def status(self, runner_id):
+        result = self._service_status(runner_id)
+        running = result.get("running")
+        if self._storage and result.get("exists") is True and running is False:
+            result["storage_ready"] = None  # Not examined; stopped is not storage-ready.
+        if self._storage and result.get("exists") is True and running is not False:
             try:
                 self._storage.verify(runner_id)
                 result["storage_ready"] = True
