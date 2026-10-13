@@ -27,6 +27,8 @@ A test asserts no column is named after anything in `providers.REDACTED_FIELDS`.
 """
 import os
 import sqlite3
+
+from db_connections import ClosingConnection
 import threading
 
 #: Its own file. See the package docstring for why this is not history.db.
@@ -295,7 +297,7 @@ def connect(path=None):
     OFF for backwards compatibility, so a connection that forgets it silently
     accepts a spec pointing at a fleet that does not exist.
     """
-    c = sqlite3.connect(path or DB_PATH, timeout=15)
+    c = sqlite3.connect(path or DB_PATH, timeout=15, factory=ClosingConnection)
     c.row_factory = sqlite3.Row
     c.execute("PRAGMA journal_mode=WAL")
     c.execute("PRAGMA foreign_keys=ON")
