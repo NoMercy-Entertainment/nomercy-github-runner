@@ -75,6 +75,17 @@ def test_action_exposes_only_public_refusal_or_generic_validation(client, plane,
     assert "PRIVATE_" not in response.get_data(as_text=True)
 
 
+def test_failed_evidence_read_does_not_serialize_backend_diagnostics(client, plane, monkeypatch):
+    def unavailable(*args, **kwargs):
+        raise RuntimeError("PRIVATE_AGENT_ADDRESS_AND_PATH")
+    monkeypatch.setattr(RunnerService, "fetch_status", unavailable)
+    rid = plane[1][("github", "linux")]
+    answer = client.get(f"/api/v2/runners/{rid}/status")
+    assert answer.status_code == 502 and answer.json["ok"] is False
+    assert answer.json["error"] == "Runner evidence is unavailable; inspect the runner logs"
+    assert "PRIVATE_" not in answer.get_data(as_text=True)
+
+
 class TestOneDoor:
     def test_every_verb_of_every_platform_reaches_the_same_handler(self):
         import app as dash

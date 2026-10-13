@@ -764,8 +764,8 @@ def _read(runner_id, fn):
         return jsonify(ok=True, result=fn(service))
     except UnknownRunner:
         return _refuse(404, f"no runner {runner_id}")
-    except Exception as e:  # noqa: BLE001 - a read that failed says why
-        return _refuse(502, f"{type(e).__name__}: {e}"[:300])
+    except Exception:  # noqa: BLE001 - failed evidence remains unavailable
+        return _refuse(502, "Runner evidence is unavailable; inspect the runner logs")
 
 
 @bp.route(f"{RUNNER}/status")
@@ -858,7 +858,7 @@ def fleet_add(fleet_id):
         op = service.create(fleet_id, 1, requested_by=requested_by(),
                             idempotency_key=key)
     except Refused as e:
-        return _refuse(409, str(e))
+        return _refuse(409, e.public_reason)
     return jsonify(ok=True, operation_id=op,
                    note=f"{fleet_id}: one more runner"), 202
 
@@ -998,8 +998,8 @@ def secret_set(name):
     except SecretRefused as e:
         audit.record(_db_path(), "set_secret", "refused",
                      actor=requested_by(), parameters={"name": name},
-                     outcome=str(e))
-        return _refuse(400, str(e))
+                     outcome=e.public_reason)
+        return _refuse(400, e.public_reason)
     audit.record(_db_path(), "set_secret", "accepted", actor=requested_by(),
                  parameters={"name": name})
     return jsonify(ok=True, note=f"{name} is set")
@@ -1015,7 +1015,7 @@ def secret_clear(name):
     try:
         SecretStore(_db_path()).clear(name)
     except SecretRefused as e:
-        return _refuse(400, str(e))
+        return _refuse(400, e.public_reason)
     audit.record(_db_path(), "clear_secret", "accepted",
                  actor=requested_by(), parameters={"name": name})
     return jsonify(ok=True, note=f"{name} is cleared")
