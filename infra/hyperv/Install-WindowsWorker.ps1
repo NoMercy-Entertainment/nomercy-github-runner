@@ -118,6 +118,34 @@ foreach ($d in $agentDir, $appDir, $tlsDir, $binDir, $templates) {
     New-Item -ItemType Directory -Force -Path $d | Out-Null
 }
 
+# ProgramData's inherited Users Write rule must not reach the agent's control
+# directory. Preserve readers and the service accounts' existing RX access.
+$controlWriters = @('S-1-5-18', 'S-1-5-32-544',
+    [Security.Principal.WindowsIdentity]::GetCurrent().User.Value)
+$controlAcl = Get-Acl -LiteralPath $agentDir
+if ($controlWriters -notcontains $controlAcl.GetOwner([Security.Principal.SecurityIdentifier]).Value) {
+    throw 'The agent control directory has an unexpected owner.'
+}
+$controlAcl.SetAccessRuleProtection($true, $true)
+Set-Acl -LiteralPath $agentDir -AclObject $controlAcl
+# Reload after inheritance conversion so RemoveAccessRuleSpecific matches
+# the resulting explicit ACEs, rather than their old inherited form.
+$controlAcl = Get-Acl -LiteralPath $agentDir
+foreach ($rule in @($controlAcl.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier]))) {
+    if ($rule.AccessControlType -eq 'Allow' -and ([int64]$rule.FileSystemRights -band 0xD0156) -ne 0 -and
+            $controlWriters -notcontains $rule.IdentityReference.Value) {
+        $controlAcl.RemoveAccessRuleSpecific($rule)
+    }
+}
+Set-Acl -LiteralPath $agentDir -AclObject $controlAcl
+$controlAcl = Get-Acl -LiteralPath $agentDir
+foreach ($rule in $controlAcl.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier])) {
+    if ($rule.AccessControlType -eq 'Allow' -and ([int64]$rule.FileSystemRights -band 0xD0156) -ne 0 -and
+            $controlWriters -notcontains $rule.IdentityReference.Value) {
+        throw 'The agent control directory still permits an untrusted writer.'
+    }
+}
+
 # --- Python --------------------------------------------------------------------
 $python = Join-Path $pythonDir 'python.exe'
 $pythonSettings = if ($Architecture -eq 'arm64') { $s.WindowsArm } else { $w }
