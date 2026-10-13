@@ -19,22 +19,30 @@ GIB = 1024**3
 MAX_BYTES = 2**63 - 1
 
 
+class InvalidSetting(ValueError):
+    """A public input/capacity validation result."""
+
+    def __init__(self, reason):
+        self.public_reason = reason
+        super().__init__(reason)
+
+
 def normalize_cpu(value, platform):
     """The text stored for a CPU limit, or None for "not set"; ValueError
     with the reason otherwise."""
     if value is None:
         return None
     if isinstance(value, bool):
-        raise ValueError("cpu_limit must be positive")
+        raise InvalidSetting("cpu_limit must be positive")
     try:
         number = float(value)
     except (TypeError, ValueError):
-        raise ValueError("cpu_limit must be positive") from None
+        raise InvalidSetting("cpu_limit must be positive") from None
     if not math.isfinite(number) or number <= 0:
-        raise ValueError("cpu_limit must be positive")
+        raise InvalidSetting("cpu_limit must be positive")
     if platform == "macos":
         if not number.is_integer() or not 1 <= number <= 64:
-            raise ValueError("macOS appliance CPU limit must be a whole count from 1 to 64")
+            raise InvalidSetting("macOS appliance CPU limit must be a whole count from 1 to 64")
         return str(int(number))
     return str(number)
 
@@ -43,7 +51,7 @@ def normalize_bytes(value, key):
     if value is None:
         return None
     if isinstance(value, bool) or not isinstance(value, int) or not 0 < value <= MAX_BYTES:
-        raise ValueError(f"{key} must be positive bytes or null")
+        raise InvalidSetting(f"{key} must be positive bytes or null")
     return value
 
 
@@ -51,5 +59,5 @@ def normalize_memory(value, platform, key="memory_limit"):
     value = normalize_bytes(value, key)
     if value is not None and platform == "macos":
         if value % GIB or not 4 * GIB <= value <= 128 * GIB:
-            raise ValueError("macOS appliance memory must be whole GiB from 4 to 128")
+            raise InvalidSetting("macOS appliance memory must be whole GiB from 4 to 128")
     return value

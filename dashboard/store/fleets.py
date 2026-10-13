@@ -170,54 +170,54 @@ class FleetStore:
     def set_defaults(self, fid, values):
         allowed = {"labels", "runner_group", "unit_template", "cpu_limit", "memory_limit", "memory_swap_limit", "disk_limit", "cache_policy"}
         if not isinstance(values, dict) or set(values) - allowed:
-            raise ValueError("unknown fleet setting")
+            raise limits.InvalidSetting("unknown fleet setting")
         fleet = self.get(fid)
         if fleet is None:
             raise UnknownFleet(f"no fleet {fid}")
         values = dict(values)
         if values.get("memory_swap_limit") is not None and fleet["platform"] != "linux":
-            raise ValueError("RAM + swap limits are supported only on Linux")
+            raise limits.InvalidSetting("RAM + swap limits are supported only on Linux")
         if fleet["platform"] == "macos" and any(key in values for key in ("cpu_limit", "memory_limit")):
             support = self.resource_support(fid)
             if any(not support[key + "_supported"] for key in ("cpu_limit", "memory_limit") if key in values):
-                raise ValueError("CPU/RAM changes require a healthy macOS worker confirming per-runner appliance enforcement")
+                raise limits.InvalidSetting("CPU/RAM changes require a healthy macOS worker confirming per-runner appliance enforcement")
         if values.get("disk_limit") is not None and not self.supports_disk_quota(fid):
-            raise ValueError("Per-runner disk quotas are unavailable on this fleet's workers")
+            raise limits.InvalidSetting("Per-runner disk quotas are unavailable on this fleet's workers")
         for key, value in values.items():
             if key == "labels":
                 if not isinstance(value, list) or len(value) > 100 or any(
                         not isinstance(v, str) or not v.strip() or len(v) > 256
                         or any(ch in v for ch in "\r\n\x00") for v in value):
-                    raise ValueError("labels must be a list of nonempty single-line labels")
+                    raise limits.InvalidSetting("labels must be a list of nonempty single-line labels")
                 values[key] = json.dumps(list(dict.fromkeys(v.strip() for v in value)))
             elif key in ("unit_template", "runner_group"):
                 if value is not None and (not isinstance(value, str) or len(value) > 1024
                         or any(ch in value for ch in "\r\n\x00")):
-                    raise ValueError(f"{key} must be single-line text")
+                    raise limits.InvalidSetting(f"{key} must be single-line text")
                 values[key] = value.strip() or None if value else None
             elif key == "cache_policy":
                 if value is not None:
                     if not isinstance(value, dict) or set(value) - {"max_bytes", "scopes", "on_clear", "enabled"}:
-                        raise ValueError("cache_policy accepts max_bytes, scopes, on_clear and enabled")
+                        raise limits.InvalidSetting("cache_policy accepts max_bytes, scopes, on_clear and enabled")
                     maximum = value.get("max_bytes")
                     if maximum is not None and (isinstance(maximum, bool) or not isinstance(maximum, int) or maximum <= 0):
-                        raise ValueError("cache max_bytes must be positive bytes")
+                        raise limits.InvalidSetting("cache max_bytes must be positive bytes")
                     scopes = value.get("scopes")
                     if scopes is not None and (not isinstance(scopes, list) or any(
                             scope not in ("engine-build-cache", "engine-images-unused", "workspace", "toolcache", "temp") for scope in scopes)):
-                        raise ValueError("unknown cache scope")
+                        raise limits.InvalidSetting("unknown cache scope")
                     if "on_clear" in value and value["on_clear"] not in ("skip-if-busy", "drain-first"):
-                        raise ValueError("cache on_clear must be skip-if-busy or drain-first")
+                        raise limits.InvalidSetting("cache on_clear must be skip-if-busy or drain-first")
                     if "enabled" in value and not isinstance(value["enabled"], bool):
-                        raise ValueError("cache enabled must be boolean")
+                        raise limits.InvalidSetting("cache enabled must be boolean")
                     if fleet["platform"] != "linux":
                         if maximum is not None or value.get("enabled") is True:
                             from control import placement
                             if not any(placement.declared(w, 'cache_budget') is True
                                        for w in self._resource_workers(fleet)):
-                                raise ValueError("automatic cache budgets require a supporting worker")
+                                raise limits.InvalidSetting("automatic cache budgets require a supporting worker")
                         if any(scope.startswith("engine-") for scope in (scopes or [])):
-                            raise ValueError("engine cache scopes are supported only on Linux")
+                            raise limits.InvalidSetting("engine cache scopes are supported only on Linux")
                     values[key] = json.dumps(value)
             elif key == "cpu_limit":
                 values[key] = limits.normalize_cpu(value, fleet["platform"])
@@ -238,7 +238,7 @@ class FleetStore:
                 current.update(values)
                 memory, swap = current.get("memory_limit"), current.get("memory_swap_limit")
                 if memory is not None and swap is not None and swap < memory:
-                    raise ValueError("RAM + swap ceiling must be at least the memory limit")
+                    raise limits.InvalidSetting("RAM + swap ceiling must be at least the memory limit")
                 c.execute("UPDATE fleets SET " + ", ".join(f"{k}=?" for k in values)
                           + " WHERE fleet_id=?", (*values.values(), fid))
         return self.get(fid)
@@ -263,7 +263,7 @@ class FleetStore:
         why = hardware.check(float(cpu) if cpu is not None else None, memory,
                              self.hardware(fleet))
         if why and why != hardware.UNVERIFIED:
-            raise ValueError(why)
+            raise limits.InvalidSetting(why)
 
     def set_capacity(self, fid, count, requested_by=None,
                      idempotency_key=None):
