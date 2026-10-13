@@ -3,12 +3,16 @@ package run
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"math"
 	"net/url"
 	"strings"
+
+	log "github.com/sirupsen/logrus"
 
 	runnerv1 "code.forgejo.org/forgejo/actions-proto/runner/v1"
 	"google.golang.org/protobuf/types/known/structpb"
@@ -253,6 +257,55 @@ func (r *Runner) admit(task *runnerv1.Task) error {
 		return r.admissionErr
 	}
 	return r.admission.allows(task)
+}
+
+// Exercise the captured daemon policy, with no workflow parsing or execution.
+// This live startup proof distinguishes installation from a build-only test.
+func admissionStartupProof(policy *admissionPolicy, raw string) error {
+	if policy == nil || len(policy.owners) == 0 {
+		return errors.New("admission startup proof requires an owner")
+	}
+	var owner uint64
+	for id := range policy.owners {
+		if owner == 0 || id < owner {
+			owner = id
+		}
+	}
+	outside := uint64(1)
+	for policy.owners[outside] || policy.sources[outside] {
+		outside++
+	}
+	repo := func(id, owner uint64, login string) map[string]any {
+		return map[string]any{"id": id, "full_name": login + "/admission-proof",
+			"owner": map[string]any{"id": owner, "login": login}}
+	}
+	base, head := repo(1, owner, "owner"), repo(2, outside, "outside")
+	task := func(event string, pr any) *runnerv1.Task {
+		payload := map[string]any{"repository": base}
+		if pr != nil {
+			payload["pull_request"] = pr
+		}
+		context, _ := structpb.NewStruct(map[string]any{"event_name": event,
+			"repository": base["full_name"], "repository_owner": "owner",
+			"actor": "owner", "event": payload})
+		return &runnerv1.Task{Id: 1, Context: context}
+	}
+	runner := &Runner{admission: policy}
+	if err := runner.admit(task("workflow_dispatch", nil)); err != nil {
+		return errors.New("admission startup proof refused its allowed owner")
+	}
+	pr := map[string]any{"base": map[string]any{"repo": base}, "head": map[string]any{"repo": head}}
+	if runner.admit(task("pull_request", pr)) == nil {
+		return errors.New("admission startup proof accepted an outside fork")
+	}
+	pr["head"] = map[string]any{"repo": nil}
+	if runner.admit(task("pull_request", pr)) == nil {
+		return errors.New("admission startup proof accepted a missing fork identity")
+	}
+	log.WithFields(log.Fields{"policy_sha256": fmt.Sprintf("%x", sha256.Sum256([]byte(raw))),
+		"own_task": "accepted", "outside_fork": "refused", "missing_head": "refused",
+		"allowed_owner_ids": policy.owners, "trusted_source_owner_ids": policy.sources}).Info("Runner admission startup proof")
+	return nil
 }
 
 // NewReporter requires a context to mask its tokens. Preserve only the task ID

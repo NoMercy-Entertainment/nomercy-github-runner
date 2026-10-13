@@ -372,6 +372,14 @@ class WindowsProcessRuntime:
         self._check(self._run([
             self._tools["icacls"], ntpath.join(p["reg"], "unit.json"), "/deny",
             f"*{sid}:({self.DENY_WRITE})", "/Q"], timeout=120))
+        # The admission snapshot and executable cannot be replaced by a job.
+        leaves = ("forgejo-runner.exe", "run.cmd", "run.bat") if self._fs.exists(
+            ntpath.join(p["reg"], "forgejo-runner.exe")) else ()
+        for leaf in leaves:
+            path = ntpath.join(p["reg"], leaf)
+            if self._fs.exists(path):
+                self._check(self._run([self._tools["icacls"], path, "/deny",
+                                      f"*{sid}:({self.DENY_WRITE})", "/Q"], timeout=120))
 
     def _acl(self, root, name):
         """Only LocalSystem, Administrators and this runner's own account, and
@@ -662,7 +670,7 @@ class WindowsProcessRuntime:
         if self.status(rid).get("running") is not True:
             raise RuntimeError("owned Windows event unit is not running")
         if self._storage:
-            disk = self._storage.verify(rid)
+            disk = self._storage.measure(rid)
             logs = ntpath.join(disk["volume_guid"], "logs")
         else:
             logs = self.paths(rid)["logs"]
@@ -682,10 +690,9 @@ class WindowsProcessRuntime:
 
     def logs(self, runner_id, since_seconds, max_bytes=256 * 1024):
         """The tail of the runner's own output, for an operator's log
-        request - this keeps verifying the runner's volume through the
-        storage helper."""
+        request, with a fresh native proof of the owned volume."""
         if self._storage:
-            self._storage.verify(runner_id)
+            self._storage.measure(runner_id)
         return self._tail_log(runner_id, since_seconds, max_bytes)
 
     def _tail_log(self, runner_id, since_seconds, max_bytes=256 * 1024):
