@@ -36,7 +36,6 @@ replace("act/filecollector/file_collector.go",
 \tif linkName != "" {
 \t\treturn os.Symlink(linkName, fdestpath)
 \t}
-
 \tdf, err := os.OpenFile(fdestpath, os.O_CREATE|os.O_WRONLY, fi.Mode())""",
     """\tif !filepath.IsLocal(fpath) {
 \t\treturn fmt.Errorf("archive entry is outside the destination")
@@ -62,6 +61,7 @@ replace("act/filecollector/file_collector.go",
 
 \tdf, err := root.OpenFile(fpath, os.O_CREATE|os.O_WRONLY, fi.Mode().Perm())""")
 
+replace("act/runner/step.go", '\t"path"\n', '\t"path"\n\t"path/filepath"\n')
 replace("act/runner/step.go",
     'if strings.HasPrefix(dest, prefix) || prefix == "./" {',
     'if !path.IsAbs(sym) && (strings.HasPrefix(dest, prefix) || (prefix == "./" && filepath.IsLocal(dest))) {')
