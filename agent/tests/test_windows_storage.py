@@ -164,6 +164,9 @@ class Disks:
     def verify(self, rid):
         return self._call("verify", rid)
 
+    def measure(self, rid):
+        return self._call("measure", rid)
+
     def remove(self, rid):
         return self._call("remove", rid)
 
@@ -319,7 +322,7 @@ def test_light_telemetry_never_waits_on_the_storage_lock_but_the_deep_probe_does
 
     probed = runtime.probe(RID, "disk_usage")
 
-    assert disks.events == ["verify"]
+    assert disks.events == ["measure"]
     assert probed == {"ok": True, "value": 800, "total_bytes": 1000}
 
 

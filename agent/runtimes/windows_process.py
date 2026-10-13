@@ -701,7 +701,7 @@ class WindowsProcessRuntime:
             return ""
 
     def _owned_disk(self, runner_id):
-        """The runner's own disk as the storage helper verified it, or None
+        """The runner's own disk after a fresh native identity check, or None
         when it has none: no storage on this worker, or a plain directory
         the helper has no manifest for (a runner made before its worker had
         owned storage). Any other failure to verify is raised - a disk that
@@ -709,7 +709,7 @@ class WindowsProcessRuntime:
         if not self._storage:
             return None
         try:
-            return self._storage.verify(runner_id)
+            return self._storage.measure(runner_id)
         except RuntimeError as exc:
             if UNMANAGED in str(exc):
                 return None
