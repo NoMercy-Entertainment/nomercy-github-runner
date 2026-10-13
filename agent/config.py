@@ -40,10 +40,10 @@ RUNTIMES = ("linux-container", "windows-process", "macos-appliance")
 FIELDS = frozenset({"host_id", "runtime", "listen", "controller", "tls",
                     "permitted", "tools", "version", "capacity", "guest", "appliance", "appliance_pool", "storage", "windows_storage"})
 APPLIANCE_FIELDS = frozenset({"name", "docker", "boot_timeout"})
-POOL_FIELDS = frozenset({"image", "base_disk", "base_system", "nvram_seed", "data_root", "templates",
+POOL_FIELDS = frozenset({"network", "image", "base_disk", "base_system", "nvram_seed", "data_root", "templates",
                          "base_guests_disabled", "ssh_port_base", "docker", "qemu_img",
                          "boot_timeout", "shutdown_timeout", "image_uid", "image_gid",
-                         "runner_storage_limit", "network"})
+                         "runner_storage_limit", "memory_balloon"})
 TOOLS_FIELDS = {
     "linux-container": frozenset(),
     "windows-process": frozenset({"nssm", "sc", "icacls", "powershell", "python", "templates", "short_workspaces"}),
@@ -255,6 +255,8 @@ def parse(data, exists=os.path.isfile):
             raise ConfigError("appliance_pool.templates must name verified installed templates")
         if pool.get("base_guests_disabled") is not True:
             raise ConfigError("appliance_pool.base_guests_disabled must attest the prepared base")
+        if "memory_balloon" in pool and type(pool["memory_balloon"]) is not bool:
+            raise ConfigError("appliance_pool.memory_balloon must be a boolean")
         for key, default, low, high in (("ssh_port_base", 51000, 1024, 65535),
                                        ("boot_timeout", 600, 10, 900),
                                        ("shutdown_timeout", 180, 10, 900),

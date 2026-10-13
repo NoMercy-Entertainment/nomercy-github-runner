@@ -37,6 +37,20 @@ if [ -f guest.pass ]; then
   install -m 600 guest.pass /etc/runner-agent/guest.pass
 fi
 install -m 644 runner-agent.service /etc/systemd/system/runner-agent.service
+python3 - <<'PY'
+import json
+from pathlib import Path
+
+config = json.loads(Path('/etc/runner-agent/agent.json').read_text())
+pool = config.get('appliance_pool') or {}
+if pool:
+    root = pool['data_root']
+    if not root.startswith('/') or any(c.isspace() or c in '%\\' for c in root):
+        raise ValueError('appliance data_root must be a systemd-safe absolute path')
+    directory = Path('/etc/systemd/system/runner-agent.service.d')
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / 'storage.conf').write_text('[Unit]\nRequiresMountsFor=' + root + '\n')
+PY
 
 # sshpass is how the guest's password reaches its SSH, and the guest is the
 # only thing this agent drives.

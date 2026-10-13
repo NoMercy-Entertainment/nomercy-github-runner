@@ -82,6 +82,21 @@ def test_console_network_survives_agent_config_loading():
     assert parsed.appliance_pool["network"] == "macos_runner_default"
 
 
+def test_production_balloon_setting_is_accepted_by_the_agent_loader():
+    rendered = _rendered()
+    rendered["appliance_pool"].update(network="macos_runner_default", memory_balloon=True)
+    parsed = config.parse(_agent_config(rendered), exists=lambda path: True)
+    assert parsed.appliance_pool["memory_balloon"] is True
+
+
+@pytest.mark.parametrize("value", [None, "true", 1, [], {}])
+def test_memory_balloon_requires_an_explicit_boolean(value):
+    rendered = _rendered()
+    rendered["appliance_pool"]["memory_balloon"] = value
+    with pytest.raises(config.ConfigError, match="memory_balloon"):
+        config.parse(_agent_config(rendered), exists=lambda path: True)
+
+
 @pytest.mark.parametrize("network", [None, 7, "", "--privileged", "host", "none", "bridge", "console\n"])
 def test_pool_refuses_invalid_or_builtin_console_networks(network):
     rendered = _rendered()

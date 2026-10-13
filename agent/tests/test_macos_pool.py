@@ -215,6 +215,37 @@ def test_recreated_guest_keeps_its_console_network_and_dns_name(pool, host):
     assert disk.read_bytes() == saved_disk
     assert pool.status(RID)["running"] is True
 
+
+def test_balloon_control_keeps_headless_display_and_survives_recreate(pool, host):
+    pool._memory_balloon = True
+    pool._image_extra = "-display none -vnc 0.0.0.0:99,password=off"
+    pool.create(RID, SPEC)
+    name = naming.unit_name(RID)
+    extra = next(value[6:] for value in host.units[name]["Config"]["Env"] if value.startswith("EXTRA="))
+    assert extra.startswith(pool._image_extra + " ")
+    assert "size=" + str(pool._read(RID)["memory"]) in extra
+    assert "reserve=off" in extra and "virtio-balloon-pci" in extra
+    assert "-qmp unix:/run/nomercy-memory/qmp.sock" in extra
+    directory = pool._directory(RID) / "memory"
+    mounts = host.units[name]["Mounts"]
+    assert next(m for m in mounts if m["Destination"] == "/run/nomercy-memory")["Source"] == str(directory)
+    pool.stop(RID)
+    pool.remove(RID, keep_data=True)
+    pool.create(RID, SPEC)
+    assert extra in [value[6:] for value in host.units[name]["Config"]["Env"] if value.startswith("EXTRA=")]
+    assert pool.status(RID)["running"] is True
+
+
+def test_ballooned_appliance_refuses_unowned_qmp_settings(pool, host):
+    pool._memory_balloon = True
+    pool.create(RID, SPEC)
+    name = naming.unit_name(RID)
+    environment = host.units[name]["Config"]["Env"]
+    environment[:] = [value if not value.startswith("EXTRA=") else "EXTRA=-qmp unix:/tmp/foreign.sock"
+                      for value in environment]
+    with pytest.raises(RuntimeError, match="appliance configuration differs"):
+        pool._inspect(RID)
+
 def test_guest_status_reads_overlap_and_keep_unknown_state(pool, monkeypatch):
     import threading
     pool.create(RID, SPEC)

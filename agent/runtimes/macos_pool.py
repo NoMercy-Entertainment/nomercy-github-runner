@@ -30,6 +30,13 @@ POOL_LABEL = "nomercy.appliance_pool"
 RUNNER_LABEL = "nomercy.runner_id"
 PINNED_IMAGE = re.compile(r"(?:sha256:[0-9a-f]{64}|[^\s]+@sha256:[0-9a-f]{64})\Z")
 NETWORK_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}\Z")
+BALLOON_EXTRA = ("-device virtio-balloon-pci,id=nomercy-balloon,deflate-on-oom=on "
+                 "-qmp unix:/run/nomercy-memory/qmp.sock,server=on,wait=off")
+
+
+def balloon_extra(memory):
+    return (f"-object memory-backend-ram,id=nomercy-ram,size={memory},reserve=off "
+            "-machine memory-backend=nomercy-ram " + BALLOON_EXTRA)
 
 
 def _port_free(port):
@@ -64,7 +71,10 @@ class MacAppliancePoolRuntime:
                  shutdown_timeout=180, image_uid=1000, image_gid=1000,
                  run=None, guest_factory=None,
                  port_free=_port_free, sleep=time.sleep, clock=time.monotonic,
-                 runner_storage_limit=None):
+                 runner_storage_limit=None, memory_balloon=False):
+        if type(memory_balloon) is not bool:
+            raise ValueError("memory_balloon must be a boolean")
+        self._memory_balloon = memory_balloon
         if not PINNED_IMAGE.fullmatch(image):
             raise ValueError("appliance pool image must be pinned by sha256")
         if network is not None and (not isinstance(network, str)
@@ -141,6 +151,11 @@ class MacAppliancePoolRuntime:
                 or config.get("Entrypoint") != [BOOT_ENTRYPOINT] or not config.get("Cmd")):
             raise ValueError("pool image lacks the verified boot wrapper and QEMU command")
         self._image_cmd = config["Cmd"]
+        environment = dict(v.split("=", 1) for v in config.get("Env") or [] if "=" in v)
+        self._image_extra = environment.get("EXTRA", "")
+
+    def _balloon_extra(self, memory):
+        return " ".join(value for value in (self._image_extra, balloon_extra(memory)) if value)
 
     @contextmanager
     def _locked(self, rid):
@@ -272,12 +287,15 @@ class MacAppliancePoolRuntime:
             if self.nvram_seed:
                 expected["/home/arch/OSX-KVM/OVMF_VARS-1024x768.fd"] = (
                     str(self._directory(rid) / "nvram.fd"), True)
+            if self._memory_balloon:
+                expected["/run/nomercy-memory"] = (str(self._directory(rid) / "memory"), True)
             if (config.get("Image") != self.image or config.get("Entrypoint") != [BOOT_ENTRYPOINT]
                     or config.get("Cmd") != self._image_cmd
                     or environment.get("RAM") != str(record["memory"] // GIB)
                     or environment.get("SMP") != str(record["cpus"])
                     or environment.get("CORES") != str(record["cpus"])
                     or environment.get("NOPICKER") != "true"
+                    or (self._memory_balloon and environment.get("EXTRA") != self._balloon_extra(record["memory"]))
                     or ports != [{"HostIp": "127.0.0.1", "HostPort": str(record["port"])}]
                     or host.get("Privileged") is not False
                     or host.get("Memory") != record["memory"] + OVERHEAD_BYTES
@@ -416,6 +434,17 @@ class MacAppliancePoolRuntime:
             if power == "absent":
                 if not self._port_free(record["port"]):
                     raise RuntimeError("assigned appliance SSH port is occupied")
+                balloon_mount = []
+                if self._memory_balloon:
+                    directory = self._directory(rid) / "memory"
+                    if directory.is_symlink() or (directory.exists() and not directory.is_dir()):
+                        raise RuntimeError("memory control directory must be owned")
+                    directory.mkdir(mode=0o700, exist_ok=True)
+                    if os.name == "posix":
+                        os.chown(directory, self.image_uid, self.image_gid)
+                        os.chmod(directory, 0o700)
+                    balloon_mount = ["--mount", f"type=bind,src={directory},dst=/run/nomercy-memory",
+                                     "--env", "EXTRA=" + self._balloon_extra(record["memory"])]
                 argv = [self._docker, "create", "--name", naming.unit_name(rid),
                         *(["--network", self.network] if self.network else []),
                         "--label", RUNNER_LABEL + "=" + rid,
@@ -433,7 +462,7 @@ class MacAppliancePoolRuntime:
                         "--env", f"RAM={record['memory'] // GIB}",
                         "--env", f"SMP={record['cpus']}",
                         "--env", f"CORES={record['cpus']}",
-                        "--env", "NOPICKER=true", self.image]
+                        "--env", "NOPICKER=true", *balloon_mount, self.image]
                 self._command(argv, timeout=300)
             return record
 

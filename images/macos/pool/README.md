@@ -97,6 +97,14 @@ attach the console proxies to it before configuring the worker. Existing running
 appliances can join it with `docker network connect` without restarting the guest.
 Omitting the setting preserves the existing Docker network behavior.
 
+The optional boolean `appliance_pool.memory_balloon` retains the production
+balloon device and private QMP socket when an appliance is recreated. Enable it
+only with a prepared guest driver and a configured memory allocator. Its socket
+directory is private to the runner, and the pinned image's display/VNC settings
+remain part of `EXTRA`. The configured maximum guest RAM and Docker limits remain
+the same. The appliance installer orders the agent after its data-root mount so
+it can resume existing guests after boot.
+
 Pool defaults are 4 vCPUs and 8 GiB guest RAM, with 2 GiB additional bounded QEMU
 overhead per instance. Docker CPU quota equals vCPU count; `RAM`, `SMP`, `CORES`
 and `NOPICKER=true` are set explicitly. `NOPICKER=true` removes the installer
