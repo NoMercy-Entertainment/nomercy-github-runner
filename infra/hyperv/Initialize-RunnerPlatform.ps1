@@ -148,11 +148,21 @@ try {
     # Each worker builds its unit images from these: the fleet's own runner
     # image plus the entry points the agent drives.
     $baseTar = Join-Path $stage 'forgejo-base.tar'
-    Invoke-InDistro $s @('docker', 'save', '-o', (ConvertTo-WslPath $baseTar),
-        $s.Forgejo.BaseImage)
     $githubTar = Join-Path $stage 'github-base.tar'
-    Invoke-InDistro $s @('docker', 'save', '-o', (ConvertTo-WslPath $githubTar),
-        $s.GitHub.BaseImage)
+    $distroPresent = (& wsl.exe -l -q 2>$null | ForEach-Object { ($_ -replace "`0", '').Trim() }) -contains $s.Distro
+    if ($distroPresent) {
+        Invoke-InDistro $s @('docker', 'save', '-o', (ConvertTo-WslPath $baseTar), $s.Forgejo.BaseImage)
+        Invoke-InDistro $s @('docker', 'save', '-o', (ConvertTo-WslPath $githubTar), $s.GitHub.BaseImage)
+    } else {
+        # The WSL distro that held the fleet is gone (2026-10-23); the host's
+        # own Docker (Docker Desktop) pulls and saves the private bases.
+        foreach ($pair in @(@($s.Forgejo.BaseImage, $baseTar), @($s.GitHub.BaseImage, $githubTar))) {
+            & docker.exe pull -q $pair[0] | Out-Null
+            if ($LASTEXITCODE -ne 0) { throw "docker pull $($pair[0]) failed" }
+            & docker.exe save -o $pair[1] $pair[0]
+            if ($LASTEXITCODE -ne 0) { throw "docker save $($pair[0]) failed" }
+        }
+    }
 
     # --- each worker ----------------------------------------------------------------
     foreach ($name in $workers) {

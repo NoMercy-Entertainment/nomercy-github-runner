@@ -95,8 +95,11 @@ foreach ($name in $order) {
     if (-not (Test-Path $seed)) { throw "No seed image for $name at $seed." }
     $dir = Join-Path $s.Root "vms\$name"
     $disk = Join-Path $dir "$name.vhdx"
-    if (-not $PSCmdlet.ShouldProcess($name, ("create: {0} GB static, {1} vCPU, {2} GB disk, {3}" -f
-            $spec.MemoryGB, $spec.Cpus, $spec.DiskGB, $spec.Address))) { continue }
+    $memoryWords = if ($spec.DynamicMemory) {
+        "{0} GB at start, dynamic {1}-{2} GB" -f $spec.MemoryGB, $spec.DynamicMemory.MinGB, $spec.DynamicMemory.MaxGB
+    } else { "{0} GB static" -f $spec.MemoryGB }
+    if (-not $PSCmdlet.ShouldProcess($name, ("create: {0}, {1} vCPU, {2} GB disk, {3}" -f
+            $memoryWords, $spec.Cpus, $spec.DiskGB, $spec.Address))) { continue }
 
     New-Item -ItemType Directory -Force -Path $dir | Out-Null
     if (-not (Test-Path $disk)) {
@@ -110,8 +113,29 @@ foreach ($name in $order) {
     Get-VMNetworkAdapter -VMName $name | Rename-VMNetworkAdapter -NewName 'mgmt'
     Set-VMNetworkAdapter -VMName $name -Name 'mgmt' -StaticMacAddress $spec.MgmtMac
     Add-VMNetworkAdapter -VMName $name -Name 'uplink' -SwitchName $s.UplinkSwitch -StaticMacAddress $spec.UplinkMac
-    Set-VMMemory -VMName $name -DynamicMemoryEnabled $false
+    if ($spec.DynamicMemory) {
+        # The owner's choice for the Linux worker (2026-10-23): the VM holds
+        # what its runners use and grows to the ceiling under load, with a
+        # buffer so a job's burst is served before Hyper-V has to add more.
+        $dm = $spec.DynamicMemory
+        Set-VMMemory -VMName $name -DynamicMemoryEnabled $true `
+            -MinimumBytes ([int64]$dm.MinGB * 1GB) -MaximumBytes ([int64]$dm.MaxGB * 1GB) `
+            -StartupBytes ([int64]$spec.MemoryGB * 1GB) -Buffer $dm.BufferPct
+    } else {
+        Set-VMMemory -VMName $name -DynamicMemoryEnabled $false
+    }
     Set-VMProcessor -VMName $name -Count $spec.Cpus
+    if ($spec.DataDiskGB) {
+        # A second, dynamic disk for the runners' own storage, made only when
+        # missing; a disk that exists is attached as it is, never resized.
+        $dataDir = Join-Path $s.Root 'data'
+        New-Item -ItemType Directory -Force -Path $dataDir | Out-Null
+        $dataDisk = Join-Path $dataDir "$name-data.vhdx"
+        if (-not (Test-Path $dataDisk)) {
+            New-VHD -Path $dataDisk -Dynamic -SizeBytes ([uint64]$spec.DataDiskGB * 1GB) | Out-Null
+        }
+        Add-VMHardDiskDrive -VMName $name -ControllerType SCSI -Path $dataDisk
+    }
     Set-VMFirmware -VMName $name -EnableSecureBoot On -SecureBootTemplate 'MicrosoftUEFICertificateAuthority'
     Add-VMDvdDrive -VMName $name -Path $seed
     Set-VMFirmware -VMName $name -FirstBootDevice (Get-VMHardDiskDrive -VMName $name)
@@ -120,8 +144,8 @@ foreach ($name in $order) {
     Set-VM -Name $name -AutomaticStartAction Start -AutomaticStartDelay 30 `
         -AutomaticStopAction ShutDown -Notes "runner platform: $($spec.Role), $($spec.Address)"
     Start-VM -Name $name
-    Write-Host ("{0} created and started: {1} GB static, {2} vCPU, {3}; commit free now {4} GB" -f
-        $name, $spec.MemoryGB, $spec.Cpus, $spec.Address, (Get-CommitHeadroomGB))
+    Write-Host ("{0} created and started: {1}, {2} vCPU, {3}; commit free now {4} GB" -f
+        $name, $memoryWords, $spec.Cpus, $spec.Address, (Get-CommitHeadroomGB))
 }
 
 Write-Host ""

@@ -39,6 +39,8 @@
     # and the dedicated ARM appliance 12 GiB. The existing macOS host is
     # outside this collection. Every allocation also requires the actual
     # host commit reserve above; this budget is not evidence of free memory.
+    # 2026-10-23: Linux 32 at startup (dynamic to 184), controller 4,
+    # Windows x64 36. The Linux ceiling is a cap, not a reservation.
     VmBudgetGB    = 132
 
     # Operator-selected target (2026-10-10). Individual VM sizes below describe
@@ -73,7 +75,7 @@
         # on that worker holding the runner GitHub publishes, checked against
         # the hash from its own release notes (images/windows/manifest.json).
         WindowsTemplate    = 'actions-runner-v2.338.0-windows'
-        WindowsRunnerMemGB = 16
+        WindowsRunnerMemGB = 8
     }
 
     # OPEN-5: static memory, inside the measured margin.
@@ -96,16 +98,25 @@
             # which is what the VM was provisioned with before -
             # settings.psd1 is the platform's one source of sizes, so a stale
             # row here would rebuild the worker at a fifth of its memory).
-            MemoryGB  = 80
+            # Rebuilt 2026-10-23 on dynamic memory, the owner's choice: the
+            # VM holds only what its runners use and grows to the ceiling
+            # under load - ten GitHub runners at 16 GiB plus three Forgejo
+            # runners at 8 GiB is 184 GB. MemoryGB is the startup amount and
+            # what the budget check counts.
+            MemoryGB  = 32
+            DynamicMemory = @{ MinGB = 16; MaxGB = 184; BufferPct = 100 }
             Cpus      = 56
             DiskGB    = 400
+            # The runners' own disk (one ext4 image each, and the swap file),
+            # a dynamic VHDX of its own next to the OS disk.
+            DataDiskGB = 2304
             Address   = '10.77.0.20'
             MgmtMac   = '00155D77140A'
             UplinkMac = '00155D77140B'
-            # What the agent declares, and placement respects: room for two
-            # runners at 16 GiB each. The live 13-runner worker declares its
-            # separate bounded commitment budget in the agent configuration.
-            MaxRunners   = 2
+            # What the agent declares, and placement respects: thirteen
+            # runners, each held to 16 GiB; Forgejo's fleet setting lowers
+            # its three to 8 GiB.
+            MaxRunners   = 13
             RunnerMemGB  = 16
         }
         'rnr-windows-1' = @{
@@ -164,7 +175,7 @@
         RunnerBinary  = 'D:\HyperV\runner-platform\artefacts\forgejo-runner-v13.1.0\forgejo-runner-v13.1.0-windows-amd64.exe'
         RunnerSha256  = '82ea01bc63c3ba60526576f3d8ac491a1e77db0f8d3d55cc37bd39666a5f04c8'
         MaxRunners    = 2
-        RunnerMemGB   = 16
+        RunnerMemGB   = 8
         # What the Windows Forgejo runners register with: the labels the
         # retired NSSM runner carried (C:\forgejo-runner\.runner), which the
         # workflows ask for. The pilot label is gone with the pilot.
@@ -191,7 +202,7 @@
     WindowsGuests = @{
         'rnr-windows-1' = @{
             MaxRunners  = 2
-            RunnerMemGB = 16
+            RunnerMemGB = 8
             StorageRoot = 'D:\runner-disks'
         }
     }
