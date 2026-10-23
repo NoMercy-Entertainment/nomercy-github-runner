@@ -138,7 +138,8 @@ foreach ($name in $order) {
     }
     Set-VMFirmware -VMName $name -EnableSecureBoot On -SecureBootTemplate 'MicrosoftUEFICertificateAuthority'
     Add-VMDvdDrive -VMName $name -Path $seed
-    Set-VMFirmware -VMName $name -FirstBootDevice (Get-VMHardDiskDrive -VMName $name)
+    # The OS disk by its path: a worker with a data disk has two drives.
+    Set-VMFirmware -VMName $name -FirstBootDevice (Get-VMHardDiskDrive -VMName $name | Where-Object { $_.Path -eq $disk })
     # Back after a host restart; shut down cleanly with the host, never saved
     # (a saved VM keeps a file the size of its memory on disk).
     Set-VM -Name $name -AutomaticStartAction Start -AutomaticStartDelay 30 `
