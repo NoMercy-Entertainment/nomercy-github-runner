@@ -199,6 +199,7 @@ try {
         Write-LfFile (Join-Path $wStage 'agent.json') ($agentConfig | ConvertTo-Json -Depth 4)
         Write-LfFile (Join-Path $wStage 'VERSION') "$version`n"
         Write-LfFile (Join-Path $wStage 'BASE_github') "$($s.GitHub.BaseImage)`n"
+        Write-LfFile (Join-Path $wStage 'BASE_forgejo') "$($s.Forgejo.BaseImage)`n"
         Write-LfFile (Join-Path $wStage 'CONTROL_PLANE') "$cp`n"
         Write-LfFile (Join-Path $wStage 'HOST_ADDRESS') "$($s.HostAddress)`n"
         Write-LfFile (Join-Path $wStage 'AGENT_PORT') "$($s.AgentPort)`n"
