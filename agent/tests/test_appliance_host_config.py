@@ -117,3 +117,22 @@ def test_the_loader_refuses_a_placeholder_image():
                       BASE_SYSTEM, DATA_ROOT, TEMPLATES)
     with pytest.raises(config.ConfigError, match="pinned by sha256"):
         config.parse(_agent_config(rendered), exists=lambda path: True)
+
+
+def test_production_fields_are_rendered_only_when_given():
+    """The seed, console network, balloon and storage limit the production
+    host runs with come through the renderer; left out, nothing is added."""
+    plain = render(IMAGE, BASE_DISK, BASE_SYSTEM, DATA_ROOT, TEMPLATES)
+    assert not ({"nvram_seed", "network", "memory_balloon", "runner_storage_limit"}
+                & set(plain["appliance_pool"]))
+    full = render(IMAGE, BASE_DISK, BASE_SYSTEM, DATA_ROOT, TEMPLATES,
+                  nvram_seed="/var/lib/runner-appliances/base/seed.fd",
+                  network="macos_runner_default", memory_balloon=True,
+                  runner_storage_limit=100 * 1024 ** 3)
+    assert full["appliance_pool"]["nvram_seed"] == "/var/lib/runner-appliances/base/seed.fd"
+    assert full["appliance_pool"]["network"] == "macos_runner_default"
+    assert full["appliance_pool"]["memory_balloon"] is True
+    assert full["appliance_pool"]["runner_storage_limit"] == 100 * 1024 ** 3
+    parsed = config.parse(_agent_config(full), exists=lambda path: True)
+    assert parsed.appliance_pool["nvram_seed"].endswith("seed.fd")
+

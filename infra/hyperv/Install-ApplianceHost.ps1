@@ -46,7 +46,15 @@ param(
     [switch] $AppliancePool,
     [string] $PoolImage,
     [string] $PoolBaseDisk,
-    [string] $PoolBaseSystem
+    [string] $PoolBaseSystem,
+    # What the production host runs with beyond the README's fragment
+    # (BASE-20260924.md): the debloated base's NVRAM seed, the console
+    # network, the balloon device and the per-runner storage limit.
+    [string] $PoolNvramSeed,
+    [string] $PoolNetwork,
+    [switch] $PoolMemoryBalloon,
+    [int64]  $PoolRunnerStorageLimit,
+    [int64]  $PoolMemoryBytes = 20GB
 )
 $ErrorActionPreference = 'Stop'
 if ($AppliancePool -and $PoolImage -notmatch '^sha256:[0-9a-f]{64}$') {
@@ -132,8 +140,13 @@ $agentConfig = [ordered]@{
 if ($AppliancePool) {
     # infra/hyperv/appliance_pool_config.py is the single source of these
     # fields (images/macos/pool/README.md); this only merges its JSON in.
-    $poolJson = & python (Join-Path $PSScriptRoot 'appliance_pool_config.py') `
-        --image $PoolImage --base-disk $PoolBaseDisk --base-system $PoolBaseSystem
+    $poolArgs = @('--image', $PoolImage, '--base-disk', $PoolBaseDisk, '--base-system', $PoolBaseSystem,
+                  '--memory-bytes', "$PoolMemoryBytes")
+    if ($PoolNvramSeed) { $poolArgs += @('--nvram-seed', $PoolNvramSeed) }
+    if ($PoolNetwork) { $poolArgs += @('--network', $PoolNetwork) }
+    if ($PoolMemoryBalloon) { $poolArgs += '--memory-balloon' }
+    if ($PoolRunnerStorageLimit) { $poolArgs += @('--runner-storage-limit', "$PoolRunnerStorageLimit") }
+    $poolJson = & python (Join-Path $PSScriptRoot 'appliance_pool_config.py') @poolArgs
     if ($LASTEXITCODE -ne 0) { throw 'appliance_pool_config.py failed to render the pool configuration' }
     $pool = $poolJson | ConvertFrom-Json
     $agentConfig['appliance_pool'] = $pool.appliance_pool
