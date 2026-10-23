@@ -157,8 +157,13 @@ try {
         # The WSL distro that held the fleet is gone (2026-10-23); the host's
         # own Docker (Docker Desktop) pulls and saves the private bases.
         foreach ($pair in @(@($s.Forgejo.BaseImage, $baseTar), @($s.GitHub.BaseImage, $githubTar))) {
-            & docker.exe pull -q $pair[0] | Out-Null
-            if ($LASTEXITCODE -ne 0) { throw "docker pull $($pair[0]) failed" }
+            # A base built on this host is saved as it is; only one that is
+            # not here yet is pulled.
+            & docker.exe image inspect $pair[0] *> $null
+            if ($LASTEXITCODE -ne 0) {
+                & docker.exe pull -q $pair[0] | Out-Null
+                if ($LASTEXITCODE -ne 0) { throw "docker pull $($pair[0]) failed" }
+            }
             & docker.exe save -o $pair[1] $pair[0]
             if ($LASTEXITCODE -ne 0) { throw "docker save $($pair[0]) failed" }
         }
