@@ -62,11 +62,18 @@
     # rebuilt from the base alone has no /runner/register - which is what a
     # rebuild discovered the hard way (2026-09-20).
     Forgejo = @{
-        BaseImage = 'ghcr.io/nomercy-entertainment/nomercy-forgejo-runner:latest'
+        # Built on this host (2026-10-23): forgejo-runner/Dockerfile plus the
+        # guarded binary from images/windows/build-forgejo-runner.sh v13.1.0
+        # guarded, verified against images/forgejo-admission/PROVENANCE.json.
+        # No registry publishes it; Initialize-RunnerPlatform.ps1 saves it
+        # from Docker Desktop for the worker.
+        BaseImage = 'nomercy/forgejo-runner:13.1.0-nomercy-admission.1'
     }
 
     GitHub = @{
-        BaseImage   = 'ghcr.io/nomercy-entertainment/nomercy-github-runner:latest'
+        # images/linux/unit/Dockerfile.tools on the pinned ghcr base: the
+        # shared SDKs plus LLVM, built on this host (2026-10-23).
+        BaseImage   = 'nomercy/github-runner-base:tools-20261023'
         RunnerMemGB = 16
         DrainGroup  = 'drain'
         RunnerGroup = 'Fillz'
