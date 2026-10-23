@@ -95,7 +95,7 @@ foreach ($name in $order) {
     if (-not (Test-Path $seed)) { throw "No seed image for $name at $seed." }
     $dir = Join-Path $s.Root "vms\$name"
     $disk = Join-Path $dir "$name.vhdx"
-    $memoryWords = if ($spec.DynamicMemory) {
+    $memoryWords = if ($spec.ContainsKey('DynamicMemory')) {
         "{0} GB at start, dynamic {1}-{2} GB" -f $spec.MemoryGB, $spec.DynamicMemory.MinGB, $spec.DynamicMemory.MaxGB
     } else { "{0} GB static" -f $spec.MemoryGB }
     if (-not $PSCmdlet.ShouldProcess($name, ("create: {0}, {1} vCPU, {2} GB disk, {3}" -f
@@ -113,7 +113,7 @@ foreach ($name in $order) {
     Get-VMNetworkAdapter -VMName $name | Rename-VMNetworkAdapter -NewName 'mgmt'
     Set-VMNetworkAdapter -VMName $name -Name 'mgmt' -StaticMacAddress $spec.MgmtMac
     Add-VMNetworkAdapter -VMName $name -Name 'uplink' -SwitchName $s.UplinkSwitch -StaticMacAddress $spec.UplinkMac
-    if ($spec.DynamicMemory) {
+    if ($spec.ContainsKey('DynamicMemory')) {
         # The owner's choice for the Linux worker (2026-10-23): the VM holds
         # what its runners use and grows to the ceiling under load, with a
         # buffer so a job's burst is served before Hyper-V has to add more.
@@ -125,7 +125,7 @@ foreach ($name in $order) {
         Set-VMMemory -VMName $name -DynamicMemoryEnabled $false
     }
     Set-VMProcessor -VMName $name -Count $spec.Cpus
-    if ($spec.DataDiskGB) {
+    if ($spec.ContainsKey('DataDiskGB')) {
         # A second, dynamic disk for the runners' own storage, made only when
         # missing; a disk that exists is attached as it is, never resized.
         $dataDir = Join-Path $s.Root 'data'
