@@ -370,3 +370,79 @@ class TestACellSaysWhatItsWorkersCanBuild:
         assert service is not None
         fleet = service.fleets.get("github-windows-x64")
         assert service.unit_image(fleet) == "a-template"
+
+
+class TestAMaximum:
+    """A fleet's ceiling (Settings, max_capacity) is enforced by the service:
+    the button is only its reflection."""
+
+    def test_add_is_refused_at_the_ceiling_whatever_the_page_shows(self, client, plane):
+        service, _ = plane
+        before = desired(service)
+        assert client.post(f"/api/v2/settings/{GH}", json={"max_capacity": before}).status_code == 200
+        answer = post(client, f"/api/v2/fleets/{GH}/runners", "add-over-max")
+        assert answer.status_code == 409
+        assert "maximum" in answer.json["error"]
+        assert desired(service) == before
+        from control.service import Refused
+        with pytest.raises(Refused, match="maximum"):
+            service.create(GH, 1, requested_by="test", idempotency_key="direct-over-max")
+        assert desired(service) == before
+
+    def test_the_button_is_off_at_the_ceiling_and_the_heading_counts_it(self, client, plane):
+        service, _ = plane
+        client.post(f"/api/v2/settings/{GH}", json={"max_capacity": desired(service)})
+        fleet = next(f for f in client.get("/api/v2/fleets").json["fleets"] if f["fleet_id"] == GH)
+        add = next(a for a in fleet["actions"] if a["verb"] == "add")
+        assert add["enabled"] is False and "maximum" in add["reason"]
+        assert fleet["max_capacity"] == desired(service)
+
+    def test_below_the_ceiling_adding_still_works(self, client, plane):
+        service, _ = plane
+        before = desired(service)
+        assert client.post(f"/api/v2/settings/{GH}", json={"max_capacity": before + 1}).status_code == 200
+        assert post(client, f"/api/v2/fleets/{GH}/runners", "add-under-max").status_code == 202
+        assert desired(service) == before + 1
+        assert post(client, f"/api/v2/fleets/{GH}/runners", "add-at-max").status_code == 409
+
+    def test_a_ceiling_below_what_the_fleet_has_is_refused(self, client, plane):
+        service, _ = plane
+        post(client, f"/api/v2/fleets/{GH}/runners", "add-first")
+        answer = client.post(f"/api/v2/settings/{GH}", json={"max_capacity": desired(service) - 1})
+        assert answer.status_code == 400
+        assert "below" in answer.json["error"]
+        for bad in (True, -1, 1.5, "3"):
+            assert client.post(f"/api/v2/settings/{GH}", json={"max_capacity": bad}).status_code == 400
+
+
+class TestRecreateFillsToTheMaximum:
+    def test_recreate_fleet_creates_what_is_missing_up_to_the_ceiling(self, client, plane):
+        service, _ = plane
+        before = desired(service)
+        assert client.post(f"/api/v2/settings/{GH}", json={"max_capacity": before + 2}).status_code == 200
+        answer = post(client, f"/api/v2/fleets/{GH}/recreate", "recreate-fill")
+        assert answer.status_code == 202
+        assert answer.json["filled"] == 2
+        assert desired(service) == before + 2
+        # asked again with the same key it fills nothing more
+        answer = post(client, f"/api/v2/fleets/{GH}/recreate", "recreate-fill")
+        assert desired(service) == before + 2
+
+    def test_the_confirm_dialog_says_how_many_will_be_new(self, client, plane):
+        service, _ = plane
+        post(client, f"/api/v2/fleets/{GH}/runners", "add-one")
+        client.post(f"/api/v2/settings/{GH}", json={"max_capacity": desired(service) + 2})
+        fleet = next(f for f in client.get("/api/v2/fleets").json["fleets"] if f["fleet_id"] == GH)
+        recreate = next(a for a in fleet["actions"] if a["verb"] == "recreate")
+        assert "2 new" in recreate["confirm"]["body"]
+        client.post(f"/api/v2/settings/{GH}", json={"max_capacity": desired(service)})
+        fleet = next(f for f in client.get("/api/v2/fleets").json["fleets"] if f["fleet_id"] == GH)
+        recreate = next(a for a in fleet["actions"] if a["verb"] == "recreate")
+        assert "new" not in recreate["confirm"]["body"]
+
+    def test_without_a_ceiling_recreate_adds_nothing(self, client, plane):
+        service, _ = plane
+        before = desired(service)
+        answer = post(client, f"/api/v2/fleets/{GH}/recreate", "recreate-plain")
+        assert answer.status_code == 202 and answer.json["filled"] == 0
+        assert desired(service) == before

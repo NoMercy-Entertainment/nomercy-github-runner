@@ -189,6 +189,21 @@ class TestCapacity:
         with pytest.raises(UnknownFleet):
             fleets.set_capacity("github-plan9-x64", 1)
 
+    def test_a_capacity_above_the_fleets_maximum_is_refused_at_the_store(self, fleets):
+        """The ceiling is not only the page's disabled button: the row that
+        records the count refuses to go past it."""
+        fleets.seed()
+        fid = fleet_id("github", "linux", "x64")
+        fleets.set_capacity(fid, 2)
+        fleets.set_defaults(fid, {"max_capacity": 3})
+        fleets.set_capacity(fid, 3)
+        with pytest.raises(ValueError, match="maximum"):
+            fleets.set_capacity(fid, 4)
+        assert fleets.get(fid)["desired_capacity"] == 3
+        fleets.set_defaults(fid, {"max_capacity": None})
+        fleets.set_capacity(fid, 4)
+        assert fleets.get(fid)["desired_capacity"] == 4
+
 
 class TestAddingASeventhCellNeedsNoCode:
     def test_a_fleet_is_a_row(self, fleets):

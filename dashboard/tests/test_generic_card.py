@@ -235,6 +235,14 @@ class TestTheRenderer:
         html = render("cardHTML", [card])[0]
         assert '>github-linux-x64-2</a>' in html
 
+    def test_the_fleet_heading_counts_against_its_ceiling(self):
+        fleet = {"fleet_id": "github-linux-x64", "title": "GitHub · Linux · x64", "available": True,
+                 "runners": ["a", "b", "c"], "actions": [], "summary": {"online": 3}}
+        html = render("fleetHeadHTML", [fleet])[0]
+        assert "3 runners" in html and " of " not in html
+        html = render("fleetHeadHTML", [dict(fleet, max_capacity=3)])[0]
+        assert "3 of 3 runners" in html
+
     def test_forge_registration_id_is_shown_on_the_card(self):
         card = dict(spec_cards()[0], registration="GitHub #2352")
         html = render("cardHTML", [card])[0]

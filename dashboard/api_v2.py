@@ -380,6 +380,20 @@ def fleet_list(service, note, all_runner_cards):
                                      members),
         })
         out[-1]["limits_problem"] = None
+        out[-1]["max_capacity"] = row.get("max_capacity") if row else None
+        if row and row.get("max_capacity") is not None:
+            maximum, have = int(row["max_capacity"]), int(desired or 0)
+            for action in out[-1]["actions"]:
+                # The page's button follows the service's refusal, not the
+                # other way round: the ceiling is enforced in service._scale
+                # and in the fleet store.
+                if action["verb"] == "add" and action.get("enabled") and have >= maximum:
+                    action.update(enabled=False, reason=f"at the maximum of {maximum} runners")
+                # A fleet recreate ends with the maximum (fleet_recreate).
+                if action["verb"] == "recreate" and action.get("confirm") and have < maximum:
+                    action["confirm"] = dict(action["confirm"], body=(
+                        f"{action['confirm']['body']} The fleet is then brought to its "
+                        f"maximum of {maximum} runners: {maximum - have} new."))
         out[-1]["origin_guard"] = origin_guard_of(provider_key, fid, all_runner_cards)
         # From the background cache only (runner_groups.py): a page read
         # never calls GitHub.
@@ -892,12 +906,27 @@ def _each_runner(service, fleet_id, verb, key, skip):
 
 @bp.route(f"{FLEET}/recreate", methods=["POST"])
 def fleet_recreate(fleet_id):
+    """Rebuild every runner the fleet has, and bring the fleet to its
+    maximum: a fleet with a ceiling (Settings, max_capacity) comes out of a
+    recreate with that many runners, the missing ones created new."""
     service, fleet, key, err = _fleet_mutation(fleet_id)
     if err:
         return err
     results = _each_runner(service, fleet_id, "recreate", key,
                            lambda spec: None)
-    return jsonify(ok=all(r["ok"] for r in results), results=results), 202
+    filled = 0
+    maximum = fleet.get("max_capacity")
+    if maximum is not None and fleet["desired_capacity"] < int(maximum):
+        from control.service import Refused
+        missing = int(maximum) - fleet["desired_capacity"]
+        try:
+            service.create(fleet_id, missing, requested_by=requested_by(),
+                           idempotency_key=f"{key}:fill")
+            filled = missing
+        except Refused as e:
+            results.append({"runner_id": None, "ok": False, "error": e.public_reason})
+    return jsonify(ok=all(r["ok"] for r in results), results=results,
+                   filled=filled), 202
 
 
 @bp.route(f"{FLEET}/clear-cache", methods=["POST"])

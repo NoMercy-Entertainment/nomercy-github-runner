@@ -76,6 +76,7 @@ function cacheFields(f) {
 function fleetDefaults(form) {
   const fields=new FormData(form), data=Object.fromEntries(fields);
   data.labels=data.labels.split(',').map(s=>s.trim()).filter(Boolean);
+  data.max_capacity=data.max_capacity===''||data.max_capacity==null?null:Math.round(Number(data.max_capacity));
   for(const key of ['cpu_limit','memory_limit','memory_swap_limit','disk_limit']) {
     if(!(key in data))continue;
     data[key]=data[key]===''?null:(key==='cpu_limit'?data[key]:Math.round(Number(data[key])*1073741824));
@@ -102,6 +103,7 @@ function fleetForm(f) {
     field(f.fleet_id,'memory_limit',mac?(f.memory_limit_supported?'Guest RAM limit (GiB)':'Memory setting (GiB, enforcement unverified)'):'Memory limit (GiB)',f.memory_limit?f.memory_limit/GIB:null,'number',!f.memory_limit_supported,mac?{min:4,max:Math.min(128,memMax||128),step:1}:{max:memMax,placeholder:inherited})+
     `<p class="hint field-wide">${esc(maxLine(f))}</p>`+
     (f.platform==='linux'?field(f.fleet_id,'memory_swap_limit','RAM + swap ceiling (GiB)',f.memory_swap_limit?f.memory_swap_limit/1073741824:null,'number'):'')+
+    field(f.fleet_id,'max_capacity','Maximum runners (Add runner stops here)',f.max_capacity,'number',false,{min:0,step:1,placeholder:'no maximum'})+
     field(f.fleet_id,'disk_limit',fixedDisk?'Guest disk size (GiB, fixed)':'Disk limit (GiB)',fixedDisk?f.guest_disk_virtual_bytes/1073741824:(f.disk_limit?f.disk_limit/1073741824:null),'number',!f.disk_quota_supported)+
     cacheFields(f)+
     `</div>${f.resource_notice?`<p class="hint">${esc(f.resource_notice)}</p>`:''}${f.disk_quota_supported||fixedDisk?'':'<p class="hint">Per-runner disk quotas are unavailable. Storage usage and cache budgets do not enforce a disk quota.</p>'}<p class="hint">Current image or template: ${esc(f.effective_template||'not configured')}. An empty memory limit uses the deployment's default for this fleet when it has one, shown in the field; an empty CPU limit has no default.${f.platform==='macos'?'':' Linux and Windows runners are not created until this fleet has both a CPU and a memory limit.'} An admin can still give one runner its own limits on its page. Automatic file cleanup runs at startup; GitHub also runs it after a completed job. Explicit clear actions use the selected scopes.</p><button type="submit">Save defaults</button></form>`;

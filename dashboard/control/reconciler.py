@@ -525,11 +525,14 @@ class Reconciler:
             if sibling["actual_state"] not in SERVING and not (
                     other and other["verb"] == "recreate" and other["state"] == "pending"):
                 if operation["state"] == "pending":
+                    # Held, not started: its deadline moves with it.
+                    self.service.operations.defer(operation["operation_id"])
                     report.held.append((spec["runner_id"], "recreate held: another fleet runner is unavailable"))
                     return False
             if other and other["verb"] == "recreate":
                 active.append(other)
         if operation["state"] == "pending" and any(o["state"] == "running" for o in active):
+            self.service.operations.defer(operation["operation_id"])
             report.held.append((spec["runner_id"], "recreate held: replacement in progress"))
             return False
         if operation["state"] == "pending":

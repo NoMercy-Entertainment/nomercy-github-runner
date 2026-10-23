@@ -1229,6 +1229,9 @@ class RunnerService:
         if already:
             return already[0]["runner_id"]
 
+        why = self.maximum_problem(fleet, fleet["desired_capacity"] + 1)
+        if why:
+            raise Refused(why)
         runner_id = self.specs.adopt(
             fleet["desired_capacity"] + 1,
             display_name=str(display_name),
@@ -1378,13 +1381,28 @@ class RunnerService:
                 f"{abs(delta)} lower")
         if delta > 0:
             # Refused at the click, not by every reconciler pass after it.
-            why = self.limits_problem(fleet)
+            why = self.limits_problem(fleet) or self.maximum_problem(fleet, target)
             if why:
                 self._audit("set_capacity", "refused", requested_by,
                             fleet_id=fid, outcome=why,
                             parameters={"desired": target})
                 raise Refused(why)
         return self.set_capacity(fid, target, requested_by, idempotency_key)
+
+    @staticmethod
+    def maximum_problem(fleet, target):
+        """Why `target` runners would exceed the fleet's ceiling, or None.
+
+        The ceiling is the fleet's own `max_capacity` (Settings). It is
+        checked here, on the service, so that a button someone re-enabled in
+        the browser, a direct API call or an adoption all meet the same
+        refusal as the page.
+        """
+        maximum = fleet.get("max_capacity")
+        if maximum is None or target <= int(maximum):
+            return None
+        return (f"{fleet['fleet_id']} is at its maximum of {int(maximum)} "
+                f"runner{'' if int(maximum) == 1 else 's'}")
 
     # ---- reads -------------------------------------------------------------
     #

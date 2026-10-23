@@ -193,7 +193,8 @@ class FleetStore:
         return bool(self.get(fid)) and self.resource_support(fid)["disk_quota_supported"]
 
     def set_defaults(self, fid, values):
-        allowed = {"labels", "runner_group", "unit_template", "cpu_limit", "memory_limit", "memory_swap_limit", "disk_limit", "cache_policy"}
+        allowed = {"labels", "runner_group", "unit_template", "cpu_limit", "memory_limit", "memory_swap_limit", "disk_limit", "cache_policy",
+                   "max_capacity"}
         if not isinstance(values, dict) or set(values) - allowed:
             raise limits.InvalidSetting("unknown fleet setting")
         fleet = self.get(fid)
@@ -244,6 +245,16 @@ class FleetStore:
                         if any(scope.startswith("engine-") for scope in (scopes or [])):
                             raise limits.InvalidSetting("engine cache scopes are supported only on Linux")
                     values[key] = json.dumps(value)
+            elif key == "max_capacity":
+                # The ceiling on `+ Add runner`: a whole number, or none. It
+                # may not undercut what the fleet already wants - lower the
+                # count first, then the ceiling.
+                if value is not None and (isinstance(value, bool) or not isinstance(value, int) or value < 0):
+                    raise limits.InvalidSetting("max_capacity must be a whole number of runners, or null")
+                if value is not None and value < fleet["desired_capacity"]:
+                    raise limits.InvalidSetting(
+                        f"max_capacity {value} is below the {fleet['desired_capacity']} runners this fleet already has")
+                values[key] = value
             elif key == "cpu_limit":
                 values[key] = limits.normalize_cpu(value, fleet["platform"])
             elif key == "memory_limit":
@@ -313,6 +324,13 @@ class FleetStore:
             raise FleetUnavailable(
                 f"{fid} cannot be given capacity: "
                 f"{fleet['unavailable_reason'] or 'the cell is unavailable'}")
+        # The fleet's ceiling (`max_capacity`, Settings) holds here, where
+        # the count is recorded, so no caller above - page, API, service or
+        # an operator at a Python prompt - can record more runners than it.
+        maximum = fleet.get("max_capacity")
+        if maximum is not None and count > int(maximum):
+            raise ValueError(f"{fid} cannot have {count} runners: "
+                             f"its maximum is {int(maximum)}")
 
         # Late import, and the direction is wrong on purpose. Operations carry
         # policy - deadlines, attempt counting, the rule that a closed outcome

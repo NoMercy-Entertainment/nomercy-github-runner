@@ -253,3 +253,30 @@ class TestListing:
         db.open("create")
         assert len(db.list(state=ops.SUCCEEDED)) == 1
         assert len(db.list(state=ops.PENDING)) == 1
+
+
+class TestDeferring:
+    """A fleet rebuild opens a recreate per runner at once and the reconciler
+    takes them one at a time; the ones held must not run out of clock."""
+
+    def test_a_held_operation_is_given_more_time(self, db, runner):
+        op, _ = db.open("recreate", runner_id=runner, deadline_seconds=60)
+        first = db.get(op["operation_id"])["deadline_at"]
+        later = datetime.now(timezone.utc) + timedelta(hours=1)
+        db.defer(op["operation_id"], seconds=1800, now=later)
+        assert db.get(op["operation_id"])["deadline_at"] > first
+
+    def test_a_deadline_is_moved_out_and_never_in(self, db, runner):
+        op, _ = db.open("recreate", runner_id=runner, deadline_seconds=3600)
+        first = db.get(op["operation_id"])["deadline_at"]
+        db.defer(op["operation_id"], seconds=60)
+        assert db.get(op["operation_id"])["deadline_at"] == first
+
+    def test_only_a_pending_operation_is_deferred(self, db, runner):
+        op, _ = db.open("recreate", runner_id=runner, deadline_seconds=60)
+        db.attempt(op["operation_id"], "started")
+        first = db.get(op["operation_id"])["deadline_at"]
+        later = datetime.now(timezone.utc) + timedelta(hours=1)
+        db.defer(op["operation_id"], seconds=1800, now=later)
+        assert db.get(op["operation_id"])["deadline_at"] == first
+

@@ -221,8 +221,12 @@ function fleetHeadHTML(f) {
   const summary = f.summary || {};
   const running = summary.online == null ? '' :
     `<span class="fleet-ready">${summary.online} online</span>`;
+  // "3 of 3 runners" when the fleet has a ceiling (Settings, max_capacity).
+  const fcount = f.max_capacity == null
+    ? `${count} runner${count === 1 ? '' : 's'}`
+    : `${count} of ${f.max_capacity} runner${f.max_capacity === 1 ? '' : 's'}`;
   return `<div class="fleet-heading"><div><h2 class="fleet-head">${esc(f.title)}</h2>` +
-    `<div class="fleet-summary"><span class="fcount">${count} runner${count === 1 ? '' : 's'}</span>${running}</div>` +
+    `<div class="fleet-summary"><span class="fcount">${fcount}</span>${running}</div>` +
     `</div><div class="fleet-actions">${buttons}</div></div>` +
     labels + group + unavailable + limits;
 }

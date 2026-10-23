@@ -82,6 +82,9 @@ CREATE TABLE IF NOT EXISTS fleets (
   disk_limit        INTEGER,
   resource_defaults TEXT,
   cache_policy      TEXT,
+  -- The most runners an operator may add to this fleet; NULL is no ceiling.
+  -- Enforced by the service, not only by the page's button.
+  max_capacity      INTEGER,
   -- Whether the cell exists at all, answered from provider.supports(). A
   -- fleet nobody can build is visibly unavailable rather than silently empty.
   available         INTEGER NOT NULL DEFAULT 1,
@@ -314,7 +317,7 @@ def _migrate(c):
     fleets = {r[1] for r in c.execute("PRAGMA table_info(fleets)")}
     for column, kind in (("unit_template", "TEXT"), ("cpu_limit", "TEXT"),
                          ("memory_limit", "INTEGER"), ("memory_swap_limit", "INTEGER"),
-                         ("disk_limit", "INTEGER")):
+                         ("disk_limit", "INTEGER"), ("max_capacity", "INTEGER")):
         if column not in fleets:
             c.execute(f"ALTER TABLE fleets ADD COLUMN {column} {kind}")
     workers = {r[1] for r in c.execute("PRAGMA table_info(workers)")}

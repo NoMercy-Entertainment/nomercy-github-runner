@@ -179,6 +179,22 @@ class OperationStore:
 
     # ---- driving -----------------------------------------------------------
 
+    def defer(self, operation_id, seconds=DEFAULT_DEADLINE_SECONDS, now=None):
+        """Push a pending operation's deadline out to `now + seconds`.
+
+        A fleet rebuild opens one recreate per runner at once, and the
+        reconciler then takes them one at a time; the tenth waited past the
+        deadline the first was given and was swept as interrupted work
+        (2026-10-23). An operation that has not started is not overdue, so
+        while it is held its clock is moved, never shortened.
+        """
+        now = now or datetime.now(timezone.utc)
+        with self._conn() as c:
+            c.execute("UPDATE operations SET deadline_at = ? WHERE operation_id = ? AND state = ?"
+                      " AND (deadline_at IS NULL OR deadline_at < ?)",
+                      (_iso(now + timedelta(seconds=seconds)), operation_id, PENDING,
+                       _iso(now + timedelta(seconds=seconds))))
+
     def attempt(self, operation_id, note):
         """Record that work is being tried, and say what.
 
