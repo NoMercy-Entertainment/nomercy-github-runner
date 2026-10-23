@@ -183,7 +183,14 @@ ls -ld /Users/runner/runners
 $intoGuest = "SSHPASS='$GuestPassword' sshpass -e ssh -o StrictHostKeyChecking=no " +
              "-o PreferredAuthentications=password -o PubkeyAuthentication=no " +
              "-p $GuestPort $GuestUser@$GuestHost " + ("'" + ($wrapper -replace "'", "'\''") + "'")
-Write-Host (Invoke-ApplianceHost $intoGuest)
+if ($AppliancePool) {
+    # The pool makes a guest per runner from the base disk and prepares each
+    # one itself (agent/runtimes/macos_pool.py); there is no shared guest on
+    # the legacy port to write into, and since 2026-10-23 none runs.
+    Write-Host "appliance pool: no shared guest to prepare"
+} else {
+    Write-Host (Invoke-ApplianceHost $intoGuest)
+}
 
 # --- installed ------------------------------------------------------------------
 Invoke-ApplianceHost 'rm -rf /tmp/rnr-stage && mkdir -p -m 700 /tmp/rnr-stage/bundle' -Quiet
