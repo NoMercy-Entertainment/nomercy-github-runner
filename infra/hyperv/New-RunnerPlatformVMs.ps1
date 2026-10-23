@@ -144,6 +144,11 @@ foreach ($name in $order) {
     # (a saved VM keeps a file the size of its memory on disk).
     Set-VM -Name $name -AutomaticStartAction Start -AutomaticStartDelay 30 `
         -AutomaticStopAction ShutDown -Notes "runner platform: $($spec.Role), $($spec.Address)"
+    # No automatic checkpoints: client Hyper-V switches them on by default,
+    # and every start then writes to a differencing disk whose merge, hours
+    # long on this array, fires the next time the VM is turned off
+    # (2026-10-23: an 807 GB merge starved every VM on the host).
+    Set-VM -Name $name -AutomaticCheckpointsEnabled $false -CheckpointType Disabled
     Start-VM -Name $name
     Write-Host ("{0} created and started: {1}, {2} vCPU, {3}; commit free now {4} GB" -f
         $name, $memoryWords, $spec.Cpus, $spec.Address, (Get-CommitHeadroomGB))
