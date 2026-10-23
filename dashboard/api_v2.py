@@ -388,12 +388,13 @@ def fleet_list(service, note, all_runner_cards):
                 # other way round: the ceiling is enforced in service._scale
                 # and in the fleet store.
                 if action["verb"] == "add" and action.get("enabled") and have >= maximum:
-                    action.update(enabled=False, reason=f"at the maximum of {maximum} runners")
+                    action.update(enabled=False, reason=f"at the maximum of {maximum} runner{'' if maximum == 1 else 's'}")
                 # A fleet recreate ends with the maximum (fleet_recreate).
                 if action["verb"] == "recreate" and action.get("confirm") and have < maximum:
                     action["confirm"] = dict(action["confirm"], body=(
                         f"{action['confirm']['body']} The fleet is then brought to its "
-                        f"maximum of {maximum} runners: {maximum - have} new."))
+                        f"maximum of {maximum} runner{'' if maximum == 1 else 's'}: "
+                        f"{maximum - have} new."))
         out[-1]["origin_guard"] = origin_guard_of(provider_key, fid, all_runner_cards)
         # From the background cache only (runner_groups.py): a page read
         # never calls GitHub.
