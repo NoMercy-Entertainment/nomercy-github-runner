@@ -169,7 +169,9 @@
         # A copy of the NSSM the Windows runner already runs under, 2.24,
         # identified by hash - never by running it (`nssm version` opens a
         # window and blocks).
-        NssmSource    = 'C:\forgejo-runner\nssm.exe'
+        # Kept under the platform root since the retired NSSM Forgejo
+        # runner's folder was removed (2026-10-23).
+        NssmSource    = 'D:\HyperV\runner-platform\artefacts\nssm.exe'
         NssmSha256    = 'f689ee9af94b00e9e3f0bb072b34caaf207f32dcb4f5782fc9ca351df9a06c97'
         Template      = 'forgejo-runner-v13.1.0-windows'
         RunnerBinary  = 'D:\HyperV\runner-platform\artefacts\forgejo-runner-v13.1.0\forgejo-runner-v13.1.0-windows-amd64.exe'
