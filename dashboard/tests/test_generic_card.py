@@ -230,11 +230,15 @@ class TestTheRenderer:
         assert "running a job" not in html
         assert "no active job" not in html
 
-    def test_generated_runner_number_is_hidden_on_the_card(self):
+    def test_runner_name_is_shown_in_full_with_its_number(self):
         card = dict(spec_cards()[0], display_name="github-linux-x64-2")
         html = render("cardHTML", [card])[0]
-        assert '>github-linux-x64</a>' in html
-        assert "github-linux-x64-2" not in html
+        assert '>github-linux-x64-2</a>' in html
+
+    def test_forge_registration_id_is_shown_on_the_card(self):
+        card = dict(spec_cards()[0], registration="GitHub #2352")
+        html = render("cardHTML", [card])[0]
+        assert "GitHub #2352" in html
 
     def test_one_function_draws_all_six_cells_and_every_field(self):
         specs = spec_cards()

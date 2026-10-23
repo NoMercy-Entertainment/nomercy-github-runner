@@ -616,6 +616,11 @@ def from_spec(spec, telemetry=None, worker_reachable=None, now=None,
         lifecycle_state=state,
         href=f"/runners/{rid}",
         fleet_id=spec.get("fleet_id"),
+        # The forge's own identity for this runner (GitHub runner id,
+        # Forgejo runner id), so an operator can match the card against the
+        # forge's runner list without opening the runner page.
+        registration=(f"{forge} #{spec['registration_id']}"
+                      if spec.get("registration_id") else None),
         # Which origin check the runner's own job-started hook carries, as
         # its unit last reported (agent/origin_guard.py); None if never.
         origin_guard=(spec.get("telemetry") or {}).get("origin_guard")

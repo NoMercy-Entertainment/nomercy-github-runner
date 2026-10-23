@@ -90,9 +90,9 @@ function actionButton(a, i) {
 }
 
 function displayName(c) {
-  const base = [c.provider, c.platform, c.architecture].join('-');
-  return new RegExp('^' + base + '-[0-9]+$').test(c.display_name || '')
-    ? base : c.display_name;
+  // The full name, number included: it is what the forge lists the runner
+  // as, and what an alarm or a job's log names.
+  return c.display_name;
 }
 
 function cardHTML(c) {
