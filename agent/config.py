@@ -51,7 +51,8 @@ TOOLS_FIELDS = {
 }
 #: What a worker may declare it can hold. Placement reads these and never
 #: puts a runner where it would not fit (dashboard/control/placement.py).
-CAPACITY_FIELDS = frozenset({"max_runners", "memory_bytes", "swap_bytes", "memory_commit_bytes", "memory_admission", "architecture"})
+CAPACITY_FIELDS = frozenset({"max_runners", "memory_bytes", "swap_bytes", "memory_commit_bytes", "memory_admission", "architecture",
+                             "physical_bytes"})
 TLS_FIELDS = frozenset({"cert", "key", "ca"})
 #: How an appliance host reaches the guest it drives. Only an appliance has
 #: one: the other runtimes act on the machine the agent runs on. The
@@ -188,7 +189,7 @@ def parse(data, exists=os.path.isfile):
     if not isinstance(capacity, dict) or set(capacity) - CAPACITY_FIELDS:
         raise ConfigError(f"capacity may name only "
                           f"{sorted(CAPACITY_FIELDS)}")
-    for name in ("max_runners", "memory_bytes", "swap_bytes", "memory_commit_bytes"):
+    for name in ("max_runners", "memory_bytes", "swap_bytes", "memory_commit_bytes", "physical_bytes"):
         if name in capacity and (not isinstance(capacity[name], int)
                                  or isinstance(capacity[name], bool)
                                  or capacity[name] < (0 if name == "swap_bytes" else 1)):

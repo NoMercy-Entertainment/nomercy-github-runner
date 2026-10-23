@@ -56,6 +56,29 @@ def test_commitment_requires_actual_swap_and_preserves_reserve():
     assert caps["capacity_valid"] is False and caps["swap_bytes"] == 0
 
 
+def test_declared_physical_ceiling_stands_in_for_a_dynamic_memory_measurement():
+    """On Hyper-V dynamic memory MemTotal is the current assignment, not the
+    VM's ceiling; `physical_bytes` declares the ceiling and the hardware
+    facts follow it, so neither the budget nor a fleet limit is judged
+    against the idle size."""
+    class Runtime:
+        def capabilities(self):
+            return {"kind": "linux-container", "hardware": {"logical_cpus": 56, "memory_bytes": 16 * GIB}}
+        def memory_capacity(self):
+            return {"memory_bytes": 16 * GIB, "swap_bytes": 640 * GIB}
+    caps = Declared(Runtime(), {"memory_bytes": 176 * GIB, "physical_bytes": 180 * GIB,
+        "swap_bytes": 640 * GIB, "memory_commit_bytes": 816 * GIB,
+        "memory_admission": "bounded-overcommit"}).capabilities()
+    assert caps["capacity_valid"] is True
+    assert caps["memory_bytes"] == 176 * GIB
+    assert caps["memory_total_bytes"] == 180 * GIB
+    assert caps["hardware"]["memory_bytes"] == 180 * GIB
+    # without the declaration the idle measurement wins, as before
+    caps = Declared(Runtime(), {"memory_bytes": 176 * GIB, "swap_bytes": 640 * GIB,
+        "memory_commit_bytes": 816 * GIB, "memory_admission": "bounded-overcommit"}).capabilities()
+    assert caps["capacity_valid"] is False and caps["memory_bytes"] == 16 * GIB
+
+
 def test_without_explicit_commitment_only_physical_budget_is_declared():
     runtime = LinuxContainerRuntime()
     runtime.memory_capacity = lambda: {"memory_bytes": 94 * GIB, "swap_bytes": 640 * GIB}

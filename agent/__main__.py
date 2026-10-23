@@ -101,6 +101,17 @@ class Declared:
         if measured is None:
             return dict(caps, capacity_valid=False, capacity_error="worker memory could not be measured")
         physical, swap = measured["memory_bytes"], measured["swap_bytes"]
+        # A guest on Hyper-V dynamic memory measures only what the host has
+        # handed it so far - 16 GB at idle on a VM that grows to 184 GB. The
+        # operator declares that ceiling as `physical_bytes`; it stands in
+        # for the measurement everywhere a budget is checked against the
+        # machine, and the hardware facts say the same so a limit is judged
+        # against what the VM can hold, not what it holds right now.
+        declared_physical = self._capacity.get("physical_bytes")
+        if declared_physical:
+            physical = max(int(declared_physical), physical)
+            if isinstance(caps.get("hardware"), dict):
+                caps["hardware"] = dict(caps["hardware"], memory_bytes=physical)
         caps["memory_total_bytes"], caps["swap_total_bytes"] = physical, swap
         memory_budget = self._capacity.get("memory_bytes", physical)
         swap_budget = self._capacity.get("swap_bytes", swap)
