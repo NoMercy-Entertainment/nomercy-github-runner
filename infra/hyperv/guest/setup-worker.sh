@@ -45,8 +45,11 @@ if [ -s BASE_github ]; then
   docker build -q -f images/linux/unit/Dockerfile.github     --build-arg BASE="$(cat BASE_github)"     --label "org.opencontainers.image.revision=${VERSION}"     -t "nomercy/runner-unit-github:${VERSION}" images/linux/unit >/dev/null
   echo "unit image nomercy/runner-unit-github:${VERSION}"
 fi
+# The Forgejo base is whatever settings.psd1 names, loaded above from the
+# tar the host saved; the ghcr name was never published (2026-10-23).
+BASE_FORGEJO="$(cat BASE_forgejo 2>/dev/null || echo ghcr.io/nomercy-entertainment/nomercy-forgejo-runner:latest)"
 docker build -q -f images/linux/unit/Dockerfile.forgejo \
-  --build-arg BASE=ghcr.io/nomercy-entertainment/nomercy-forgejo-runner:latest \
+  --build-arg BASE="$BASE_FORGEJO" \
   --label "org.opencontainers.image.revision=${VERSION}" \
   -t "nomercy/runner-unit-forgejo:${VERSION}" images/linux/unit >/dev/null
 echo "unit image nomercy/runner-unit-forgejo:${VERSION}"
