@@ -81,6 +81,7 @@ try {
         infra/hyperv/lib.ps1 infra/hyperv/settings.psd1 `
         infra/hyperv/Install-WindowsWorker.ps1 `
         infra/windows/guest/Install-RunnerTools.ps1 `
+        infra/windows/guest/Install-RunnerToolCache.ps1 `
         infra/windows/guest/Install-CppBuildTools.ps1 `
         infra/windows/guest/Install-AndroidSdk.ps1 `
         infra/windows/guest/set_runner_update_policy.py `

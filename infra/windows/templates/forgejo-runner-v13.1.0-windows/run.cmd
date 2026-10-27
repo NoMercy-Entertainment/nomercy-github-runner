@@ -25,6 +25,14 @@ goto wait
 rem Forgejo has no unlimited duration; use the maximum it supports.
 >> config.yaml echo   timeout: 2562047h47m16s
 >> config.yaml echo   shutdown_timeout: 2562047h47m16s
+rem In host mode a job's RUNNER_TOOL_CACHE is a tool_cache under
+rem workdir_parent - the workspace, which a recreate discards - unless
+rem runner.envs names one. The unit file names the runner's own, in its
+rem cache, already filled with the machine's Pythons and Nodes.
+if defined RUNNER_TOOL_CACHE (
+>> config.yaml echo   envs:
+>> config.yaml echo     RUNNER_TOOL_CACHE: %RUNNER_TOOL_CACHE%
+)
 >> config.yaml echo host:
 >> config.yaml echo   workdir_parent: %RUNNER_WORK_DIR%
 "%~dp0forgejo-runner.exe" daemon --config "%~dp0config.yaml"

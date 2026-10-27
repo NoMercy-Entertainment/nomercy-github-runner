@@ -244,10 +244,125 @@ if ($PSCmdlet.ShouldProcess('Android SDK', 'install platform and build tools')) 
     & $androidInstaller
 }
 
+# Composer has no machine-scope WinGet package. The pinned phar beside a
+# composer.bat on the machine PATH gives every runner the `composer` that
+# Linux and macOS jobs already have (2026-10-27).
+$composerVersion = '2.10.3'
+$composerSha256 = '7a2d379d5b8ffdaa028580ef26494c36d2feef4b178d3dd1473a4dbc5e17c8d6'
+$composerDir = 'C:\Program Files\Composer'
+if (-not (Resolve-ForService 'composer') -and
+        $PSCmdlet.ShouldProcess('composer', "install $composerVersion for the machine")) {
+    New-Item -ItemType Directory -Force -Path $composerDir | Out-Null
+    $phar = Join-Path $composerDir 'composer.phar'
+    Invoke-WebRequest -UseBasicParsing -OutFile $phar `
+        -Uri "https://getcomposer.org/download/$composerVersion/composer.phar"
+    if ((Get-FileHash -LiteralPath $phar -Algorithm SHA256).Hash.ToLower() -ne $composerSha256) {
+        Remove-Item -LiteralPath $phar -Force
+        throw "composer.phar $composerVersion does not match its published SHA-256"
+    }
+    Set-Content -LiteralPath (Join-Path $composerDir 'composer.bat') -Encoding ASCII `
+        -Value '@php "%~dp0composer.phar" %*'
+    [void](Add-ToMachinePath $composerDir)
+}
+
+# Node 25 and later no longer bundle corepack. Installed beside node, in
+# the machine's Node directory, not in the installing admin's profile.
+$nodeDir = 'C:\Program Files\nodejs'
+if ((Test-Path -LiteralPath (Join-Path $nodeDir 'npm.cmd')) -and
+        -not (Test-Path -LiteralPath (Join-Path $nodeDir 'corepack.cmd')) -and
+        $PSCmdlet.ShouldProcess('corepack', 'install beside node')) {
+    & (Join-Path $nodeDir 'npm.cmd') install --global --prefix $nodeDir corepack
+    if ($LASTEXITCODE -ne 0) { throw "Installing corepack exited with $LASTEXITCODE" }
+}
+
+# The Build Tools' MSBuild builds C++ projects; dotnet's own MSBuild does
+# not. cl.exe stays off the PATH on purpose: it works only inside the
+# developer environment (INCLUDE, LIB), which the build scripts load.
+$msbuildDir = Get-Item -Path 'C:\Program Files*\Microsoft Visual Studio\*\*\MSBuild\Current\Bin' `
+    -ErrorAction SilentlyContinue | Where-Object PSIsContainer | Select-Object -First 1
+if ($msbuildDir -and $PSCmdlet.ShouldProcess('msbuild', 'put the Build Tools MSBuild on the PATH')) {
+    [void](Add-ToMachinePath $msbuildDir.FullName)
+}
+
+# The clock. Windows Time is demand-started and nothing on this image
+# triggers it, so the guest kept only the time it booted with: it ran 17 s
+# ahead of the host, and every job event it stamped with it (2026-10-27).
+# Running, it takes the host's time through the Hyper-V provider.
+if ((Get-Service W32Time).StartType -ne 'Automatic' -and
+        $PSCmdlet.ShouldProcess('W32Time', 'start automatically and sync from the host')) {
+    Set-Service W32Time -StartupType Automatic
+    Start-Service W32Time
+    & w32tm.exe /resync /force | Out-Null
+}
+
+# Tools with no machine-scope WinGet package that jobs on Linux and macOS
+# take for granted (the health checks ask for each, 2026-10-27): pinned
+# releases, checked against their publisher's hash, in Program Files and
+# on the machine PATH. Gradle and Maven run on the machine's JDK.
+$isArm = $Architecture -eq 'arm64'
+$Portable = [ordered]@{
+    'jq'     = @{ Url = "https://github.com/jqlang/jq/releases/download/jq-1.8.2/jq-windows-$(if ($isArm) { 'arm64' } else { 'amd64' }).exe"
+                  Sha256 = $(if ($isArm) { '083b5377392bc57cf27052b6d20a2d927770683bca844632901ff38b4b7b0ac7' } else { 'a6fc67fedaf9128a3309a1e2ebb8b986aeccf70122ee46d2cb4849e423f0c627' })
+                  Dir = 'C:\Program Files\jq'; Exe = 'jq.exe' }
+    # The x64 release zip Chocolatey's wget 1.25.0 verifies (its
+    # VERIFICATION.txt). The site answers a client without a browser
+    # User-Agent with an HTML challenge page, which the hash check refuses.
+    'wget'   = @{ Url = 'https://eternallybored.org/misc/wget/releases/wget-1.25.0-win64.zip'
+                  Sha256 = '7567cbc08a1616931162b1c05f1731316853c32c79a21af1e850ccb673d1620c'
+                  Dir = 'C:\Program Files\wget'; Zip = $true; X64Only = $true; UserAgent = 'Mozilla/5.0' }
+    'ninja'  = @{ Url = "https://github.com/ninja-build/ninja/releases/download/v1.13.2/ninja-win$(if ($isArm) { 'arm64' }).zip"
+                  Sha256 = $(if ($isArm) { 'e52f0bdef9dfb1003229dbd6508a508c4073fd017247002adc66e5e806cb0391' } else { '07fc8261b42b20e71d1720b39068c2e14ffcee6396b76fb7a795fb460b78dc65' })
+                  Dir = 'C:\Program Files\Ninja'; Zip = $true }
+    'gradle' = @{ Url = 'https://services.gradle.org/distributions/gradle-9.8.2-bin.zip'
+                  Sha256 = '21bd5da2de49b642904077f38c0efdc7778e92b3ed0889392dca61b97e389607'
+                  Dir = 'C:\Program Files\Gradle'; Zip = $true; Bin = 'gradle-9.8.2\bin' }
+    'mvn'    = @{ Url = 'https://archive.apache.org/dist/maven/maven-3/3.9.16/binaries/apache-maven-3.9.16-bin.zip'
+                  Sha512 = 'ed41650d42485cfc243fad22158caf9cbb5dc408ce7a09ddb94dd42a019de929ca43065bfa450612cf12bf78b5cafa3884b96c090de326ff590448c933454af3'
+                  Dir = 'C:\Program Files\Maven'; Zip = $true; Bin = 'apache-maven-3.9.16\bin' }
+}
+foreach ($command in $Portable.Keys) {
+    $spec = $Portable[$command]
+    $bin = if ($spec.Bin) { Join-Path $spec.Dir $spec.Bin } else { $spec.Dir }
+    if ((Resolve-ForService $command) -or -not $PSCmdlet.ShouldProcess($command, 'install a pinned release for the machine')) { continue }
+    if ($spec.X64Only -and $isArm) { Write-Host ('no arm64 build : {0}' -f $command); continue }
+    Write-Host ('installing    : {0} ({1})' -f $command, $spec.Url)
+    $download = Join-Path $env:TEMP ([IO.Path]::GetFileName($spec.Url))
+    $agent = if ($spec.UserAgent) { @{ UserAgent = $spec.UserAgent } } else { @{} }
+    Invoke-WebRequest -UseBasicParsing -TimeoutSec 600 -OutFile $download -Uri $spec.Url @agent
+    $algorithm = if ($spec.Sha512) { 'SHA512' } else { 'SHA256' }
+    $expected = if ($spec.Sha512) { $spec.Sha512 } else { $spec.Sha256 }
+    if ((Get-FileHash -LiteralPath $download -Algorithm $algorithm).Hash.ToLower() -ne $expected) {
+        Remove-Item -LiteralPath $download -Force
+        throw "$($spec.Url) does not match its published $algorithm"
+    }
+    New-Item -ItemType Directory -Force -Path $spec.Dir | Out-Null
+    if ($spec.Zip) {
+        & tar.exe -xf $download -C $spec.Dir
+        if ($LASTEXITCODE -ne 0) { throw "unpacking $download failed" }
+        Remove-Item -LiteralPath $download -Force
+    } else {
+        # A copy, not a move: a moved file keeps the installing admin's TEMP
+        # ACL, and the runners' service accounts were denied jq (2026-10-27).
+        Copy-Item -Force -LiteralPath $download -Destination (Join-Path $spec.Dir $spec.Exe)
+        Remove-Item -LiteralPath $download -Force
+    }
+    [void](Add-ToMachinePath $bin)
+}
+
+# setup-python and setup-node look in the runner's tool cache before they
+# download; the agent fills that from this machine-wide one.
+$toolCacheInstaller = Join-Path $PSScriptRoot 'Install-RunnerToolCache.ps1'
+if (-not (Test-Path -LiteralPath $toolCacheInstaller)) {
+    throw "Missing $toolCacheInstaller"
+}
+if ($PSCmdlet.ShouldProcess('tool cache', 'Python 3.10-3.14 and Node 20/22/24/26')) {
+    & $toolCacheInstaller -Architecture $Architecture
+}
+
 Write-Host ''
 Write-Host 'what a runner will find (machine PATH only):'
 $missing = @()
-foreach ($command in $Tools.Keys) {
+foreach ($command in @($Tools.Keys) + @('composer', 'corepack', 'msbuild') + @($Portable.Keys) + @('clang-cl')) {
     $where = if ($report.Contains($command)) { $report[$command] } else { Resolve-ForService $command }
     if (-not $where) { $missing += $command }
     Write-Host ('  {0,-8} {1}' -f $command, $(if ($where) { $where } else { 'NOT reachable by a service' }))

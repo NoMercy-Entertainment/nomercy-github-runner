@@ -889,3 +889,120 @@ class TestWhatThisWorkerCanBuildFrom:
             self, runtime, host):
         host.explode_on_listdir = True
         assert runtime.capabilities()["templates"] == []
+
+
+SEED = r"C:\ProgramData\nomercy\toolcache"
+
+
+def _seeded(host):
+    """The machine's tool cache as Install-RunnerTools.ps1 leaves it: each
+    version's files beside the `<arch>.complete` marker setup-python and
+    setup-node look for."""
+    for tool, version in (("Python", "3.12.10"), ("Python", "3.14.0"), ("node", "22.21.0")):
+        host.put(ntpath.join(SEED, tool, version, "x64", "bin.exe"), 1000)
+        host.put(ntpath.join(SEED, tool, version, "x64.complete"), 0)
+    # Half-installed: no marker, so never handed to a runner.
+    host.put(ntpath.join(SEED, "node", "26.0.0", "x64", "node.exe"), 1000)
+    return WindowsProcessRuntime(run=host, fs=host, tools=dict(TOOLS, toolcache_seed=SEED))
+
+
+class TestToolCache:
+    """setup-python and setup-node look in RUNNER_TOOL_CACHE before they
+    download. On Windows both forges defaulted to a directory under the
+    workspace, which a recreate discards, and nothing was in it: every job
+    downloaded its Python and Node again (2026-10-27)."""
+
+    def test_both_forges_are_told_the_runners_own_persistent_tool_cache(self, runtime, host):
+        runtime.create(RID, SPEC)
+        p = runtime.paths(RID)
+        env = json.loads(host.read_text(ntpath.join(p["reg"], "unit.json")))["env"]
+        toolcache = ntpath.join(p["cache"], "toolcache")
+        for key in ("RUNNER_TOOL_CACHE", "AGENT_TOOLSDIRECTORY", "RUNNER_TOOLSDIRECTORY"):
+            assert env[key] == toolcache, key
+        assert host.exists(toolcache)
+        assert "cache" in KEPT_ON_RECREATE
+
+    def test_create_fills_it_with_every_complete_version_of_the_machine_seed(self, host):
+        runtime = _seeded(host)
+        runtime.create(RID, SPEC)
+        toolcache = ntpath.join(runtime.paths(RID)["cache"], "toolcache")
+        for tool, version in (("Python", "3.12.10"), ("Python", "3.14.0"), ("node", "22.21.0")):
+            assert host.exists(ntpath.join(toolcache, tool, version, "x64", "bin.exe"))
+            assert host.exists(ntpath.join(toolcache, tool, version, "x64.complete"))
+        assert not host.exists(ntpath.join(toolcache, "node", "26.0.0"))
+
+    def test_the_copy_is_made_after_the_tree_is_locked_to_the_runner(self, host):
+        runtime = _seeded(host)
+        seen = []
+        real_copy = host.copytree
+
+        def copy(src, dst):
+            if src.startswith(SEED):
+                seen.append(ntpath.normcase(runtime.paths(RID)["root"]) in host.acls)
+            return real_copy(src, dst)
+        host.copytree = copy
+        runtime.create(RID, SPEC)
+        assert seen and all(seen)
+
+    def test_a_version_the_runner_already_has_is_not_copied_again(self, host):
+        runtime = _seeded(host)
+        runtime.create(RID, SPEC)
+        mine = ntpath.join(runtime.paths(RID)["cache"], "toolcache", "Python", "3.12.10", "x64", "pip-installed")
+        host.put(mine, 7)
+        copies = []
+        real_copy = host.copytree
+        host.copytree = lambda src, dst: (copies.append(src), real_copy(src, dst))
+        runtime.create(RID, SPEC)
+        assert copies == [] and host.exists(mine)
+
+    def test_an_interrupted_copy_is_completed_on_the_next_create(self, host):
+        runtime = _seeded(host)
+        runtime.create(RID, SPEC)
+        marker = ntpath.join(runtime.paths(RID)["cache"], "toolcache", "node", "22.21.0", "x64.complete")
+        host.remove(marker)
+        runtime.create(RID, SPEC)
+        assert host.exists(marker)
+
+    def test_a_cleared_tool_cache_gets_the_seed_back_when_the_runner_starts(self, host):
+        """A clear is drain, clear, start - and clear_cache itself touches
+        nothing outside the runner's tree (test_cache_safety.py)."""
+        runtime = _seeded(host)
+        runtime.create(RID, SPEC)
+        toolcache = ntpath.join(runtime.paths(RID)["cache"], "toolcache")
+        host.put(ntpath.join(toolcache, "Python", "3.9.1", "x64", "python.exe"), 5000)
+        runtime.stop(RID)
+        result = runtime.clear_cache(RID, {"scopes": ["toolcache"]})
+        assert not result["errors"]
+        assert not host.exists(ntpath.join(toolcache, "Python", "3.12.10"))
+        runtime.start(RID)
+        assert not host.exists(ntpath.join(toolcache, "Python", "3.9.1"))
+        assert host.exists(ntpath.join(toolcache, "Python", "3.12.10", "x64.complete"))
+        assert host.exists(ntpath.join(toolcache, "Python", "3.12.10", "x64", "bin.exe"))
+
+    def test_no_seed_on_the_machine_is_an_empty_cache_not_a_failure(self, runtime, host):
+        runtime.create(RID, SPEC)
+        toolcache = ntpath.join(runtime.paths(RID)["cache"], "toolcache")
+        assert host.exists(toolcache) and host.listdir(toolcache) == []
+
+
+def test_a_forgejo_unit_gets_its_admission_policy_and_job_event_spool(runtime, host):
+    """The guarded forgejo-runner refuses every task without the policy the
+    controller puts in the spec, and emits job events only with both
+    NOMERCY_ variables - the same three a Linux or macOS Forgejo unit has."""
+    policy = '{"version":1,"instance":"https://forge.example","allowed_owner_ids":[1],"trusted_source_owner_ids":[]}'
+    spec = dict(SPEC, env={"NOMERCY_FORGEJO_ADMISSION_POLICY": policy})
+    runtime.create(RID, spec)
+    p = runtime.paths(RID)
+    env = json.loads(host.read_text(ntpath.join(p["reg"], "unit.json")))["env"]
+    assert env["NOMERCY_FORGEJO_ADMISSION_POLICY"] == policy
+    assert env["NOMERCY_RUNNER_ID"] == RID
+    assert env["NOMERCY_JOB_EVENT_DIR"] == ntpath.join(p["logs"], "job-events")
+
+
+def test_android_user_home_is_in_the_runners_own_cache(runtime, host):
+    """The Android tools' .android belongs to the runner, not to the
+    service account's profile under ServiceProfiles."""
+    runtime.create(RID, SPEC)
+    p = runtime.paths(RID)
+    env = json.loads(host.read_text(ntpath.join(p["reg"], "unit.json")))["env"]
+    assert env["ANDROID_USER_HOME"] == ntpath.join(p["cache"], "android")

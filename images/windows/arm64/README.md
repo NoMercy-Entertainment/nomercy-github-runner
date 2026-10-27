@@ -155,7 +155,7 @@ and resume the same registrations. Never start both copies simultaneously.
   restriction were removed. Incoming management restrictions remain in place.
 - GitHub's [health run](https://github.com/NoMercy-Entertainment/nomercy-runner-health-check/actions/runs/37881055139)
   is executing on `github-windows-arm64-1`; Forgejo's
-  [health run](https://forgejo.phillippepelzer.me/FiLL/forgejo-runners-heath-check/actions/runs/59)
+  [health run](https://forgejo.phillippepelzer.me/FiLL/forgejo-runners-health-check/actions/runs/59)
   is executing on its existing ARM64 runner. Full build-environment results
   are still pending; job execution and fleet availability are verified.
 
@@ -530,7 +530,7 @@ Log: `C:\ProgramData\nomercy\arm-runner-disk.log`.
 Build health checks are prepared but not dispatched:
 - GitHub private repository `NoMercy-Entertainment/nomercy-runner-health-check`,
   master, workflow `.github/workflows/windows-arm64.yml`.
-- Forgejo `FiLL/forgejo-runners-heath-check`, branch
+- Forgejo `FiLL/forgejo-runners-health-check`, branch
   `windows-arm64-health-20261002`, `.forgejo/workflows/windows-arm64.yml`.
 
 Both contain the same service-account build test, including native C++,

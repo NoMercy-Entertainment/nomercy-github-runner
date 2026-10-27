@@ -18,7 +18,7 @@ try {
         param($directory)
         New-Item -ItemType Directory -Path $directory -Force | Out-Null
     }
-    foreach ($file in @('Install-RunnerTools.ps1', 'Install-CppBuildTools.ps1', 'Install-AndroidSdk.ps1')) {
+    foreach ($file in @('Install-RunnerTools.ps1', 'Install-RunnerToolCache.ps1', 'Install-CppBuildTools.ps1', 'Install-AndroidSdk.ps1')) {
         Copy-Item -LiteralPath (Join-Path $PSScriptRoot "..\windows\guest\$file") `
             -Destination (Join-Path $guestDir $file) -ToSession $session -Force
     }

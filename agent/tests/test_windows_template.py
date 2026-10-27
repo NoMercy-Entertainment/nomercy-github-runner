@@ -99,3 +99,16 @@ def test_register_keeps_the_exit_code_of_what_it_started():
         if "Start-Process" not in reg:
             continue
         assert re.search(r"\$null = \$\w+\.Handle", reg), template
+
+
+def test_jobs_get_the_runners_own_tool_cache():
+    """In host mode forgejo-runner sets RUNNER_TOOL_CACHE to a tool_cache
+    under workdir_parent - the workspace a recreate discards - unless
+    runner.envs names one. The agent's unit file names the runner's
+    persistent one; an older unit file without it keeps the default rather
+    than handing jobs an empty value."""
+    run = read("run.cmd")
+    assert re.search(r"if defined RUNNER_TOOL_CACHE \(", run)
+    assert ">> config.yaml echo   envs:" in run
+    assert ">> config.yaml echo     RUNNER_TOOL_CACHE: %RUNNER_TOOL_CACHE%" in run
+    assert run.index("envs:") < run.index("host:")

@@ -89,6 +89,15 @@ TEMPLATE_MARKER = ".template"
 #: The scopes this runtime offers are generated from this table. No engine
 #: scopes: there is no engine, so nothing of the runner's would hold one.
 SCOPE_AREAS = {"workspace": "work", "toolcache": "cache", "temp": "tmp"}
+
+#: Where setup-python, setup-node and the other setup-* actions look before
+#: they download, inside the runner's cache: kept across a recreate, and
+#: told to both forges (RUNNER_TOOL_CACHE; the GitHub runner also reads the
+#: two older names). Filled at create from the machine's own tool cache,
+#: which Install-RunnerTools.ps1 lays out the way those actions expect.
+TOOLCACHE = "toolcache"
+TOOLCACHE_ENV_KEYS = ("RUNNER_TOOL_CACHE", "AGENT_TOOLSDIRECTORY", "RUNNER_TOOLSDIRECTORY")
+COMPLETE = ".complete"
 SUPPORTED_SCOPES = frozenset(SCOPE_AREAS)
 DEFAULT_SCOPES = ("toolcache", "temp")
 
@@ -106,6 +115,7 @@ TOOLS = {
     "powershell": r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe",
     "python": sys.executable,
     "templates": r"C:\ProgramData\nomercy\templates",
+    "toolcache_seed": r"C:\ProgramData\nomercy\toolcache",
 }
 
 _UNITS = {"": 1, "b": 1, "k": 1024, "m": 1024 ** 2, "g": 1024 ** 3,
@@ -237,6 +247,7 @@ class WindowsProcessRuntime:
         self._fs.makedirs(p["root"])
         for key in (*AREAS, "tmp"):
             self._fs.makedirs(p[key])
+        self._fs.makedirs(ntpath.join(p["cache"], TOOLCACHE))
 
         # 2. The service, before the tree is locked to it. Its virtual
         #    account's SID is derived from the name, but Windows maps that SID
@@ -294,6 +305,10 @@ class WindowsProcessRuntime:
                 self._fs.write_text(ntpath.join(hooks, "federation-started.js"),
                                     (HOOK_SOURCE.parent / "federation-started.js").read_text(encoding="utf-8"))
 
+        # 4c. The machine's Pythons and Nodes, into the runner's own tool
+        #     cache, now that the tree is locked to it.
+        self._seed_toolcache(p)
+
         # 5. What the job host reads: limits and environment, never argv.
         self._fs.write_text(ntpath.join(p["reg"], "unit.json"),
                             json.dumps(self._unit(rid, spec, p, disk)))
@@ -323,6 +338,8 @@ class WindowsProcessRuntime:
         for area, key in LAYOUT_ENV_KEYS.items():
             env[key] = p[area]
         env["TEMP"] = env["TMP"] = p["tmp"]
+        for key in TOOLCACHE_ENV_KEYS:
+            env[key] = ntpath.join(p["cache"], TOOLCACHE)
         # These profiles belong to the runner for both storage backends.
         # Plain directory workers (including QEMU ARM guests) must not put
         # job caches in a service profile outside clear_cache's scopes.
@@ -337,6 +354,12 @@ class WindowsProcessRuntime:
             "NUGET_SCRATCH": "nuget-scratch", "GRADLE_USER_HOME": "gradle",
             "NPM_CONFIG_CACHE": "npm", "PIP_CACHE_DIR": "pip",
             "GOCACHE": "go-build", "GOMODCACHE": "go-mod",
+            # The Android Gradle plugin, sdkmanager and avdmanager keep their
+            # .android (debug keystore, AVDs) here, not in the service
+            # account's own profile under ServiceProfiles, which no clear or
+            # recreate reaches. adb 1.0.41 does not read it and still puts
+            # its adbkey in that profile (health check, 2026-10-27).
+            "ANDROID_USER_HOME": "android",
         }.items():
             env[variable] = ntpath.join(p["cache"], directory)
         if self._tools.get("short_workspaces"):
@@ -357,6 +380,30 @@ class WindowsProcessRuntime:
                 "memory_bytes": size_bytes(spec.get("memory")),
                 "cpus": float(cpus) if cpus not in ("", "0") else None,
                 "cpuset": spec.get("cpuset") or None}
+
+    def _seed_toolcache(self, p):
+        """Every version the machine's tool cache holds complete and the
+        runner's does not: its files first, its `<arch>.complete` marker
+        last, so a copy cut off is redone and never taken for a whole one.
+        A version the runner already has is left as its jobs left it."""
+        seed = self._tools.get("toolcache_seed")
+        if not seed or not self._fs.exists(seed):
+            return
+        mine = ntpath.join(p["cache"], TOOLCACHE)
+        for tool in self._fs.listdir(seed):
+            for version in self._fs.listdir(ntpath.join(seed, tool)):
+                source = ntpath.join(seed, tool, version)
+                for marker in self._fs.listdir(source):
+                    arch = marker[:-len(COMPLETE)]
+                    if not marker.endswith(COMPLETE) or not arch or \
+                            not self._fs.exists(ntpath.join(source, arch)):
+                        continue
+                    target = ntpath.join(mine, tool, version)
+                    if self._fs.exists(ntpath.join(target, marker)):
+                        continue
+                    self._fs.makedirs(target)
+                    self._fs.copytree(ntpath.join(source, arch), ntpath.join(target, arch))
+                    self._fs.write_text(ntpath.join(target, marker), "")
 
     #: Every kind of write, and delete, rename, re-permission and take-over:
     #: what a job is denied on the files its own hook and job host run from.
@@ -469,6 +516,10 @@ class WindowsProcessRuntime:
         if running is None:
             raise RuntimeError("service state is unknown; start is held")
         if running is False:
+            # A cleared tool cache gets its baseline back before the runner
+            # takes another job: a clear is drained, cleared, then started.
+            self._fs.makedirs(ntpath.join(p["cache"], TOOLCACHE))
+            self._seed_toolcache(p)
             self._service_command(runner_id, "start")
 
     def stop(self, runner_id):
