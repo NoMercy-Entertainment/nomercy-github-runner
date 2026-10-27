@@ -194,9 +194,12 @@ class GuestFs:
 
     def copytree(self, src, dst):
         quoted_src, quoted_dst = shlex.quote(src + "/."), shlex.quote(dst)
+        # The first copy in a freshly created guest reads every file of the
+        # template from the cold base disk: over 300 s on an idle host, and
+        # every new macOS runner failed create_unit (2026-10-27).
         ok, _, err = self._sh("mkdir -p %s && cp -R %s %s"
                               % (quoted_dst, quoted_src, quoted_dst),
-                              timeout=300)
+                              timeout=1200)
         if not ok:
             raise OSError("could not copy %s to %s in the guest: %s"
                           % (src, dst, err))

@@ -182,6 +182,14 @@ class TestTheDiskInsideTheGuest:
         assert "cp -R" in run.remote
         assert "/Users/runner/templates/t/." in run.remote
 
+    def test_copytree_waits_for_a_cold_guest_disk(self, fs, run):
+        """The first copy of the GitHub template in a freshly created guest
+        reads every file from the cold base disk; it took over 300 s on an
+        idle host and failed create_unit for every new macOS runner
+        (2026-10-27)."""
+        fs.copytree("/Users/runner/templates/t", "/Users/runner/r/reg")
+        assert run.calls[-1]["timeout"] >= 1200
+
     def test_read_text_is_what_the_guest_holds(self, fs, run):
         run.answers = {"cat ": (0, "hello", "")}
         assert fs.read_text("/Users/runner/f") == "hello"
