@@ -434,6 +434,35 @@ def test_unknown_guest_or_host_never_reports_absence_or_forces_poweroff(pool, ho
     assert not any(a[:2] in (["docker", "stop"], ["docker", "kill"]) for a in host.calls)
 
 
+def test_one_failed_guest_read_keeps_the_last_reading_for_a_minute(pool, host, monkeypatch):
+    """A running guest whose read fails once must not flip the card to
+    "unknown" and back every other beat (2026-10-27). The last reading is
+    reused for LIGHT_GRACE seconds; after that the guest is unknown again."""
+    from agent.runtimes import macos_pool
+    pool.create(RID, SPEC)
+    inner = pool._online(RID)
+    good = {"cpu_percent": 3.5, "mem_used_bytes": 2048, "host_cores": 8,
+            "host_mem_bytes": 8 << 30, "storage_volume_used_bytes": 10,
+            "storage_volume_total_bytes": 100}
+    answers = [good, RuntimeError("ssh timed out"), RuntimeError("ssh timed out")]
+
+    def read(rid):
+        answer = answers.pop(0)
+        if isinstance(answer, Exception):
+            raise answer
+        return dict(answer)
+
+    monkeypatch.setattr(type(inner), "telemetry", lambda self, rid: read(rid))
+    first = pool.telemetry(RID)
+    assert first["cpu_percent"] == 3.5
+    host.now += 20
+    assert pool.telemetry(RID)["cpu_percent"] == 3.5
+    assert pool.telemetry(RID)["storage_volume_used_bytes"] == 10
+    host.now += macos_pool.LIGHT_GRACE
+    answers.append(RuntimeError("ssh timed out"))
+    assert pool.telemetry(RID)["cpu_percent"] is None
+
+
 def test_stopped_telemetry_is_unknown_without_boot_or_ssh(pool, host):
     pool.create(RID, SPEC)
     pool.stop(RID)
@@ -653,3 +682,9 @@ def test_a_stopped_guest_cannot_be_read_and_says_nothing(pool, host):
     pool.create(RID, dict(SPEC, labels={"nomercy.provider": "github"}))
     pool.stop(RID)
     assert pool.origin_guard_report(RID) is None
+
+
+def test_pool_guests_use_the_hosted_tool_cache_path(pool, tmp_path):
+    """A pool guest holds one runner, and the python-versions packages that
+    are built from source only run from GitHub's hosted path (2026-10-27)."""
+    assert pool._tools["toolcache"] == "/Users/runner/hostedtoolcache"

@@ -115,6 +115,11 @@ TOOLS = {
     "ps": "/bin/ps",
     "df": "/bin/df",
     "templates": "/Users/runner/templates",
+    # Where the setup-* actions find and install tools (RUNNER_TOOL_CACHE
+    # and AGENT_TOOLSDIRECTORY, always the same path). None: the runner's
+    # own cache/toolcache. A guest that holds one runner names a fixed path
+    # instead; see macos_pool.HOSTED_TOOLCACHE.
+    "toolcache": None,
     "launch_agents": "/Users/runner/Library/LaunchAgents",
     "domain": None,             # gui/<uid> or user/<uid>; see _domain
     "runner_user": None,        # required for system launchd jobs
@@ -273,6 +278,12 @@ class MacApplianceRuntime:
         self._fs.chmod(p["root"], 0o700)
         for key in (*AREAS, "tmp"):
             self._fs.makedirs(p[key])
+        # The job's HOME lives under work, which a recreate discards, and
+        # nothing else made it again: adb failed on its .android on the first
+        # job after a recreate (2026-10-27). The tool cache survives a
+        # recreate: the runner's cache area, or the guest's own disk.
+        self._fs.makedirs(posixpath.join(p["work"], ".home"))
+        self._fs.makedirs(self.toolcache(p))
 
         # 2. The runner's software, once.
         marker = posixpath.join(p["reg"], TEMPLATE_MARKER)
@@ -324,6 +335,10 @@ class MacApplianceRuntime:
         if not self.status(rid).get("running"):
             self._check(self._launchctl("kickstart", self._target(rid)))
         return naming.unit_name(rid)
+
+    def toolcache(self, p):
+        """The tool cache a runner's jobs use, from its paths."""
+        return self._tools.get("toolcache") or posixpath.join(p["cache"], "toolcache")
 
     def _adopt(self, rid, adopt):
         """Take over a runner that is already installed and serving.
@@ -447,17 +462,34 @@ class MacApplianceRuntime:
             "NUGET_PACKAGES": "nuget", "NUGET_HTTP_CACHE_PATH": "nuget-http",
             "NUGET_SCRATCH": "nuget-scratch", "GRADLE_USER_HOME": "gradle",
             "NPM_CONFIG_CACHE": "npm", "PIP_CACHE_DIR": "pip",
-            "RUNNER_TOOL_CACHE": "toolcache", "AGENT_TOOLSDIRECTORY": "toolcache",
             "GOCACHE": "go-build", "GOMODCACHE": "go-mod", "GOPATH": "go",
             "XDG_DATA_HOME": "xdg-data", "XDG_CONFIG_HOME": "xdg-config",
         }.items():
             env[key] = posixpath.join(p["cache"], directory)
+        # One path for both: setup.sh installs where AGENT_TOOLSDIRECTORY
+        # points and setup-python looks where RUNNER_TOOL_CACHE points.
+        env["RUNNER_TOOL_CACHE"] = env["AGENT_TOOLSDIRECTORY"] = self.toolcache(p)
         for key, directory in {
             "RUSTUP_HOME": ".rustup", "PYENV_ROOT": ".pyenv",
             "RBENV_ROOT": ".rbenv", "ANDROID_HOME": "Library/Android/sdk",
             "ANDROID_SDK_ROOT": "Library/Android/sdk",
         }.items():
             env.setdefault(key, posixpath.join(shared_home, directory))
+        # launchd starts a job with /usr/bin:/bin:/usr/sbin:/sbin only, and
+        # every tool a job needs - Node, PHP, the Rust proxies, adb, all of
+        # Homebrew - lives in /usr/local. A Forgejo macOS job found none of
+        # them; GitHub's start script added /usr/local/bin by itself
+        # (2026-10-27). First the runner's own install targets (cargo
+        # install, go install, dotnet tool install), then the machine's.
+        sdk = env["ANDROID_HOME"]
+        env.setdefault("PATH", ":".join((
+            posixpath.join(env["CARGO_HOME"], "bin"),
+            posixpath.join(env["GOPATH"], "bin"),
+            posixpath.join(env["DOTNET_CLI_HOME"], ".dotnet", "tools"),
+            "/usr/local/bin", "/usr/local/sbin",
+            posixpath.join(sdk, "platform-tools"),
+            posixpath.join(sdk, "cmdline-tools", "latest", "bin"),
+            "/usr/bin", "/bin", "/usr/sbin", "/sbin")))
         env["DOTNET_CLI_TELEMETRY_OPTOUT"] = "1"
         env["NOMERCY_RUNNER_ID"] = rid
         env["NOMERCY_JOB_EVENT_DIR"] = posixpath.join(p["logs"], "job-events")
@@ -647,11 +679,22 @@ class MacApplianceRuntime:
                   "host_cores": None, "host_mem_bytes": None,
                   "storage_volume_used_bytes": None,
                   "storage_volume_total_bytes": None}
-        # Named, not `-n`: sysctl answers the names it knows and fails the
-        # call for one it does not, so each figure is read by its own name
-        # whatever the exit status - one it cannot read loses only itself.
-        _, out, _ = self._run(["/usr/sbin/sysctl", "hw.logicalcpu",
-                               "hw.memsize"], timeout=5)
+        # Every read is one SSH login into the guest, and none depends on
+        # another: run in a row under load they took 20 s, longer than a
+        # heartbeat keeps a reading, and both macOS cards showed CPU and
+        # memory unknown (2026-10-27). Together they take one round trip.
+        # sysctl is named, not `-n`: it answers the names it knows and fails
+        # the call for one it does not, so each figure is read by its own
+        # name whatever the exit status - one it cannot read loses only itself.
+        from concurrent.futures import ThreadPoolExecutor
+        with ThreadPoolExecutor(max_workers=4) as reads:
+            sizes = reads.submit(self._run, ["/usr/sbin/sysctl", "hw.logicalcpu",
+                                             "hw.memsize"], timeout=15)
+            job = reads.submit(self._pid, runner_id)
+            table = reads.submit(self._run, [self._tools["ps"], "-A", "-o",
+                                             "pid=,ppid=,pgid=,%cpu=,rss="], timeout=15)
+            disk = reads.submit(self._volume, self.paths(runner_id)["root"])
+        _, out, _ = sizes.result()
         named = {}
         for line in (out or "").splitlines():
             name, sep, value = line.partition(":")
@@ -659,10 +702,9 @@ class MacApplianceRuntime:
                 named[name.strip()] = value.strip()
         result["host_cores"] = _int(named.get("hw.logicalcpu"))
         result["host_mem_bytes"] = _int(named.get("hw.memsize"))
-        pid = self.status(runner_id).get("pid")
+        pid = job.result()
         if pid:
-            ok, out, _ = self._run([self._tools["ps"], "-A", "-o",
-                                    "pid=,ppid=,pgid=,%cpu=,rss="], timeout=15)
+            ok, out, _ = table.result()
             if ok:
                 processes = {}
                 for line in out.splitlines():
@@ -683,10 +725,17 @@ class MacApplianceRuntime:
                 if measured:
                     result["cpu_percent"] = round(sum(p[2] for p in measured), 2)
                     result["mem_used_bytes"] = sum(p[3] for p in measured)
-        volume = self._volume(self.paths(runner_id)["root"])
+        volume = disk.result()
         result["storage_volume_used_bytes"] = volume["volume_used_bytes"]
         result["storage_volume_total_bytes"] = volume["volume_total_bytes"]
         return result
+
+    def _pid(self, runner_id):
+        """The launchd job's pid, from one `launchctl print`: what status()
+        says without its existence check, which telemetry does not need."""
+        ok, out, _ = self._launchctl("print", self._target(naming.check(runner_id)),
+                                     timeout=15)
+        return _int(_field(out, "pid")) if ok else None
 
     def _volume(self, path):
         """The volume `path` is on, which every appliance runner shares."""

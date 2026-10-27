@@ -24,6 +24,15 @@ the listener user. It fills the Rust and Android SDK gaps beside the existing
 Xcode, Java, PHP, .NET, Go and other tools. The shared production guest needs
 the same script so GitHub and Forgejo jobs see one toolchain.
 
+Then run `install-runner-toolcache.sh` as the same user. It fills
+`/Users/runner/hostedtoolcache` with the Python and Node versions jobs ask
+setup-python and setup-node for, installed the way those actions install
+them (Python 3.11+ frameworks land in `/Library/Frameworks`). Every pool
+runner's `RUNNER_TOOL_CACHE` and `AGENT_TOOLSDIRECTORY` name that path
+(`macos_pool.HOSTED_TOOLCACHE`), so a job finds them without downloading.
+It has to be GitHub's hosted path: the python-versions packages built from
+source load libpython from it by absolute path.
+
 The base must contain **no enabled runner listeners** or registrations belonging
 to the old shared instance. Verify launchd's persistent disabled settings and
 auto-start locations before setting `base_guests_disabled: true`. This field is

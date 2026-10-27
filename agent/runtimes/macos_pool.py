@@ -26,6 +26,17 @@ from .macos_native import NativeProvisioner, PinnedGuestExec
 
 GIB = 1024 ** 3
 OVERHEAD_BYTES = 2 * GIB
+#: How long a running guest's last reading stands in for a guest read that
+#: failed. Long enough to bridge a missed beat or two, short enough that a
+#: guest that has really gone quiet turns unknown within a minute.
+LIGHT_GRACE = 60
+#: The tool cache of every pool guest: GitHub's hosted macOS path. The
+#: actions/python-versions packages for versions python.org has no installer
+#: for (3.10.22, every 3.9 and 3.8) are built with this prefix and load
+#: libpython from it by absolute path; under any other tool cache they abort
+#: in dyld (2026-10-27). A pool guest holds one runner, so the path is that
+#: runner's alone; the base carries it filled (images/macos/pool/BASE-20261027.md).
+HOSTED_TOOLCACHE = "/Users/runner/hostedtoolcache"
 POOL_LABEL = "nomercy.appliance_pool"
 RUNNER_LABEL = "nomercy.runner_id"
 PINNED_IMAGE = re.compile(r"(?:sha256:[0-9a-f]{64}|[^\s]+@sha256:[0-9a-f]{64})\Z")
@@ -119,6 +130,7 @@ class MacAppliancePoolRuntime:
         self.network = network
         self._run, self._guest_factory = run or _exec, guest_factory
         self._guest, self._tools = dict(guest), dict(tools or {})
+        self._tools.setdefault("toolcache", HOSTED_TOOLCACHE)
         if runner_storage_limit is not None and (type(runner_storage_limit) is not int
                 or runner_storage_limit < GIB or runner_storage_limit % GIB):
             raise ValueError('runner_storage_limit must be whole GiB')
@@ -621,14 +633,31 @@ class MacAppliancePoolRuntime:
         result = dict(cpu_percent=None, mem_used_bytes=None, mem_limit_bytes=None,
                       storage_volume_used_bytes=None, storage_volume_total_bytes=None,
                       cpu_cores=None, host_cores=None, host_mem_bytes=None)
+        cache = self.__dict__.setdefault("_last_light", {})
+        running = False
         try:
             record = self._read(rid)
             inner = self._online(rid)
             if inner:
+                running = True
+                result.update(cpu_cores=record["cpus"], mem_limit_bytes=record["memory"])
                 result.update(inner.telemetry(rid))
                 result.update(cpu_cores=record["cpus"], mem_limit_bytes=record["memory"])
         except (OSError, ValueError, RuntimeError):
             pass
+        if result["cpu_percent"] is not None:
+            cache[rid] = (self._clock(), dict(result))
+        elif running and rid in cache:
+            # One guest read that fails - an SSH round trip that timed out
+            # while the guest is busy - flipped the card to "unknown" and back
+            # every other beat (2026-10-27). A running guest keeps its last
+            # reading for LIGHT_GRACE seconds; a guest that stays silent
+            # longer, or is not running, is unknown again.
+            at, last = cache[rid]
+            if self._clock() - at <= LIGHT_GRACE:
+                result = dict(last)
+        if not running:
+            cache.pop(rid, None)
         return result
 
     def telemetry_all(self, runner_ids):

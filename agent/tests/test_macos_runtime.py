@@ -114,6 +114,69 @@ def test_runner_profiles_do_not_share_dotnet_or_package_caches(runtime):
     assert envs[0]["DOTNET_CLI_HOME"] != envs[1]["DOTNET_CLI_HOME"]
 
 
+def test_every_runner_gets_the_tool_path(runtime):
+    """launchd starts a job with /usr/bin:/bin:/usr/sbin:/sbin only. Node,
+    PHP, the Rust proxies, adb and every Homebrew tool live in /usr/local, so
+    a Forgejo macOS job found none of them (2026-10-27); GitHub's start script
+    happened to add /usr/local/bin itself. The PATH belongs to the unit, for
+    both forges."""
+    runtime._tools["runner_user"] = "user"
+    for spec in (SPEC, dict(SPEC, provider="forgejo")):
+        p = runtime.paths(RID)
+        env = plistlib.loads(runtime._plist(RID, spec, p).encode())["EnvironmentVariables"]
+        parts = env["PATH"].split(":")
+        for wanted in ("/usr/local/bin", "/usr/local/sbin", "/usr/bin", "/bin",
+                       "/usr/sbin", "/sbin",
+                       "/Users/user/Library/Android/sdk/platform-tools",
+                       "/Users/user/Library/Android/sdk/cmdline-tools/latest/bin",
+                       posixpath.join(env["CARGO_HOME"], "bin"),
+                       posixpath.join(env["GOPATH"], "bin"),
+                       posixpath.join(env["DOTNET_CLI_HOME"], ".dotnet", "tools")):
+            assert wanted in parts, wanted
+        assert parts.index("/usr/local/bin") < parts.index("/usr/bin")
+
+
+def test_create_makes_the_job_home_and_the_tool_cache(runtime, guest):
+    """HOME lives under work, which a recreate discards, and nothing made it
+    again: adb failed on its .android on the first job after a recreate
+    (2026-10-27)."""
+    runtime.create(RID, SPEC, start=False)
+    p = runtime.paths(RID)
+    assert guest.exists(posixpath.join(p["work"], ".home"))
+    assert guest.exists(posixpath.join(p["cache"], "toolcache"))
+
+
+def test_both_tool_cache_variables_name_one_path(runtime):
+    """setup.sh installs where AGENT_TOOLSDIRECTORY points and setup-python
+    looks where RUNNER_TOOL_CACHE points: two paths and a version installed
+    by one job is never found by the next."""
+    runtime._tools["runner_user"] = "user"
+    p = runtime.paths(RID)
+    env = plistlib.loads(runtime._plist(RID, SPEC, p).encode())["EnvironmentVariables"]
+    assert env["RUNNER_TOOL_CACHE"] == env["AGENT_TOOLSDIRECTORY"] == posixpath.join(p["cache"], "toolcache")
+
+
+def test_a_named_tool_cache_is_the_one_jobs_get_and_create_makes(guest):
+    """The python-versions packages python.org has no installer for are
+    built for /Users/runner/hostedtoolcache and abort in dyld anywhere else
+    (3.10.22, 2026-10-27). A guest holding one runner names that path."""
+    hosted = "/Users/runner/hostedtoolcache"
+    runtime = MacApplianceRuntime(run=guest, fs=guest, appliance=guest.appliance,
+                                  tools=dict(TOOLS, toolcache=hosted, runner_user="user"))
+    p = runtime.paths(RID)
+    env = plistlib.loads(runtime._plist(RID, SPEC, p).encode())["EnvironmentVariables"]
+    assert env["RUNNER_TOOL_CACHE"] == env["AGENT_TOOLSDIRECTORY"] == hosted
+    runtime.create(RID, SPEC, start=False)
+    assert guest.exists(hosted)
+
+
+def test_a_spec_path_is_kept(runtime):
+    runtime._tools["runner_user"] = "user"
+    spec = dict(SPEC, env={"PATH": "/opt/x/bin:/usr/bin:/bin"})
+    env = plistlib.loads(runtime._plist(RID, spec, runtime.paths(RID)).encode())["EnvironmentVariables"]
+    assert env["PATH"] == "/opt/x/bin:/usr/bin:/bin"
+
+
 class TestTheVocabulary:
     """CON-7: a VM or QEMU guest is never called a container. The one
     exception is the capability key `job_containers`, which is the protocol's
@@ -219,6 +282,43 @@ class TestTheAppliance:
         t = runtime.telemetry(RID)
         assert t["cpu_percent"] == 2.5
         assert t["mem_used_bytes"] == 102400 * 1024
+
+    def test_telemetry_reads_the_guest_in_parallel(self, guest):
+        """Every guest call is its own SSH login; under load each took 3.4 s,
+        six in a row took 20 s, and the heartbeat dropped every reading as
+        stale, so both macOS cards showed CPU and memory unknown
+        (2026-10-27). The reads do not depend on each other."""
+        import threading
+        import time as clock
+        rt = MacApplianceRuntime(run=guest, fs=guest, appliance=guest.appliance,
+                                 tools=TOOLS)
+        rt.create(RID, SPEC)
+        inner_call, inner_usage = guest.__call__, guest.disk_usage
+        lock, active, peak = threading.Lock(), [0], [0]
+
+        def slow(fn):
+            def wrapped(*args, **kwargs):
+                with lock:
+                    active[0] += 1
+                    peak[0] = max(peak[0], active[0])
+                clock.sleep(0.2)
+                try:
+                    return fn(*args, **kwargs)
+                finally:
+                    with lock:
+                        active[0] -= 1
+            return wrapped
+
+        rt._run = slow(inner_call)
+        rt._fs = type("SlowFs", (), {"disk_usage": staticmethod(slow(inner_usage)),
+                                     "__getattr__": lambda self, name: getattr(guest, name)})()
+        started = clock.monotonic()
+        t = rt.telemetry(RID)
+        elapsed = clock.monotonic() - started
+        assert t["cpu_percent"] == 2.5 and t["host_cores"] == 6
+        assert t["storage_volume_total_bytes"] == 274 * 10 ** 9
+        assert peak[0] >= 3
+        assert elapsed < 0.6, elapsed
 
     def test_a_stopped_instance_has_no_process_figures(self, runtime):
         runtime.create(RID, SPEC)

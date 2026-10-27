@@ -53,8 +53,16 @@ while not (root/'.runner').exists():
  if stopping:sys.exit(0)
  time.sleep(1)
 if stopping:sys.exit(0)
+toolcache=Path(os.environ.get('RUNNER_TOOL_CACHE') or root.parent/'cache'/'toolcache')
+toolcache.mkdir(parents=True,exist_ok=True)
+(root.parent/'work'/'.home').mkdir(parents=True,exist_ok=True)
+envs={'RUNNER_TOOL_CACHE':str(toolcache),'AGENT_TOOLSDIRECTORY':str(toolcache)}
+try:name=json.loads((root/'.runner').read_text()).get('name')
+except (OSError,ValueError,AttributeError):name=None
+if isinstance(name,str) and name:envs['RUNNER_NAME']=name
 config={'runner':{'file':str(root/'.runner'),'capacity':1,
- 'timeout':'2562047h47m16s','shutdown_timeout':'2562047h47m16s'},
+ 'timeout':'2562047h47m16s','shutdown_timeout':'2562047h47m16s',
+ 'envs':envs},
  'cache':{'dir':str(root.parent/'cache'/'actcache')},
  'host':{'workdir_parent':str(root.parent/'work')}}
 (root/'config.yaml').write_text(json.dumps(config))
