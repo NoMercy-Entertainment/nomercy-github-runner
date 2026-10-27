@@ -1,0 +1,19 @@
+# The Forgejo job image for ubuntu-22.04 labels: the act image those labels
+# have always run on (Ubuntu 22.04, so what a job builds keeps 22.04's glibc),
+# pinned by digest, plus the hosted tool cache, so setup-python and
+# setup-node find their versions instead of downloading them. The newest Node
+# of the cache is the one on PATH (Node 26 on every runner, 2026-10-27), with
+# corepack's yarn and pnpm beside it.
+#
+#   docker build -f images/linux/unit/Dockerfile.jammy \
+#     -t nomercy/job-ubuntu-22.04:<version> images/linux/unit
+ARG BASE=catthehacker/ubuntu:act-22.04@sha256:3488f78aa97770c8d5d835f2913c1a782d3121ad3f2aafb17054fb1d554ea4e1
+FROM ${BASE}
+COPY toolcache/ /tmp/toolcache/
+RUN bash /tmp/toolcache/install.sh 22.04 /opt/hostedtoolcache && rm -rf /tmp/toolcache \
+    && newest="$(ls -d /opt/hostedtoolcache/node/*/x64 | sort -V | tail -n 1)" \
+    && mkdir -p /opt/nomercy && ln -sfn "$newest" /opt/nomercy/node \
+    && PATH="/opt/nomercy/node/bin:$PATH" corepack enable \
+    && /opt/nomercy/node/bin/node --version
+ENV RUNNER_TOOL_CACHE=/opt/hostedtoolcache \
+    PATH=/opt/nomercy/node/bin:/opt/acttoolcache/node/24.19.0/x64/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/games:/usr/local/games:/snap/bin

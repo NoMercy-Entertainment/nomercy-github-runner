@@ -1,0 +1,21 @@
+# The hosted tool cache the Linux job images carry (install.sh): the builds
+# actions/setup-python and actions/setup-node download themselves, from the
+# actions/python-versions and actions/node-versions releases, each checked
+# against the sha256 GitHub publishes for the release asset.
+# Latest patch of each line on 2026-10-27; bump with the next image build.
+#
+# kind   version  ubuntu  url  sha256
+python 3.10.22 22.04 https://github.com/actions/python-versions/releases/download/3.10.22-36876129702/python-3.10.22-linux-22.04-x64.tar.gz sha256:0778f8324e655c55cf804300d142c4b04166939ca8614c215735d46fb04d34c4
+python 3.10.22 24.04 https://github.com/actions/python-versions/releases/download/3.10.22-36876129702/python-3.10.22-linux-24.04-x64.tar.gz sha256:4c96c0e9380150d436c38be322bafa04a5632db7eb2def147b7553ed7e88fd16
+python 3.11.18 22.04 https://github.com/actions/python-versions/releases/download/3.11.18-40260280589/python-3.11.18-linux-22.04-x64.tar.gz sha256:2fd26e1f81ede41906d1e76d5d4de447a904e7fb42bd7635fc4dac0753f607b2
+python 3.11.18 24.04 https://github.com/actions/python-versions/releases/download/3.11.18-40260280589/python-3.11.18-linux-24.04-x64.tar.gz sha256:099ef30fc27f0d7067a67be5a5fb7fd66154cfa1e4186c88f71c3a3070c81abc
+python 3.12.16 22.04 https://github.com/actions/python-versions/releases/download/3.12.16-40260402378/python-3.12.16-linux-22.04-x64.tar.gz sha256:ebdd874c6bb02d1ade9069da60b6b09f8346ba0ae0db11e60e6ce90cf5542fb7
+python 3.12.16 24.04 https://github.com/actions/python-versions/releases/download/3.12.16-40260402378/python-3.12.16-linux-24.04-x64.tar.gz sha256:dec61ed20cd3e71143f1642ef9966945dea8ae4f3e96b306205a710da4f2191a
+python 3.13.18 22.04 https://github.com/actions/python-versions/releases/download/3.13.18-40336726450/python-3.13.18-linux-22.04-x64.tar.gz sha256:a097723026deed0d66ae32d4e619e90454547a09b568f7546f6e43122e96bdd9
+python 3.13.18 24.04 https://github.com/actions/python-versions/releases/download/3.13.18-40336726450/python-3.13.18-linux-24.04-x64.tar.gz sha256:683005a1465d94d40045f6a1a6eb316885b5f08d3360f7922b44ef58a14a9eed
+python 3.14.10 22.04 https://github.com/actions/python-versions/releases/download/3.14.10-40336797752/python-3.14.10-linux-22.04-x64.tar.gz sha256:c48e486fadd9f91d76c2b48db591821c147933b3492a3994f8f59b83f9881b82
+python 3.14.10 24.04 https://github.com/actions/python-versions/releases/download/3.14.10-40336797752/python-3.14.10-linux-24.04-x64.tar.gz sha256:d67d217db8480fd474bac19db80f6b956362432cca30ed6ac6fbe5a2bba6b4cd
+node 20.20.2 any https://github.com/actions/node-versions/releases/download/20.20.2-23521894959/node-20.20.2-linux-x64.tar.gz sha256:cc47fc6eb872f905f48c85397856e8a097b2020bb65b394e728af606bfb6e1a9
+node 22.23.4 any https://github.com/actions/node-versions/releases/download/22.23.4-39619033003/node-22.23.4-linux-x64.tar.gz sha256:05c182e45510cb6c5dcf62b208abffbafe9af22b73101cbf5f14d15c8dc5ff0f
+node 24.22.1 any https://github.com/actions/node-versions/releases/download/24.22.1-39619001896/node-24.22.1-linux-x64.tar.gz sha256:13c8f1384f72ada969d164b8de7ebacd55f3fb18a97ea86abd9b7ebdb6c77c26
+node 26.12.1 any https://github.com/actions/node-versions/releases/download/26.12.1-39618969937/node-26.12.1-linux-x64.tar.gz sha256:78014adc1cd831841572f1c308e148bf4251a9c22edcc963e7193bfca5dfdf74

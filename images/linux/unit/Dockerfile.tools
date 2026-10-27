@@ -1,9 +1,14 @@
 # Full Forgejo job image. The base provides the shared language SDKs; LLVM is
 # required by the same native build health checks used on every Linux runner.
+# The hosted tool cache (toolcache/) is what setup-python and setup-node look
+# in before they download: Forgejo jobs see it at /opt/hostedtoolcache, and the
+# GitHub unit built on this image copies it into its own tool cache at start.
 ARG BASE=ghcr.io/nomercy-entertainment/nomercy-github-runner@sha256:1934fdb1c641fc88007f344f54acb3dc89409a852d7e87a25f21a13cf18d1436
 FROM ${BASE}
 RUN apt-get update && apt-get install -y --no-install-recommends clang clang-format clang-tidy \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
+COPY toolcache/ /tmp/toolcache/
+RUN bash /tmp/toolcache/install.sh 24.04 /opt/hostedtoolcache && rm -rf /tmp/toolcache
 RUN command -v javac && command -v php && command -v dotnet && command -v adb && command -v clang++
 ENTRYPOINT []
 CMD ["bash"]

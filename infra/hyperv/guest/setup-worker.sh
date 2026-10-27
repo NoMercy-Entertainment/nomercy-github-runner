@@ -54,6 +54,20 @@ docker build -q -f images/linux/unit/Dockerfile.forgejo \
   -t "nomercy/runner-unit-forgejo:${VERSION}" images/linux/unit >/dev/null
 echo "unit image nomercy/runner-unit-forgejo:${VERSION}"
 
+# --- the job images -----------------------------------------------------------------
+# What Forgejo jobs run in (FORGEJO_RUNNER_LABELS): served to the units' nested
+# engines by this worker's job-image registry, so a new, recreated or repaired
+# unit fetches them itself. job-images.tar and JOB_IMAGES come from the host
+# (settings.psd1 Forgejo.JobImages).
+if [ -f job-image-registry.sh ]; then
+  bash job-image-registry.sh up
+  if [ -f job-images.tar ] && [ -s JOB_IMAGES ]; then
+    docker load -q -i job-images.tar
+    # shellcheck disable=SC2046
+    bash job-image-registry.sh push $(cat JOB_IMAGES)
+  fi
+fi
+
 # --- the firewall -------------------------------------------------------------------
 # SSH from the host only, the agent's port from the control plane only (13.2).
 # SSH is allowed before the firewall is switched on, so this cannot lock the

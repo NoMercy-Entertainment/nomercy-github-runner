@@ -68,16 +68,27 @@
         # No registry publishes it; Initialize-RunnerPlatform.ps1 saves it
         # from Docker Desktop for the worker.
         BaseImage = 'nomercy/forgejo-runner:13.1.0-nomercy-admission.1'
+        # What Forgejo Linux jobs run in (FORGEJO_RUNNER_LABELS names them as
+        # 172.17.0.1:5000/<image>): saved from this host and pushed into each
+        # worker's job-image registry (guest\job-image-registry.sh). Both
+        # carry the hosted tool cache (images/linux/unit/toolcache).
+        # docker build -f images/linux/unit/Dockerfile.jammy \
+        #   -t nomercy/job-ubuntu-22.04:20261027 images/linux/unit
+        JobImages = @(
+            'nomercy/github-runner-base:tools-20261027.2'
+            'nomercy/job-ubuntu-22.04:20261027'
+        )
     }
 
     GitHub = @{
         # images/linux/unit/Dockerfile.tools on the base built from the root
-        # dockerfile on this host (PHP 8.5 only, Node 26; 2026-10-27):
+        # dockerfile on this host (PHP 8.5 only, Node 26; 2026-10-27), plus
+        # the hosted tool cache (Python 3.10-3.14, Node 20/22/24/26; .2):
         # docker build -f dockerfile -t nomercy/github-runner-base:20261027 .
         # docker build -f images/linux/unit/Dockerfile.tools \
         #   --build-arg BASE=nomercy/github-runner-base:20261027 \
-        #   -t nomercy/github-runner-base:tools-20261027 images/linux/unit
-        BaseImage   = 'nomercy/github-runner-base:tools-20261027'
+        #   -t nomercy/github-runner-base:tools-20261027.2 images/linux/unit
+        BaseImage   = 'nomercy/github-runner-base:tools-20261027.2'
         RunnerMemGB = 16
         DrainGroup  = 'drain'
         RunnerGroup = 'Fillz'
@@ -185,8 +196,13 @@
         NssmSource    = 'D:\HyperV\runner-platform\artefacts\nssm.exe'
         NssmSha256    = 'f689ee9af94b00e9e3f0bb072b34caaf207f32dcb4f5782fc9ca351df9a06c97'
         Template      = 'forgejo-runner-v13.1.0-windows'
-        RunnerBinary  = 'D:\HyperV\runner-platform\artefacts\forgejo-runner-v13.1.0\forgejo-runner-v13.1.0-windows-amd64.exe'
-        RunnerSha256  = '82ea01bc63c3ba60526576f3d8ac491a1e77db0f8d3d55cc37bd39666a5f04c8'
+        # The guarded build with native job events and owner admission
+        # (PROVENANCE job_events=1, admission_version=1), the same one the
+        # Linux and macOS Forgejo runners run. The plain v13.1.0 build emitted
+        # no job events, so a busy Windows Forgejo card could not name its
+        # job (2026-10-27).
+        RunnerBinary  = 'D:\HyperV\runner-platform\artefacts\forgejo-runner-v13.1.0-admission\forgejo-runner-v13.1.0-nomercy-admission.1-windows-amd64.exe'
+        RunnerSha256  = '2550f5cf69307916422cc96ba9c73edff7867a8b13bfe5ddbed15b88e54c3b82'
         MaxRunners    = 2
         RunnerMemGB   = 8
         # What the Windows Forgejo runners register with: the labels the

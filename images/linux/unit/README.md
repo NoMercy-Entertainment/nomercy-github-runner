@@ -68,6 +68,51 @@ hooks: it runs the cleanup only at unit startup. Windows and macOS GitHub
 runners get the same disk guard from the agent itself:
 `docs/operations/runner-job-hooks.md`.
 
+## Forgejo job images and the hosted tool cache
+
+Forgejo Linux jobs run in the image each `FORGEJO_RUNNER_LABELS` label names,
+inside the unit's nested engine:
+
+| Labels | Image | Dockerfile |
+| --- | --- | --- |
+| `ubuntu-latest`, `ubuntu-24.04`, `ubuntu-24.04-full` | `nomercy/github-runner-base:tools-<version>` | `Dockerfile.tools` (every tool the GitHub unit has) |
+| `ubuntu-22.04`, `ubuntu-22.04-full` | `nomercy/job-ubuntu-22.04:<version>` | `Dockerfile.jammy` (the act 22.04 image, pinned, so a build keeps 22.04's glibc) |
+
+No public registry has them. Each worker serves them from its **job-image
+registry** (`infra/hyperv/guest/job-image-registry.sh`): read-only on the
+docker0 gateway `172.17.0.1:5000`, which the labels name, and writable only on
+the worker's own `127.0.0.1:5001`. The Forgejo unit lets its nested engine pull
+from the gateway (`RUNNER_JOB_IMAGE_REGISTRY`, `insecure-registries` in the
+engine's daemon.json), and `/runner/job_images.py`:
+
+- before the startup prune, pins every image the registration's labels name
+  with a stopped container, so neither `docker image prune -a` at startup nor
+  the dashboard's "unused images" clear removes it, and drops pins for images
+  no label names any more;
+- once the runner is up, pulls any of those images the engine does not have
+  (a new unit, a fresh engine volume) and pins it.
+
+Before this, the image was `docker load`ed into each engine by hand, and the
+startup prune or a recreate lost it: "pull access denied" (2026-10-27).
+
+Both job images carry the hosted tool cache in `/opt/hostedtoolcache`
+(`toolcache/install.sh`, versions and hashes in `toolcache/versions.txt`):
+Python 3.10-3.14 and Node 20/22/24/26, the very builds setup-python and
+setup-node download, so they find them instead. Forgejo sets
+`RUNNER_TOOL_CACHE=/opt/hostedtoolcache` in docker jobs. The GitHub unit's tool
+cache is `/runner/work/_tool` on its work volume; `/runner/toolcache.py` copies
+each version it lacks there at start, and never touches one a job completed.
+
+Publishing a new build, on the worker after `docker load`:
+
+```sh
+sudo bash job-image-registry.sh push nomercy/github-runner-base:tools-<v> nomercy/job-ubuntu-22.04:<v>
+```
+
+then name the new tags in `FORGEJO_RUNNER_LABELS` (controller.env) as
+`172.17.0.1:5000/<image>` and recreate the Forgejo runners: labels are fixed
+at registration.
+
 ## Why the entry points are written the way they are
 
 - **The runner is waited for.** `/runner/run` is PID 1, and PID 1 exiting

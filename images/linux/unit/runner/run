@@ -57,9 +57,22 @@ esac
 gc_enabled=true
 [ "${RUNNER_MAINTENANCE:-0}" = 1 ] && gc_enabled=false
 [ "${RUNNER_CLEANUP_ENABLED:-1}" = 0 ] && gc_enabled=false
+# The worker's job-image registry (infra/hyperv/guest/job-image-registry.sh):
+# where the images Forgejo jobs run in come from, since no public registry
+# has them. Plain HTTP on the worker's own bridge, read-only. Only host[:port]
+# names reach daemon.json; anything else is left out with a warning.
+registries=""
+for reg in $(printf '%s' "${RUNNER_JOB_IMAGE_REGISTRY:-}" | tr ',' ' '); do
+  if printf '%s' "$reg" | grep -Eqx '[A-Za-z0-9.-]+(:[0-9]{1,5})?'; then
+    registries="${registries:+$registries, }\"$reg\""
+  else
+    echo "RUNNER_JOB_IMAGE_REGISTRY: '$reg' is not host[:port]; left out" >&2
+  fi
+done
 cat > "$RUNNER_REG_DIR/daemon.json" <<JSON
 {
   "storage-driver": "${driver}",
+  "insecure-registries": [${registries}],
   "log-driver": "local",
   "log-opts": { "max-size": "10m", "max-file": "3" },
   "features": { "containerd-snapshotter": false },
@@ -122,9 +135,19 @@ done
 # Job control on: without it bash starts a background child with SIGINT
 # ignored, and the GitHub runner's run.sh stops the listener with SIGINT.
 set -m
+# The images this registration's jobs run in are held before the prune below,
+# which would otherwise take them (they are used by no running container).
+if [ "$RUNNER_KIND" = forgejo ]; then
+  timeout 120s python3 -I -B /runner/job_images.py pin || true
+fi
 /runner/cleanup
 case "$RUNNER_KIND" in
   github)
+    # The hosted tool cache the image carries (setup-python, setup-node ...),
+    # put where this runner's tool cache is: <work>/_tool on its own volume,
+    # so a job can still add to it, and only what is missing is copied.
+    timeout 900s python3 -I -B /runner/toolcache.py /opt/hostedtoolcache \
+      "$RUNNER_WORK_DIR/_tool" || echo "tool cache seeding incomplete" >&2
     # Upstream caps the local Listener -> Worker startup channel at 300s.
     # The job itself retains its separately configured five-day allowance.
     export GITHUB_ACTIONS_RUNNER_CHANNEL_TIMEOUT=300
@@ -180,6 +203,10 @@ YAML
     cd "$RUNNER_REG_DIR"
     "$FORGEJO_RUNNER_BIN" daemon --config "$RUNNER_REG_DIR/config.yaml" &
     RUNNER_PID=$!
+    # Fetch the job images this engine does not have yet - a new unit, or a
+    # fresh engine volume - so the first job does not wait for them, and pin
+    # them. A job that starts meanwhile pulls the same image itself.
+    ( timeout 3600s python3 -I -B /runner/job_images.py pull || true ) &
     ;;
 esac
 echo "runner started (${RUNNER_KIND}, pid ${RUNNER_PID})"

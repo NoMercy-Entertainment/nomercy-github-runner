@@ -1,0 +1,2 @@
+# Test runs leave bytecode beside the scripts; it is not part of any image.
+**/__pycache__

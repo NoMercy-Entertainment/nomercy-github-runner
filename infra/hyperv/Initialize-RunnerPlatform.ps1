@@ -169,6 +169,15 @@ try {
         }
     }
 
+    # What Forgejo Linux jobs run in: built on this host, served to the units
+    # by each worker's job-image registry (guest\job-image-registry.sh).
+    $jobImages = @($s.Forgejo.JobImages | Where-Object { $_ })
+    $jobTar = Join-Path $stage 'job-images.tar'
+    if ($jobImages.Count -gt 0) {
+        & docker.exe save -o $jobTar @jobImages
+        if ($LASTEXITCODE -ne 0) { throw "docker save $($jobImages -join ' ') failed" }
+    }
+
     # --- each worker ----------------------------------------------------------------
     foreach ($name in $workers) {
         $w = $s.VMs[$name]
@@ -205,11 +214,16 @@ try {
         Write-LfFile (Join-Path $wStage 'AGENT_PORT') "$($s.AgentPort)`n"
         Write-LfFile (Join-Path $wStage 'runner-agent.service') (Get-Content -Raw (Join-Path $PSScriptRoot 'guest\runner-agent.service'))
         Write-LfFile (Join-Path $wStage 'setup.sh') (Get-Content -Raw (Join-Path $PSScriptRoot 'guest\setup-worker.sh'))
+        Write-LfFile (Join-Path $wStage 'job-image-registry.sh') (Get-Content -Raw (Join-Path $PSScriptRoot 'guest\job-image-registry.sh'))
+        if ($jobImages.Count -gt 0) {
+            Write-LfFile (Join-Path $wStage 'JOB_IMAGES') (($jobImages -join "`n") + "`n")
+        }
 
         Invoke-Guest $s $w.Address 'rm -rf /tmp/rnr-stage && mkdir -p -m 700 /tmp/rnr-stage/bundle' -Quiet
         Send-ToGuest $s $w.Address $tar '/tmp/rnr-stage/code.tar'
         Send-ToGuest $s $w.Address $baseTar '/tmp/rnr-stage/forgejo-base.tar'
         Send-ToGuest $s $w.Address $githubTar '/tmp/rnr-stage/github-base.tar'
+        if ($jobImages.Count -gt 0) { Send-ToGuest $s $w.Address $jobTar '/tmp/rnr-stage/job-images.tar' }
         foreach ($f in Get-ChildItem $wStage) { Send-ToGuest $s $w.Address $f.FullName "/tmp/rnr-stage/$($f.Name)" }
         Invoke-Guest $s $w.Address ('cd /tmp/rnr-stage && tar -xf code.tar && tar -C bundle -xf bundle.tar' +
             ' && sudo bash setup.sh')
