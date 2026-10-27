@@ -63,15 +63,15 @@ $Tools = [ordered]@{
     'git'    = @{ Package = 'Git.Git';              Dir = 'C:\Program Files\Git\cmd' }
     'bash'   = @{ Package = 'Git.Git';              Dir = 'C:\Program Files\Git\bin' }
     'pwsh'   = @{ Package = 'Microsoft.PowerShell'; Dir = 'C:\Program Files\PowerShell\7' }
-    'node'   = @{ Package = 'OpenJS.NodeJS.LTS';    Dir = 'C:\Program Files\nodejs' }
+    'node'   = @{ Package = 'OpenJS.NodeJS';        Dir = 'C:\Program Files\nodejs' }
     'python' = @{ Package = 'Python.Python.3.12';   Dir = 'C:\Program Files\Python312' }
     'dotnet' = @{ Package = 'Microsoft.DotNet.SDK.10'; Dir = 'C:\Program Files\dotnet' }
     'cmake'  = @{ Package = 'Kitware.CMake';        Dir = 'C:\Program Files\CMake\bin' }
     'go'     = @{ Package = 'GoLang.Go';            Dir = 'C:\Program Files\Go\bin' }
     'java'   = @{ Package = 'EclipseAdoptium.Temurin.21.JDK'
                   DirGlob = 'C:\Program Files\Eclipse Adoptium\jdk-21*\bin' }
-    'php'    = @{ Package = 'PHP.PHP.8.4'
-                  DirGlob = 'C:\Program Files\WinGet\Packages\PHP.PHP.8.4*' }
+    'php'    = @{ Package = 'PHP.PHP.8.5'
+                  DirGlob = 'C:\Program Files\WinGet\Packages\PHP.PHP.8.5*' }
     'ruby'   = @{ Package = 'RubyInstallerTeam.RubyWithDevKit.3.3'
                   DirGlob = 'C:\Ruby33*\bin' }
     'clang'  = @{ Package = 'LLVM.LLVM';            Dir = 'C:\Program Files\LLVM\bin' }

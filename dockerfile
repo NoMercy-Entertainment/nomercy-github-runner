@@ -192,15 +192,11 @@ RUN sed -i "s|http://archive.ubuntu.com|http://${UBUNTU_MIRROR}|g" /etc/apt/sour
         # fuse-overlayfs for nested Docker (overlay-on-overlay)
         fuse-overlayfs fuse3 \
         #
-        # PHP 8.3 + 8.4
-        php8.3 php8.3-cli php8.3-common \
-        php8.3-curl php8.3-mbstring php8.3-xml php8.3-zip \
-        php8.3-pgsql php8.3-sqlite3 php8.3-mysql \
-        php8.3-bcmath php8.3-gd php8.3-intl php8.3-readline \
-        php8.4 php8.4-cli php8.4-common \
-        php8.4-curl php8.4-mbstring php8.4-xml php8.4-zip \
-        php8.4-pgsql php8.4-sqlite3 php8.4-mysql \
-        php8.4-bcmath php8.4-gd php8.4-intl php8.4-readline \
+        # PHP 8.5 only: one `php` on every runner (2026-10-27)
+        php8.5 php8.5-cli php8.5-common \
+        php8.5-curl php8.5-mbstring php8.5-xml php8.5-zip \
+        php8.5-pgsql php8.5-sqlite3 php8.5-mysql \
+        php8.5-bcmath php8.5-gd php8.5-intl php8.5-readline \
         # Java
         openjdk-8-jdk openjdk-11-jdk openjdk-17-jdk openjdk-21-jdk \
         # Ruby
@@ -228,8 +224,9 @@ ENV LC_ALL=en_US.UTF-8
 
 # ── Step 3: Non-apt tools ────────────────────────────────────────────────────
 # Install Node.js directly from official tarball (no nodesource dependency)
-RUN curl -fsSL https://nodejs.org/dist/v22.22.2/node-v22.22.2-linux-x64.tar.gz \
-        | tar -xz -C /usr/local --strip-components=1 && \
+RUN curl -fsSL -o /tmp/node.tar.gz https://nodejs.org/dist/v26.12.1/node-v26.12.1-linux-x64.tar.gz && \
+    echo "0fd1eb7770598f52a21995edf6ed35fc690400fa437c2386af329519e9143132  /tmp/node.tar.gz" | sha256sum -c - && \
+    tar -xzf /tmp/node.tar.gz -C /usr/local --strip-components=1 && rm -f /tmp/node.tar.gz && \
     npm install -g yarn corepack n && corepack enable && \
     curl -sS https://getcomposer.org/installer | php -- --install-dir=/usr/local/bin --filename=composer && \
     # bomutils + xar for macOS .pkg building (not in Ubuntu 24.04 repos)

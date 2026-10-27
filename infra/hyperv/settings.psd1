@@ -71,9 +71,13 @@
     }
 
     GitHub = @{
-        # images/linux/unit/Dockerfile.tools on the pinned ghcr base: the
-        # shared SDKs plus LLVM, built on this host (2026-10-23).
-        BaseImage   = 'nomercy/github-runner-base:tools-20261023'
+        # images/linux/unit/Dockerfile.tools on the base built from the root
+        # dockerfile on this host (PHP 8.5 only, Node 26; 2026-10-27):
+        # docker build -f dockerfile -t nomercy/github-runner-base:20261027 .
+        # docker build -f images/linux/unit/Dockerfile.tools \
+        #   --build-arg BASE=nomercy/github-runner-base:20261027 \
+        #   -t nomercy/github-runner-base:tools-20261027 images/linux/unit
+        BaseImage   = 'nomercy/github-runner-base:tools-20261027'
         RunnerMemGB = 16
         DrainGroup  = 'drain'
         RunnerGroup = 'Fillz'
