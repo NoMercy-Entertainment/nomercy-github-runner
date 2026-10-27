@@ -11,7 +11,7 @@ RUN apk add --no-cache bash coreutils tzdata \
 
 WORKDIR /app
 COPY alarm_notify.py alarms.py api_v2.py app.py cards.py db_connections.py dbwatch.py federation_api.py forgejo_api.py github_api.py history.py machines.py native_history.py oidc.py providers.py runner_groups.py users.py webhook_jobs.py ./
-COPY forgejo_admission.py ./
+COPY forgejo_admission.py job_notify.py ./
 COPY runtime/ ./runtime/
 COPY store/ ./store/
 COPY control/ ./control/

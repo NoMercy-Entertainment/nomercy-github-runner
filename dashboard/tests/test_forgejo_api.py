@@ -96,8 +96,10 @@ def test_task_info_names_a_running_job_without_waiting_for_completion():
     fj = forgejo_api.Forgejo("https://forgejo.example/", "tok")
     fj._get = lambda path, params=None, timeout=None: {
         "workflow_runs": [dict(TASKS["workflow_runs"][0], status="running")]}
+    # With the run's link, which a job's Discord message carries.
     assert fj.task_info("FiLL/p", 830) == {
-        "name": "build", "workflow": "build.yml"}
+        "name": "build", "workflow": "build.yml",
+        "url": "https://forgejo.example/FiLL/p/actions/runs/12"}
     assert fj.task_info("FiLL/p", 999) is None
 
 

@@ -437,15 +437,13 @@ class GitHub:
                     }
         return None
 
-    def job_result(self, repo, run_id, attempt, runner_name, started_at):
-        """The conclusion of the job `runner_name` ran in one run attempt.
-
-        For native history rows, which already know their repository, run id
-        and attempt: one call instead of find_job()'s scan of every repo.
-        Among that runner's jobs in the attempt, the one that started closest
-        to `started_at` - a matrix can put two jobs on the same runner in
-        turn. None while the job has not completed, or when no job of that
-        runner is in the attempt. False when GitHub could not be read.
+    def job_details(self, repo, run_id, attempt, runner_name, started_at):
+        """The job `runner_name` ran in one run attempt, whatever its status:
+        {"status", "conclusion", "name", "workflow", "url", "completed_at",
+        "branch"}. Among that runner's jobs in the attempt, the one that
+        started closest to `started_at` - a matrix can put two jobs on the
+        same runner in turn. None when no job of that runner is in the
+        attempt; False when GitHub could not be read.
         """
         if not repo or not run_id or not runner_name:
             return None
@@ -472,12 +470,27 @@ class GitHub:
         if ours is not None:
             mine.sort(key=lambda j: abs((seconds(j.get("started_at")) or 0) - ours))
         job = mine[0]
-        if job.get("status") != "completed" or not job.get("conclusion"):
-            return None
-        return {"conclusion": job["conclusion"], "url": job.get("html_url"),
+        return {"status": job.get("status"), "conclusion": job.get("conclusion"),
+                "name": job.get("name"), "url": job.get("html_url"),
                 "completed_at": job.get("completed_at"),
                 "workflow": job.get("workflow_name"),
                 "branch": job.get("head_branch")}
+
+    def job_result(self, repo, run_id, attempt, runner_name, started_at):
+        """The conclusion of the job `runner_name` ran in one run attempt
+        (job_details), or None while it has not completed or when there is
+        no such job; False when GitHub could not be read. For native history
+        rows, which already know their repository, run id and attempt: one
+        call instead of find_job()'s scan of every repo."""
+        job = self.job_details(repo, run_id, attempt, runner_name, started_at)
+        if not job:
+            return job
+        if job.get("status") != "completed" or not job.get("conclusion"):
+            return None
+        return {"conclusion": job["conclusion"], "url": job.get("url"),
+                "completed_at": job.get("completed_at"),
+                "workflow": job.get("workflow"),
+                "branch": job.get("branch")}
 
     def current_jobs(self, runner_names):
         """{runner name: the job GitHub says it is running} for the named

@@ -187,8 +187,8 @@ class TestOnceEach:
 
     def test_a_condition_that_never_raised_sends_nothing(self, path):
         post = Post()
-        offline_for(path, 3)
-        back_online(path, T0 + 4 * MIN)
+        offline_for(path, 1)
+        back_online(path, T0 + 1.5 * MIN)
         alarm_notify.deliver_due(path, {"ALARM_WEBHOOK_URL": HOOK}, T0 + 5 * MIN, post=post)
         assert post.sent == []
 

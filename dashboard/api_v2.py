@@ -1231,6 +1231,36 @@ def settings_save(fleet_id):
     return jsonify(ok=True, fleet=fleet, hardware_unverified=unverified, note=note)
 
 
+@bp.route("/api/v2/notifications")
+def notifications_get():
+    """What Discord is sent: job messages all, failures only or off, and
+    whether runners going offline and online are said (job_notify)."""
+    import job_notify
+    if not os.path.exists(_db_path()):
+        return _refuse(503, "the control plane has not run yet")
+    return jsonify(job_notify.get_settings(_db_path()))
+
+
+@bp.route("/api/v2/notifications", methods=["POST"])
+def notifications_set():
+    if getattr(g, "role", None) != "admin":
+        return _refuse(403, "Changing notifications requires admin")
+    import job_notify
+    from control import audit
+    if not os.path.exists(_db_path()):
+        return _refuse(503, "the control plane has not run yet")
+    body = request.get_json(silent=True) or {}
+    jobs, runners = body.get("jobs"), body.get("runners")
+    if jobs is not None and jobs not in job_notify.MODES:
+        return _refuse(400, f"jobs is one of {list(job_notify.MODES)}")
+    if runners is not None and not isinstance(runners, bool):
+        return _refuse(400, "runners must be boolean")
+    now = job_notify.set_settings(_db_path(), jobs=jobs, runners=runners)
+    audit.record(_db_path(), "notifications", "accepted", actor=requested_by(),
+                 parameters={"jobs": jobs, "runners": runners})
+    return jsonify(ok=True, **now)
+
+
 @bp.route("/api/v2/maintenance", methods=["POST"])
 def maintenance_set():
     if getattr(g, "role", None) != "admin":

@@ -31,6 +31,9 @@ input:disabled{opacity:.5}
 <button id="maintenance-toggle">Loading</button></section>
 <section class="panel"><h2>Credentials</h2><p class="hint">Tokens are encrypted and never displayed. A saved token is used by the next controller operation. ALARM_WEBHOOK_URL is where alarms are sent (ntfy, Discord, Slack or JSON); without it they show only in the banner.</p>
 <div id="secrets"></div></section>
+<section class="panel"><h2>Notifications</h2><p class="hint">What is sent to ALARM_WEBHOOK_URL besides alarms: a message when each job starts and when it ends with its result, and each runner going offline (after two minutes) and coming back. A stop, restart or recreate by the platform is said as such, not as an alarm.</p>
+<div class="field"><label for="notify-jobs">Job messages</label><select id="notify-jobs"><option value="all">Every job: started and finished</option><option value="failures">Failed jobs only</option><option value="off">Off</option></select></div>
+<div class="field"><label for="notify-runners">Runner online and offline</label><select id="notify-runners"><option value="on">On</option><option value="off">Off</option></select></div></section>
 {% endif %}
 <section class="panel" id="runner-groups" aria-live="polite">GitHub runner groups: loading</section>
 <div id="fleets">Loading settings</div>
@@ -137,6 +140,19 @@ document.addEventListener('submit',async ev=>{
     else {const d=await api('/api/v2/settings/'+encodeURIComponent(form.dataset.fleet),fleetDefaults(form));message(d.note);}
   }catch(e){message(e.message,true);}finally{button.disabled=false;}
 });
+async function loadNotifications(){
+  try{const d=await api('/api/v2/notifications');
+    document.getElementById('notify-jobs').value=d.jobs;
+    document.getElementById('notify-runners').value=d.runners?'on':'off';}catch(e){message(e.message,true);}
+}
+if(admin){
+  loadNotifications();
+  for(const id of ['notify-jobs','notify-runners'])document.getElementById(id).addEventListener('change',async()=>{
+    try{await api('/api/v2/notifications',{jobs:document.getElementById('notify-jobs').value,
+      runners:document.getElementById('notify-runners').value==='on'});message('Notifications saved');}
+    catch(e){message(e.message,true);await loadNotifications();}
+  });
+}
 if(admin)document.getElementById('maintenance-toggle').addEventListener('click',async()=>{
   if(!maintenance && !(await confirmDialog({title:'Pause reconciliation?',body:'Runners that are already running can still accept jobs.',confirm:'Pause'})))return;
   if(maintenance && !(await confirmDialog({title:'Resume reconciliation?',body:'Queued runner operations will be applied. Runners may start accepting jobs.',confirm:'Resume'})))return;

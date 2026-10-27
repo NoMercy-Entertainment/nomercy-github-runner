@@ -356,3 +356,25 @@ def test_job_result_is_false_when_github_does_not_answer(monkeypatch):
     client, _ = _client_with_jobs(monkeypatch, [])
     monkeypatch.setattr(client, "_get", lambda *a, **k: None, raising=False)
     assert client.job_result("o/r", 4242, "1", "gh-1", "2026-10-26T10:00:00Z") is False
+
+
+def test_a_run_that_just_ended_is_asked_again_on_every_sweep(tmp_path, monkeypatch):
+    """GitHub marks a job completed a minute or two after the runner's hook
+    ran; its finished message waits for the result, so a run that ended in
+    the last ten minutes does not wait the five-minute retry."""
+    import time as clock
+    _fresh_db(tmp_path, monkeypatch)
+    ended = clock.strftime("%Y-%m-%dT%H:%M:%SZ", clock.gmtime(clock.time() - 60))
+    rid = _native_github_row("gh-1", "build", "2026-10-26T10:00:00.1Z", ended)
+    answers = [None, {"conclusion": "success"}]
+
+    class Late(FakeResults):
+        def job_result(self, *a):
+            self.calls.append(a)
+            return answers.pop(0)
+    _wire(monkeypatch, Late({}))
+
+    dash._enrich_pending({}, stale_before="2026-10-25T00:00:00Z")
+    dash._enrich_pending({}, stale_before="2026-10-25T00:00:00Z")
+
+    assert _result_of(rid)["result"] == "Succeeded"

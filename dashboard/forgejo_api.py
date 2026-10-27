@@ -190,7 +190,8 @@ class Forgejo:
             if not isinstance(name, str) or not name.strip():
                 return None
             return {"name": " ".join(name.split())[:200],
-                    "workflow": str(task.get("workflow_id") or "")[:200]}
+                    "workflow": str(task.get("workflow_id") or "")[:200],
+                    "url": task.get("url") if isinstance(task.get("url"), str) else None}
         return None
 
     def find_task(self, repo, task_id, started_at):

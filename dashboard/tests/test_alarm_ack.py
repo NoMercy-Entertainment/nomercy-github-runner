@@ -15,7 +15,7 @@ from store import schema
 
 T0 = 1_790_000_000.0
 MIN = 60.0
-KEY = "runner:github:5"
+KEY = "runner:github:nomercy-mac-mini"
 
 
 def runner(online=False):
@@ -49,7 +49,7 @@ class TestTheBook:
         assert entry["actor"] == "phil@example" and "nomercy-mac-mini" in entry["outcome"]
 
     def test_an_alarm_that_is_not_there_is_not_acknowledged(self, path):
-        assert not alarms.AlarmBook(path).acknowledge("runner:github:404", "phil", T0)
+        assert not alarms.AlarmBook(path).acknowledge("runner:github:nobody", "phil", T0)
 
     def test_it_clears_when_the_alarm_resolves(self, path):
         book = raise_it(path)
@@ -119,7 +119,7 @@ class TestTheAction:
         assert audit.entries(raised, verb="alarm", decision="acknowledged") == []
 
     def test_an_unknown_alarm_is_404(self, client, raised):
-        assert client.post("/api/v2/alarms/runner:github:404/ack", json={}).status_code == 404
+        assert client.post("/api/v2/alarms/runner:github:nobody/ack", json={}).status_code == 404
 
     def test_the_banner_script_folds_it_away_too(self, client, raised):
         import json

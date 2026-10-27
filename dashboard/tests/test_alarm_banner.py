@@ -85,7 +85,7 @@ class TestTheBanner:
         html = client.get("/").get_data(as_text=True)
         banner = html[html.index('id="alarm-banner"'):]
         banner = banner[:banner.index("</section>")]
-        assert 'data-ack="runner:github:5">Acknowledge</button>' in banner
+        assert 'data-ack="runner:github:nomercy-mac-mini">Acknowledge</button>' in banner
         as_role("operator")
         html = client.get("/").get_data(as_text=True)
         banner = html[html.index('id="alarm-banner"'):]
@@ -149,9 +149,9 @@ class TestTheEndpoint:
         r = client.get("/api/v2/alarms")
         assert r.status_code == 200
         [alarm] = r.json["alarms"]
-        assert alarm["alarm_key"] == "runner:github:5"
+        assert alarm["alarm_key"] == "runner:github:nomercy-mac-mini"
         assert alarm["since"] == alarms.iso(T0) and alarm["raised_at"]
-        assert r.json["thresholds"]["offline_minutes"] == 10
+        assert r.json["thresholds"]["offline_minutes"] == 2
         assert r.json["monitor"]["forgejo_queue"] == "not covered"
 
     def test_nobody_signed_in_may_not(self, anon_client, raised):

@@ -48,7 +48,7 @@ class TestSettings:
     def test_defaults(self):
         c = alarms.settings({})
         assert (c["offline_minutes"], c["queue_minutes"], c["poll_seconds"],
-                c["queue_poll_seconds"]) == (10, 10, 60, 300)
+                c["queue_poll_seconds"]) == (2, 10, 60, 300)
 
     def test_each_is_configurable_and_nonsense_is_the_default(self):
         c = alarms.settings({"ALARM_OFFLINE_MINUTES": "3", "ALARM_QUEUE_MINUTES": "x",
@@ -58,10 +58,12 @@ class TestSettings:
 
 
 class TestTheOfflineTimer:
-    def test_not_raised_before_ten_minutes(self, path):
+    def test_not_raised_before_two_minutes(self, path):
+        """Two minutes, not ten (2026-10-27): timely, while a restart or a
+        blip still says nothing."""
         b = book(path)
         b.observe_runners("github", [gh(1)], T0, cfg())
-        b.observe_runners("github", [gh(1)], T0 + 9 * MIN, cfg())
+        b.observe_runners("github", [gh(1)], T0 + 1.5 * MIN, cfg())
         assert raised(path) == []
         assert b.rows()[0]["since"] == alarms.iso(T0)
 
@@ -90,9 +92,9 @@ class TestTheOfflineTimer:
     def test_a_blip_shorter_than_the_threshold_leaves_nothing(self, path):
         b = book(path)
         b.observe_runners("github", [gh(1)], T0, cfg())
-        b.observe_runners("github", [gh(1, "online")], T0 + 2 * MIN, cfg())
-        b.observe_runners("github", [gh(1)], T0 + 3 * MIN, cfg())
-        b.observe_runners("github", [gh(1)], T0 + 12 * MIN, cfg())
+        b.observe_runners("github", [gh(1, "online")], T0 + 1 * MIN, cfg())
+        b.observe_runners("github", [gh(1)], T0 + 2 * MIN, cfg())
+        b.observe_runners("github", [gh(1)], T0 + 3.5 * MIN, cfg())
         assert raised(path) == [], "the timer starts again after the runner came back"
         assert audit.entries(path, verb="alarm") == []
 
@@ -110,13 +112,14 @@ class TestTheOfflineTimer:
         b.observe_runners("github", [gh(1)], T0, cfg())
         b.observe_runners("forgejo", [{"id": "uuid-1", "name": "fj", "online": True,
                                        "labels": []}], T0 + MIN, cfg())
-        assert [r["alarm_key"] for r in b.rows()] == ["runner:github:1"]
+        assert [r["alarm_key"] for r in b.rows()] == ["runner:github:runner-1"]
 
     def test_a_runner_stopped_on_purpose_is_not_an_alarm(self, path):
+        """It is said as what it is - offline on purpose - never alarmed."""
         b = book(path)
         b.observe_runners("github", [gh(1)], T0, cfg(), suppressed={"1"})
         b.observe_runners("github", [gh(1)], T0 + 30 * MIN, cfg(), suppressed={"1"})
-        assert b.rows() == []
+        assert [r["kind"] for r in b.rows()] == ["runner_planned"]
 
 
 class TestARestartRemembers:
@@ -163,7 +166,7 @@ class TestABlindMonitorSaysSo:
         b.observe_runners("github", [gh(1), gh(2)], T0 + 10 * MIN, cfg())
         b.observe_runners("github", None, T0 + 11 * MIN, cfg())
         keys = {r["alarm_key"] for r in raised(path)}
-        assert {"runner:github:1", "runner:github:2"} <= keys, \
+        assert {"runner:github:runner-1", "runner:github:runner-2"} <= keys, \
             "an unreadable list is not every runner removed"
 
     def test_reading_again_recovers(self, path):
@@ -232,8 +235,8 @@ class TestTheMonitor:
         m.tick(path, ENV, [], T0)
         m.tick(path, ENV, [], T0 + 10 * MIN)
         view = m.view(T0 + 10 * MIN)
-        assert {a["alarm_key"] for a in view["alarms"]} == {"runner:github:5",
-                                                            "runner:forgejo:u-1"}
+        assert {a["alarm_key"] for a in view["alarms"]} == {
+            "runner:github:nomercy-mac-mini", "runner:forgejo:forgejo-linux-1"}
         assert view["alarms"][0]["for"] == "10 min"
         assert view["monitor"]["github"] == {"configured": True,
                                              "checked_at": alarms.iso(T0 + 10 * MIN),

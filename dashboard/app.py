@@ -651,10 +651,22 @@ RESULTS_RETRY = 300
 _RESULTS_ASKED = {}
 
 
+#: A run that ended this recently is asked about on every sweep: its job's
+#: finished message waits for the answer, and GitHub marks the job done a
+#: minute or two after the runner's completion hook ran (2026-10-27).
+RESULTS_FRESH = 600
+
+
 def _due(rows):
     now = time.monotonic()
+    wall = time.time()
+
+    def fresh(r):
+        import alarms
+        ended = alarms.epoch(r.get("ended_at"))
+        return ended is not None and wall - ended <= RESULTS_FRESH
     due = [r for r in rows
-           if now - _RESULTS_ASKED.get(r["id"], -RESULTS_RETRY) >= RESULTS_RETRY]
+           if fresh(r) or now - _RESULTS_ASKED.get(r["id"], -RESULTS_RETRY) >= RESULTS_RETRY]
     if len(_RESULTS_ASKED) > 5000:
         _RESULTS_ASKED.clear()
     for r in due[:RESULTS_PAGE]:
@@ -1232,5 +1244,10 @@ if __name__ == "__main__":
                      daemon=True).start()
     threading.Thread(target=alarms.run_queue_forever, args=(_alarm_plane,),
                      daemon=True).start()
+    # Every job's start and end for Discord, from the run history, on a
+    # thread of its own: a forge lookup never delays an alarm or a page.
+    import job_notify
+    threading.Thread(target=job_notify.run_forever, args=(_alarm_plane,),
+                     name="job-messages", daemon=True).start()
     app.permanent_session_lifetime = 60 * 60 * 24 * 14
     app.run(host="0.0.0.0", port=PORT, threaded=True)

@@ -34,7 +34,10 @@ from store import schema
 #: (env key, default, minimum) of every setting, read from the deployment
 #: each pass so a change needs no restart.
 SETTINGS = {
-    "offline_minutes": ("ALARM_OFFLINE_MINUTES", 10, 1),
+    # How long a runner must be offline before it is said: long enough that
+    # a restart or a blip says nothing, short enough to be timely (the
+    # owner, 2026-10-27; it was ten minutes).
+    "offline_minutes": ("ALARM_OFFLINE_MINUTES", 2, 1),
     "queue_minutes": ("ALARM_QUEUE_MINUTES", 10, 1),
     "poll_seconds": ("ALARM_POLL_SECONDS", 60, 15),
     "queue_poll_seconds": ("ALARM_QUEUE_POLL_SECONDS", 300, 60),
@@ -147,6 +150,9 @@ def message(kind, forge, subject, detail, since):
         labels = ", ".join(detail.get("labels") or [])
         return (f"{name} runner {subject} has been offline since {since}"
                 + (f" (labels: {labels})" if labels else ""))
+    if kind == "runner_planned":
+        return (f"{name} runner {subject} is offline on purpose since {since}: "
+                f"{detail.get('why') or 'taken down by the platform'}")
     if kind == "job_queued":
         return (f"{subject} has been queued since {since} and no online runner "
                 f"has its labels: {', '.join(detail.get('labels') or [])}")
@@ -294,10 +300,23 @@ class AlarmBook:
 
     # ---- runners ---------------------------------------------------------
 
-    def observe_runners(self, forge, runners, now, cfg, suppressed=(), why=None):
+    def observe_runners(self, forge, runners, now, cfg, suppressed=(), why=None,
+                        planned=None):
         """One reading of a forge's runners: each {"id", "name", "online",
-        "labels"}, or None when the forge could not be read."""
+        "labels"}, or None when the forge could not be read.
+
+        A runner is its name (2026-10-27): a recreate replaces the forge's
+        registration - a new id - and must read as one runner going and
+        coming back, not one removed and another added. Two registrations of
+        one name are online when either is. `planned` maps a name to why the
+        platform has it offline on purpose ("recreating", "stopped by
+        operator"), and its "__expected__" lists the platform's runners, which
+        are offline when the forge does not list them at all. `suppressed`,
+        forge ids, is the older form of the same: offline on purpose."""
         threshold = cfg["offline_minutes"] * 60
+        planned = dict(planned or {})
+        expected = [n for n in planned.pop("__expected__", []) or [] if n]
+        quiet_ids = {str(s) for s in suppressed or ()}
         with _WRITE, self._begin() as c:
             if runners is None:
                 self._blind(c, forge, now, threshold, why or "no answer")
@@ -315,27 +334,62 @@ class AlarmBook:
                 c.execute("DELETE FROM alarm_labels WHERE forge=? AND"
                           " COALESCE(last_seen_at, first_seen_at) < ?",
                           (forge, iso(now - LABEL_DAYS * 86400)))
-                seen = set()
+                byname = {}
                 for runner in runners:
-                    key = f"runner:{forge}:{runner['id']}"
+                    name = str(runner.get("name") or runner["id"])
+                    one = byname.setdefault(name, {"online": False, "labels": [], "ids": [],
+                                                   "quiet": False})
+                    one["online"] = one["online"] or bool(runner.get("online"))
+                    one["labels"] += [l for l in runner.get("labels") or []
+                                      if l not in one["labels"]]
+                    one["ids"].append(runner["id"])
+                    one["quiet"] = one["quiet"] or str(runner["id"]) in quiet_ids
+                for name in expected:
+                    byname.setdefault(name, {"online": False, "labels": [], "ids": [],
+                                             "quiet": False, "unlisted": True})
+                seen = set()
+                for name, one in byname.items():
+                    key = f"runner:{forge}:{name}"
                     seen.add(key)
-                    if str(runner["id"]) in {str(s) for s in suppressed}:
-                        self._resolve(c, key, now, "stopped on purpose on the platform")
-                    elif runner.get("online"):
+                    reason = planned.get(name) or next(
+                        (planned[f"id:{i}"] for i in one["ids"] if f"id:{i}" in planned),
+                        None) or ("stopped on purpose on the platform" if one["quiet"] else None)
+                    if one["online"]:
                         self._resolve(c, key, now, "back online")
-                    else:
-                        self._watch(c, key, "runner_offline", forge,
-                                    runner.get("name") or str(runner["id"]),
-                                    {"labels": list(runner.get("labels") or []),
-                                     "id": runner["id"]},
-                                    iso(now), threshold, now)
+                        continue
+                    detail = {"labels": one["labels"], "ids": one["ids"]}
+                    if one.get("unlisted"):
+                        detail["unlisted"] = True
+                    kind = "runner_planned" if reason else "runner_offline"
+                    if reason:
+                        detail["why"] = reason
+                    self._turn(c, key, kind, now)
+                    self._watch(c, key, kind, forge, name, detail, iso(now), threshold, now)
                 for (key,) in c.execute(
-                        "SELECT alarm_key FROM alarm_watch WHERE kind='runner_offline'"
-                        " AND forge=?", (forge,)).fetchall():
+                        "SELECT alarm_key FROM alarm_watch WHERE kind IN"
+                        " ('runner_offline', 'runner_planned') AND forge=?",
+                        (forge,)).fetchall():
                     if key not in seen:
                         self._resolve(c, key, now,
                                       f"removed from {FORGES.get(forge, forge)}")
         return self._flush()
+
+    def _turn(self, c, key, kind, now):
+        """A runner offline on purpose that stays offline once the platform
+        is done with it is offline for real: its watch starts again, so the
+        alarm follows the debounce. Offline for real that the platform then
+        takes on (a stop, a recreate), not said yet, is said as the
+        platform's. An alarm already raised stays what it is."""
+        row = c.execute("SELECT kind, raised_at FROM alarm_watch WHERE alarm_key=?",
+                        (key,)).fetchone()
+        if row is None or row["kind"] == kind:
+            return
+        if row["raised_at"] is None:
+            c.execute("UPDATE alarm_watch SET kind=? WHERE alarm_key=?", (kind, key))
+        elif kind == "runner_offline":
+            c.execute("UPDATE alarm_watch SET kind=?, since=?, raised_at=NULL,"
+                      " acked_by=NULL, acked_at=NULL WHERE alarm_key=?",
+                      (kind, iso(now), key))
 
     # ---- queued jobs -----------------------------------------------------
 
@@ -485,6 +539,62 @@ def _record(forge, r):
             "labels": list(r.get("labels") or [])}
 
 
+#: What a runner's operation means for whoever reads Discord.
+PLANNED_VERBS = {"recreate": "recreating", "restart": "restarting",
+                 "stop": "stopped by operator", "retire": "being retired",
+                 "remove": "being removed", "repair": "being repaired",
+                 "drain": "drained by operator", "start": "starting",
+                 "create": "being created", "clear_cache": "clearing its cache"}
+
+
+def planned(forge, specs, verbs):
+    """{runner name: why the platform has it offline on purpose}, and under
+    "__expected__" the names of the platform's own runners of this forge -
+    which are offline when the forge does not list them. `verbs` maps an
+    operation id to its verb."""
+    out, expected = {}, []
+    field = "registration_uuid" if forge == "forgejo" else "registration_id"
+    for s in specs or []:
+        if s.get("provider") != forge or s.get("deleted_at"):
+            continue
+        name = s.get("display_name")
+        op = s.get("current_operation")
+        if name and not (s.get("actual_state") == "absent" and not op):
+            expected.append(name)
+        why = None
+        if op:
+            verb = (verbs or {}).get(op)
+            why = PLANNED_VERBS.get(verb, f"{verb} in progress" if verb
+                                    else "an operation in progress")
+        elif s.get("desired_state") == "stopped":
+            why = "stopped by operator"
+        elif s.get("desired_state") == "drained" or \
+                s.get("actual_state") in ("draining", "drained"):
+            why = "drained by operator"
+        elif s.get("actual_state") in QUIET_ACTUAL:
+            why = "taken down by the platform"
+        if why:
+            if name:
+                out[name] = why
+            if s.get(field):
+                out[f"id:{s[field]}"] = why
+    out["__expected__"] = expected
+    return out
+
+
+def _operation_verbs(path, specs):
+    ids = [s.get("current_operation") for s in specs or [] if s.get("current_operation")]
+    if not ids:
+        return {}
+    try:
+        with schema.connect(path) as c:
+            return {r[0]: r[1] for r in c.execute(
+                "SELECT operation_id, verb FROM operations WHERE operation_id IN (%s)"
+                % ",".join("?" * len(ids)), ids)}
+    except Exception:  # noqa: BLE001 - a reason is not worth a missed reading
+        return {}
+
+
 def _quiet(forge, specs):
     field = "registration_uuid" if forge == "forgejo" else "registration_id"
     return {str(s.get(field)) for s in specs or []
@@ -536,7 +646,8 @@ class Monitor:
             except Exception as e:  # noqa: BLE001
                 records, why = None, f"the runner list could not be read: {type(e).__name__}"
             runners = None if records is None else [_record(forge, r) for r in records]
-            book.observe_runners(forge, runners, now, cfg, _quiet(forge, specs), why=why)
+            book.observe_runners(forge, runners, now, cfg, why=why,
+                                 planned=planned(forge, specs, _operation_verbs(path, specs)))
             if runners is None:
                 self.online[forge] = None
                 before = self.status.get(forge) or {}
@@ -673,6 +784,8 @@ class Monitor:
             row["for"] = duration(now - (epoch(row["since"]) or now))
         acknowledged = [r for r in rows if r.get("acked_at")]
         rows = [r for r in rows if not r.get("acked_at")]
+        # A runner the platform took down on purpose is said, not alarmed.
+        rows = [r for r in rows if r["kind"] != "runner_planned"]
         active = [r for r in rows if r["raised_at"] and r["kind"] != "monitor"]
 
         def shown(r):
