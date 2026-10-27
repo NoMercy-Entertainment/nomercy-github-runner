@@ -1,7 +1,7 @@
 """A card that keeps its shape and its last known figures (2026-10-27).
 
 What the owner saw: the Storage line alternating between
-"0.71 GiB own · 0.64 GiB / 100 GiB" (two lines) and "0.71 GiB / 100 GiB",
+"0.71 GiB own · 0.64 GiB / 100.00 GiB" (two lines) and "0.71 GiB / 100.00 GiB",
 CPU and Memory flipping to "unknown" whenever a beat carried nulls, and
 "runner is busy - job details unavailable" while the job was known. Every
 card below it moved each time.
@@ -219,14 +219,15 @@ class TestTheSameShapeWhateverItSays:
                                              volume_total_bytes=100 * GIB))
         a, b = render("cardHTML", [own, with_volume])
         detail = lambda h: re.search(r'data-m="storage".*?class="mdetail"[^>]*>([^<]*)<', h).group(1)
-        assert detail(a) == "0.71 GiB / 100 GiB"
-        assert detail(b) == "0.64 GiB / 100 GiB"
+        assert detail(a) == "0.71 GiB / 100.00 GiB"
+        assert detail(b) == "0.64 GiB / 100.00 GiB"
         assert " own · " not in detail(b)
 
     def test_a_last_known_reading_says_how_old_it_is(self):
         aged = variants()[-1]
         html = render("cardHTML", [aged])[0]
-        assert re.search(r'data-m="cpu".*?class="msub">75 s ago<', html)
+        assert re.search(r'data-m="cpu".*?class="mdetail" title="[^"]*· 75 s ago"', html)
+        assert re.search(r'data-m="cpu".*?class="msub"></span>', html)
         assert 'mval">unknown' not in html.split('data-m="memory"')[0]
 
     def test_cores_in_use_always_have_one_decimal(self):

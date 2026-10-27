@@ -334,32 +334,43 @@ class TestTheSameCardEverywhere:
         mac = {m[0]: m[1:] for m in _meters(html[0])}
         linux = {m[0]: m[1:] for m in _meters(html[1])}
         assert mac["cpu"] == ("5.0%", "0.3 / 6 cores shared", 5.0)
-        assert mac["memory"][1] == "1.86 GiB / 16 GiB shared"
+        assert mac["memory"][1] == "1.86 GiB / 16.00 GiB shared"
         for meter in METERS:
             assert "shared" not in linux[meter][1], meter
 
     def test_shared_storage_shows_its_own_bytes_and_fills_with_the_volume(
             self):
         """The bar is how full the boundary that would stop the runner is:
-        the volume it shares. The runner's own bytes are said too - on the
-        label line, so the detail line has one format and one line on every
-        card (2026-10-27)."""
+        the volume it shares. The runner's own bytes are not drawn: every
+        card reads the same (2026-10-27)."""
         html = render("cardHTML", [card(WINDOWS_PLAIN)])[0]
         storage = {m[0]: m[1:] for m in _meters(html)}["storage"]
-        assert storage == ("45.0%", "838 GiB / 1863 GiB shared", 45.0)
-        assert 'class="msub">37 GiB own<' in html
+        assert storage == ("45.0%", "838.19 GiB / 1862.65 GiB shared", 45.0)
+        assert ' own' not in html
 
     def test_an_own_disk_fills_with_the_runners_own_use(self):
         html = render("cardHTML", [card(WINDOWS_VHD)])[0]
         got = {m[0]: m[1:] for m in _meters(html)}
-        assert got["storage"] == ("11.2%", "11 GiB / 100 GiB", 11.2)
-        assert got["cache"] == ("11.2%", "11 GiB / 100 GiB", 11.2)
-        assert 'class="msub">2.79 GiB own<' in html
+        assert got["storage"] == ("11.2%", "11.18 GiB / 100.00 GiB", 11.2)
+        assert got["cache"] == ("11.2%", "11.18 GiB / 100.00 GiB", 11.2)
+        assert ' own' not in html
+
+    def test_every_platform_labels_its_meters_the_same(self):
+        """macOS and Windows know their share of a volume; Linux does not.
+        The label line must not show it (2026-10-27: macOS read
+        "Storage · 0.60 GiB own" next to Linux's "Storage")."""
+        html = render("cardHTML", [card(c) for c in
+                                   (LINUX, MACOS, MACOS_POOL, WINDOWS_PLAIN, WINDOWS_VHD)])
+        labels = [re.findall(r'class="mlabel">([^<]*)<span class="msub">([^<]*)<', h)
+                  for h in html]
+        for got in labels:
+            assert got == labels[0] == [("CPU", ""), ("Memory", ""),
+                                        ("Storage", ""), ("Cache", "")]
 
     def test_an_own_guest_disk_fills_with_the_disk_and_is_not_shared(self):
         html = render("cardHTML", [card(MACOS_POOL)])[0]
         got = {m[0]: m[1:] for m in _meters(html)}
-        assert got["storage"] == ("30.0%", "28 GiB / 93 GiB", 30.0)
+        assert got["storage"] == ("30.0%", "27.94 GiB / 93.13 GiB", 30.0)
         for meter in METERS:
             assert "shared" not in got[meter][1], meter
 
@@ -369,7 +380,7 @@ class TestTheSameCardEverywhere:
                                    card(ARM64)])
         linux = {m[0]: m[1:] for m in _meters(html[0])}
         arm = {m[0]: m[1:] for m in _meters(html[1])}
-        assert linux["storage"] == ("unknown", "unknown / 100 GiB", 0.0)
+        assert linux["storage"] == ("unknown", "unknown / 100.00 GiB", 0.0)
         assert arm["storage"] == ("unknown", "unknown / unknown shared", 0.0)
 
 
@@ -421,12 +432,12 @@ class TestEverySourceHasTheSameMeters:
         got = {m[0]: m[1:] for m in _meters(legacy)}
         assert [m[0] for m in _meters(legacy)] == list(METERS)
         assert got["cpu"] == ("50.8%", "8.1 / 16 cores", 50.8)
-        assert got["memory"][1] == "11 GiB / 32 GiB"
-        assert got["cache"] == ("31.3%", "12 GiB / 37 GiB", 31.3)
+        assert got["memory"][1] == "11.20 GiB / 32.00 GiB"
+        assert got["cache"] == ("31.3%", "11.64 GiB / 37.25 GiB", 31.3)
         got = {m[0]: m[1:] for m in _meters(unmanaged)}
         assert [m[0] for m in _meters(unmanaged)] == list(METERS)
         assert got["cpu"][1] == "0.0 / 56 cores"
-        assert got["storage"] == ("60.0%", "559 GiB / 931 GiB shared", 60.0)
+        assert got["storage"] == ("60.0%", "558.79 GiB / 931.32 GiB shared", 60.0)
 
 
 def test_the_page_gives_each_card_its_workers_hardware(tmp_path):

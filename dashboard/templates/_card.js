@@ -21,12 +21,12 @@ function esc(v) {
     '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'})[ch]);
 }
 
+// Always GiB with two decimals, on every card and every meter: "0.0 MiB"
+// on one card next to "0.04 GiB" on another, and "19 GiB" next to
+// "0.25 GiB", read as different cards (2026-10-27).
 function fmtBytes(b) {
   if (b == null || isNaN(Number(b))) return 'unknown';
-  const g = Number(b) / 1073741824;
-  if (g >= 10) return Math.round(g) + ' GiB';
-  if (g >= 0.01) return g.toFixed(2) + ' GiB';
-  return (Number(b) / 1048576).toFixed(1) + ' MiB';
+  return (Number(b) / 1073741824).toFixed(2) + ' GiB';
 }
 
 function fmtCores(n) {
@@ -56,8 +56,7 @@ function fmtAge(s) {
 // the same three fixed lines whatever is known (2026-10-27: a storage line
 // that grew a second line, and CPU that flipped to "unknown", moved every
 // card below it). Line one: the label - with the reading's age when it is
-// the last known one, or the runner's own figure when the bar is a shared
-// volume's - and the share of the boundary. Line two: used / total of what
+// the last known one - and the share of the boundary. Line two: used / total of what
 // the bar shows, in one format. Line three: the bar, how full the boundary
 // that would stop this runner is - a volume's fill when it is known.
 // Anything not known reads "unknown" in its slot, never a confident zero.
@@ -68,12 +67,15 @@ function meter(key, label, m, fmt, unit, fmtUsed) {
   const pct = known(used) && known(total) && Number(total) > 0
     ? 100 * Number(used) / Number(total) : null;
   const p = Math.max(0, Math.min(100, pct || 0));
-  const sub = known(m.age) ? fmtAge(m.age)
-    : volume && known(m.used) ? fmt(m.used) + ' own' : '';
+  // The label names the measure alone on every card: a macOS or Windows
+  // card that also knows its own share of a volume read "Storage · 0.60 GiB
+  // own" next to Linux's "Storage", and a stale reading added its age to
+  // one card only (2026-10-27). The age is in the hover text instead.
+  const sub = known(m.age) ? fmtAge(m.age) : '';
   const detail = (fmtUsed || fmt)(used) + ' / ' + fmt(total) + unit + (m.shared ? ' shared' : '');
   return `<div class="meter" data-m="${esc(key)}">` +
     `<div class="mrow"><span class="mlabel">${esc(label)}` +
-    `<span class="msub">${esc(sub)}</span></span>` +
+    `<span class="msub"></span></span>` +
     `<span class="mval">${esc(pct == null ? 'unknown' : pct.toFixed(1) + '%')}</span></div>` +
     `<div class="mdetail" title="${esc(detail + (sub ? ' · ' + sub : ''))}">${esc(detail)}</div>` +
     `<div class="track"><div class="fill ${pctClass(p)}" ` +

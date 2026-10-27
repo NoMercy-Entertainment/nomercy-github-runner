@@ -272,7 +272,7 @@ class TestTheRenderer:
         c = dict(spec_cards()[0],
                  storage={"used_bytes": int(0.12 * 1024 ** 3), "total_bytes": 100 * 1024 ** 3})
         html = render("cardHTML", [c])[0]
-        assert "0.1%" in html and "0.12 GiB / 100 GiB" in html
+        assert "0.1%" in html and "0.12 GiB / 100.00 GiB" in html
 
     def test_a_disabled_action_carries_its_reason(self):
         html = render("cardHTML", [cards.from_unmanaged(
