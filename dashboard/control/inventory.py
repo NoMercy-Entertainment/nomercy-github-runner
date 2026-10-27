@@ -176,6 +176,9 @@ _KEPT = ((("storage_bytes",), "storage_at"),
           "storage_volume_at"),
          (("cache_volume_used_bytes", "cache_volume_total_bytes"),
           "cache_volume_at"))
+#: The readings a beat replaces only with another reading, each with the
+#: time it was taken.
+_READINGS = {"cpu_percent": "cpu_at", "mem_used_bytes": "mem_at"}
 _STAMPS = ("at",) + tuple(stamp for _, stamp in _KEPT)
 
 
@@ -423,11 +426,24 @@ class Inventory:
             # Kept when a beat carries none; the dashboard decides when it
             # is too old to count (api_v2.origin_guard_of).
             current["origin_guard"] = origin_guard
-        for key in ("cpu_percent", "cpu_cores", "host_cores",
-                    "host_mem_bytes", "job",
-                    "mem_used_bytes", "mem_limit_bytes",
-                    "mem_swap_limit_bytes"):
-            current[key] = fresh.get(key)
+        # A reading is replaced by the next reading, not by a beat that had
+        # none: the macOS pool sent beats of nothing but nulls, and the card
+        # flipped to "unknown" and back every few seconds (2026-10-27). The
+        # reading keeps the time it was taken, and the card says how old it
+        # is. What bounds the unit - its cores and memory, the machine's -
+        # is replaced by any beat that read something, null meaning no
+        # limit; a beat that read nothing says nothing about it either.
+        measured = any(fresh.get(key) is not None for key in _READINGS)
+        for key, stamp in _READINGS.items():
+            if fresh.get(key) is not None:
+                current[key], current[stamp] = fresh[key], at
+            else:
+                current.setdefault(key, None)
+        for key in ("cpu_cores", "host_cores", "host_mem_bytes",
+                    "mem_limit_bytes", "mem_swap_limit_bytes"):
+            if measured or key not in current:
+                current[key] = fresh.get(key)
+        current["job"] = fresh.get("job")
         # Once events report this runner's job, a delayed sampled heartbeat
         # cannot resurrect a completed job or replace the current one.
         if isinstance(current.get("job_event"), dict):
@@ -437,7 +453,11 @@ class Inventory:
             current.pop(key, None)
         current["at"] = at              # arrival, as accept_heartbeat says
         for keys, stamp in _KEPT:
-            if any(key in fresh for key in keys):
+            # A figure stated as null was not read this time - it is not
+            # gone: the macOS null beats blanked the volume, and a Linux
+            # beat whose cache reading failed turned the Cache line to
+            # "unknown" (2026-10-27). Replaced by the next reading only.
+            if any(fresh.get(key) is not None for key in keys):
                 for key in keys:
                     current[key] = fresh.get(key)
                 current[stamp] = min(fresh.get(stamp, at), at)

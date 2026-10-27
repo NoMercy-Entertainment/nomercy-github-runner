@@ -16,16 +16,23 @@ a.cname:hover{text-decoration:underline;text-underline-offset:3px}
 .badge.draining{color:var(--drain)}
 .badge.stopped,.badge.offline,.badge.failed{color:var(--alert)}
 .creg{font-size:var(--type-small);color:var(--text-faint);overflow-wrap:anywhere}
-.annots{display:flex;gap:var(--space-2);flex-wrap:wrap;margin-top:var(--space-2)}
+.annots{display:flex;gap:var(--space-2);flex-wrap:nowrap;overflow:hidden;white-space:nowrap;min-height:1.4em;line-height:1.4em;margin-top:var(--space-2)}
 .annot{font-size:var(--type-small);color:var(--text-dim)}
-.cjob{margin:var(--space-5) 0;font-size:var(--type-body);font-weight:600;
-  color:var(--busy);overflow-wrap:anywhere;min-height:2.5em;display:flex;align-items:center;
+.cjob{margin:var(--space-5) 0;font-size:var(--type-body);font-weight:600;line-height:1.4;
+  color:var(--busy);overflow-wrap:anywhere;height:2.8em;display:flex;align-items:center;
   padding-left:var(--space-3);border-left:2px solid var(--busy)}
+/* Two lines at most, whatever the job is called: the card keeps its height. */
+.cjob>span{display:-webkit-box;-webkit-line-clamp:2;line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.cwhere{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .cjob.none{color:var(--text-faint);font-weight:400;border-left-color:var(--rule-hot)}
-.cerr,.cnote,.cwarn{margin-top:var(--space-3);font-size:var(--type-body);overflow-wrap:anywhere}
+/* The message slot is there on every card, two lines high, empty or not. */
+.cmsg{margin-top:var(--space-3);font-size:var(--type-body);line-height:1.4;height:2.8em;overflow:hidden;
+  overflow-wrap:anywhere;display:-webkit-box;-webkit-line-clamp:2;line-clamp:2;-webkit-box-orient:vertical}
+.flimits,div.cerr{margin-top:var(--space-3);font-size:var(--type-body);overflow-wrap:anywhere}
 .cerr{color:var(--alert)} .cnote{color:var(--text-dim)} .cwarn{color:var(--busy)}
 .card-meta{margin-top:var(--space-5)}
-.clabels{display:flex;align-items:center;flex-wrap:wrap;gap:var(--space-2);font-size:var(--type-small);color:var(--text-dim)}
+.clabels{display:flex;align-items:center;flex-wrap:nowrap;overflow:hidden;gap:var(--space-2);font-size:var(--type-small);color:var(--text-dim);white-space:nowrap}
+.clabels .chip{flex:none}
 .flabels{display:flex;align-items:center;flex-wrap:wrap;gap:var(--space-2);margin-top:var(--space-3);font-size:var(--type-small);color:var(--text-faint)}
 .chip{display:inline-block;border:1px solid var(--rule);border-radius:var(--space-1);padding:var(--space-1) var(--space-2);color:var(--text-dim);font-size:var(--type-small);overflow-wrap:anywhere;max-width:100%}
 .card .chip{border-color:transparent;background:var(--bg-inset)}
@@ -40,14 +47,20 @@ a.cname:hover{text-decoration:underline;text-underline-offset:3px}
 .chip.rgroup .rguard{display:block;margin-top:var(--space-1)}
 .metrics{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:var(--space-5)}
 .meter{min-width:0}
-.mrow{display:flex;align-items:baseline;justify-content:space-between;flex-wrap:wrap;gap:var(--space-1) var(--space-2);font-size:var(--type-small);color:var(--text-faint)}
-.mval{color:var(--text);font-size:var(--type-body);font-weight:650;font-variant-numeric:tabular-nums;overflow-wrap:anywhere}
-.mdetail{min-height:1.5em;margin:var(--space-1) 0 var(--space-2);font-size:var(--type-small);color:var(--text-faint);font-variant-numeric:tabular-nums;overflow-wrap:anywhere}
+.mrow{display:flex;align-items:baseline;justify-content:space-between;flex-wrap:nowrap;gap:var(--space-2);font-size:var(--type-small);color:var(--text-faint);min-width:0}
+.mlabel{min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.msub:not(:empty)::before{content:" · "}
+.msub{color:var(--text-faint)}
+.mval{flex:none;color:var(--text);font-size:var(--type-body);font-weight:650;font-variant-numeric:tabular-nums;white-space:nowrap}
+.mdetail{height:1.5em;line-height:1.5em;margin:var(--space-1) 0 var(--space-2);font-size:var(--type-small);color:var(--text-faint);font-variant-numeric:tabular-nums;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .track{position:relative;height:4px;background:var(--bg-inset);overflow:hidden;border-radius:var(--space-1)}
 .fill{height:100%;width:0;background:var(--text-faint);border-radius:inherit}
 .fill.warn{background:var(--busy)} .fill.crit{background:var(--alert)}
 .card-footer{display:flex;align-items:center;justify-content:space-between;gap:var(--space-3);margin-top:auto;padding-top:var(--space-5)}
-.cstatus{display:flex;flex-direction:column;gap:var(--space-1);min-width:0}
+.cstatus{display:flex;flex-direction:column;gap:var(--space-1);min-width:0;flex:1}
+/* Three status lines on every card, each one line high, empty or not. */
+.sline{display:block;min-height:1.4em;line-height:1.4em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.aslot{min-height:44px}
 .card-footer button{flex:none;min-height:40px;padding:var(--space-2) var(--space-3);border-color:transparent;text-decoration:underline;text-underline-offset:3px}
 .actions{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:var(--space-2);
   margin-top:var(--space-4);padding-top:var(--space-4);border-top:1px solid var(--rule)}

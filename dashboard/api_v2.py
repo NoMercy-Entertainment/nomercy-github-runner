@@ -21,6 +21,7 @@ import os
 import json
 import re
 import sqlite3
+import threading
 import time
 from datetime import datetime, timezone
 
@@ -206,12 +207,97 @@ def _host_of(service, spec):
         return {}
 
 
+#: GitHub's word on the job each busy GitHub runner of ours is running,
+#: asked off the request path (_refresh_github_jobs): what a busy card
+#: shows while the runner's own job-started hook has not arrived yet.
+GITHUB_JOBS_FRESH = 30
+GITHUB_JOBS_EVERY = 15
+GITHUB_CLOCK_SLACK = 5
+_github_jobs = {"at": None, "jobs": {}, "asking": False, "asked_at": None,
+                "client": None, "key": None}
+_github_jobs_lock = threading.Lock()
+
+
+def _now_iso():
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _refresh_github_jobs(service):
+    """Ask GitHub, once at a time and at most every GITHUB_JOBS_EVERY
+    seconds, which job each busy GitHub runner is running. In a thread: a
+    page read never waits on GitHub."""
+    now = time.monotonic()
+    with _github_jobs_lock:
+        asked = _github_jobs["asked_at"]
+        if _github_jobs["asking"] or (asked is not None and now - asked < GITHUB_JOBS_EVERY):
+            return
+        _github_jobs.update(asking=True, asked_at=now)
+
+    def ask():
+        try:
+            env = service.env or {}
+            key = (env.get("GH_TOKEN"), env.get("GITHUB_ORG"))
+            client = _github_jobs["client"] if _github_jobs["key"] == key else None
+            if client is None:
+                provider = providers.by_key("github")
+                client = provider.forge_client(env) if provider else None
+                _github_jobs.update(client=client, key=key)
+            names = {s.get("display_name") for s in service.specs.list()
+                     if s.get("provider") == "github" and s.get("display_name")
+                     and s.get("forge_state") == "busy"}
+            found = client.current_jobs(names) if client is not None else None
+            if found is not None:
+                _github_jobs.update(jobs=found, at=time.monotonic())
+        except Exception as e:  # noqa: BLE001 - a name is never worth a failed page
+            print(f"[github-jobs] {type(e).__name__}: {e}")
+        finally:
+            _github_jobs["asking"] = False
+
+    threading.Thread(target=ask, name="github-current-jobs", daemon=True).start()
+
+
+def _github_job_name(service, spec):
+    """The job GitHub says this runner is running, or None: only from a
+    recent answer, and never one that started before the runner's own hook
+    said its last job finished - GitHub may still call that one running."""
+    fresh = (_github_jobs["at"] is not None
+             and time.monotonic() - _github_jobs["at"] <= GITHUB_JOBS_FRESH)
+    entry = _github_jobs["jobs"].get(spec.get("display_name")) if fresh else None
+    if entry is None:
+        _refresh_github_jobs(service)
+        return None
+    telemetry = spec.get("telemetry") if isinstance(spec.get("telemetry"), dict) else {}
+    event = telemetry.get("job_event")
+    if isinstance(event, dict) and event.get("state") == "finished":
+        # On the controller's clock, with a few seconds for GitHub's: a job
+        # that started before the last completion arrived is that job.
+        started, finished = cards._instant(entry.get("started_at")), cards.event_arrival(telemetry)
+        if (started is None or finished is None
+                or (started - finished).total_seconds() <= -GITHUB_CLOCK_SLACK):
+            return None
+    return entry.get("job")
+
+
 def _runner_card(service, spec, reachable, host=None):
     card = cards.from_spec(spec, worker_reachable=reachable,
                            host=_host_of(service, spec) if host is None
                            else host)
-    if spec.get("provider") == "forgejo" and spec.get("actual_state") in ("busy", "draining"):
+    telemetry = spec.get("telemetry") if isinstance(spec.get("telemetry"), dict) else {}
+    event = telemetry.get("job_event") if isinstance(telemetry.get("job_event"), dict) else {}
+    job = card.get("job") or ""
+    if (spec.get("provider") == "forgejo" and event.get("job") and job.startswith(event["job"])
+            and str(event.get("job_id") or "").isdigit() and event.get("repo")):
+        # The runner's event names the job by its key ("windows",
+        # "health"); its task, which the event identifies, has the name the
+        # forge shows - the same words a log-named Forgejo job gets below.
+        named = _named_forgejo_job(service, f"task {event['job_id']} - {event['repo']}")
+        if not named.startswith("task "):
+            card["job"] = named + job[len(event["job"]):]
+    elif spec.get("provider") == "forgejo" and spec.get("actual_state") in ("busy", "draining"):
         card["job"] = _named_forgejo_job(service, card.get("job"))
+    if spec.get("provider") == "github" and (
+            job == cards.UNNAMED_JOB or job.endswith(cards.FINISHING)):
+        card["job"] = _github_job_name(service, spec) or card["job"]
     from control import states
     if spec.get("actual_state") == "failed":
         card["actions"].append({"verb": "repair", "label": "Repair", "tone": "primary",

@@ -22,7 +22,7 @@ tbody tr:hover{background:var(--bg-inset)}
    folded into the three above, because each of those would be a claim about
    how the run ended that nobody can make. Styled dim so they read as
    "no result", not as a failure. */
-.res.Skipped{color:var(--text-dim)} .res.Unknown{color:var(--text-faint)}
+.res.Skipped{color:var(--text-dim)} .res.Unknown{color:var(--text-faint)} .res.checking{color:var(--text-dim)}
 .num{font-variant-numeric:tabular-nums;color:var(--text-dim)}
 th:nth-child(4),th:nth-child(5),th:nth-child(6),td:nth-child(4),td:nth-child(5),td:nth-child(6){text-align:right}
 .job-link{border:0;padding:0;text-align:left;color:var(--text);font-size:inherit;font-weight:600;min-height:32px}
@@ -70,7 +70,7 @@ svg{display:block;width:100%;height:150px;background:var(--bg-inset);
 
 <div class="filters">
   <div><label for="f-runner">Runner</label><select id="f-runner"><option value="">All runners</option>
-    {% for r in runners %}<option>{{ r }}</option>{% endfor %}</select></div>
+    {% for value, name in runners %}<option value="{{ value }}">{{ name }}</option>{% endfor %}</select></div>
   <div><label for="f-job">Job</label><select id="f-job"><option value="">All jobs</option>
     {% for j in jobs %}<option>{{ j }}</option>{% endfor %}</select></div>
   <div><label for="f-result">Result</label><select id="f-result"><option value="">Any result</option>
@@ -148,7 +148,9 @@ async function loadRuns() {
 
   $('rows').innerHTML = rs.map(r => {
     const running = !r.ended_at;
-    const res = running ? 'running' : (r.result || 'unknown');
+    // A closed run without a result is one whose result is still being
+    // read from the forge (app._fill_*_results), not an unknown outcome.
+    const res = running ? 'running' : (r.result || 'checking');
     let ctx = '<span class="ctx">-</span>';
     if (r.gh_repo) {
       const bits = [esc(r.gh_repo)];
@@ -161,7 +163,7 @@ async function loadRuns() {
     return `<tr data-id="${r.id}">
       <td class="num">${fmtTime(r.started_at)}</td>
       <td><button class="job-link" aria-label="View run: ${esc(r.job_name)}">${esc(r.job_name)}</button></td>
-      <td class="num">${esc(r.runner.replace('github-runner-', '#'))}</td>
+      <td class="num">${esc((r.registration || r.runner).replace('github-runner-', '#'))}</td>
       <td class="num">${running ? 'running' : fmtDur(r.duration_s)}</td>
       <td class="num">${r.cpu_max != null ? r.cpu_max.toFixed(0) + '%' : '-'}</td>
       <td class="num">${fmtMem(r.mem_max)}</td>
@@ -209,7 +211,7 @@ async function openRun(id) {
       <div><span class="k">Started</span><span class="v">${fmtTime(r.started_at)}</span></div>
       <div><span class="k">Ended</span><span class="v">${fmtTime(r.ended_at)}</span></div>
       <div><span class="k">Duration</span><span class="v">${fmtDur(r.duration_s)}</span></div>
-      <div><span class="k">Result</span><span class="v"><span class="res ${esc(r.result || 'running')}">${esc(r.result || 'running')}</span></span></div>
+      <div><span class="k">Result</span><span class="v"><span class="res ${esc(r.result || (r.ended_at ? 'checking' : 'running'))}">${esc(r.result || (r.ended_at ? 'checking' : 'running'))}</span></span></div>
       <div><span class="k">CPU min / avg / max</span><span class="v">${
         r.cpu_min != null ? `${r.cpu_min.toFixed(1)}% / ${r.cpu_avg.toFixed(1)}% / ${r.cpu_max.toFixed(1)}%` : '-'}</span></div>
       <div><span class="k">Mem min / avg / max</span><span class="v">${

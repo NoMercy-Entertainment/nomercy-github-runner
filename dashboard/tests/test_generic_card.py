@@ -226,7 +226,7 @@ class TestTheRenderer:
         card = dict(spec_cards()[0], lifecycle_state="draining", state="unknown",
                     job=None)
         html = render("cardHTML", [card])[0]
-        assert '>draining</div>' in html
+        assert '>draining</span></div>' in html
         assert "running a job" not in html
         assert "no active job" not in html
 
@@ -336,7 +336,8 @@ class TestTheRenderer:
                  last_note=f"2026-09-22T05:00:00Z {sentence}",
                  label_drift=sentence)
         html = render("cardHTML", [c])[0]
-        assert html.count(sentence) == 1
+        # Drawn once; the message slot's tooltip carries it too, unseen.
+        assert re.sub(r"<[^>]+>", "", html).count(sentence) == 1
         assert 'class="cwarn"' in html
         assert 'class="cnote"' not in html
 

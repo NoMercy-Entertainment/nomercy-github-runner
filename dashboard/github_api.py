@@ -437,6 +437,85 @@ class GitHub:
                     }
         return None
 
+    def job_result(self, repo, run_id, attempt, runner_name, started_at):
+        """The conclusion of the job `runner_name` ran in one run attempt.
+
+        For native history rows, which already know their repository, run id
+        and attempt: one call instead of find_job()'s scan of every repo.
+        Among that runner's jobs in the attempt, the one that started closest
+        to `started_at` - a matrix can put two jobs on the same runner in
+        turn. None while the job has not completed, or when no job of that
+        runner is in the attempt. False when GitHub could not be read.
+        """
+        if not repo or not run_id or not runner_name:
+            return None
+        data = self._get(
+            f"/repos/{repo}/actions/runs/{run_id}/attempts/{attempt or 1}/jobs",
+            {"per_page": 100})
+        if not isinstance(data, dict):
+            # Not "no such job": GitHub did not answer (a DNS failure
+            # closed a stale run as Unknown, 2026-10-27). Asked again later.
+            return False
+
+        def seconds(stamp):
+            try:
+                text = str(stamp).replace("Z", "+00:00")
+                return dt.datetime.fromisoformat(text).timestamp()
+            except (TypeError, ValueError):
+                return None
+
+        ours = seconds(started_at)
+        mine = [j for j in data.get("jobs") or []
+                if j.get("runner_name") == runner_name]
+        if not mine:
+            return None
+        if ours is not None:
+            mine.sort(key=lambda j: abs((seconds(j.get("started_at")) or 0) - ours))
+        job = mine[0]
+        if job.get("status") != "completed" or not job.get("conclusion"):
+            return None
+        return {"conclusion": job["conclusion"], "url": job.get("html_url"),
+                "completed_at": job.get("completed_at"),
+                "workflow": job.get("workflow_name"),
+                "branch": job.get("head_branch")}
+
+    def current_jobs(self, runner_names):
+        """{runner name: the job GitHub says it is running} for the named
+        runners, from the in-progress runs of the org's recently pushed
+        repositories; {} when none of them is running anything GitHub
+        lists, None when the repositories could not be read.
+
+        GitHub knows a runner's job the moment the runner takes it; the
+        runner's own job-started hook runs only after "Set up job" (24 s
+        later on the macOS guest, 2026-10-27). Asked conditionally, so an
+        unchanged list of runs costs nothing of the rate limit.
+        """
+        wanted = set(runner_names or ())
+        if not wanted:
+            return {}
+        repos = self.repos()
+        if repos is None:
+            return None
+        found = {}
+        for repo in repos:
+            runs = self._get(f"/repos/{repo}/actions/runs",
+                             {"status": "in_progress", "per_page": 30},
+                             conditional=True)
+            for run in (runs or {}).get("workflow_runs") or []:
+                jobs = self._get(f"/repos/{repo}/actions/runs/{run.get('id')}/jobs",
+                                 {"per_page": 100}, conditional=True)
+                for j in (jobs or {}).get("jobs") or []:
+                    name = j.get("runner_name")
+                    if (name in wanted and j.get("status") == "in_progress"
+                            and isinstance(j.get("name"), str) and j["name"]):
+                        found[name] = {"job": j["name"][:200], "repo": repo,
+                                       "workflow": j.get("workflow_name") or run.get("name"),
+                                       "started_at": j.get("started_at"),
+                                       "url": j.get("html_url")}
+                if wanted <= set(found):
+                    return found
+        return found
+
     # ------------------------------------------------------------- runners
     def runners(self):
         """Self-hosted runners as GitHub sees them.

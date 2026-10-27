@@ -301,8 +301,12 @@ def add_sample(runner, cpu, mem, when, *, runner_id=None):
 def _seconds_between(a, b):
     import datetime as dt
     try:
-        fa = dt.datetime.strptime(a, "%Y-%m-%dT%H:%M:%SZ")
-        fb = dt.datetime.strptime(b, "%Y-%m-%dT%H:%M:%SZ")
+        # Native rows carry microseconds ("...:51.520052Z"); strptime's
+        # fixed format read every one of them as no duration at all.
+        fa, fb = (dt.datetime.fromisoformat(str(v).replace("Z", "+00:00"))
+                  for v in (a, b))
+        fa, fb = (v if v.tzinfo else v.replace(tzinfo=dt.timezone.utc)
+                  for v in (fa, fb))
         return max(0, int((fb - fa).total_seconds()))
     except Exception:
         return None
@@ -344,6 +348,72 @@ def mark_unmatched(run_id):
     """Give up on a run so it is not retried forever."""
     with _lock, _conn() as c:
         c.execute("UPDATE runs SET gh_checked=1 WHERE id=?", (run_id,))
+
+
+def pending_results(limit=20, open_before=None, provider="github"):
+    """Native runs of one forge whose outcome is still to be learned, newest
+    first: closed without a result, or - when `open_before` is given - still
+    open although they started before it.
+
+    The runner's completion hook closes a GitHub run without a result: the
+    hook cannot know whether the job passed. And a hook that never arrived
+    leaves a run open for good - three GitHub rows read "running" for days
+    (2026-10-24/25). The native ledger already stored the repository and
+    the run id (a Forgejo row also its task id), so the forge can say both.
+    The attempt comes from that ledger and is 1 when it is not there. A row
+    stops being pending once it has any result, "Unknown" included.
+    """
+    where = ("ended_at IS NOT NULL" if open_before is None else
+             "(ended_at IS NOT NULL OR started_at < ?)")
+    args = [] if open_before is None else [open_before]
+    known = ("gh_run_id IS NOT NULL" if provider == "github"
+             else "forge_task_id IS NOT NULL")
+    with _lock, _conn() as c:
+        rows = [dict(r) for r in c.execute(
+            "SELECT id, registration, job_name, started_at, ended_at,"
+            " gh_run_id, gh_repo, forge_task_id FROM runs"
+            " WHERE provider=? AND result IS NULL AND " + where +
+            "   AND " + known + " AND gh_repo IS NOT NULL"
+            " ORDER BY started_at DESC LIMIT ?",
+            [provider] + args + [limit]).fetchall()]
+        for row in rows:
+            try:
+                found = c.execute(
+                    "SELECT attempt FROM native_job_runs WHERE history_id=?",
+                    (row["id"],)).fetchone()
+            except sqlite3.OperationalError:   # no native ledger in this db
+                found = None
+            row["attempt"] = str(found[0]) if found and found[0] else "1"
+        return rows
+
+
+def apply_result(run_id, result, conclusion=None, url=None, ended_at=None):
+    """Set a run's result once; a result already there is never replaced.
+    A run still open is closed at `ended_at` (its start when that is not
+    known), so a lost completion hook does not leave it running forever."""
+    with _lock, _conn() as c:
+        row = c.execute("SELECT started_at, ended_at FROM runs WHERE id=?",
+                        (run_id,)).fetchone()
+        if not row:
+            return
+        if row["ended_at"] is None:
+            end = ended_at or row["started_at"]
+            c.execute("UPDATE runs SET ended_at=?, duration_s=?"
+                      " WHERE id=? AND ended_at IS NULL",
+                      (end, _seconds_between(row["started_at"], end), run_id))
+        c.execute(
+            "UPDATE runs SET result=?, gh_conclusion=COALESCE(?, gh_conclusion),"
+            " gh_url=COALESCE(?, gh_url) WHERE id=? AND result IS NULL",
+            (result, conclusion, url, run_id))
+
+
+def runner_choices():
+    """[(runner, name)] for the history filter: a native row's runner is
+    its runner id, which is no name to pick from."""
+    with _lock, _conn() as c:
+        return [(r[0], r[1] or r[0]) for r in c.execute(
+            "SELECT runner, MAX(registration) FROM runs WHERE runner IS NOT NULL"
+            " GROUP BY runner ORDER BY COALESCE(MAX(registration), runner)").fetchall()]
 
 
 # --------------------------------------------------------------------------
@@ -533,5 +603,11 @@ def record_controller_logs(spec, text, when=None):
         except (AttributeError, ValueError, TypeError):
             return
         cpu, mem = telemetry.get("cpu_percent"), telemetry.get("mem_used_bytes")
+        # Only readings the latest beat took: the controller keeps the last
+        # reading through beats that had none (cpu_at / mem_at), and the
+        # card shows it with its age, but a job's samples are measurements.
+        if any(telemetry.get(stamp) not in (None, sample_at)
+               for stamp in ("cpu_at", "mem_at")):
+            return
         if 0 <= age <= 30 and cpu is not None and mem is not None:
             add_sample(name, cpu, mem, sample_at, runner_id=spec["runner_id"])

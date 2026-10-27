@@ -539,7 +539,11 @@ def _enricher():
             # codebase.
             stale_before = time.strftime(
                 "%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - 24 * 3600))
-            _enrich_pending(env, stale_before)
+            # A run still open this long after it started is asked about:
+            # its completion may never come.
+            open_before = time.strftime(
+                "%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - 15 * 60))
+            _enrich_pending(env, stale_before, open_before)
         except Exception as e:  # noqa: BLE001
             print(f"[enricher] {e}")
         time.sleep(90)
@@ -564,7 +568,7 @@ def _runner_group_env():
     return service.env if service is not None else read_env()
 
 
-def _enrich_pending(env, stale_before):
+def _enrich_pending(env, stale_before, open_before=None):
     """Run one enrichment sweep over history.pending_enrichment().
 
     Split out from _enricher() so the two invariants that actually matter
@@ -634,6 +638,84 @@ def _enrich_pending(env, stale_before):
                 history.apply_enrichment(run["id"], found)
             else:
                 history.mark_unmatched(run["id"])
+
+    _fill_github_results(env, stale_before, open_before)
+    _fill_forgejo_results(env, stale_before, open_before)
+
+
+#: How many rows one sweep asks a forge about, and how long a row that got
+#: no answer waits before it is asked again - so rows a forge cannot answer
+#: yet never hold the page while the backlog behind them waits.
+RESULTS_PAGE = 30
+RESULTS_RETRY = 300
+_RESULTS_ASKED = {}
+
+
+def _due(rows):
+    now = time.monotonic()
+    due = [r for r in rows
+           if now - _RESULTS_ASKED.get(r["id"], -RESULTS_RETRY) >= RESULTS_RETRY]
+    if len(_RESULTS_ASKED) > 5000:
+        _RESULTS_ASKED.clear()
+    for r in due[:RESULTS_PAGE]:
+        _RESULTS_ASKED[r["id"]] = now
+    return due[:RESULTS_PAGE]
+
+
+def _fill_github_results(env, stale_before, open_before=None):
+    """The result of every GitHub run that has none (2026-10-27).
+
+    The runner's completion hook closes a GitHub run without a result, so
+    521 runs in a row read "unknown"; a hook that never came left three
+    "running" for days. Each row knows its repository, run id and attempt;
+    the job's conclusion and end are one call away. A run still without a
+    conclusion after the staleness cutoff is closed as "Unknown" - honest,
+    and it stops being asked about.
+    """
+    from native_history import RESULT
+    pending = _due(history.pending_results(limit=500, open_before=open_before))
+    if not pending:
+        return
+    provider = providers.by_key("github")
+    client = provider.forge_client(env) if provider else None
+    if client is None or not hasattr(client, "job_result"):
+        return
+    for run in pending:
+        found = client.job_result(run["gh_repo"], run["gh_run_id"],
+                                  run["attempt"], run["registration"],
+                                  run["started_at"])
+        if found is False:
+            continue                     # GitHub did not answer: not a miss
+        if found and found.get("conclusion"):
+            conclusion = found["conclusion"]
+            history.apply_result(run["id"],
+                                 RESULT.get(conclusion, conclusion.capitalize()),
+                                 conclusion, found.get("url"),
+                                 ended_at=found.get("completed_at"))
+        elif (run["ended_at"] or run["started_at"]) < stale_before:
+            history.apply_result(run["id"], "Unknown")
+
+
+def _fill_forgejo_results(env, stale_before, open_before=None):
+    """The same for Forgejo: a native run whose finished event carried no
+    result, or never came, is settled from its task, which says both how
+    and when it ended."""
+    pending = _due(history.pending_results(limit=500, open_before=open_before,
+                                           provider="forgejo"))
+    if not pending:
+        return
+    provider = providers.by_key("forgejo")
+    client = provider.forge_client(env) if provider else None
+    if client is None or not hasattr(client, "find_task"):
+        return
+    for run in pending:
+        found = client.find_task(run["gh_repo"], run["forge_task_id"],
+                                 run["started_at"])
+        if found and found.get("conclusion"):
+            history.apply_result(run["id"], found["conclusion"], None,
+                                 found.get("url"), ended_at=found.get("ended_at"))
+        elif (run["ended_at"] or run["started_at"]) < stale_before:
+            history.apply_result(run["id"], "Unknown")
 
 
 # --------------------------------------------------------------------------
@@ -859,7 +941,7 @@ def index():
 def history_page():
     return render_template(
         "history.html",
-        runners=history.distinct("runner"),
+        runners=history.runner_choices(),
         jobs=history.distinct("job_name"),
     )
 

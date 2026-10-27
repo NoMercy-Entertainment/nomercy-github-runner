@@ -425,7 +425,16 @@ def _first(*values):
     return next((v for v in map(_amount, values) if v is not None), None)
 
 
-def _measured(spec, override, now, host=None):
+#: How long a reading stays on the card of a runner that is up and beating
+#: but whose last beats did not read it again - drawn with its age, never
+#: as "unknown" (2026-10-27). A runner whose beats stop is another matter:
+#: then the reading is only as good as HEARTBEAT_FRESH and the card says the
+#: runner is not reachable. Storage and cache are read every deep pass and
+#: kept between them already (STORAGE_FRESH).
+LAST_KNOWN = 900
+
+
+def _measured(spec, override, now, host=None, running=False):
     """The card's four meters - CPU, memory, storage and cache - always all
     four, each with what the unit uses and what that is a share of.
 
@@ -455,9 +464,27 @@ def _measured(spec, override, now, host=None):
         seen = _age(next((t[s] for s in stamps if t.get(s)), None), now)
         return seen is not None and 0 <= seen <= STORAGE_FRESH
 
+    def reading(key, stamp):
+        """(value, age in seconds when it is not from a current beat). A
+        value carried over from an earlier beat of a runner that is up is
+        the last known one, with its age; one whose runner stopped beating
+        is no reading."""
+        if override is not None:
+            return t.get(key), None
+        value = t.get(key)
+        seen = _age(t.get(stamp) or t.get("at"), now)
+        if value is None or seen is None or seen < 0:
+            return None, None
+        if seen <= HEARTBEAT_FRESH and live:
+            return value, None
+        if running and seen <= LAST_KNOWN:
+            return value, int(seen)
+        return None, None
+
     own_cores = _amount(t.get("cpu_cores"))
     host_cores = _first(t.get("host_cores"), host.get("cpus"))
-    cpu = {"percent": t.get("cpu_percent") if live else None,
+    percent, cpu_age = reading("cpu_percent", "cpu_at")
+    cpu = {"percent": percent, "age_s": cpu_age,
            "cores": own_cores, "host_cores": host_cores,
            "total_cores": own_cores or host_cores,
            "shared": own_cores is None}
@@ -465,7 +492,8 @@ def _measured(spec, override, now, host=None):
     own_memory = _amount(t.get("mem_limit_bytes"))
     host_memory = None if own_memory else _first(t.get("host_mem_bytes"),
                                                  host.get("memory_bytes"))
-    memory = {"used_bytes": t.get("mem_used_bytes") if live else None,
+    used, mem_age = reading("mem_used_bytes", "mem_at")
+    memory = {"used_bytes": used, "age_s": mem_age,
               "limit_bytes": own_memory, "host_bytes": host_memory,
               "total_bytes": own_memory or host_memory,
               "shared": own_memory is None}
@@ -526,24 +554,80 @@ def _job_telemetry(spec, override, now):
     return t if age is not None and 0 <= age <= FORGE_FRESH else None
 
 
-def _job(lifecycle, telemetry):
+#: What a busy card says when nothing has named its job yet.
+UNNAMED_JOB = "runner is busy - job details unavailable"
+
+#: After a job's name: it finished, and the forge has not released the
+#: runner yet.
+FINISHING = " - finishing"
+
+def _instant(stamp):
+    """An ISO time, with or without fractions or a zone, as an aware
+    datetime; None when it is not one."""
+    from datetime import datetime, timezone
+    try:
+        when = datetime.fromisoformat(str(stamp).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+    return when if when.tzinfo else when.replace(tzinfo=timezone.utc)
+
+
+def event_arrival(telemetry):
+    """When the controller received the job event the telemetry carries -
+    the controller's clock, as heartbeat freshness is: a worker's clock ran
+    17 s ahead (Windows guest, 2026-10-27) and its own `at` would have
+    been compared with the controller's forge stamps. The event's `at`
+    only when no arrival was recorded."""
+    t = telemetry if isinstance(telemetry, dict) else {}
+    event = t.get("job_event") if isinstance(t.get("job_event"), dict) else {}
+    return _instant(t.get("job_event_received_at")) or _instant(event.get("at"))
+
+
+def _event_is_newer(telemetry, forge_seen_at):
+    """Whether the job event arrived after the forge's last word: then it
+    is the newer evidence of the two."""
+    arrived, seen = event_arrival(telemetry), _instant(forge_seen_at)
+    return arrived is not None and seen is not None and arrived > seen
+
+
+#: How long after a job's completion arrived a busy runner is still taken
+#: to be finishing it. Longer, and the forge's busy is some other job whose
+#: start was never heard: never shown as the old one.
+FINISHING_FOR = 300
+
+
+def _job(lifecycle, telemetry, now=None):
     """Keep the forge's busy state distinct from incomplete job details.
 
     A completion hook can arrive before the forge releases the runner.
-    Never resurrect that completed job or claim the busy runner is free.
+    Never resurrect that completed job as running or claim the busy runner
+    is free: until the forge lets go, the card says that job is finishing -
+    not "job details unavailable", which read as something broken for the
+    20 s every job ends with (2026-10-27). A next job brings its own
+    started event, or GitHub's own word (api_v2._github_job_name).
     """
     event = (telemetry or {}).get("job_event")
     if isinstance(event, dict):
-        if event.get("state") == "started" and lifecycle in ("idle", "busy", "draining") and event.get("job"):
+        # Not on an idle runner: from_spec has already shown a start newer
+        # than the forge's "idle" as busy, so an idle card's start is older
+        # than the forge's word - a job whose completion never arrived
+        # (forgejo-windows-x64-1, 2026-10-27), not one running now.
+        if event.get("state") == "started" and lifecycle in ("busy", "draining") and event.get("job"):
             return event["job"]
-        return "runner is busy - job details unavailable" if lifecycle == "busy" else None
+        arrived = event_arrival(telemetry)
+        if lifecycle == "busy" and event.get("job") and arrived is not None:
+            from datetime import datetime, timezone
+            since = ((now or datetime.now(timezone.utc)) - arrived).total_seconds()
+            if since <= FINISHING_FOR:
+                return event["job"] + FINISHING
+        return UNNAMED_JOB if lifecycle == "busy" else None
     if lifecycle not in ("busy", "draining"):
         return None
     named = (telemetry or {}).get("job")
     if isinstance(named, str) and named:
         return named
     if lifecycle == "busy":
-        return "runner is busy - job details unavailable"
+        return UNNAMED_JOB
     return None
 
 
@@ -559,6 +643,17 @@ def from_spec(spec, telemetry=None, worker_reachable=None, now=None,
     ready = readiness(spec, now)
     shown = (spec.get("forge_state") if state in ("idle", "busy") and ready["ready"]
              else state)
+    # A job-started event newer than the forge's last "idle" is the newer
+    # evidence: the runner took a job the forge has not been asked about
+    # yet. Shown busy at once, not after the next forge pass (2026-10-27).
+    # Never the other way: a completion does not make a busy runner free.
+    telemetry_seen = spec.get("telemetry")
+    event = (telemetry_seen.get("job_event")
+             if isinstance(telemetry_seen, dict) else None)
+    if (shown == "idle" and isinstance(event, dict)
+            and event.get("state") == "started" and event.get("job")
+            and _event_is_newer(telemetry_seen, spec.get("forge_seen_at"))):
+        shown = "busy"
     forge = {"github": "GitHub", "forgejo": "Forgejo"}.get(
         spec.get("provider"), spec.get("provider"))
     who = spec.get("display_name") or f"rnr-{rid[:8]}"
@@ -583,7 +678,8 @@ def from_spec(spec, telemetry=None, worker_reachable=None, now=None,
             verb, visible=visible[verb],
             url=f"/api/v2/runners/{rid}/actions/{verb}", body={},
             confirm=_confirm(verb, who, forge), idempotent=True))
-    cpu, memory, storage, cache = _measured(spec, telemetry, now, host)
+    cpu, memory, storage, cache = _measured(spec, telemetry, now, host,
+                                            running=ready["process"] == "up")
     reachable = None if worker_reachable is None else         bool(worker_reachable) and ready["process"] == "up"
     return _card(
         runner_id=rid,
@@ -596,7 +692,7 @@ def from_spec(spec, telemetry=None, worker_reachable=None, now=None,
         worker=spec.get("host_id"),
         runtime=caps.get("kind"),
         state=_shown_state(shown, ready),
-        job=_job(shown, _job_telemetry(spec, telemetry, now)),
+        job=_job(shown, _job_telemetry(spec, telemetry, now), now),
         cpu=cpu,
         memory=memory,
         storage=storage,

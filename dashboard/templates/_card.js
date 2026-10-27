@@ -34,29 +34,48 @@ function fmtCores(n) {
   return Number.isInteger(Number(n)) ? String(Number(n)) : Number(n).toFixed(1);
 }
 
+// Cores in use always with one decimal: "0 / 8" and "0.0 / 8" from one beat
+// to the next read as a change.
+function fmtUsedCores(n) {
+  if (n == null || isNaN(Number(n))) return 'unknown';
+  return Number(n).toFixed(1);
+}
+
 function pctClass(p) { return p >= 90 ? 'crit' : p >= 70 ? 'warn' : ''; }
 
 function known(v) { return v != null && !isNaN(Number(v)); }
 
-// One meter, drawn the same way for all four measures and every runner: the
-// share of its boundary in the value slot, used / total in the detail, and a
-// bar that is how full the boundary that would stop this runner is. A shared
-// boundary says "shared"; a shared volume also gives the runner's own
-// figure, since the bar is then the volume's fill. Anything not known right
-// now reads "unknown" in its slot, never a confident zero.
-function meter(key, label, m, fmt, unit) {
+// How old a reading is, in the fewest words: "45 s ago", "3 min ago".
+function fmtAge(s) {
+  if (!known(s)) return '';
+  const n = Math.max(0, Math.round(Number(s)));
+  return n < 90 ? n + ' s ago' : Math.round(n / 60) + ' min ago';
+}
+
+// One meter, drawn the same way for all four measures and every runner, in
+// the same three fixed lines whatever is known (2026-10-27: a storage line
+// that grew a second line, and CPU that flipped to "unknown", moved every
+// card below it). Line one: the label - with the reading's age when it is
+// the last known one, or the runner's own figure when the bar is a shared
+// volume's - and the share of the boundary. Line two: used / total of what
+// the bar shows, in one format. Line three: the bar, how full the boundary
+// that would stop this runner is - a volume's fill when it is known.
+// Anything not known reads "unknown" in its slot, never a confident zero.
+function meter(key, label, m, fmt, unit, fmtUsed) {
   const volume = known(m.volumeTotal);
   const used = volume ? m.volumeUsed : m.used;
   const total = volume ? m.volumeTotal : m.total;
   const pct = known(used) && known(total) && Number(total) > 0
     ? 100 * Number(used) / Number(total) : null;
   const p = Math.max(0, Math.min(100, pct || 0));
-  const detail = (volume ? fmt(m.used) + ' own · ' : '') +
-    fmt(used) + ' / ' + fmt(total) + unit + (m.shared ? ' shared' : '');
+  const sub = known(m.age) ? fmtAge(m.age)
+    : volume && known(m.used) ? fmt(m.used) + ' own' : '';
+  const detail = (fmtUsed || fmt)(used) + ' / ' + fmt(total) + unit + (m.shared ? ' shared' : '');
   return `<div class="meter" data-m="${esc(key)}">` +
-    `<div class="mrow"><span>${esc(label)}</span>` +
+    `<div class="mrow"><span class="mlabel">${esc(label)}` +
+    `<span class="msub">${esc(sub)}</span></span>` +
     `<span class="mval">${esc(pct == null ? 'unknown' : pct.toFixed(1) + '%')}</span></div>` +
-    `<div class="mdetail">${esc(detail)}</div>` +
+    `<div class="mdetail" title="${esc(detail + (sub ? ' · ' + sub : ''))}">${esc(detail)}</div>` +
     `<div class="track"><div class="fill ${pctClass(p)}" ` +
     `style="width:${p.toFixed(1)}%"></div></div></div>`;
 }
@@ -69,16 +88,17 @@ function meters(c) {
   const st = c.storage || {}, ca = c.cache || {};
   return [
     ['cpu', 'CPU', {used: known(cpu.percent) ? Number(cpu.percent) / 100 : null,
-                    total: cpu.total_cores, shared: cpu.shared}, fmtCores, ' cores'],
+                    total: cpu.total_cores, shared: cpu.shared, age: cpu.age_s},
+     fmtCores, ' cores', fmtUsedCores],
     ['memory', 'Memory', {used: mem.used_bytes, total: mem.total_bytes,
-                          shared: mem.shared}, fmtBytes, ''],
+                          shared: mem.shared, age: mem.age_s}, fmtBytes, ''],
     ['storage', 'Storage', {used: st.used_bytes, total: st.total_bytes, shared: st.shared,
                             volumeUsed: st.volume_used_bytes,
                             volumeTotal: st.volume_total_bytes}, fmtBytes, ''],
     ['cache', 'Cache', {used: ca.used_bytes, total: ca.total_bytes, shared: ca.shared,
                         volumeUsed: ca.volume_used_bytes,
                         volumeTotal: ca.volume_total_bytes}, fmtBytes, ''],
-  ].map(([key, label, m, fmt, unit]) => meter(key, label, m, fmt, unit)).join('');
+  ].map(([key, label, m, fmt, unit, fmtUsed]) => meter(key, label, m, fmt, unit, fmtUsed)).join('');
 }
 
 function actionButton(a, i) {
@@ -89,12 +109,40 @@ function actionButton(a, i) {
     esc(a.label) + `</button>`;
 }
 
+// The action grid has the same six slots on every card, whatever its state:
+// a state that offers fewer actions leaves a slot empty instead of pulling
+// the rows below up (2026-10-27). Each slot holds the first visible verb of
+// its list; Repair, offered only on a failed runner, takes the drain slot,
+// which a failed runner never offers.
+const ACTION_SLOTS = [['drain', 'cancel_drain', 'repair'], ['start', 'stop'],
+  ['restart'], ['clear_cache'], ['recreate'], ['remove']];
+
+function actionGrid(actions) {
+  const used = new Set();
+  const slots = ACTION_SLOTS.map(verbs => {
+    for (const verb of verbs) {
+      const i = actions.findIndex(a => a.verb === verb && a.visible);
+      if (i >= 0) { used.add(i); return actionButton(actions[i], i); }
+    }
+    return '<span class="aslot" aria-hidden="true"></span>';
+  });
+  // Anything else a payload offers is still drawn, after the six.
+  actions.forEach((a, i) => {
+    if (a.verb !== 'logs' && a.visible && !used.has(i)) slots.push(actionButton(a, i));
+  });
+  return slots.join('');
+}
+
 function displayName(c) {
   // The full name, number included: it is what the forge lists the runner
   // as, and what an alarm or a job's log names.
   return c.display_name;
 }
 
+// Every card is the same lines in the same order, each a fixed height:
+// heading, where, job (two lines at most), four meters, labels, one message
+// line pair, three status lines, the action grid. What is not there leaves
+// its line empty; long text is cut with its whole in the tooltip.
 function cardHTML(c) {
   const shownName = displayName(c);
   const name = c.href
@@ -105,9 +153,8 @@ function cardHTML(c) {
                  c.registration, c.uptime].filter(Boolean).join(' · ');
   const labels = c.labels == null
     ? `<div class="clabels">Labels unavailable</div>`
-    : `<div class="clabels">` +
+    : `<div class="clabels" title="${esc(c.labels.join(', '))}">` +
       (c.labels.length ? c.labels.map(l => `<span class="chip">${esc(l)}</span>`).join('') : 'No labels configured') + `</div>`;
-  const drift = c.label_drift ? `<div class="cwarn">${esc(c.label_drift)}</div>` : '';
   const notes = (c.annotations || []).map(
     t => `<span class="annot">${esc(t)}</span>`).join('');
   const draining = c.lifecycle_state === 'draining' || c.state === 'draining';
@@ -115,33 +162,35 @@ function cardHTML(c) {
     : draining ? 'draining' : 'no active job');
   const seen = c.reachable === false ? 'not reachable'
              : c.reachable == null ? 'reachability unknown' : 'reachable';
-  const status = `<div class="creg cstatus"><span>${esc(seen)}</span>` +
-    (c.readiness_note ? `<span>${esc(c.readiness_note)}</span>` : '') +
-    (c.last_seen_at ? `<span>seen ${esc(String(c.last_seen_at).replace('T', ' ').replace('Z', ' UTC'))}</span>` : '') +
-    (c.current_operation ? `<span>operation ${esc(c.current_operation)}</span>` : '') +
-    `</div>`;
-  const error = c.last_error ? `<div class="cerr">${esc(c.last_error)}</div>` : '';
-  // A note is something true that is not a failure - a runner registered
-  // with labels of its own still works. It reads as a note, not in the
-  // colour that means something is broken. When the note is registration
-  // drift, the warning above already says it - the note does not repeat it.
-  const note = (c.last_note && !c.label_drift) ? `<div class="cnote">${esc(c.last_note)}</div>` : '';
+  const third = [c.current_operation ? 'operation ' + c.current_operation : '',
+                 c.readiness_note || ''].filter(Boolean).join(' · ');
+  const line = text => `<span class="sline" title="${esc(text)}">${esc(text)}</span>`;
+  const status = `<div class="creg cstatus">${line(seen)}` +
+    line(c.last_seen_at ? 'seen ' + String(c.last_seen_at).replace('T', ' ').replace('Z', ' UTC') : '') +
+    line(third) + `</div>`;
+  // One message slot, always there: the last error, a registration drift
+  // warning, and a note - something true that is not a failure, in the
+  // colour of a note. When the note is registration drift, the warning
+  // already says it - the note does not repeat it.
+  const messages = [];
+  if (c.last_error) messages.push(`<span class="cerr">${esc(c.last_error)}</span>`);
+  if (c.label_drift) messages.push(`<span class="cwarn">${esc(c.label_drift)}</span>`);
+  if (c.last_note && !c.label_drift) messages.push(`<span class="cnote">${esc(c.last_note)}</span>`);
+  const whole = [c.last_error, c.label_drift, c.label_drift ? null : c.last_note]
+    .filter(Boolean).join(' · ');
+  const message = `<div class="cmsg" title="${esc(whole)}">${messages.join(' ')}</div>`;
   const actions = c.actions || [];
   const logs = actions.map((a, i) => a.verb === 'logs' ? actionButton(a, i) : '').join('');
-  // Keep the original index: click handlers look up actions in the payload.
-  const order = ['drain', 'cancel_drain', 'start', 'stop', 'restart', 'clear_cache', 'recreate', 'remove'];
-  const buttons = actions.map((a, i) => ({a, i})).filter(({a}) => a.verb !== 'logs')
-    .sort((x, y) => order.indexOf(x.a.verb) - order.indexOf(y.a.verb))
-    .map(({a, i}) => actionButton(a, i)).join('');
+  const buttons = actions.some(a => a.verb !== 'logs')
+    ? `<div class="actions" role="group" aria-label="Manage runner">${actionGrid(actions)}</div>` : '';
   const metadata = `<div class="card-meta" aria-label="Runner labels and capabilities">` +
-    labels + (notes ? `<div class="annots">${notes}</div>` : '') + `</div>`;
+    labels + `<div class="annots" title="${esc((c.annotations || []).join(', '))}">${notes}</div></div>`;
   return `<div class="chead">${name}<span class="badge ${esc(c.state)}">` +
     `${esc(c.state)}</span></div>` +
-    `<div class="creg">${esc(where)}</div>` +
-    `<div class="cjob${c.job ? '' : ' none'}">${esc(job)}</div>` +
-    `<div class="metrics">${meters(c)}</div>` + metadata + drift + note + error +
-    `<div class="card-footer">${status}${logs}</div>` +
-    (buttons ? `<div class="actions" role="group" aria-label="Manage runner">${buttons}</div>` : '');
+    `<div class="creg cwhere" title="${esc(where)}">${esc(where)}</div>` +
+    `<div class="cjob${c.job ? '' : ' none'}" title="${esc(job)}"><span>${esc(job)}</span></div>` +
+    `<div class="metrics">${meters(c)}</div>` + metadata + message +
+    `<div class="card-footer">${status}${logs}</div>` + buttons;
 }
 
 // Who may use this fleet's runners, in plain words, and whether the runners

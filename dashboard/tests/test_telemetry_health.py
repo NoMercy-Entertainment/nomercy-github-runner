@@ -110,7 +110,7 @@ class TestTheCardShowsWhatTheUnitUses:
                                  "cache_bytes": 12 * 10 ** 9})
         card = cards.from_spec(service.specs.get(rid), worker_reachable=True)
         assert card["cpu"]["percent"] == 312.5
-        assert card["memory"] == {"used_bytes": 7 * 2 ** 30,
+        assert card["memory"] == {"used_bytes": 7 * 2 ** 30, "age_s": None,
                                   "limit_bytes": 32 * 2 ** 30,
                                   "host_bytes": None,
                                   "total_bytes": 32 * 2 ** 30,
@@ -141,7 +141,7 @@ class TestTheCardShowsWhatTheUnitUses:
         self.beat(service, rid, {"cpu_percent": 1180.0, "cpu_cores": 16,
                                  "host_cores": 64})
         card = cards.from_spec(service.specs.get(rid), worker_reachable=True)
-        assert card["cpu"] == {"percent": 1180.0, "cores": 16,
+        assert card["cpu"] == {"percent": 1180.0, "age_s": None, "cores": 16,
                                "host_cores": 64, "total_cores": 16,
                                "shared": False}
 
@@ -389,4 +389,6 @@ class TestTheJobNameStays:
                       telemetry={"job": "build app", "at": at(45), "cpu_percent": 80})
         card = cards.from_spec(runner, now=NOW)
         assert card["job"] == "build app"
-        assert card["cpu"]["percent"] is None, "the numbers are still only as fresh as they are"
+        # The reading is the last known one, and the card says how old it
+        # is - not "unknown" while the runner is up (2026-10-27).
+        assert card["cpu"]["percent"] == 80 and card["cpu"]["age_s"] == 45
