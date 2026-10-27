@@ -11,7 +11,12 @@ Forgejo Runner v13.1.0 does not support disabling these deadlines: a zero job
 timeout retains its three-hour default, and a zero shutdown timeout immediately
 cancels running jobs during a drain.
 
-The Forgejo server also needs `actions.ENDLESS_TASK_TIMEOUT=2562047h47m16s`.
+The Forgejo server's `actions.ENDLESS_TASK_TIMEOUT` is `720h` (30 days, set in
+`BeastStack/forgejo/docker-compose.yml`). It must never be Go's maximum
+duration: the server's stop-endless-tasks job runs every 30 minutes and
+computes `now - timeout`, which then falls before 1970. The "started before"
+filter is dropped as non-positive and every running task fails. Until
+2026-10-27 that failed every Forgejo job running at :22:15 and :52:15.
 Forgejo workflows should omit job and step `timeout-minutes` when no shorter
 deadline is intended. Cancelling a workflow remains possible.
 
