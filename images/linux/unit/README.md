@@ -52,7 +52,15 @@ things:
    every later job on that runner (GitHub #13). The job is told with a
    `::warning`. This takes about 4 s per job when nothing is missing, and
    about 12 s after a full wipe.
-3. **Guards the disk.** It checks the lowest free space of `/runner/work` and
+3. **Puts the PHP alternatives back.** A job that asks setup-php for another
+   PHP installs it into the unit's root and points `php`, `phar`,
+   `phar.phar`, `php-config` and `phpize` at it; every later job on that
+   unit inherited it (nomercy-tv's `ci` left 8.4 on github-linux-x64-6,
+   2026-10-28). Before each job the hook points them at the fleet's series
+   again (`RUNNER_PHP_SERIES`, default 8.5) and tells the job with a
+   `::warning`. A link nobody registered, or a series whose binary is
+   missing, is left alone.
+4. **Guards the disk.** It checks the lowest free space of `/runner/work` and
    `/`:
    - under `RUNNER_DISK_CLEAN_BELOW_GB` (15) it runs `/runner/cleanup`;
    - under `RUNNER_DISK_WARN_BELOW_GB` (10) it prints a `::warning`;
@@ -62,8 +70,9 @@ things:
 Only those deliberate refusals fail a job. A fault in the hook itself is
 reported as a warning.
 
-The running fleet uses the `jobhooks-20261008` overlay image, built with
-`Dockerfile.cleanup` from `github-unit:toolchain-20260925`. Forgejo has no job
+The running fleet uses `nomercy/runner-unit-github:20261029`, built with
+`Dockerfile.cleanup` from `runner-unit-github:20261027.2` (the hooks
+refreshed, the toolchain layer untouched). Forgejo has no job
 hooks: it runs the cleanup only at unit startup. Windows and macOS GitHub
 runners get the same disk guard from the agent itself:
 `docs/operations/runner-job-hooks.md`.
