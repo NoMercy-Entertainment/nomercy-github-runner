@@ -18,6 +18,14 @@ A full disk crashed a runner mid-release with nothing useful in its log
 warns lower down, and refuses the job lower still, with a line that says why,
 before the build can take the runner down with it.
 
+The same writable root lets a job change which PHP the unit answers with.
+nomercy-tv's `ci` asked shivammathur/setup-php for 8.4 (2026-10-28); on a
+self-hosted runner that is an apt install from the PPA and
+`update-alternatives --set php /usr/bin/php8.4`, and every job after it on
+that unit got 8.4 where the fleet runs 8.5. The alternatives are put back to
+the fleet's series before each job; the foreign packages may stay, they are
+harmless once nothing points at them.
+
 Exit status: 0 to let the job run, REFUSE to fail it on purpose. A fault in
 this hook itself is reported as a warning and never fails a job.
 """
@@ -35,6 +43,35 @@ PRISTINE = "/opt/nomercy/android-sdk.pristine"
 GUARD = os.path.join(os.path.dirname(os.path.abspath(__file__)), "runner_guard.py")
 LIVE = "/usr/local/lib/android"
 DISK_PATHS = ("/runner/work", "/")
+
+#: The PHP series the fleet runs (owner's rule of 2026-10-27: 8.5 only) and
+#: the alternatives Debian's php packages register for it.
+PHP_SERIES = "8.5"
+PHP_ALTERNATIVES = ("php", "phar", "phar.phar", "php-config", "phpize")
+
+
+def _run(args):
+    return subprocess.run(args, capture_output=True, text=True, timeout=60, check=False).returncode
+
+
+def restore_php(series, root="/", run=_run):
+    """Point every registered PHP alternative at `series` again. Returns the
+    names that were switched. A link nobody registered is left alone, and so
+    is one whose `series` binary is missing: nothing is invented."""
+    root = Path(root)
+    switched = []
+    for name in PHP_ALTERNATIVES:
+        link = root / "etc" / "alternatives" / name
+        if not link.is_symlink():
+            continue
+        wanted = root / "usr" / "bin" / f"{name}{series}"
+        if os.path.basename(os.readlink(link)) == wanted.name:
+            continue
+        if not wanted.is_file():
+            continue
+        if run(["update-alternatives", "--set", name, str(wanted)]) == 0:
+            switched.append(name)
+    return switched
 
 
 def restore_tree(pristine, live):
@@ -149,6 +186,14 @@ def main(env=None):
                   f"deleted {restored} Android SDK files; they were put back before this job.")
     except Exception as error:          # noqa: BLE001 - never fail a job on our fault
         print(f"::warning title=Runner hook::Android SDK check failed: {error}")
+    try:
+        series = env.get("RUNNER_PHP_SERIES", PHP_SERIES)
+        switched = restore_php(series)
+        if switched:
+            print(f"::warning title=PHP restored::an earlier job on this runner switched "
+                  f"{', '.join(switched)} to another PHP; put back to {series} before this job.")
+    except Exception as error:          # noqa: BLE001 - never fail a job on our fault
+        print(f"::warning title=Runner hook::PHP check failed: {error}")
     try:
         return check_disk(DISK_PATHS, env)
     except Exception as error:          # noqa: BLE001

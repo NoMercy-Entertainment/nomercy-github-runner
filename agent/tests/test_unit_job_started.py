@@ -213,6 +213,90 @@ def test_the_cleanup_before_a_job_leaves_temp_alone(monkeypatch):
     assert "temp" not in seen["RUNNER_CLEANUP_SCOPES"].split(",") and "workspace" in seen["RUNNER_CLEANUP_SCOPES"]
 
 
+# ---- PHP: a job's setup-php must not outlive the job -------------------------
+#
+# 2026-10-28: nomercy-tv's `ci` asked shivammathur/setup-php for PHP 8.4 on
+# github-linux-x64-6. On a self-hosted runner that is `apt install php8.4` into
+# the unit's writable root and `update-alternatives --set php /usr/bin/php8.4`,
+# which the next job inherits. The health check found 8.4.27 where the fleet
+# runs 8.5.12, on that one unit only.
+
+
+def alternatives(root, current):
+    """A fake /etc/alternatives + /usr/bin: every link points at `current`."""
+    (root / "etc" / "alternatives").mkdir(parents=True)
+    (root / "usr" / "bin").mkdir(parents=True)
+    for name in job_started.PHP_ALTERNATIVES:
+        for series in ("8.4", "8.5"):
+            (root / "usr" / "bin" / f"{name}{series}").write_text(series)
+        try:
+            os.symlink(root / "usr" / "bin" / f"{name}{current}", root / "etc" / "alternatives" / name)
+        except OSError:
+            pytest.skip("symlink creation unavailable")
+    return root
+
+
+class TestPhp:
+    def test_the_fleet_series_in_place_changes_nothing(self, tmp_path):
+        calls = []
+        root = alternatives(tmp_path, "8.5")
+        changed = job_started.restore_php("8.5", root=root, run=lambda a: calls.append(a) or 0)
+        assert changed == [] and calls == []
+
+    def test_a_foreign_series_is_switched_back_to_the_fleets(self, tmp_path):
+        calls = []
+        root = alternatives(tmp_path, "8.4")
+        changed = job_started.restore_php("8.5", root=root, run=lambda a: calls.append(a) or 0)
+        assert set(changed) == set(job_started.PHP_ALTERNATIVES)
+        assert calls == [["update-alternatives", "--set", name, str(root / "usr" / "bin" / f"{name}8.5")]
+                         for name in job_started.PHP_ALTERNATIVES]
+
+    def test_a_link_nobody_installed_is_left_alone(self, tmp_path):
+        """phpize and php-config come with php-dev; a unit without them has no
+        link to put back, and the hook must not invent one."""
+        calls = []
+        root = alternatives(tmp_path, "8.4")
+        (root / "etc" / "alternatives" / "phpize").unlink()
+        changed = job_started.restore_php("8.5", root=root, run=lambda a: calls.append(a) or 0)
+        assert "phpize" not in changed and len(calls) == len(job_started.PHP_ALTERNATIVES) - 1
+
+    def test_without_the_fleets_binary_nothing_is_switched(self, tmp_path):
+        calls = []
+        root = alternatives(tmp_path, "8.4")
+        for name in job_started.PHP_ALTERNATIVES:
+            (root / "usr" / "bin" / f"{name}8.5").unlink()
+        assert job_started.restore_php("8.5", root=root, run=lambda a: calls.append(a) or 0) == []
+        assert calls == []
+
+    def test_a_failed_set_is_not_counted(self, tmp_path):
+        root = alternatives(tmp_path, "8.4")
+        assert job_started.restore_php("8.5", root=root, run=lambda a: 2) == []
+
+    def test_the_series_comes_from_the_environment(self, tmp_path, monkeypatch, capsys):
+        root = alternatives(tmp_path, "8.4")
+        seen = {}
+        monkeypatch.setattr(job_started, "restore_php",
+                            lambda series, **k: seen.setdefault("series", series) or [])
+        monkeypatch.setattr(job_started, "check_disk", lambda *a, **k: 0)
+        job_started.main({"RUNNER_ANDROID_PRISTINE": str(tmp_path / "x"), "RUNNER_PHP_SERIES": "8.6"})
+        assert seen["series"] == "8.6"
+
+    def test_a_switch_is_announced_to_the_job(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.setattr(job_started, "restore_php", lambda series, **k: ["php", "phar"])
+        monkeypatch.setattr(job_started, "check_disk", lambda *a, **k: 0)
+        assert job_started.main({"RUNNER_ANDROID_PRISTINE": str(tmp_path / "x")}) == 0
+        out = capsys.readouterr().out
+        assert "::warning title=PHP restored::" in out and "php, phar" in out and "8.5" in out
+
+    def test_a_fault_in_the_php_check_never_fails_the_job(self, tmp_path, monkeypatch, capsys):
+        def boom(*a, **k):
+            raise OSError("alternatives unreadable")
+        monkeypatch.setattr(job_started, "restore_php", boom)
+        monkeypatch.setattr(job_started, "check_disk", lambda *a, **k: 0)
+        assert job_started.main({"RUNNER_ANDROID_PRISTINE": str(tmp_path / "x")}) == 0
+        assert "PHP check failed" in capsys.readouterr().out
+
+
 # ---- whose code: the guard runs first (runner_guard.py) ---------------------
 
 from . import origin_cases  # noqa: E402
