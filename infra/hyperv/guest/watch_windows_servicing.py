@@ -11,7 +11,7 @@ import re
 import subprocess
 import tempfile
 
-TASK = 'NoMercy-ArmRecoveryWatch-20261009'
+TASK = 'NoMercy-ServicingWatch-20261009'
 
 def classify(line):
     if ' CBS ' not in line:
@@ -53,7 +53,7 @@ def self_test():
     assert classify('2026-10-09 16:00:00, Info                  CBS    Startup processing completed. [HRESULT = 0x00000000]') == 'cbs_complete'
     assert classify('2026-10-09 16:00:00, Info                  CBS    Failed a critical portion of startup processing. [HRESULT = 0x800f0920]') == 'failure'
     assert classify('2026-10-09 16:00:00, Info                  CBS    Startup: Processing complete. [HRESULT = 0x80070bc2]') is None
-    with tempfile.TemporaryDirectory(prefix='arm-watch-test-') as directory:
+    with tempfile.TemporaryDirectory(prefix='servicing-watch-test-') as directory:
         changes = Changes(directory)
         try:
             assert not changes.wait(30)
@@ -71,7 +71,7 @@ def watch(config_path):
     def send(kind, line=''):
         event = {'id': hashlib.sha256((kind + line).encode()).hexdigest(),
                  'kind': kind, 'at': datetime.now().astimezone().isoformat(),
-                 'host_id': 'windows-arm64-1', 'detail': line[:800]}
+                 'host_id': 'rnr-windows-1', 'detail': line[:800]}
         if event['id'] in state['sent']:
             return
         connection = http.client.HTTPConnection(config['host'], config['port'], timeout=20)

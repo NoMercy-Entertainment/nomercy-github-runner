@@ -35,9 +35,9 @@
     # least this much commit is still free. Static memory is a reservation;
     # commit exhaustion has killed the WSL VM twice (R-2).
     CommitReserveGB = 20
-    # Current managed VMs: Linux 80, controller 4, Windows x64 36,
-    # and the dedicated ARM appliance 12 GiB. The existing macOS host is
-    # outside this collection. Every allocation also requires the actual
+    # Current managed VMs: Linux 80, controller 4, Windows x64 36 GiB.
+    # The existing macOS host is outside this collection. Every allocation
+    # also requires the actual
     # host commit reserve above; this budget is not evidence of free memory.
     # 2026-10-23: Linux 32 at startup (dynamic to 184), controller 4,
     # Windows x64 36. The Linux ceiling is a cap, not a reservation.
@@ -243,35 +243,5 @@
         ForgejoBinary = '/Users/runner/templates/forgejo-runner-v13.1.0-macos-r20260921/forgejo-runner'
         ForgejoSha256 = 'f9f9ed421d6d1e71436b92e9b8891fb03b44c713e87e545c6e86423be2edb07a'
         ForgejoLabels = 'macos-latest:host,macos-15:host'
-    }
-
-    WindowsArm = @{
-        Enabled = $false
-        HostId = 'windows-arm64-1'
-        # Dedicated Hyper-V Linux host. Windows ARM64 stays a QEMU guest
-        # with its existing disks, firmware, TPM and runner identities.
-        Appliance = @{
-            Name = 'rnr-windows-arm64'
-            Address = '10.77.0.50'
-            MemoryGB = 40
-            Cpus = 16
-            DiskGB = 64
-            # Expanded online on 2026-10-10; the guest filesystem is 629 GiB.
-            # Keep room for the original disk and the staged per-runner disks.
-            DataDiskGB = 640
-            MgmtMac = '00155D77320A'
-            UplinkMac = '00155D77320B'
-        }
-        PythonUrl = 'https://www.python.org/ftp/python/3.13.14/python-3.13.14-embed-arm64.zip'
-        PythonSha256 = '8b5bfc935a24b55c17410aa0b21016ebeee225c96addf008d1d3cd83ff52eb43'
-        Endpoint = 'https://10.77.0.50:8445'
-        GuestAddress = '10.0.2.15'
-        MaxRunners = 2
-        RunnerMemGB = 16
-        ForgejoTemplate = 'forgejo-runner-v13.1.0-windows-arm64'
-        ForgejoBinary = 'D:\HyperV\runner-platform\artefacts\forgejo-runner-v13.1.0\forgejo-runner-v13.1.0-windows-arm64.exe'
-        ForgejoSha256 = 'cd59d117346c32419ddb62679150ba2f11ff7f6fbbf64b7400830287c4b15b07'
-        GitHubTemplate = 'actions-runner-v2.338.0-windows-arm64'
-        ForgejoLabels = 'windows-arm64:host'
     }
 }

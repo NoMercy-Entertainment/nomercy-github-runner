@@ -6,9 +6,9 @@
 .DESCRIPTION
     Install-WindowsGuestWorker.ps1 carries the worker into its guest over
     PowerShell Direct, which needs an elevated session on this host: every
-    agent redeploy therefore waited for someone to run it by hand. The ARM64
-    guest is reached over SSH with the platform key instead, and needs no one.
-    This gives a Hyper-V guest the same door, and nothing wider:
+    agent redeploy therefore waited for someone to run it by hand. SSH with
+    the platform key needs no one. This gives a Hyper-V guest that door, and
+    nothing wider:
       - OpenSSH Server, added as a Windows capability when it is missing;
       - the platform's public key ($s.Root\ssh\id_ed25519.pub) as the only
         entry in administrators_authorized_keys, readable by SYSTEM and

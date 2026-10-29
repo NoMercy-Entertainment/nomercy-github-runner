@@ -103,7 +103,7 @@ def policy(value):
     return {"max_runners": _integer(value.get("max_runners"), 0, 100, "max_runners"),
             "max_lease_minutes": _integer(value.get("max_lease_minutes"), 1, 7200,
                                           "max_lease_minutes"),
-            "profiles": _names(value.get("profiles"), "profiles", r"github-(linux|windows|macos)-(x64|arm64)"),
+            "profiles": _names(value.get("profiles"), "profiles", r"github-(linux|windows|macos)-x64"),
             "organizations": _names(value.get("organizations"), "organizations", r"[A-Za-z0-9][A-Za-z0-9-]{0,38}"),
             "automatic": automatic, "quiet_hours": sorted(set(hours)), "runner_groups": groups}
 

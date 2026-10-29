@@ -3,11 +3,10 @@
     Puts this repository's HEAD agent code on a Windows guest worker over
     SSH and restarts its agent. No elevation, no re-enrolment.
 .DESCRIPTION
-    Install-WindowsGuestWorker.ps1 and Install-WindowsArmGuestWorker.ps1 set a
-    worker up: Python, NSSM, templates, a fresh certificate. Redeploying the
-    agent's code needs none of that, and both need things a plain redeploy
-    should not: an elevated session here, or ten minutes of toolchain checks
-    under emulation. This does the code swap those installers end with, and
+    Install-WindowsGuestWorker.ps1 sets a worker up: Python, NSSM, templates,
+    a fresh certificate. Redeploying the agent's code needs none of that, and
+    the installer needs something a plain redeploy should not: an elevated
+    session here. This does the code swap the installer ends with, and
     nothing else:
       1. `git archive HEAD agent`, copied into the guest;
       2. unpacked beside the running code as app.new;
@@ -19,12 +18,11 @@
     Going back is the same swap the other way: move app.previous to app and
     start rnr-agent.
 
-    Reaches rnr-windows-1 directly (Enable-WindowsGuestSsh.ps1 opened it) and
-    the ARM64 guest through its appliance host, as Install-WindowsArmGuestWorker.ps1 does.
+    Reaches rnr-windows-1 directly (Enable-WindowsGuestSsh.ps1 opened it).
 #>
 [CmdletBinding()]
 param(
-    [ValidateSet('rnr-windows-1', 'windows-arm64-1')] [string] $Name = 'rnr-windows-1'
+    [ValidateSet('rnr-windows-1')] [string] $Name = 'rnr-windows-1'
 )
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'lib.ps1')
@@ -43,18 +41,9 @@ $stage = Join-Path $env:TEMP ("rnr-agent-update-" + [guid]::NewGuid().ToString('
 New-Item -ItemType Directory -Path $stage | Out-Null
 $sshConfig = Join-Path $stage 'ssh.conf'
 $tar = Join-Path $stage 'agent.tar'
-if ($Name -eq 'windows-arm64-1') {
-    $lines = @('Host guest', '    HostName 127.0.0.1', '    Port 52222', '    User admin',
-               '    ProxyJump rnr-arm-host', "    IdentityFile $key", '    IdentitiesOnly yes',
-               '    StrictHostKeyChecking accept-new', "    UserKnownHostsFile $known", '    ConnectTimeout 60',
-               'Host rnr-arm-host', "    HostName $($s.WindowsArm.Appliance.Address)",
-               "    User $($s.AdminUser)", "    IdentityFile $key", '    IdentitiesOnly yes',
-               '    StrictHostKeyChecking accept-new', "    UserKnownHostsFile $known")
-} else {
-    $lines = @('Host guest', "    HostName $($s.VMs[$Name].Address)", '    User admin',
-               "    IdentityFile $key", '    IdentitiesOnly yes', "    UserKnownHostsFile $known",
-               '    StrictHostKeyChecking accept-new')
-}
+$lines = @('Host guest', "    HostName $($s.VMs[$Name].Address)", '    User admin',
+           "    IdentityFile $key", '    IdentitiesOnly yes', "    UserKnownHostsFile $known",
+           '    StrictHostKeyChecking accept-new')
 [IO.File]::WriteAllLines($sshConfig, $lines)
 
 function Invoke-GuestPs([string] $Command) {

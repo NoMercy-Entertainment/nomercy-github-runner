@@ -1,6 +1,6 @@
 name: Forgejo runner job event health
 
-# Manual only: select one platform so ARM can be checked last.
+# Manual only: select one platform per dispatch.
 on:
   workflow_dispatch:
     inputs:
@@ -9,7 +9,7 @@ on:
         type: choice
         required: true
         default: windows-x64
-        options: [windows-x64, macos-x64, linux-x64, windows-arm64]
+        options: [windows-x64, macos-x64, linux-x64]
       outcome:
         description: Result to exercise in the native event stream
         type: choice
@@ -78,21 +78,3 @@ jobs:
       - name: Hold this diagnostic until cancelled
         if: inputs.outcome == 'cancellation'
         run: sleep 600
-
-  windows-arm:
-    name: native-event-windows-arm64
-    if: inputs.platform == 'windows-arm64'
-    runs-on: windows-arm64
-    timeout-minutes: 7200
-    defaults:
-      run:
-        shell: pwsh
-    steps:
-      - name: Emit a real bounded diagnostic job
-        run: echo 'Native Forgejo job event delivery check'
-      - name: Exercise a failed result
-        if: inputs.outcome == 'failure'
-        run: exit 1
-      - name: Hold this diagnostic until cancelled
-        if: inputs.outcome == 'cancellation'
-        run: Start-Sleep -Seconds 600

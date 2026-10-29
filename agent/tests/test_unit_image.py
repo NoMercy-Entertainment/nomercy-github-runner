@@ -31,7 +31,7 @@ def read(*parts):
 
 
 def branch(script, kind):
-    """The body of one forge's `case` arm in a script."""
+    """The body of one forge's `case` branch in a script."""
     m = re.search(rf"^\s*{kind}\)\n(.*?)^\s*;;", script, re.S | re.M)
     assert m, f"no {kind} branch"
     return m.group(1)

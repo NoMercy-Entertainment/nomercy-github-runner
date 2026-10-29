@@ -36,7 +36,7 @@
 #>
 [CmdletBinding(SupportsShouldProcess)]
 param(
-    [ValidateSet('x64', 'arm64')]
+    [ValidateSet('x64')]
     [string] $Architecture = 'x64',
     [string] $Root = 'C:\ProgramData\nomercy\toolcache',
     [string[]] $PythonVersions = @('3.10', '3.11', '3.12', '3.13', '3.14'),
@@ -47,8 +47,8 @@ $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 
-$pythonPackage = if ($Architecture -eq 'arm64') { 'pythonarm64' } else { 'python' }
-$nodeArch = if ($Architecture -eq 'arm64') { 'arm64' } else { 'x64' }
+$pythonPackage = 'python'
+$nodeArch = 'x64'
 $work = Join-Path $env:TEMP ('rnr-toolcache-' + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Force -Path $Root, $work | Out-Null
 

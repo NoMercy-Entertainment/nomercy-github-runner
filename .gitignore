@@ -19,3 +19,6 @@ __pycache__/
 # The GitHub runner's payload is fetched and verified, never committed:
 # images/windows/fetch-actions-runner.ps1 puts it here.
 infra/windows/templates/*/agent/
+
+# session work queue for elevated jobs, never committed
+scratchpad/

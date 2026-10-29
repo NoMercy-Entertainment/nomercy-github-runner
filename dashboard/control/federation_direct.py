@@ -355,9 +355,9 @@ class Direct:
         target, token = self._target(actor, identity)
         reply = self.http(target["origin"], "capacity", token)
         value = reply.get("capacity") if isinstance(reply, dict) else None
-        supported = {"github-linux-x64", "github-windows-x64", "github-windows-arm64", "github-macos-x64"}
+        supported = {"github-linux-x64", "github-windows-x64", "github-macos-x64"}
         if (not isinstance(value, dict) or value.get("profile") != PROFILE or
-                not isinstance(value.get("available_profiles"), list) or len(value["available_profiles"]) > 4 or
+                not isinstance(value.get("available_profiles"), list) or len(value["available_profiles"]) > len(supported) or
                 any(not isinstance(profile, str) or profile not in supported for profile in value["available_profiles"])):
             raise Refused("The peer did not return its bounded capacity contract")
         return value

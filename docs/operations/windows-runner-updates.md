@@ -4,21 +4,21 @@ Windows Update may automatically restart an unattended runner even when
 `NoAutoRebootWithLoggedOnUsers=1`: that policy needs a logged-on user and the
 appropriate scheduled-install policy. It is insufficient for five-day jobs.
 
-Both Windows runner VMs use explicit maintenance for OS updates. Run the
+The Windows runner VM uses explicit maintenance for OS updates. Run the
 native agent Python as administrator **inside the enrolled guest**:
 
 ```powershell
-& 'C:\ProgramData\nomercy\agent\python\python.exe' .\infra\windows\guest\set_runner_update_policy.py --worker windows-arm64-1
-& 'C:\ProgramData\nomercy\agent\python\python.exe' .\infra\windows\guest\set_runner_update_policy.py --worker windows-arm64-1 --apply
+& 'C:\ProgramData\nomercy\agent\python\python.exe' .\infra\windows\guest\set_runner_update_policy.py --worker rnr-windows-1
+& 'C:\ProgramData\nomercy\agent\python\python.exe' .\infra\windows\guest\set_runner_update_policy.py --worker rnr-windows-1 --apply
 ```
 
-Use `rnr-windows-1` for the x64 guest. The first command reads only. The second
+The first command reads only. The second
 requires an exact enrolled worker identity and recognized VM hardware, refuses
 BEAST-UNIT, preserves the original registry values once in the agent directory
 and proves the new policy by readback. A configured update deadline stops the
 change for review. It does not reboot, stop a service or change host settings.
-Both guest installers request this policy before starting their agent, so newly
-enrolled Windows guests receive it before accepting jobs. The common installer
+The guest installer requests this policy before starting its agent, so a newly
+enrolled Windows guest receives it before accepting jobs. The common installer
 does not apply it unless the guest-only option is explicitly supplied.
 
 `NoAutoUpdate=1` keeps automatic Windows updates disabled; manual Windows Update

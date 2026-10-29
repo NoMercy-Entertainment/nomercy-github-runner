@@ -378,8 +378,8 @@ class TestCreate:
 
     def test_a_half_removed_unregistered_copy_is_made_whole_again(self, runtime, host):
         """A failed undo can delete a runner's software and leave the marker
-        that says it was copied. github-windows-arm64-1 then got an empty
-        agent directory on every retry: "config.cmd ... cannot find the file
+        that says it was copied. A Windows runner then got an empty agent
+        directory on every retry: "config.cmd ... cannot find the file
         specified" (2026-10-08). Nothing is registered yet, so nothing holds
         those files, and the copy is made again."""
         runtime.create(RID, SPEC)
@@ -513,10 +513,10 @@ class TestObservation:
 
     def test_a_plain_directory_reports_the_volume_it_shares(self, runtime,
                                                             host):
-        """A runner with no disk of its own - the ARM64 guest's, or any on a
-        worker without owned storage - is stopped by the volume its tree is
-        on filling, not by its own bytes. Both are reported: its own, and
-        that volume's used and total."""
+        """A runner with no disk of its own - any on a worker without owned
+        storage - is stopped by the volume its tree is on filling, not by
+        its own bytes. Both are reported: its own, and that volume's used
+        and total."""
         runtime.create(RID, SPEC)
         host.volume = (400 * 10 ** 9, 150 * 10 ** 9)
         disk = runtime.probe(RID, "disk_usage")

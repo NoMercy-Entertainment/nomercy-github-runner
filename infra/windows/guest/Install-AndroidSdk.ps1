@@ -47,35 +47,11 @@ if (-not (Test-Path -LiteralPath $tools)) {
 $env:ANDROID_HOME = $sdk
 $env:ANDROID_SDK_ROOT = $sdk
 $javaPattern = 'C:\Program Files\Eclipse Adoptium\jdk-21*'
-$nativeArm = [Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString() -eq 'Arm64'
-if ($nativeArm) {
-    $javaPattern = 'C:\Program Files\Microsoft\jdk-21*'
-    $nativeJava = Get-Item -Path $javaPattern -ErrorAction SilentlyContinue |
-        Where-Object { $_.PSIsContainer -and (Test-Path -LiteralPath (Join-Path $_.FullName 'bin\javac.exe')) }
-    if (-not $nativeJava) {
-        Write-Host 'Installing native ARM64 Java 21 for the Android SDK and both runner services.'
-        & winget install --exact --id Microsoft.OpenJDK.21 --source winget --architecture arm64 `
-            --scope machine --silent --accept-source-agreements --accept-package-agreements --disable-interactivity
-        if ($LASTEXITCODE -ne 0) { throw "Installing native ARM64 Java failed (exit $LASTEXITCODE)." }
-    }
-}
 $java = Get-Item -Path $javaPattern -ErrorAction SilentlyContinue |
     Where-Object PSIsContainer | Sort-Object Name -Descending | Select-Object -First 1
 if ($java) {
-    if ($nativeArm) {
-        $javaExecutable = Join-Path $java.FullName 'bin\java.exe'
-        $javaBytes = [IO.File]::ReadAllBytes($javaExecutable)
-        $peOffset = [BitConverter]::ToInt32($javaBytes, 0x3c)
-        if ([BitConverter]::ToUInt16($javaBytes, $peOffset + 4) -ne 0xaa64) {
-            throw "Expected native ARM64 Java: $javaExecutable"
-        }
-        Add-MachinePath (Join-Path $java.FullName 'bin') -First
-        [Environment]::SetEnvironmentVariable('JAVA_HOME_21_ARM64', $java.FullName, 'Machine')
-    }
     [Environment]::SetEnvironmentVariable('JAVA_HOME', $java.FullName, 'Machine')
     $env:JAVA_HOME = $java.FullName
-} elseif ($nativeArm) {
-    throw "Java 21 was not found at $javaPattern"
 }
 $env:Path = [Environment]::GetEnvironmentVariable('Path', 'Machine') + ';' +
     [Environment]::GetEnvironmentVariable('Path', 'User')

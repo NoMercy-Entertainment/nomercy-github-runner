@@ -19,7 +19,7 @@ def setup_flow(plant, monkeypatch, latest="offline", running=False):
     new_stamp = stamp(NOW + timedelta(seconds=10))
 
     def status(ref):
-        # Routine forge health advances while a slow ARM worker answers.
+        # Routine forge health advances while a slow worker answers.
         with schema.connect(service.specs.path) as c:
             c.execute("UPDATE runner_specs SET forge_state=?,forge_seen_at=? WHERE runner_id=?", (latest, new_stamp, rid))
         completed.append(True)

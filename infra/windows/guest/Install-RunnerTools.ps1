@@ -51,7 +51,7 @@
 #>
 [CmdletBinding(SupportsShouldProcess)]
 param(
-    [ValidateSet('x64', 'arm64')]
+    [ValidateSet('x64')]
     [string] $Architecture = 'x64'
 )
 
@@ -83,13 +83,6 @@ $Tools = [ordered]@{
                   # the same toolchain this install made.
                   MachineEnv = @{ CARGO_HOME = 'C:\Rust\cargo'; RUSTUP_HOME = 'C:\Rust\rustup' } }
     '7z'     = @{ Package = '7zip.7zip';            Dir = 'C:\Program Files\7-Zip' }
-}
-
-# The latest Temurin 21 WinGet entry currently selects x64 on Windows ARM.
-# Microsoft's JDK 21 distribution also provides a native Windows ARM64 JDK.
-if ($Architecture -eq 'arm64') {
-    $Tools['java'] = @{ Package = 'Microsoft.OpenJDK.21'
-                       DirGlob = 'C:\Program Files\Microsoft\jdk-21*\bin' }
 }
 
 $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
@@ -179,7 +172,7 @@ foreach ($command in $Tools.Keys) {
     Write-Host ('installing    : {0} ({1}), for the machine' -f $command, $spec.Package)
     $installerOptions = @()
     if ($command -eq 'cargo') {
-        $rustHost = if ($Architecture -eq 'arm64') { 'aarch64-pc-windows-msvc' } else { 'x86_64-pc-windows-msvc' }
+        $rustHost = 'x86_64-pc-windows-msvc'
         $rustArguments = '-y --default-host ' + $rustHost +
             ' --default-toolchain stable --profile minimal --component clippy --component rustfmt --no-modify-path'
         $installerOptions = @('--override', $rustArguments)
@@ -190,7 +183,7 @@ foreach ($command in $Tools.Keys) {
     # Only a scope/installer selection failure justifies dropping --scope.
     # An aborted WinGet can leave its installer running, or can return after
     # a successful install when App Installer itself updates. Retrying every
-    # failure with --force started a second Git install on ARM (2026-10-02).
+    # failure with --force once started a second Git install (2026-10-02).
     # APPINSTALLER_CLI_ERROR_NO_APPLICABLE_INSTALLER = 0x8A150010.
     if ($installExit -eq -1978335216) {
         Write-Host ('  no installer for machine scope ({0}); trying the package default' -f $installExit)
@@ -299,19 +292,18 @@ if ((Get-Service W32Time).StartType -ne 'Automatic' -and
 # take for granted (the health checks ask for each, 2026-10-27): pinned
 # releases, checked against their publisher's hash, in Program Files and
 # on the machine PATH. Gradle and Maven run on the machine's JDK.
-$isArm = $Architecture -eq 'arm64'
 $Portable = [ordered]@{
-    'jq'     = @{ Url = "https://github.com/jqlang/jq/releases/download/jq-1.8.2/jq-windows-$(if ($isArm) { 'arm64' } else { 'amd64' }).exe"
-                  Sha256 = $(if ($isArm) { '083b5377392bc57cf27052b6d20a2d927770683bca844632901ff38b4b7b0ac7' } else { 'a6fc67fedaf9128a3309a1e2ebb8b986aeccf70122ee46d2cb4849e423f0c627' })
+    'jq'     = @{ Url = 'https://github.com/jqlang/jq/releases/download/jq-1.8.2/jq-windows-amd64.exe'
+                  Sha256 = 'a6fc67fedaf9128a3309a1e2ebb8b986aeccf70122ee46d2cb4849e423f0c627'
                   Dir = 'C:\Program Files\jq'; Exe = 'jq.exe' }
     # The x64 release zip Chocolatey's wget 1.25.0 verifies (its
     # VERIFICATION.txt). The site answers a client without a browser
     # User-Agent with an HTML challenge page, which the hash check refuses.
     'wget'   = @{ Url = 'https://eternallybored.org/misc/wget/releases/wget-1.25.0-win64.zip'
                   Sha256 = '7567cbc08a1616931162b1c05f1731316853c32c79a21af1e850ccb673d1620c'
-                  Dir = 'C:\Program Files\wget'; Zip = $true; X64Only = $true; UserAgent = 'Mozilla/5.0' }
-    'ninja'  = @{ Url = "https://github.com/ninja-build/ninja/releases/download/v1.13.2/ninja-win$(if ($isArm) { 'arm64' }).zip"
-                  Sha256 = $(if ($isArm) { 'e52f0bdef9dfb1003229dbd6508a508c4073fd017247002adc66e5e806cb0391' } else { '07fc8261b42b20e71d1720b39068c2e14ffcee6396b76fb7a795fb460b78dc65' })
+                  Dir = 'C:\Program Files\wget'; Zip = $true; UserAgent = 'Mozilla/5.0' }
+    'ninja'  = @{ Url = 'https://github.com/ninja-build/ninja/releases/download/v1.13.2/ninja-win.zip'
+                  Sha256 = '07fc8261b42b20e71d1720b39068c2e14ffcee6396b76fb7a795fb460b78dc65'
                   Dir = 'C:\Program Files\Ninja'; Zip = $true }
     'gradle' = @{ Url = 'https://services.gradle.org/distributions/gradle-9.8.2-bin.zip'
                   Sha256 = '21bd5da2de49b642904077f38c0efdc7778e92b3ed0889392dca61b97e389607'
@@ -324,7 +316,6 @@ foreach ($command in $Portable.Keys) {
     $spec = $Portable[$command]
     $bin = if ($spec.Bin) { Join-Path $spec.Dir $spec.Bin } else { $spec.Dir }
     if ((Resolve-ForService $command) -or -not $PSCmdlet.ShouldProcess($command, 'install a pinned release for the machine')) { continue }
-    if ($spec.X64Only -and $isArm) { Write-Host ('no arm64 build : {0}' -f $command); continue }
     Write-Host ('installing    : {0} ({1})' -f $command, $spec.Url)
     $download = Join-Path $env:TEMP ([IO.Path]::GetFileName($spec.Url))
     $agent = if ($spec.UserAgent) { @{ UserAgent = $spec.UserAgent } } else { @{} }

@@ -7,7 +7,7 @@ from store import schema
 from store.fleets import FleetStore, UnknownFleet
 from tests.test_fleet_routes import plane
 
-DISABLED = ['github-windows-arm64', 'forgejo-windows-arm64']
+DISABLED = ['github-macos-x64', 'forgejo-macos-x64']
 
 
 @pytest.fixture
@@ -21,8 +21,8 @@ def retired(plane):
 
 def test_restart_seeding_keeps_retired_fleets_disabled(retired):
     service, path = retired
-    service.fleets.seed({'FORGEJO_RUNNER_ARTIFACT_WINDOWS_ARM64': 'arm.exe'})
-    assert len(service.fleets.list()) == 6
+    service.fleets.seed({'FORGEJO_RUNNER_ARTIFACT_MACOS': 'forgejo-runner-darwin-amd64'})
+    assert len(service.fleets.list()) == 4
     for fid in DISABLED:
         assert service.fleets.get(fid) is None
         with schema.connect(path) as connection:
@@ -37,8 +37,8 @@ def test_fleet_and_settings_payloads_omit_retired_fleets(client, retired):
     for endpoint in ('/api/v2/fleets', '/api/v2/settings'):
         response = client.get(endpoint)
         assert response.status_code == 200
-        assert len(response.json['fleets']) == 6
-        assert 'windows-arm64' not in response.get_data(as_text=True)
+        assert len(response.json['fleets']) == 4
+        assert 'macos-x64' not in response.get_data(as_text=True)
 
 
 @pytest.mark.parametrize('fid', DISABLED)
@@ -53,12 +53,12 @@ def test_fallback_cannot_reintroduce_retired_cells(retired, monkeypatch):
     import api_v2
     service, path = retired
     monkeypatch.setattr(schema, 'DB_PATH', path)
-    assert len(api_v2.fleet_list(None, None, [])) == 6
+    assert len(api_v2.fleet_list(None, None, [])) == 4
 
 
-def test_sharing_profile_choices_omit_retired_windows_arm(client, retired):
+def test_sharing_profile_choices_omit_retired_fleets(client, retired):
     response = client.get('/federation')
     assert response.status_code == 200
     text = response.get_data(as_text=True)
-    assert 'windows-arm64' not in text
-    assert 'github-windows-x64' in text and 'github-macos-x64' in text
+    assert 'github-macos-x64' not in text
+    assert 'github-linux-x64' in text and 'github-windows-x64' in text

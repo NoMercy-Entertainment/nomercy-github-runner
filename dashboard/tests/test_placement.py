@@ -33,13 +33,13 @@ class TestTheChoice:
                                 placed)[0] == "two"
 
     def test_the_wrong_architecture_is_passed_over(self):
-        arm = dict(SPEC, architecture="arm64")
-        assert placement.choose(arm, [w("x", architecture="x64"),
-                                      w("a", architecture="arm64")],
-                                [])[0] == "a"
+        other = dict(SPEC, architecture="riscv64")
+        assert placement.choose(other, [w("x", architecture="x64"),
+                                        w("r", architecture="riscv64")],
+                                [])[0] == "r"
 
     def test_a_worker_that_says_nothing_is_x64(self):
-        assert placement.choose(dict(SPEC, architecture="arm64"),
+        assert placement.choose(dict(SPEC, architecture="riscv64"),
                                 [w("x")], [])[0] is None
 
     def test_memory_is_counted_against_what_the_worker_has(self):

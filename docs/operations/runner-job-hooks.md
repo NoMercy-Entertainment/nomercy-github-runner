@@ -22,7 +22,7 @@ hook to finish; nothing in them is bounded by a timeout.
 
 | | Windows | macOS |
 | --- | --- | --- |
-| Measured | the volume holding `RUNNER_WORK_DIR`: the runner's own VHD on x64 storage workers (mounted at its folder, which a drive letter would miss), the shared volume on ARM64 and plain-directory workers | `df -Pk` on `RUNNER_WORK_DIR`: the Data volume, never the sealed `/` |
+| Measured | the volume holding `RUNNER_WORK_DIR`: the runner's own VHD on storage workers (mounted at its folder, which a drive letter would miss), the shared volume on plain-directory workers | `df -Pk` on `RUNNER_WORK_DIR`: the Data volume, never the sealed `/` |
 | Cleared under 15 GB | earlier workspaces | earlier workspaces, Xcode DerivedData entries with nothing changed for two days, the runner's Gradle build cache (`$GRADLE_USER_HOME/caches/build-cache-*`) |
 | Cleared after every job | `_work\_temp` | `_work/_temp`, Xcode DerivedData entries with nothing changed for two days |
 
@@ -59,8 +59,8 @@ keep the existing cleanup paths (the fleet's clear-cache, runbook 5.3).
   Python the job host runs under.
   - The hooks are `.js` because GitHub runs only `.js`, `.sh` and `.ps1`
     hooks. A `.js` one runs under the runner's own bundled node. A `.ps1` one
-    is dot-sourced by PowerShell, which the ARM64 guest's execution policy
-    refuses, and which takes minutes to start under emulation.
+    is dot-sourced by PowerShell, which a guest's execution policy can
+    refuse, and which starts slower than node.
   - Each `.js` hands the work to `runner_disk.py` with that Python
     (`-X utf8`), which measures the volume with `GetDiskFreeSpaceEx` on the
     path itself.
@@ -79,9 +79,8 @@ keep the existing cleanup paths (the fleet's clear-cache, runbook 5.3).
 ## Rolling it out
 
 1. Redeploy the agent on each worker that runs GitHub runners: the Windows
-   x64 worker (`rnr-windows-1`) and the ARM64 guest
-   (`infra\hyperv\Update-WindowsGuestAgent.ps1 -Name ...`), and the macOS
-   appliance's agent.
+   worker (`rnr-windows-1`, `infra\hyperv\Update-WindowsGuestAgent.ps1`)
+   and the macOS appliance's agent.
 2. **Recreate each GitHub runner.** The hooks are set only when a unit is
    made: `create` writes the hook files into the runner's tree and the
    environment that names them - on Windows `unit.json`, which the job host

@@ -3,8 +3,8 @@
 // status into the hook's.
 //
 // The runner runs a .js hook under its own bundled node: no execution policy
-// to refuse it, as the ARM64 guest's does a .ps1, and no PowerShell to start,
-// which takes minutes under emulation. Only node's own modules are used.
+// to refuse it, as a guest's may refuse a .ps1, and no PowerShell to start
+// before the first line runs. Only node's own modules are used.
 //
 // Exit status: 1 only when the check refuses the job on purpose (75 from a
 // job-started check). Anything else - no Python, a Python that cannot start,

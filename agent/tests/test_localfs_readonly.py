@@ -1,8 +1,8 @@
 """A runner's directory is removed even when a job left read-only files in it.
 
 git marks the files under .git/objects read-only, and on Windows a read-only
-file cannot be deleted. Removing github-windows-arm64-1 for a recreate failed
-on exactly that on 2026-10-08 ("storage left behind: ... Access is denied"),
+file cannot be deleted. Removing a Windows runner for a recreate failed on
+exactly that on 2026-10-08 ("storage left behind: ... Access is denied"),
 leaving the runner in `removing` with its unit gone.
 """
 import os

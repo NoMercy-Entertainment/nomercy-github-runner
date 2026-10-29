@@ -8,7 +8,7 @@ refusal fails a job. A fault in the hook itself never does.
 
 The work is in `agent/hooks/windows/runner_disk.py`; the `.js` files are
 what GitHub runs, under its own node, because it runs nothing but `.js`,
-`.sh` and `.ps1`, and a `.ps1` is refused by the ARM64 guest's execution
+`.sh` and `.ps1`, and a `.ps1` may be refused by a guest's execution
 policy. They start the agent's own Python, which measures the volume under the runner's
 work directory correctly even when that volume is the runner's own disk,
 mounted at a folder rather than a drive letter.
@@ -306,11 +306,11 @@ class TestMain:
 
 # ---- the .js files GitHub runs ----------------------------------------------
 #
-# GitHub starts a .ps1 hook as `pwsh -command ". '<path>'"`, and the ARM64
-# guest's execution policy refuses to dot-source a script: the hook would
-# fail before any line of it ran, and every job with it. A .js hook runs
-# under the runner's own bundled node, which has no execution policy and
-# starts in seconds where PowerShell takes minutes under emulation.
+# GitHub starts a .ps1 hook as `pwsh -command ". '<path>'"`, and a guest's
+# execution policy may refuse to dot-source a script: the hook would fail
+# before any line of it ran, and every job with it. A .js hook runs under
+# the runner's own bundled node, which has no execution policy and starts
+# without a PowerShell host.
 
 NODE = shutil.which("node")
 

@@ -2,7 +2,7 @@
 
 `.forgejo/workflows/job-event-health.yml` runs only on manual dispatch. Each
 dispatch schedules one chosen platform and outcome; the other platform jobs
-are skipped. Check Windows x64 and macOS first, then Linux, and ARM last.
+are skipped. Check Windows x64 and macOS first, then Linux.
 There is no checkout, build, action download or runner configuration change.
 Every job retains the fleet's 7200-minute ceiling.
 
@@ -14,7 +14,6 @@ the controller's SecretStore and provider client on 2026-10-12:
 | `windows-x64` | `windows-2022` | `pwsh` |
 | `macos-x64` | `macos-latest` | `bash` |
 | `linux-x64` | `ubuntu-latest` | `bash` |
-| `windows-arm64` | `windows-arm64` | `pwsh` |
 
 Success echoes a fixed diagnostic message. Failure additionally exits with
 code 1. Cancellation echoes and sleeps for at most 600 seconds: cancel only

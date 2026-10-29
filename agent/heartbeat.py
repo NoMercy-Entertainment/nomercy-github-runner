@@ -179,7 +179,7 @@ def build(agent, server=None, deep=False, include_usage=True):
     }
     beat["measured_at"] = beat["sent_at"]
     # These are independent reads. On a remote macOS appliance each read
-    # crosses an emulated guest SSH connection; serial reads took longer
+    # crosses an SSH connection into the guest VM; serial reads took longer
     # than the dashboard's three-heartbeat freshness window.
     with ThreadPoolExecutor(max_workers=2) as pool:
         capabilities = pool.submit(agent.runtime.capabilities)

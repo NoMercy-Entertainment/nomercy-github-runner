@@ -60,7 +60,6 @@ param(
     [string] $TlsBundle,
     [string] $NssmSource,
     [string] $RunnerBinary,
-    [ValidateSet('x64', 'arm64')] [string] $Architecture = 'x64',
     [string] $RunnerTemplate,
     [string] $RunnerSha256,
     [string[]] $FirewallRemoteAddress,
@@ -88,10 +87,6 @@ if (-not $RunnerTemplate) { $RunnerTemplate = $w.Template }
 if (-not $RunnerSha256) { $RunnerSha256 = $w.RunnerSha256 }
 if (-not $MaxRunners)    { $MaxRunners = $w.MaxRunners }
 if (-not $RunnerMemGB)   { $RunnerMemGB = $w.RunnerMemGB }
-if ($Architecture -eq 'arm64' -and -not ($PSBoundParameters.ContainsKey('RunnerTemplate') -and
-        $PSBoundParameters.ContainsKey('RunnerBinary') -and $PSBoundParameters.ContainsKey('RunnerSha256'))) {
-    throw 'An ARM64 worker requires explicit -RunnerTemplate, -RunnerBinary and -RunnerSha256.'
-}
 if ($TlsBundle -and -not (Test-Path -LiteralPath $TlsBundle)) {
     throw "-TlsBundle $TlsBundle does not exist."
 }
@@ -148,22 +143,12 @@ foreach ($rule in $controlAcl.GetAccessRules($true, $true, [Security.Principal.S
 
 # --- Python --------------------------------------------------------------------
 $python = Join-Path $pythonDir 'python.exe'
-$pythonSettings = if ($Architecture -eq 'arm64') { $s.WindowsArm } else { $w }
 if (-not (Test-Path $python)) {
     $zip = Join-Path $env:TEMP 'rnr-python-embed.zip'
-    Invoke-WebRequest -UseBasicParsing -Uri $pythonSettings.PythonUrl -OutFile $zip
-    Assert-Hash $zip $pythonSettings.PythonSha256
+    Invoke-WebRequest -UseBasicParsing -Uri $w.PythonUrl -OutFile $zip
+    Assert-Hash $zip $w.PythonSha256
     Expand-Archive -LiteralPath $zip -DestinationPath $pythonDir -Force
     Remove-Item $zip
-}
-if ($Architecture -eq 'arm64') {
-    # Reject an earlier x64 agent installation instead of silently running
-    # its Python through Windows' additional x64 emulation layer.
-    $pythonBytes = [IO.File]::ReadAllBytes($python)
-    $peOffset = [BitConverter]::ToInt32($pythonBytes, 0x3c)
-    if ([BitConverter]::ToUInt16($pythonBytes, $peOffset + 4) -ne 0xaa64) {
-        throw "The ARM64 worker requires native ARM64 Python: $python"
-    }
 }
 # The embeddable package reads its search path from its ._pth file and
 # ignores PYTHONPATH and the working directory; the agent's code is added there.
@@ -217,8 +202,6 @@ Assert-Hash $nssm $w.NssmSha256
 # empty for a create to fail on.
 $source = Join-Path $PSScriptRoot '..\windows\templates'
 foreach ($dir in Get-ChildItem -Directory $source) {
-    if ($Architecture -eq 'arm64' -and $dir.Name -notlike '*-arm64') { continue }
-    if ($Architecture -eq 'x64' -and $dir.Name -like '*-arm64') { continue }
     $into = Join-Path $templates $dir.Name
     if ($dir.Name -like 'actions-runner-*' -and
         -not (Test-Path (Join-Path $dir.FullName 'agent\config.cmd'))) {
@@ -275,7 +258,7 @@ $config = [ordered]@{
                     ca = (Join-Path $tlsDir 'ca.pem') }
     tools      = @{ nssm = $nssm; python = $python; templates = $templates; short_workspaces = 'D:\w' }
     capacity   = @{ max_runners = $MaxRunners; memory_bytes = [int64]$RunnerMemGB * $MaxRunners * 1GB
-                    architecture = $Architecture }
+                    architecture = 'x64' }
     version    = $version
 }
 if ($WindowsStorage) {

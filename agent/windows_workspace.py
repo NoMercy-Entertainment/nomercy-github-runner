@@ -20,8 +20,8 @@ def alias_path(base, runner_id):
     return ntpath.join(base, naming.check(runner_id).replace("-", ""))
 
 
-def ensure_alias(base, runner_id, workspace, run, icacls, powershell, architecture=None):
-    timeout = shell_timeout(architecture)
+def ensure_alias(base, runner_id, workspace, run, icacls, powershell):
+    timeout = shell_timeout()
     root, target = Path(base), Path(workspace)
     alias = Path(alias_path(base, runner_id))
     if not target.is_dir() or os.path.isjunction(target) or target.is_symlink():

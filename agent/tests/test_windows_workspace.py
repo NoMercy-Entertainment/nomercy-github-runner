@@ -31,11 +31,10 @@ def test_an_existing_directory_cannot_be_replaced_with_a_workspace_alias(tmp_pat
         remove_alias(str(root), RID, str(target))
 
 
-@pytest.mark.parametrize("architecture,least", [("arm64", 300), ("amd64", 30)])
-def test_the_alias_waits_as_long_as_the_machine_needs_to_start_a_shell(tmp_path, monkeypatch, architecture, least):
-    """An emulated ARM64 guest takes minutes to start PowerShell, so a 30 s
-    bound timed the alias out and failed github-windows-arm64-1's recreate
-    with "create_unit: timed out after 30s" (2026-10-08)."""
+def test_every_shell_call_for_the_alias_is_bounded(tmp_path, monkeypatch):
+    """Both the icacls call and the junction's PowerShell call carry the
+    shell timeout; an unbounded call would hang a create forever."""
+    from agent.windows_timeouts import shell_timeout
     root, target = tmp_path / "aliases", tmp_path / "work"
     target.mkdir()
     # The bound is what is under test, not the drive-letter rule, which
@@ -49,6 +48,5 @@ def test_the_alias_waits_as_long_as_the_machine_needs_to_start_a_shell(tmp_path,
         return True, "", ""
 
     with pytest.raises(RuntimeError):      # the fake makes no junction
-        ensure_alias(str(root), RID, str(target), run, "icacls", "powershell",
-                     architecture=architecture)
-    assert len(seen) == 2 and min(seen) >= least
+        ensure_alias(str(root), RID, str(target), run, "icacls", "powershell")
+    assert seen == [shell_timeout(), shell_timeout()]

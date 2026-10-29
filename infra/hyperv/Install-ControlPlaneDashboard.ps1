@@ -67,7 +67,6 @@ $missing = @($Settings | Where-Object { -not $values[$_] })
 if ($missing) { throw "not set in ${EnvFile}: $($missing -join ', ')" }
 # Plus what the platform itself decides, the same values the controller has.
 $win = $s.Windows
-$arm = $s.WindowsArm
 $mac = $s.MacOS
 $unitMemGB = ($s.VMs.Keys | Where-Object { $s.VMs[$_].Role -eq 'linux-worker' } |
     ForEach-Object { $s.VMs[$_].RunnerMemGB } | Measure-Object -Minimum).Minimum
@@ -83,19 +82,10 @@ $lines = ($Settings | ForEach-Object { "$_=$($values[$_])" }) + @(
     "FORGEJO_RUNNER_ARTIFACT_WINDOWS=$($win.Template) sha256:$($win.RunnerSha256)",
     "RUNNER_UNIT_IMAGE_FORGEJO_WINDOWS=$($win.Template)",
     "RUNNER_UNIT_MEMORY_FORGEJO_WINDOWS=$($win.RunnerMemGB)g",
-    "FORGEJO_RUNNER_ARTIFACT_WINDOWS_ARM64=$($arm.ForgejoTemplate) sha256:$($arm.ForgejoSha256)",
-    "FORGEJO_RUNNER_LABELS_WINDOWS_ARM64=$($arm.ForgejoLabels)",
-    "RUNNER_UNIT_IMAGE_FORGEJO_WINDOWS_ARM64=$($arm.ForgejoTemplate)",
-    "RUNNER_UNIT_MEMORY_FORGEJO_WINDOWS_ARM64=$($arm.RunnerMemGB)g",
-    "RUNNER_UNIT_IMAGE_GITHUB_WINDOWS_ARM64=$($arm.GitHubTemplate)",
-    "RUNNER_UNIT_MEMORY_GITHUB_WINDOWS_ARM64=$($arm.RunnerMemGB)g",
     "FORGEJO_RUNNER_ARTIFACT_MACOS=$($mac.ForgejoBinary) sha256:$($mac.ForgejoSha256)",
     "FORGEJO_RUNNER_LABELS_MACOS=$($mac.ForgejoLabels)",
     "RUNNER_UNIT_IMAGE_FORGEJO_MACOS=$($mac.ForgejoTemplate)",
     "RUNNER_UNIT_IMAGE_GITHUB_MACOS=$($mac.GitHubTemplate)")
-if (-not $arm.Enabled) {
-    $lines = @($lines | Where-Object { ($_ -split '=', 2)[0] -notlike '*_WINDOWS_ARM64' })
-}
 Write-LfFile (Join-Path $stage 'dashboard.env') (($lines -join "`n") + "`n")
 
 # --- the data, copied consistently while the old dashboard keeps serving ------

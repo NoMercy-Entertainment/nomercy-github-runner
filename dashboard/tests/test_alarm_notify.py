@@ -344,8 +344,8 @@ class TestLocalTime:
         assert alarms.local_time(utc) == local
 
     def test_the_message_reads_in_local_time(self):
-        text = alarms.message("runner_offline", "github", "github-windows-arm64-1",
-                              {"labels": ["self-hosted", "ARM64"]}, "2026-10-09T00:31:41Z")
+        text = alarms.message("runner_offline", "github", "github-windows-x64-1",
+                              {"labels": ["self-hosted", "X64"]}, "2026-10-09T00:31:41Z")
         assert "09-10-2026 02:31 CEST" in text and "Z" not in text.split("since", 1)[1]
 
     def test_an_unreadable_time_is_shown_as_it_came(self):
@@ -369,7 +369,7 @@ class TestWhoIsTagged:
     @pytest.mark.parametrize("subject,who", [
         ("nomercy-mac-mini", STONEY), ("nomercy-dat30", STONEY),
         ("ffmpeg-verify-mac", FILL), ("github-linux-x64-3", FILL),
-        ("forgejo-windows-arm64-1", FILL), ("someone-new", FILL)])
+        ("forgejo-windows-x64-1", FILL), ("someone-new", FILL)])
     def test_a_runner_alarm_tags_its_owner(self, subject, who):
         data = self.body(dict(EVENT, subject=subject))
         assert data["content"] == f"<@{who}>"

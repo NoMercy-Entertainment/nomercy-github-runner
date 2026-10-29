@@ -24,8 +24,6 @@ GIB = 1024 ** 3
 OWNERS = {
     'rnr-windows-1': {'98ce7e34-1498-4825-acd5-4d58af67816f',
                       'fcbd05be-00e3-4974-b2c9-04aa4ef844e6'},
-    'windows-arm64-1': {'246e44e4-c7a7-4a67-ad61-6e5a09ab5a6b',
-                        '34746f24-145b-4d1c-9b97-24ea77db1e81'},
 }
 
 

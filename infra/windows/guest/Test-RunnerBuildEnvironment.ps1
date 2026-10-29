@@ -1,7 +1,7 @@
 # Run from a real CI job, using its service account and inherited PATH.
 [CmdletBinding()]
 param(
-    [ValidateSet('x64', 'arm64')] [string] $Architecture = 'arm64',
+    [ValidateSet('x64')] [string] $Architecture = 'x64',
     [string] $Workspace = (Get-Location).Path
 )
 $ErrorActionPreference = 'Stop'
@@ -33,7 +33,7 @@ function Assert-NativeBinary([string] $Path) {
     $bytes = [IO.File]::ReadAllBytes($Path)
     $pe = [BitConverter]::ToInt32($bytes, 0x3c)
     $machine = [BitConverter]::ToUInt16($bytes, $pe + 4)
-    $expected = if ($Architecture -eq 'arm64') { 0xaa64 } else { 0x8664 }
+    $expected = 0x8664
     if ($machine -ne $expected) { throw "$Path has PE architecture 0x$('{0:x}' -f $machine)" }
 }
 
@@ -87,11 +87,11 @@ try {
     }
     Test-Build 'MSVC C++ compile, architecture and execution' {
         $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
-        $component = if ($Architecture -eq 'arm64') { 'Microsoft.VisualStudio.Component.VC.Tools.ARM64' } else { 'Microsoft.VisualStudio.Component.VC.Tools.x86.x64' }
+        $component = 'Microsoft.VisualStudio.Component.VC.Tools.x86.x64'
         $vsRoot = & $vswhere -latest -products '*' -requires $component -property installationPath
         if ($LASTEXITCODE -ne 0 -or -not $vsRoot) { throw 'MSVC workload was not found' }
         $vsdev = Join-Path ($vsRoot | Select-Object -First 1) 'Common7\Tools\VsDevCmd.bat'
-        $target = if ($Architecture -eq 'arm64') { 'arm64' } else { 'amd64' }
+        $target = 'amd64'
         [IO.File]::WriteAllText((Join-Path $smoke 'hello.cpp'), '#include <vector>' + "`r`n" + 'int main() { std::vector<int> v{40, 2}; return v[0] + v[1] == 42 ? 0 : 1; }')
         $command = 'call "' + $vsdev + '" -arch=' + $target + ' -host_arch=' + $target + ' >nul && cl /nologo /EHsc /W4 /WX hello.cpp /Fe:hello-cpp.exe'
         Invoke-Checked $env:ComSpec @('/d', '/s', '/c', $command)
@@ -101,7 +101,7 @@ try {
     Test-Build 'Rust compile, architecture and execution' {
         Invoke-Checked cargo @('new', '--bin', '--vcs', 'none', 'rust-smoke')
         [IO.File]::WriteAllText((Join-Path $smoke 'rust-smoke\src\main.rs'), 'fn main() { assert_eq!(6 * 7, 42); println!("Rust build OK"); }')
-        $target = if ($Architecture -eq 'arm64') { 'aarch64-pc-windows-msvc' } else { 'x86_64-pc-windows-msvc' }
+        $target = 'x86_64-pc-windows-msvc'
         Invoke-Checked cargo @('build', '--manifest-path', 'rust-smoke\Cargo.toml', '--target', $target)
         $rustBinary = Join-Path $smoke "rust-smoke\target\$target\debug\rust-smoke.exe"
         Assert-NativeBinary $rustBinary
@@ -115,7 +115,7 @@ try {
         [IO.File]::WriteAllText((Join-Path $smoke 'hello.go'), 'package main' + "`n" + 'import "fmt"' + "`n" + 'func main() { fmt.Println("Go build OK") }')
         $previous = $env:GOARCH
         try {
-            $env:GOARCH = if ($Architecture -eq 'arm64') { 'arm64' } else { 'amd64' }
+            $env:GOARCH = 'amd64'
             Invoke-Checked go @('build', '-o', 'hello-go.exe', 'hello.go')
         } finally { $env:GOARCH = $previous }
         Assert-NativeBinary (Join-Path $smoke 'hello-go.exe')
@@ -132,16 +132,16 @@ try {
         Invoke-Checked cmake @('--version')
         Invoke-Checked clang @('--version')
         $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
-        $component = if ($Architecture -eq 'arm64') { 'Microsoft.VisualStudio.Component.VC.Tools.ARM64' } else { 'Microsoft.VisualStudio.Component.VC.Tools.x86.x64' }
+        $component = 'Microsoft.VisualStudio.Component.VC.Tools.x86.x64'
         $vsRoot = & $vswhere -latest -products '*' -requires $component -property installationPath
         if ($LASTEXITCODE -ne 0 -or -not $vsRoot) { throw 'MSVC environment for CMake and LLVM was not found' }
         $vsdev = Join-Path ($vsRoot | Select-Object -First 1) 'Common7\Tools\VsDevCmd.bat'
-        $target = if ($Architecture -eq 'arm64') { 'arm64' } else { 'amd64' }
+        $target = 'amd64'
         $project = Join-Path $smoke 'cmake-project'
         New-Item -ItemType Directory -Path $project | Out-Null
         [IO.File]::WriteAllText((Join-Path $project 'hello.cpp'), '#include <vector>' + "`n" + 'int main() { std::vector<int> v{40, 2}; return v[0] + v[1] == 42 ? 0 : 1; }')
         [IO.File]::WriteAllText((Join-Path $project 'CMakeLists.txt'), 'cmake_minimum_required(VERSION 3.20)' + "`n" + 'project(RunnerBuildHealth LANGUAGES CXX)' + "`n" + 'add_executable(cmake-hello hello.cpp)' + "`n")
-        $llvmTarget = if ($Architecture -eq 'arm64') { 'aarch64-pc-windows-msvc' } else { 'x86_64-pc-windows-msvc' }
+        $llvmTarget = 'x86_64-pc-windows-msvc'
         $command = 'call "' + $vsdev + '" -arch=' + $target + ' -host_arch=' + $target +
             ' >nul && cmake -S cmake-project -B cmake-build -G "NMake Makefiles" -DCMAKE_BUILD_TYPE=Release' +
             ' && cmake --build cmake-build && clang-cl --target=' + $llvmTarget +

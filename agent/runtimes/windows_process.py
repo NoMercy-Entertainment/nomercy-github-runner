@@ -211,8 +211,8 @@ class WindowsProcessRuntime:
         if marker not in result[1] + result[2]:
             self._check(result)
         # NSSM can return a failure while SCM is still completing the
-        # requested transition, especially under ARM emulation. Confirm the
-        # final state before treating the operation as failed or complete.
+        # requested transition. Confirm the final state before treating the
+        # operation as failed or complete.
         deadline = time.monotonic() + STOP_TIMEOUT + 30
         while True:
             state = self._service_status(runner_id)
@@ -341,8 +341,8 @@ class WindowsProcessRuntime:
         for key in TOOLCACHE_ENV_KEYS:
             env[key] = ntpath.join(p["cache"], TOOLCACHE)
         # These profiles belong to the runner for both storage backends.
-        # Plain directory workers (including QEMU ARM guests) must not put
-        # job caches in a service profile outside clear_cache's scopes.
+        # Plain directory workers must not put job caches in a service
+        # profile outside clear_cache's scopes.
         env["HOME"] = env["USERPROFILE"] = p["work"]
         env["APPDATA"] = env["LOCALAPPDATA"] = p["cache"]
         # In particular, the machine's CARGO_HOME holds the installed shims;

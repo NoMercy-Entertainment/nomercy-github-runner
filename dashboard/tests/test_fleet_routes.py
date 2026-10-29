@@ -148,7 +148,7 @@ class TestTheFleetsAreRows:
                             lambda: str(tmp_path / "none.db"))
         monkeypatch.setitem(api_v2._status, "fn", lambda: {})
         fleets = client.get("/api/v2/fleets").get_json()["fleets"]
-        assert len(fleets) == 8
+        assert len(fleets) == 6
         win = next(f for f in fleets if f["fleet_id"] == "forgejo-windows-x64")
         assert win["available"] is False
         assert "FORGEJO_RUNNER_ARTIFACT_WINDOWS" in win["reason"]
@@ -159,14 +159,14 @@ class TestTheFleetsAreRows:
         with schema.connect(path) as c:
             c.execute("INSERT INTO fleets (fleet_id, provider, platform,"
                       " architecture, desired_capacity, labels, available)"
-                      " VALUES ('github-linux-arm64', 'github', 'linux',"
-                      " 'arm64', 0, '[]', 1)")
+                      " VALUES ('github-linux-riscv64', 'github', 'linux',"
+                      " 'riscv64', 0, '[]', 1)")
         fleets = client.get("/api/v2/fleets").get_json()["fleets"]
         ids = [f["fleet_id"] for f in fleets]
-        assert "github-linux-arm64" in ids and len(ids) == 9
-        arm = next(f for f in fleets if f["fleet_id"] == "github-linux-arm64")
-        assert arm["title"] == "GitHub · Linux · arm64"
-        assert any(a["enabled"] for a in arm["actions"])
+        assert "github-linux-riscv64" in ids and len(ids) == 7
+        row = next(f for f in fleets if f["fleet_id"] == "github-linux-riscv64")
+        assert row["title"] == "GitHub · Linux · riscv64"
+        assert any(a["enabled"] for a in row["actions"])
 
     def test_a_fleet_reads_by_its_id(self, client, plane):
         r = client.get(f"/api/v2/fleets/{GH}")

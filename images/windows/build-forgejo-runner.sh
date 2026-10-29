@@ -76,7 +76,7 @@ go test ./act/runner -run '^TestNoMercy' -count=1
 if [ "$MODE" = guarded ]; then
   go test ./internal/app/run -run '^TestAdmission' -count=1 -timeout=60s
 fi
-for target in linux/amd64 linux/arm64 windows/amd64 windows/arm64 darwin/amd64 darwin/arm64; do
+for target in linux/amd64 linux/arm64 windows/amd64 darwin/amd64 darwin/arm64; do
   os="${target%/*}" arch="${target#*/}"
   ext=""; [ "$os" = windows ] && ext=".exe"
   out="${OUTPUT}/forgejo-runner-${VERSION}-${os}-${arch}${ext}"

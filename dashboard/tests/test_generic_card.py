@@ -450,10 +450,10 @@ def no_control_plane(tmp_path, monkeypatch):
 
 
 class TestThePagesData:
-    def test_eight_fleets_and_every_runner_in_one(self, client,
-                                                no_control_plane):
+    def test_six_fleets_and_every_runner_in_one(self, client,
+                                              no_control_plane):
         body = client.get("/api/v2/fleet").get_json()
-        assert len(body["fleets"]) == 8
+        assert len(body["fleets"]) == 6
         assert body["control_plane"]["running"] is False
         placed = [k for f in body["fleets"] for k in f["runners"]]
         assert sorted(placed) == sorted(c["key"] for c in body["runners"])
@@ -481,8 +481,8 @@ class TestThePagesData:
 # the page, in a real browser
 # ---------------------------------------------------------------------------
 
-def test_the_page_renders_all_eight_fleets_in_a_real_browser(tmp_path,
-                                                             monkeypatch):
+def test_the_page_renders_all_six_fleets_in_a_real_browser(tmp_path,
+                                                           monkeypatch):
     """A stub serving the page and the v2 data - no docker, no forge, no
     sign-in - loaded by headless Edge, whose DOM is then read back."""
     from flask import Flask, render_template
@@ -509,7 +509,7 @@ def test_the_page_renders_all_eight_fleets_in_a_real_browser(tmp_path,
                                tmp_path / "edge")
     finally:
         server.shutdown()
-    assert dom.count('class="fleet"') == 8, dom[-2000:]
+    assert dom.count('class="fleet"') == 6, dom[-2000:]
     assert dom.count("<article") == 4, "two containers, two forge-only"
     assert 'id="s-total">4</div>' in dom
     assert '<div class="k">Total runners</div>' in dom

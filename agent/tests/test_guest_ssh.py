@@ -75,9 +75,9 @@ class TestReachingTheGuest:
 
     def test_forwarded_guests_and_users_have_separate_connections(self):
         mac = GuestExec("127.0.0.1", "user", port=50922)
-        arm = GuestExec("127.0.0.1", "user", port=52222)
+        other_port = GuestExec("127.0.0.1", "user", port=52222)
         other_user = GuestExec("127.0.0.1", "admin", port=50922)
-        assert len({mac._control, arm._control, other_user._control}) == 3
+        assert len({mac._control, other_port._control, other_user._control}) == 3
         assert mac._control == GuestExec("127.0.0.1", "user", port=50922)._control
 
     def test_refusing_master_is_retired_without_replaying_the_command(self, run):

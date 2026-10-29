@@ -1,17 +1,13 @@
 # Install the C++ compiler and Windows SDK for a Windows runner guest.
 [CmdletBinding()]
 param(
-    [ValidateSet('x64', 'arm64')]
+    [ValidateSet('x64')]
     [string] $Architecture = 'x64',
     [string] $ResultPath = 'C:\ProgramData\nomercy\cpp-build-tools-result.json'
 )
 
 $ErrorActionPreference = 'Stop'
-$component = if ($Architecture -eq 'arm64') {
-    'Microsoft.VisualStudio.Component.VC.Tools.ARM64'
-} else {
-    'Microsoft.VisualStudio.Component.VC.Tools.x86.x64'
-}
+$component = 'Microsoft.VisualStudio.Component.VC.Tools.x86.x64'
 $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
 $bootstrapper = Join-Path $env:ProgramData 'nomercy\vs_buildtools_2022.exe'
 $resultDirectory = Split-Path -Parent $ResultPath
@@ -33,7 +29,7 @@ function Find-Compiler {
     if (-not $root) { return $null }
     $toolsRoot = Join-Path $root 'VC\Tools\MSVC'
     if (-not (Test-Path -LiteralPath $toolsRoot)) { return $null }
-    $pattern = if ($Architecture -eq 'arm64') { '*\Hostarm64\arm64\cl.exe' } else { '*\Hostx64\x64\cl.exe' }
+    $pattern = '*\Hostx64\x64\cl.exe'
     $compiler = Get-ChildItem -LiteralPath $toolsRoot -Filter cl.exe -Recurse -ErrorAction SilentlyContinue |
         Where-Object FullName -Like $pattern | Sort-Object FullName -Descending | Select-Object -First 1
     if (-not $compiler) { return $null }
@@ -62,7 +58,6 @@ try {
             '--add', 'Microsoft.VisualStudio.Workload.VCTools',
             '--includeRecommended'
         )
-        if ($Architecture -eq 'arm64') { $arguments += @('--add', $component) }
         Write-Result 'installing' 'Installing the C++ desktop workload and recommended compiler and SDK components.'
         $process = Start-Process -FilePath $bootstrapper -ArgumentList $arguments -WindowStyle Hidden -Wait -PassThru
         if ($process.ExitCode -eq 5008) {
@@ -103,7 +98,7 @@ try {
     $source = Join-Path $smokeRoot 'hello.c'
     $binary = Join-Path $smokeRoot 'hello.exe'
     [IO.File]::WriteAllText($source, 'int main(void) { return 0; }')
-    $target = if ($Architecture -eq 'arm64') { 'arm64' } else { 'amd64' }
+    $target = 'amd64'
     $command = 'call "' + $vsdev + '" -arch=' + $target +
         ' -host_arch=' + $target + ' >nul && cl /nologo /W4 /WX /Fe:"' +
         $binary + '" "' + $source + '"'

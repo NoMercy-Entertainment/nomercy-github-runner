@@ -81,7 +81,6 @@ try {
     # runaway job cannot take its worker - and the agent on it - down.
     $unitMemGB = ($workers | ForEach-Object { $s.VMs[$_].RunnerMemGB } | Measure-Object -Minimum).Minimum
     $win = $s.Windows
-    $arm = $s.WindowsArm
     $mac = $s.MacOS
     $controllerEnv = ($wanted | ForEach-Object { "$_=$($values[$_])" }) + @(
         "RUNNER_UNIT_IMAGE_FORGEJO_LINUX=nomercy/runner-unit-forgejo:$version",
@@ -92,10 +91,6 @@ try {
         "FORGEJO_RUNNER_LABELS_WINDOWS=$(if ($WindowsLabels) { $WindowsLabels } else { $win.Labels })",
         "RUNNER_UNIT_IMAGE_FORGEJO_WINDOWS=$($win.Template)",
         "RUNNER_UNIT_MEMORY_FORGEJO_WINDOWS=$($win.RunnerMemGB)g",
-        "FORGEJO_RUNNER_ARTIFACT_WINDOWS_ARM64=$($arm.ForgejoTemplate) sha256:$($arm.ForgejoSha256)",
-        "FORGEJO_RUNNER_LABELS_WINDOWS_ARM64=$($arm.ForgejoLabels)",
-        "RUNNER_UNIT_IMAGE_FORGEJO_WINDOWS_ARM64=$($arm.ForgejoTemplate)",
-        "RUNNER_UNIT_MEMORY_FORGEJO_WINDOWS_ARM64=$($arm.RunnerMemGB)g",
         "FORGEJO_RUNNER_ARTIFACT_MACOS=$($mac.ForgejoBinary) sha256:$($mac.ForgejoSha256)",
         "FORGEJO_RUNNER_LABELS_MACOS=$($mac.ForgejoLabels)",
         "RUNNER_UNIT_IMAGE_FORGEJO_MACOS=$($mac.ForgejoTemplate)",
@@ -113,12 +108,7 @@ try {
         # The GitHub Windows cell: the template installed on that worker.
         "RUNNER_UNIT_IMAGE_GITHUB_WINDOWS=$($s.GitHub.WindowsTemplate)",
         "RUNNER_UNIT_MEMORY_GITHUB_WINDOWS=$($s.GitHub.WindowsRunnerMemGB)g",
-        "RUNNER_UNIT_IMAGE_GITHUB_WINDOWS_ARM64=$($arm.GitHubTemplate)",
-        "RUNNER_UNIT_MEMORY_GITHUB_WINDOWS_ARM64=$($arm.RunnerMemGB)g",
         "CONTROL_INTERVAL=15")
-    if (-not $arm.Enabled) {
-        $controllerEnv = @($controllerEnv | Where-Object { ($_ -split '=', 2)[0] -notlike '*_WINDOWS_ARM64' })
-    }
 
     # --- the control plane ------------------------------------------------------
     Write-Host "waiting for $($control[0]) ($cp)..."

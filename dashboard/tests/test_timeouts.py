@@ -29,9 +29,8 @@ CONTROL = os.path.join(os.path.dirname(HERE), "control")
 
 def test_windows_service_calls_do_not_overlap_retries():
     x64 = retry.agent_fast_for({"platform": "windows", "architecture": "x64"})
-    arm = retry.agent_fast_for({"kind": "windows-process", "architecture": "arm64"})
     assert x64.timeout >= 30 and x64.retries == 0
-    assert arm.timeout >= x64.timeout and arm.retries == 0
+    assert retry.agent_fast_for({"kind": "windows-process"}) is x64
     assert retry.agent_fast_for({"platform": "linux"}) is AGENT_FAST
 
 

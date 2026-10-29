@@ -145,7 +145,7 @@ def screen():
     from store.fleets import FleetStore
     disabled = FleetStore(api_v2._db_path()).disabled_ids()
     profiles = [profile for profile in ("github-linux-x64", "github-windows-x64",
-                                       "github-windows-arm64", "github-macos-x64")
+                                       "github-macos-x64")
                 if profile not in disabled]
     return render_template("federation.html", csrf=session["federation_csrf"], people=users.list_users(),
                            provisioning_ready=ready, unavailable=note, profiles=profiles)

@@ -23,7 +23,7 @@
 [CmdletBinding()]
 param(
     [string] $Version = '2.338.0',
-    [ValidateSet('x64', 'arm64')] [string] $Architecture = 'x64',
+    [ValidateSet('x64')] [string] $Architecture = 'x64',
     [string] $Sha256,
     [string] $ArchivePath,
     [string] $Repo = 'D:\docker-compose\GithubRunners'
@@ -44,8 +44,7 @@ if (-not $Sha256) {
 }
 $asset = "actions-runner-win-$Architecture-$Version.zip"
 $url = "https://github.com/actions/runner/releases/download/v$Version/$asset"
-$suffix = if ($Architecture -eq 'arm64') { '-arm64' } else { '' }
-$template = Join-Path $Repo "infra\windows\templates\actions-runner-v$Version-windows$suffix"
+$template = Join-Path $Repo "infra\windows\templates\actions-runner-v$Version-windows"
 if (-not (Test-Path $template)) {
     throw "no template at $template - its three entry points come from the repository"
 }

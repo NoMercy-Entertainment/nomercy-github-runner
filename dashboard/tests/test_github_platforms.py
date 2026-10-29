@@ -21,7 +21,7 @@ import providers as P
 
 GH = P.GITHUB
 ENV = {"GH_TOKEN": "ghp_live-looking-token-000", "GITHUB_ORG": "NoMercy-Entertainment"}
-CELLS = [(p, a) for p in P.PLATFORMS for a in (P.X64, P.ARM64)]
+CELLS = [(p, P.X64) for p in P.PLATFORMS]
 
 #: The org's runners list, one runner per platform, as GitHub returns it.
 RECORDED_RUNNERS = {
@@ -103,16 +103,12 @@ def spec_for(platform, arch=P.X64, **kw):
 
 
 class TestLabels:
-    def test_windows_arm_does_not_inherit_x64_labels(self):
-        env = {"RUNNER_LABELS_WINDOWS": "self-hosted,Windows,X64,old"}
-        assert GH.default_labels(P.WINDOWS, P.ARM64, env) == "self-hosted,Windows,ARM64"
-
     @pytest.mark.parametrize("platform,arch", CELLS)
     def test_each_cell_defaults_to_githubs_own_three(self, platform, arch):
         os_label = {"linux": "Linux", "windows": "Windows",
                     "macos": "macOS"}[platform]
         assert GH.default_labels(platform, arch, {}) == \
-            f"self-hosted,{os_label},{'X64' if arch == P.X64 else 'ARM64'}"
+            f"self-hosted,{os_label},X64"
 
     @pytest.mark.parametrize("platform", [P.WINDOWS, P.MACOS])
     def test_the_linux_fleets_variable_is_not_inherited(self, platform):
@@ -309,8 +305,8 @@ class TestLabelDrift:
         assert P.FORGEJO.registration_drift(
             {"labels": "docker:docker://node:20,ubuntu-latest:docker://x"},
             record) is None
-        assert "missing labels arm" in P.FORGEJO.registration_drift(
-            {"labels": "docker:docker://node:20,arm:host"}, record)
+        assert "missing labels gpu" in P.FORGEJO.registration_drift(
+            {"labels": "docker:docker://node:20,gpu:host"}, record)
 
 
 class TestADriftIsVisible:

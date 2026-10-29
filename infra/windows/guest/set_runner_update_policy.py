@@ -36,8 +36,8 @@ def read_values(registry, path):
 
 
 def apply_policy(registry, root, expected, computer, apply=False):
-    if expected not in {"rnr-windows-1", "windows-arm64-1"} or computer.upper() == "BEAST-UNIT":
-        raise RuntimeError("Only the two enrolled Windows runner VMs are eligible")
+    if expected != "rnr-windows-1" or computer.upper() == "BEAST-UNIT":
+        raise RuntimeError("Only the enrolled Windows runner VM is eligible")
     config = json.loads((root / "agent.json").read_text(encoding="utf-8-sig"))
     if config.get("host_id") != expected:
         raise RuntimeError("The guest agent identity does not match the selected worker")
@@ -67,7 +67,7 @@ def apply_policy(registry, root, expected, computer, apply=False):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--worker", required=True, choices=("rnr-windows-1", "windows-arm64-1"))
+    parser.add_argument("--worker", required=True, choices=("rnr-windows-1",))
     parser.add_argument("--apply", action="store_true")
     arguments = parser.parse_args()
     import winreg

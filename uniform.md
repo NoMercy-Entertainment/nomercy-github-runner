@@ -80,7 +80,7 @@ Iedere runner-instance moet dezelfde onderdelen hebben:
 - een declaratieve RunnerSpec;
 - een provider: `github` of `forgejo`;
 - een platform: `linux`, `windows` of `macos`;
-- een architectuur, bijvoorbeeld `x64` of `arm64`;
+- een architectuur: `x64`;
 - een platformimage of appliance-template;
 - één geïsoleerde runner-agent;
 - een eigen persistente registratiestatus;

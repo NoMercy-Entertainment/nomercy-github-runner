@@ -195,9 +195,8 @@ def parse(data, exists=os.path.isfile):
                                  or capacity[name] < (0 if name == "swap_bytes" else 1)):
             raise ConfigError(f"capacity.{name} must be a positive whole "
                               f"number")
-    if "architecture" in capacity and capacity["architecture"] not in (
-            "x64", "arm64"):
-        raise ConfigError("capacity.architecture must be x64 or arm64")
+    if "architecture" in capacity and capacity["architecture"] != "x64":
+        raise ConfigError("capacity.architecture must be x64")
     if "memory_admission" in capacity and capacity["memory_admission"] not in (
             "physical", "bounded-overcommit"):
         raise ConfigError("capacity.memory_admission must be physical or bounded-overcommit")

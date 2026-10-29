@@ -60,7 +60,7 @@ Rollout, owned by the operator:
    fall back to log polling. Source handles detach before storage maintenance.
    Install the dashboard/control modules together with native_history.py so
    the job_events capability disables the legacy history-log collector too.
-5. Run real short jobs for both providers on Linux, Windows x64/ARM64 and macOS.
+5. Run real short jobs for both providers on Linux, Windows and macOS.
    Verify start/finish, exact Forgejo success/failure/cancellation, signed GitHub
    results, durable replay after sender restart and no per-heartbeat log reads.
    Keep provider/registration IDs and resource profiles unchanged.

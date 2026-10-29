@@ -75,7 +75,7 @@ class Outbound:
         self._access(subject)  # Do not replace a current nonce when sign-in is missing.
         broker = Broker(self.path, self.clock, self.http)
         nonce = broker.begin_registration(issuer, subject)
-        supported = {"github-linux-x64", "github-windows-x64", "github-windows-arm64", "github-macos-x64"}
+        supported = {"github-linux-x64", "github-windows-x64", "github-macos-x64"}
         profiles = [row["fleet_id"] for row in self.service.fleets.list() if row["provider"] == "github" and row["available"] and row["fleet_id"] in supported]
         reply = self.call(subject, "/register", {"name": name, "callback_origin": public_origin.rstrip("/"),
             "ownership_nonce": nonce, "capabilities": {"protocol": 1, "profiles": profiles}}, issuer)
@@ -138,7 +138,7 @@ class Outbound:
         """Mint the same restricted short credential for either transport."""
         if not self.service or not isinstance(intent, dict) or set(intent) != {"profile", "organization", "count", "lease_minutes"}:
             raise Refused("An intent contains only profile, organization, count and lease_minutes")
-        if not isinstance(intent["profile"], str) or intent["profile"] not in {"github-linux-x64", "github-windows-x64", "github-windows-arm64", "github-macos-x64"}:
+        if not isinstance(intent["profile"], str) or intent["profile"] not in {"github-linux-x64", "github-windows-x64", "github-macos-x64"}:
             raise Refused("Choose a supported local GitHub profile")
         _integer(intent["count"], 1, 100, "count")
         _integer(intent["lease_minutes"], 1, 7200, "lease_minutes")

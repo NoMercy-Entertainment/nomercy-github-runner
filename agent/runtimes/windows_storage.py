@@ -19,8 +19,9 @@ DEFAULT_LIMIT = 100 * 1024 ** 3
 DEFAULT_RESERVE = 20 * 1024 ** 3
 MIN_LIMIT = 1024 ** 3
 # A full identity check includes shell startup and the storage CIM provider.
-# The real ARM check took 529 seconds with PowerShell 7. Keep one bound for
-# every Windows worker and below the default 1800-second operation deadline.
+# A real check on a slow guest took 529 seconds with PowerShell 7. Keep one
+# bound for every Windows worker and below the default 1800-second operation
+# deadline.
 VERIFY_TIMEOUT = 900
 #: What the helper says when a runner has no owned disk at all - a plain
 #: directory it will not adopt. The runtime measures such a runner as the
@@ -64,8 +65,8 @@ class WindowsStorage:
         # The helper already serializes storage through a host-wide mutex.
         # Queue locally before starting PowerShell, so our own concurrent
         # readers do not exhaust its short verify wait or compete for shell
-        # startup CPU under emulation. The OS mutex still protects other
-        # processes, and every call retains its complete identity check.
+        # startup CPU. The OS mutex still protects other processes, and
+        # every call retains its complete identity check.
         with self._helper_lock:
             ok, out, err = self._run([
                 self._powershell, "-NoProfile", "-NonInteractive", "-ExecutionPolicy",

@@ -346,8 +346,8 @@ class TestTheJobField:
 
 class TestFreshnessIsTheControllersClock:
     """A beat is dated when the controller receives it, not by the agent's
-    own stamp. The ARM64 guest's stamps ran 15 s behind the controller
-    (emulated clock plus a slow TLS post), so with a 10 s interval almost
+    own stamp. One Windows guest's stamps ran 15 s behind the controller
+    (a slow guest clock plus a slow TLS post), so with a 10 s interval almost
     nothing was left of the 30 s window: its card flipped to "unknown" and
     "not reachable" on every small hiccup (2026-10-10). The agent already
     refuses to send a measurement older than its own STALE_AFTER, so what

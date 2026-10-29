@@ -37,7 +37,7 @@ def bounded_policies(monkeypatch):
     return policies
 
 
-@pytest.mark.parametrize("target", [("linux", "x64"), ("windows", "x64"), ("windows", "arm64"), ("macos", "x64")])
+@pytest.mark.parametrize("target", [("linux", "x64"), ("windows", "x64"), ("macos", "x64")])
 def test_delayed_drain_waits_once_and_repeated_completion_is_idempotent(platform, monkeypatch, target):
     _, flow, agent, _ = platform
     spec = registered(platform, target)
@@ -80,7 +80,7 @@ def test_delayed_drain_waits_once_and_repeated_completion_is_idempotent(platform
 
 
 @pytest.mark.parametrize("fence", ["drained", "quiescent"])
-@pytest.mark.parametrize("target", [("windows", "arm64"), ("macos", "x64")])
+@pytest.mark.parametrize("target", [("windows", "x64"), ("macos", "x64")])
 def test_delayed_running_confirmation_awaits_one_actual_reply(platform, monkeypatch, fence, target):
     _, flow, agent, _ = platform
     spec = registered(platform, target)

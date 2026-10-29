@@ -141,8 +141,6 @@ class TestForFleet:
                                 capabilities={"kind": "macos-appliance"})
         workers.register_worker("rnr-windows-1", inv.HYPERV_WINDOWS, capabilities={
             "kind": "windows-process", "host_cores": 16})
-        workers.register_worker("windows-arm64-1", inv.HYPERV_WINDOWS, capabilities={
-            "kind": "windows-process", "host_cores": 8, "architecture": "arm64"})
         fleets = FleetStore(path)
 
         linux = hardware.for_fleet(workers, fleets.get("github-linux-x64"))
@@ -150,8 +148,6 @@ class TestForFleet:
             ("rnr-linux-1", 56, True)]
         x64 = hardware.for_fleet(workers, fleets.get("github-windows-x64"))
         assert [(h["host_id"], h["healthy"]) for h in x64] == [("rnr-windows-1", False)]
-        arm = hardware.for_fleet(workers, fleets.get("github-windows-arm64"))
-        assert [h["host_id"] for h in arm] == ["windows-arm64-1"]
         mac = hardware.for_fleet(workers, fleets.get("github-macos-x64"))
         assert [h["host_id"] for h in mac] == ["macos-appliance-1"]
 

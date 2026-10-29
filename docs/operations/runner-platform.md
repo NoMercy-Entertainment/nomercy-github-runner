@@ -19,7 +19,6 @@ controller; nothing is started by hand.
 | Forgejo Windows, 1 runner | BEAST-UNIT itself (OPEN-2) | Running as its own service and virtual account, in a Job Object, on its own fixed 100 GiB VHDX, labels `windows-2022`, `windows-latest` |
 | GitHub Windows | BEAST-UNIT | Cell buildable; see section 1.1 |
 | Forgejo macOS, 1 runner | Hyper-V VM `macos-runner` (QEMU guest) | Running from the debloated reusable base with its original Forgejo registration; the per-runner pool is not deployed |
-| Windows ARM64 (GitHub + Forgejo) | Dedicated Hyper-V VM `rnr-windows-arm64` (10.77.0.50), QEMU guest | Both online and executing health jobs after isolation on 2026-10-09. Own 12 GiB RAM, 8 vCPU, 64 GiB OS disk and 320 GiB appliance data disk; Windows keeps 8 GiB, 8 CPUs and two 120 GiB disks. See `images/windows/arm64/README.md` |
 | GitHub macOS | - | Not running; see section 1.1 |
 | WSL distro `github-runners` | - | Stopped, kept as the rollback copy of the old volumes. Its worker `wsl-linux-1` has no runners and reads degraded |
 | Docker Desktop | its own WSL VM, 32 GiB | Unrelated to the runners since the move |

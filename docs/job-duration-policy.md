@@ -4,7 +4,7 @@ Jobs may run for multiple days. Runner maintenance must drain them to completion
 
 ## Forgejo
 
-Linux, macOS, Windows x64 and Windows ARM64 use `2562047h47m16s` for both
+Linux, macOS and Windows use `2562047h47m16s` for both
 `runner.timeout` and `runner.shutdown_timeout`. This is the largest whole-second
 duration supported by Go, about 292 years, not a literal infinity setting.
 Forgejo Runner v13.1.0 does not support disabling these deadlines: a zero job

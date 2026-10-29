@@ -47,12 +47,10 @@ def test_helper_uses_fixed_argv_and_json_not_request_text_as_code():
     assert "-Command" not in args
 
 
-def test_arm_storage_verification_allows_emulated_shell_startup_without_skipping_identity(monkeypatch):
-    from agent import windows_timeouts
-    monkeypatch.setattr(windows_timeouts.platform, 'machine', lambda: 'ARM64')
-
+def test_storage_verification_allows_slow_shell_startup_without_skipping_identity():
     def run(args, **kwargs):
-        assert kwargs['timeout'] >= 120, 'Emulated PowerShell can take over a minute to start'
+        assert kwargs['timeout'] == windows_storage.VERIFY_TIMEOUT >= 120, \
+            'PowerShell can take over a minute to start on a slow guest'
         return True, json.dumps({'runner_id': RID, 'volume_guid': 'not-an-owned-volume',
                                  'virtual_bytes': DEFAULT_LIMIT,
                                  'capacity_bytes': DEFAULT_LIMIT - 1024**2,

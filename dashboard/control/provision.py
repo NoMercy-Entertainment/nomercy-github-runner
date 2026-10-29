@@ -852,8 +852,9 @@ class ProvisioningFlow:
         if unit.exists is not True or unit.running is not False:
             return False
         # Capture forge agreement after the potentially slow worker read.
-        # Routine health can advance while ARM/storage is answering; a stamp
-        # from before that wait is rejected by the atomic observation fence.
+        # Routine health can advance while a slow worker or its storage is
+        # answering; a stamp from before that wait is rejected by the atomic
+        # observation fence.
         records = self._records(provider, fresh=True, spec=spec)
         seen = provider.job_state(spec, records)
         self.forge_words[spec["runner_id"]] = seen

@@ -98,9 +98,9 @@ def test_agent_logs_store_identity_and_do_not_close_a_newer_job_on_replay(plane)
     assert len(history.get_run(runs[0]['id'])['samples_data']) == 1
 
 
-def test_controller_settings_page_has_eight_fleets_and_never_env_editor(client, plane):
+def test_controller_settings_page_has_six_fleets_and_never_env_editor(client, plane):
     assert b'Defaults for every fleet' in client.get('/settings').data
-    assert len(client.get('/api/v2/settings').json['fleets']) == 8
+    assert len(client.get('/api/v2/settings').json['fleets']) == 6
     # The .env editor and the by-name runner controls are gone (T-8), not
     # merely refused: a route that no longer exists cannot be reached by an
     # old bookmark or a stale tab.

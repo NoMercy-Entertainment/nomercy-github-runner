@@ -209,7 +209,7 @@ class AgentClient:
                 self._refuse(host_id, verb, WORKER_NOT_HEALTHY,
                              f"the worker is {health}")
         from .retry import agent_fast_for
-        # The socket must outlive a Windows ARM service read, but release
+        # The socket must outlive a slow Windows service read, but release
         # before the controller's outer deadline expires.
         default_timeout = max(self.timeout,
                               agent_fast_for(worker.get("capabilities")).timeout - 5)

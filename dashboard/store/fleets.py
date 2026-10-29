@@ -4,7 +4,7 @@ A fleet is one cell of the provider x platform matrix: what to build, how many
 of them, and with which defaults. The dashboard sets a number; the controller
 converges on it. Nobody creates a runner by hand.
 
-**They are rows, not code.** A seventh cell - `github/linux/arm64`, say -
+**They are rows, not code.** A seventh cell - a fourth platform, say -
 needs a row, not a branch. That is the whole reason this table exists rather
 than a constant somewhere: the previous shape of this system had the fleet
 implicit in a compose file with six near-identical service blocks, and adding
@@ -37,14 +37,13 @@ import providers
 
 from . import limits, schema
 
-# The existing x64 cells plus Windows ARM64 for both forges. New rows start
-# at zero capacity; seeding does not change an operator's existing capacity.
+# The six x64 cells: each forge on each platform. New rows start at zero
+# capacity; seeding does not change an operator's existing capacity.
 CELLS = tuple(
     (provider.key, platform, providers.X64)
     for provider in providers.ALL
     for platform in providers.PLATFORMS
-) + tuple((provider.key, providers.WINDOWS, providers.ARM64)
-          for provider in providers.ALL)
+)
 
 
 def fleet_id(provider_key, platform, architecture):

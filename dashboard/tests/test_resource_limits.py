@@ -28,12 +28,9 @@ def live_workers(service):
         "memory_total_bytes": LINUX_MEMORY})
     inventory.register_worker("rnr-windows-1", "hyperv-windows", capabilities={
         "kind": "windows-process", "host_cores": 16})
-    inventory.register_worker("windows-arm64-1", "hyperv-windows", capabilities={
-        "kind": "windows-process", "host_cores": 8, "architecture": "arm64"})
     inventory.register_worker("macos-appliance-1", "hyperv-linux",
                               capabilities={"kind": "macos-appliance"})
-    for host in ("rnr-linux-1", "rnr-windows-1", "windows-arm64-1",
-                 "macos-appliance-1"):
+    for host in ("rnr-linux-1", "rnr-windows-1", "macos-appliance-1"):
         inventory.heartbeat(host)
 
 
@@ -50,20 +47,17 @@ class TestSettingsShowsTheMaximum:
         assert [h["host_id"] for h in row["hardware"]] == ["rnr-linux-1"]
         assert row["limits_max"]["cpus"] == 56
         assert row["limits_max"]["memory_bytes"] == LINUX_MEMORY
-        arm = settings_row(client, "github-windows-arm64")
-        assert arm["limits_max"]["cpus"] == 8
-        assert arm["limits_max"]["memory_bytes"] is None
+        windows = settings_row(client, "github-windows-x64")
+        assert windows["limits_max"]["cpus"] == 16
+        assert windows["limits_max"]["memory_bytes"] is None
 
     def test_memory_the_deployment_supplies_is_shown_as_inherited(
             self, client, plane, monkeypatch):
         monkeypatch.setenv("RUNNER_UNIT_MEMORY_GITHUB_WINDOWS", "8g")
-        monkeypatch.setenv("RUNNER_UNIT_MEMORY_GITHUB_WINDOWS_ARM64", "3g")
         service, _ = api_v2.control_plane()
         live_workers(service)
         x64 = settings_row(client, "github-windows-x64")
-        arm = settings_row(client, "github-windows-arm64")
         assert x64["memory_inherited"] == {"bytes": 8 * GIB, "text": "8g"}
-        assert arm["memory_inherited"] == {"bytes": 3 * GIB, "text": "3g"}
         assert x64["memory_limit"] is None, "never copied into the fleet row"
         assert settings_row(client, "github-linux-x64")["memory_inherited"] is None
 
@@ -99,21 +93,19 @@ class TestSettingsRefusesAboveTheMaximum:
         assert refused.status_code == 400
         assert "78.6 GiB" in refused.json["error"]
 
-    def test_the_arm64_cell_is_bounded_by_its_own_host(self, client, plane):
+    def test_the_windows_cell_is_bounded_by_its_own_host(self, client, plane):
         service, _ = api_v2.control_plane()
         live_workers(service)
-        assert client.post("/api/v2/settings/github-windows-arm64",
-                           json={"cpu_limit": 8}).status_code == 200
-        refused = client.post("/api/v2/settings/github-windows-arm64",
-                              json={"cpu_limit": 16})
-        assert refused.status_code == 400 and "windows-arm64-1" in refused.json["error"]
+        assert client.post("/api/v2/settings/github-windows-x64",
+                           json={"cpu_limit": 16}).status_code == 200
+        refused = client.post("/api/v2/settings/github-windows-x64",
+                              json={"cpu_limit": 32})
+        assert refused.status_code == 400 and "rnr-windows-1" in refused.json["error"]
 
 
 #: The deployment's memory seeds as they are set today (2026-10-08).
 LIVE_ENV = {"RUNNER_UNIT_MEMORY_GITHUB_WINDOWS": "8g",
-            "RUNNER_UNIT_MEMORY_FORGEJO_WINDOWS": "8g",
-            "RUNNER_UNIT_MEMORY_GITHUB_WINDOWS_ARM64": "3g",
-            "RUNNER_UNIT_MEMORY_FORGEJO_WINDOWS_ARM64": "3g"}
+            "RUNNER_UNIT_MEMORY_FORGEJO_WINDOWS": "8g"}
 
 
 def live_fleets(service):
@@ -126,8 +118,6 @@ def live_fleets(service):
                                 {"cpu_limit": 16, "memory_limit": 6 * GIB})
     for fid in ("github-windows-x64", "forgejo-windows-x64"):
         service.fleets.set_defaults(fid, {"cpu_limit": 16})
-    for fid in ("github-windows-arm64", "forgejo-windows-arm64"):
-        service.fleets.set_defaults(fid, {"cpu_limit": 8})
 
 
 def fleet_row(client, fid):
@@ -156,8 +146,7 @@ class TestLinuxAndWindowsNeedLimits:
             assert "limit" not in (add_action(row)["reason"] or ""), row["fleet_id"]
         for row in client.get("/api/v2/settings").json["fleets"]:
             assert row["limits_problem"] is None, row["fleet_id"]
-        for fid in ("github-linux-x64", "forgejo-linux-x64", "github-windows-x64",
-                    "github-windows-arm64"):
+        for fid in ("github-linux-x64", "forgejo-linux-x64", "github-windows-x64"):
             assert service.create(fid, 1, idempotency_key=f"live-{fid}")
 
     def test_a_fleet_without_memory_cannot_add_a_runner(self, client, plane):

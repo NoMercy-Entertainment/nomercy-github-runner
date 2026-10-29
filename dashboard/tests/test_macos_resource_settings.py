@@ -60,7 +60,7 @@ def test_healthy_pool_enables_cpu_and_guest_ram_but_fixed_disk_is_read_only(clie
     ("healthy", dict(CAPS, appliance_per_runner=False), "hyperv-linux"),
     ("healthy", dict(CAPS, cpu_enforcement=1), "hyperv-linux"),
     ("healthy", dict(CAPS, memory_enforcement="true"), "hyperv-linux"),
-    ("healthy", dict(CAPS, architecture="arm64"), "hyperv-linux"),
+    ("healthy", dict(CAPS, architecture="riscv64"), "hyperv-linux"),
     ("healthy", CAPS, "hyperv-windows"),
     ("healthy", dict(CAPS, capacity_valid=False), "hyperv-linux"),
     ("healthy", {"kind": "macos-appliance", "runtime": "invalid"}, "hyperv-linux"),

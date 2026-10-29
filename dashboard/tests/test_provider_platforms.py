@@ -32,13 +32,11 @@ class TestTheMatrix:
         assert P.GITHUB.supports(P.WINDOWS, P.X64, {})
 
     def test_github_macos(self):
-        """Documented: macOS 11.0 or later, x64 and ARM64."""
+        """Documented: macOS 11.0 or later."""
         assert P.GITHUB.supports(P.MACOS, P.X64, {})
-        assert P.GITHUB.supports(P.MACOS, P.ARM64, {})
 
     def test_forgejo_linux(self):
         assert P.FORGEJO.supports(P.LINUX, P.X64, {})
-        assert P.FORGEJO.supports(P.LINUX, P.ARM64, {})
 
     def test_forgejo_windows_is_unavailable_until_someone_builds_it(self):
         s = P.FORGEJO.supports(P.WINDOWS, P.X64, {})
@@ -55,26 +53,18 @@ class TestTheMatrix:
 
 
 class TestConfiguringTheSelfBuiltArtefact:
-    def test_windows_arm_uses_its_own_artefact_and_label(self):
-        env = {"FORGEJO_RUNNER_ARTIFACT_WINDOWS": "forgejo-x64.exe",
-               "FORGEJO_RUNNER_LABELS_WINDOWS": "windows-latest:host"}
-        assert not P.FORGEJO.supports(P.WINDOWS, P.ARM64, env)
-        assert P.FORGEJO.default_labels(P.WINDOWS, P.ARM64, env) == "windows-arm64:host"
-        env["FORGEJO_RUNNER_ARTIFACT_WINDOWS_ARM64"] = "forgejo-arm64.exe"
-        assert P.FORGEJO.agent_artifact(P.WINDOWS, P.ARM64, env).reference == "forgejo-arm64.exe"
-
     def test_naming_the_artefact_enables_the_cell(self):
-        env = {"FORGEJO_RUNNER_ARTIFACT_MACOS": "forgejo-runner-darwin-arm64"}
-        assert P.FORGEJO.supports(P.MACOS, P.ARM64, env)
+        env = {"FORGEJO_RUNNER_ARTIFACT_MACOS": "forgejo-runner-darwin-amd64"}
+        assert P.FORGEJO.supports(P.MACOS, P.X64, env)
 
     def test_the_artefact_is_marked_self_built(self):
         """Provenance is not cosmetic: a self-built binary has no upstream
         release feed, and this fleet has already lost a day to a pinned runner
         version being deprecated with no warning."""
-        env = {"FORGEJO_RUNNER_ARTIFACT_MACOS": "forgejo-runner-darwin-arm64"}
-        a = P.FORGEJO.agent_artifact(P.MACOS, P.ARM64, env)
+        env = {"FORGEJO_RUNNER_ARTIFACT_MACOS": "forgejo-runner-darwin-amd64"}
+        a = P.FORGEJO.agent_artifact(P.MACOS, P.X64, env)
         assert a.source == "self-built"
-        assert a.reference == "forgejo-runner-darwin-arm64"
+        assert a.reference == "forgejo-runner-darwin-amd64"
         assert "no upstream release feed" in a.notes
 
     def test_a_vendor_artefact_says_so(self):
@@ -101,6 +91,18 @@ class TestUnknownInputIsAnswered:
         s = P.FORGEJO.supports(P.WINDOWS, P.X64, {})
         assert bool(s) is False
         assert s.reason
+
+    def test_an_architecture_nobody_builds_is_unsupported(self):
+        """Every cell this platform builds is x64. Another architecture is
+        answered with a reason by either forge on every platform, whatever
+        self-built artefacts the deployment names."""
+        env = {"FORGEJO_RUNNER_ARTIFACT_WINDOWS": "forgejo-runner.exe",
+               "FORGEJO_RUNNER_ARTIFACT_MACOS": "forgejo-runner-darwin-amd64"}
+        for prov in P.ALL:
+            for platform in P.PLATFORMS:
+                s = prov.supports(platform, "riscv64", env)
+                assert not s and "riscv64" in s.reason, (prov.key, platform)
+                assert prov.agent_artifact(platform, "riscv64", env) is None
 
 
 class TestDeregistrationDiffersAndTheDifferenceMatters:

@@ -1,31 +1,20 @@
-"""Registration deadlines for native and emulated Windows workers.
+"""Registration deadlines for Windows workers.
 
-An ARM64 worker under TCG took over two minutes just to start Windows
-PowerShell (2026-10-02). Keep the existing x64 bounds, while allowing the
-ARM template's 600-second registration process plus shell startup. The
-pipe client and its parent must outlive the service-side handler.
+The pipe client and its parent must outlive the service-side handler.
 """
-import platform
 
 
-def service_identity_timeout(architecture=None):
-    """Keep identity verification mandatory while allowing ARM emulation startup."""
-    architecture = (architecture or platform.machine()).lower()
-    return 60 if architecture in ("arm64", "aarch64") else 10
+def service_identity_timeout():
+    """Identity verification is mandatory: one short PowerShell call."""
+    return 10
 
 
-def registration_limits(architecture=None):
-    architecture = (architecture or platform.machine()).lower()
-    if architecture in ("arm64", "aarch64"):
-        # The pipe waits for the job host to start (minutes under TCG) and
-        # then for the whole script, so it needs both (2026-10-08).
-        return {"key_setup": 600, "script": 900, "pipe": 1600, "client": 1650}
+def registration_limits():
+    # The pipe waits for the job host to start and then for the whole
+    # script, so it needs both.
     return {"key_setup": 30, "script": 105, "pipe": 115, "client": 140}
 
 
-def shell_timeout(architecture=None):
-    """One short PowerShell or icacls call. Under TCG, PowerShell alone took
-    over two minutes to start (2026-10-02), so 30 s timed out every ARM64
-    create at its workspace alias (2026-10-08)."""
-    architecture = (architecture or platform.machine()).lower()
-    return 300 if architecture in ("arm64", "aarch64") else 30
+def shell_timeout():
+    """One short PowerShell or icacls call."""
+    return 30

@@ -24,14 +24,14 @@ def fleets(tmp_path):
 #: Names a self-built Forgejo agent, which is what makes those cells buildable.
 BUILT = {
     "FORGEJO_RUNNER_ARTIFACT_WINDOWS": "forgejo-runner-windows-amd64.exe",
-    "FORGEJO_RUNNER_ARTIFACT_MACOS": "forgejo-runner-darwin-arm64",
+    "FORGEJO_RUNNER_ARTIFACT_MACOS": "forgejo-runner-darwin-amd64",
 }
 
 
 class TestSeeding:
-    def test_there_are_eight(self, fleets):
+    def test_there_are_six(self, fleets):
         fleets.seed()
-        assert len(fleets.list()) == 8
+        assert len(fleets.list()) == 6
 
     def test_seeded_fleets_are_the_declared_cells(self, fleets):
         fleets.seed()
@@ -61,14 +61,6 @@ class TestSeeding:
 
 
 class TestAvailabilityComesFromTheProvider:
-    def test_windows_arm_forgejo_requires_its_own_binary(self, fleets):
-        fleets.seed(BUILT)
-        arm = fleets.get("forgejo-windows-arm64")
-        assert arm["available"] is False
-        assert "FORGEJO_RUNNER_ARTIFACT_WINDOWS_ARM64" in arm["unavailable_reason"]
-        fleets.seed(dict(BUILT, FORGEJO_RUNNER_ARTIFACT_WINDOWS_ARM64="forgejo-arm.exe"))
-        assert fleets.get("forgejo-windows-arm64")["available"] is True
-
     def test_the_github_cells_are_available(self, fleets):
         fleets.seed()
         for platform in providers.PLATFORMS:
@@ -214,10 +206,10 @@ class TestAddingASeventhCellNeedsNoCode:
             c.execute(
                 "INSERT INTO fleets (fleet_id, provider, platform,"
                 " architecture, available) VALUES"
-                " ('github-linux-arm64', 'github', 'linux', 'arm64', 1)")
-        assert len(fleets.list()) == 9
-        fleets.set_capacity("github-linux-arm64", 2)
-        assert fleets.get("github-linux-arm64")["desired_capacity"] == 2
+                " ('github-linux-riscv64', 'github', 'linux', 'riscv64', 1)")
+        assert len(fleets.list()) == 7
+        fleets.set_capacity("github-linux-riscv64", 2)
+        assert fleets.get("github-linux-riscv64")["desired_capacity"] == 2
 
     def test_a_cell_cannot_be_registered_twice(self, fleets):
         """UNIQUE on the coordinate is what makes the fleet id canonical."""
@@ -288,12 +280,11 @@ class TestLimitsAgainstHardware:
         _host(fleets, "rnr-linux-1", kind="linux-container", host_cores=56)
         _host(fleets, "rnr-windows-1", "hyperv-windows", kind="windows-process",
               host_cores=16)
-        _host(fleets, "windows-arm64-1", "hyperv-windows", kind="windows-process",
-              host_cores=8, architecture="arm64")
         assert fleets.set_defaults("github-windows-x64", {"cpu_limit": 16})
         with pytest.raises(ValueError) as refused:
-            fleets.set_defaults("github-windows-arm64", {"cpu_limit": 16})
-        assert "windows-arm64-1" in str(refused.value)
+            fleets.set_defaults("github-windows-x64", {"cpu_limit": 32})
+        assert "rnr-windows-1" in str(refused.value)
+        assert "rnr-linux-1" not in str(refused.value)
 
     def test_unknown_hardware_is_accepted(self, fleets):
         fleets.seed()

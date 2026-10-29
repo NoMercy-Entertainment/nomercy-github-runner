@@ -11,9 +11,9 @@ The telemetry below is the shape each runtime's agent really sends, with the
 fleet's own numbers (2026-10-08): Linux runners on a 56-core, 84.4 GB host
 with a 107.37 GB disk and a 40 GB cache cap each; Windows x64 with 16 cores,
 8.59 GB and its own 107.37 GB VHD; forgejo-windows-x64-2, a plain directory
-on that same storage-enabled worker; the ARM64 guest's 8 cores, 3.22 GB and
-no owned storage; and the macOS appliance, 6 logical CPUs, no limits, its
-runners on a 274 GB Data volume.
+on that same storage-enabled worker; a Windows guest with its 8 cores and
+3.22 GB but no storage measured yet; and the macOS appliance, 6 logical CPUs,
+no limits, its runners on a 274 GB Data volume.
 """
 import re
 from datetime import datetime, timedelta, timezone
@@ -77,7 +77,7 @@ WINDOWS_PLAIN = spec("windows", display_name="forgejo-windows-x64-2",
     "cache_volume_used_bytes": 900 * GB,
     "cache_volume_total_bytes": 2000 * GB, "cache_volume_at": at(100)})
 
-ARM64 = spec("windows", "arm64", telemetry={
+WINDOWS_BARE = spec("windows", telemetry={
     "at": at(3), "cpu_percent": 12.0, "cpu_cores": 8, "host_cores": 8,
     "mem_used_bytes": 1 * GB, "mem_limit_bytes": 3221225472})
 
@@ -108,7 +108,8 @@ MACOS_POOL = spec("macos", telemetry={
     "cache_volume_total_bytes": 100 * GB, "cache_volume_at": at(100)})
 
 EVERY = {"linux": LINUX, "windows-vhd": WINDOWS_VHD,
-         "windows-plain": WINDOWS_PLAIN, "arm64": ARM64, "macos": MACOS,
+         "windows-plain": WINDOWS_PLAIN, "windows-bare": WINDOWS_BARE,
+         "macos": MACOS,
          "macos-pool": MACOS_POOL}
 
 METERS = ("cpu", "memory", "storage", "cache")
@@ -206,8 +207,8 @@ class TestSharedBoundaries:
         assert c["cache"]["shared"] is True
         assert c["cache"]["total_bytes"] == 2000 * GB
 
-    def test_arm64_before_its_volume_is_measured_is_unknown_not_missing(self):
-        c = card(ARM64)
+    def test_a_guest_before_its_volume_is_measured_is_unknown_not_missing(self):
+        c = card(WINDOWS_BARE)
         assert c["cpu"]["total_cores"] == 8
         assert c["memory"]["total_bytes"] == 3221225472
         assert c["storage"] == {"used_bytes": None, "total_bytes": None,
@@ -377,11 +378,11 @@ class TestTheSameCardEverywhere:
     def test_an_unknown_figure_is_unknown_in_its_slot(self):
         t = dict(LINUX["telemetry"], storage_at=at(3600))
         html = render("cardHTML", [card(dict(LINUX, telemetry=t)),
-                                   card(ARM64)])
+                                   card(WINDOWS_BARE)])
         linux = {m[0]: m[1:] for m in _meters(html[0])}
-        arm = {m[0]: m[1:] for m in _meters(html[1])}
+        bare = {m[0]: m[1:] for m in _meters(html[1])}
         assert linux["storage"] == ("unknown", "unknown / 100.00 GiB", 0.0)
-        assert arm["storage"] == ("unknown", "unknown / unknown shared", 0.0)
+        assert bare["storage"] == ("unknown", "unknown / unknown shared", 0.0)
 
 
 # ---------------------------------------------------------------------------

@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
     [string] $Name = 'rnr-windows-1',
-    [ValidateSet('x64', 'arm64')]
+    [ValidateSet('x64')]
     [string] $Architecture = 'x64',
     [string] $ResultPath = 'D:\HyperV\runner-platform\stage\windows-build-tools-result.json'
 )
