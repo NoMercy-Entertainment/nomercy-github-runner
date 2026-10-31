@@ -24,6 +24,11 @@ class DiskCommands:
         self.fail = None
         self.foreign_backing = None
         self.children = False
+        # Loop devices whose backing file is opened O_DIRECT, as `losetup
+        # --list` reports in its DIO column. A device `mount -o loop` makes
+        # starts buffered, as the kernel does.
+        self.direct_io = set()
+        self.refuse_direct_io = False
 
     def __call__(self, argv, timeout=120):
         self.calls.append(argv)
@@ -51,10 +56,16 @@ class DiskCommands:
         if verb == "losetup":
             if "--associated" in argv:
                 return 0, json.dumps({"loopdevices": list(self.mounts)}), ""
+            if "--direct-io=on" in argv:
+                if self.refuse_direct_io:
+                    return 1, "", f"losetup: {argv[-1]}: set direct io failed: Invalid argument"
+                self.direct_io.add(argv[-1])
+                return 0, "", ""
             index = int(argv[-1].removeprefix("/dev/loop"))
             return 0, json.dumps({"loopdevices": [{"name": argv[-1],
                                  "back-file": self.foreign_backing or list(self.mounts.values())[index],
-                                 "offset": 0, "sizelimit": 0, "ro": False}]}), ""
+                                 "offset": 0, "sizelimit": 0, "ro": False,
+                                 "dio": argv[-1] in self.direct_io}]}), ""
         if verb == "umount":
             self.mounts.pop(argv[-1])
             # Model the empty host mountpoint exposed by unmounting.
@@ -177,6 +188,48 @@ def test_wrong_filesystem_or_loop_backing_fails_closed(disk):
     commands.filesystems[str(store._paths(RID)[2])] = OTHER
     with pytest.raises(StorageError, match="UUID"):
         provision(store)
+
+
+def direct_io_calls(commands):
+    return [call for call in commands.calls if call[0] == "losetup" and "--direct-io=on" in call]
+
+
+def test_the_loop_device_is_switched_to_direct_io_once(disk):
+    """Buffered, the loop worker charges a second copy of every written page
+    to the unit's cgroup and fires the OOM killer from a context that cannot
+    reclaim (every kill on rnr-linux-1 2026-10-24..31). The image is read
+    and written O_DIRECT, and a device already running so is left alone."""
+    store, commands = disk
+    provision(store)
+    assert direct_io_calls(commands) == [["losetup", "--direct-io=on", "/dev/loop0"]]
+    assert commands.direct_io == {"/dev/loop0"}
+    provision(store)
+    assert len(direct_io_calls(commands)) == 1
+
+
+def test_a_filesystem_mounted_buffered_by_an_older_agent_is_switched_on_ensure(disk):
+    store, commands = disk
+    provision(store)
+    commands.direct_io.clear()  # what an agent before this change left mounted
+    count = len(commands.calls)
+    provision(store)
+    assert direct_io_calls(commands)[1:] == [["losetup", "--direct-io=on", "/dev/loop0"]]
+    assert not any(call[0] in ("mount", "mkfs.ext4") for call in commands.calls[count:])
+    assert commands.direct_io == {"/dev/loop0"}
+
+
+def test_a_loop_device_that_cannot_run_direct_io_fails_closed(disk):
+    store, commands = disk
+    commands.refuse_direct_io = True
+    with pytest.raises(StorageError, match="direct I/O"):
+        provision(store)
+    # The mount stays; a retry when the device can do it succeeds without
+    # formatting or mounting again.
+    commands.refuse_direct_io = False
+    count = len(commands.calls)
+    provision(store)
+    assert not any(call[0] in ("mount", "mkfs.ext4") for call in commands.calls[count:])
+    assert commands.direct_io == {"/dev/loop0"}
 
 
 def test_registration_reset_preserves_previous_work_and_cache(disk):

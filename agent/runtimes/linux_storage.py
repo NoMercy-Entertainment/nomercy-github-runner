@@ -131,6 +131,8 @@ class LinuxStorage:
             raise StorageError("existing filesystem type or UUID is not owned by this runner")
 
     def _mounted(self, rid):
+        """False when nothing is mounted, else the owned loop device's
+        `losetup --list` row (name, backing, dio); truthy."""
         _, _, image, mount = self._paths(rid)
         self._safe(mount, directory=True)
         code, out, error = self.run(["findmnt", "--json", "--mountpoint", str(mount),
@@ -152,7 +154,7 @@ class LinuxStorage:
         except (ValueError, KeyError, IndexError, TypeError) as error:
             raise StorageError("unexpected runner mount") from error
         out = self._command(["losetup", "--json", "--list", "--output",
-                             "NAME,BACK-FILE,OFFSET,SIZELIMIT,RO", source])
+                             "NAME,BACK-FILE,OFFSET,SIZELIMIT,RO,DIO", source])
         try:
             loops = json.loads(out)["loopdevices"]
             loop = loops[0]
@@ -161,7 +163,34 @@ class LinuxStorage:
                 raise ValueError("unexpected backing configuration")
         except (ValueError, KeyError, IndexError, TypeError) as error:
             raise StorageError("loop device is backed by a different image or range") from error
-        return True
+        return loop
+
+    @staticmethod
+    def _direct(loop):
+        return loop.get("dio") in (True, 1, "1")
+
+    def _direct_io(self, rid, loop):
+        """The loop device reads and writes its image O_DIRECT.
+
+        `mount -o loop` leaves it buffered, and then the loop worker writes
+        the image through the host page cache: every page a job writes is
+        charged to the unit's cgroup twice (inner ext4 and backing file),
+        and the charge happens in a kernel worker that cannot write anything
+        back. When the cgroup is at its limit that worker fires the OOM
+        killer at whatever job process is there - every memcg kill on
+        rnr-linux-1 between 2026-10-24 and 2026-10-31, with the cgroup 90 %
+        file cache and the killed process at a few hundred MiB. Toggling is
+        safe on a mounted device (the kernel flushes first), so a filesystem
+        an older agent mounted is switched the next time it is ensured."""
+        if self._direct(loop):
+            return
+        try:
+            self._command(["losetup", "--direct-io=on", loop["name"]])
+        except StorageError as error:
+            raise StorageError(f"runner loop device would not switch to direct I/O: {error}") from error
+        loop = self._mounted(rid)
+        if not loop or not self._direct(loop):
+            raise StorageError("runner loop device did not switch to direct I/O")
 
     def _no_child_mounts(self, rid):
         mount = self._paths(rid)[3]
@@ -206,12 +235,15 @@ class LinuxStorage:
         self._filesystem(rid, data)
         if not mount.exists() and not mount.is_symlink():
             mount.mkdir(mode=0o700)
-        if not self._mounted(rid):
+        loop = self._mounted(rid)
+        if not loop:
             if list(mount.iterdir()):
                 raise StorageError("unmounted backing directory is not empty; refusing to hide data")
             self._command(["mount", "-t", "ext4", "-o", "loop,rw,nodev,nosuid", str(image), str(mount)])
-            if not self._mounted(rid):
+            loop = self._mounted(rid)
+            if not loop:
                 raise StorageError("runner filesystem did not mount")
+        self._direct_io(rid, loop)
         paths = {}
         for area, directory in AREA_DIRS.items():
             path = mount / directory

@@ -14,8 +14,8 @@ controller; nothing is started by hand.
 | Part | Where | State |
 | --- | --- | --- |
 | Control plane: controller + dashboard | VM `rnr-control` (10.77.0.10), compose `/etc/runner-platform/compose.yml` | Running. The public name reaches the dashboard through the host's portproxy |
-| GitHub Linux, 10 runners | VM `rnr-linux-1` (10.77.0.20), 80 GiB, 56 vCPU | Running. One container each, writable root (jobs run apt), own 100 GiB filesystem, 16-core cpuset, 32 GiB RAM + 32 GiB swap |
-| Forgejo Linux, 3 runners | `rnr-linux-1` | Running, 6 GiB RAM + 6 GiB swap, labels `ubuntu-latest`, `ubuntu-22.04(-full)`, `ubuntu-24.04(-full)` |
+| GitHub Linux, 10 runners | VM `rnr-linux-1` (10.77.0.20), 56 vCPU | Running. One container each, writable root (jobs run apt), own 100 GiB filesystem on a direct-I/O loop device (1.3), 8-core cpuset, 16 GiB RAM + 16 GiB swap |
+| Forgejo Linux, 3 runners | `rnr-linux-1` | Running, 8 GiB RAM + 8 GiB swap, labels `ubuntu-latest`, `ubuntu-22.04(-full)`, `ubuntu-24.04(-full)` |
 | Forgejo Windows, 1 runner | BEAST-UNIT itself (OPEN-2) | Running as its own service and virtual account, in a Job Object, on its own fixed 100 GiB VHDX, labels `windows-2022`, `windows-latest` |
 | GitHub Windows | BEAST-UNIT | Cell buildable; see section 1.1 |
 | Forgejo macOS, 1 runner | Hyper-V VM `macos-runner` (QEMU guest) | Running from the debloated reusable base with its original Forgejo registration; the per-runner pool is not deployed |
@@ -53,32 +53,54 @@ Each looked healthy on the dashboard, which is why they are listed:
   the worker's per-runner filesystems as a disk quota.
 - A fleet-wide cache clear took every idle runner out at once.
 
-### 1.3 Forgejo Linux memory: what 6 GiB was measured against
+### 1.3 Linux unit memory: the limit is not what kills jobs
 
-Each Forgejo Linux unit has 6 GiB RAM and 6 GiB combined RAM+swap. Measured
-on 2026-09-22, about a day after the units were made and with jobs having run
-on all three (`memory.stat`, `memory.events` and `memory.peak` of each unit's
-cgroup, not `docker stats`):
+Every Linux unit's five areas (work, nested engine, cache, reg, logs) are
+one ext4 image, `/var/lib/runner-data/runners/<id>/disk.ext4`, attached as a
+loop device by the agent (`agent/runtimes/linux_storage.py`). A loop device
+`mount -o loop` makes is buffered: the kernel's loop worker writes the image
+through the host page cache, so every page a job writes is charged to the
+unit's cgroup twice (the inner ext4 and the backing file), and that charge
+happens in a kernel worker that cannot write anything back. When the cgroup
+is at its limit, that worker fires the OOM killer at whatever job process is
+there.
 
-| | unit 1 | unit 2 | unit 3 |
-| --- | --- | --- | --- |
-| peak | 6144 MiB (at the limit) | 6145 MiB | 6144 MiB |
-| anonymous (real process memory) | 56 MiB | 55 MiB | 53 MiB |
-| page cache | 2646 MiB | 4175 MiB | 4208 MiB |
-| `max` events (reclaim at the limit) | 4597 | 2785 | 1270 |
-| `oom_kill` | 0 | 0 | 0 |
-| swap used at peak | 0 | 0 | 0 |
+Measured 2026-10-31 in `journalctl -k` on `rnr-linux-1`: all 16 memcg kills
+since the rebuild of 2026-10-23 carry `Workqueue: loopN loop_workfn` and the
+trace `lo_write_simple -> ext4_da_write_begin -> try_charge_memcg`. At each
+kill the cgroup was file cache, not process memory:
 
-So the limit is reached, but by page cache, which the kernel reclaims; the
-work itself needs tens of MiB. Nothing was killed and nothing swapped. 6 GiB
-stands.
+| kill | unit limit | anon | file | killed |
+| --- | --- | --- | --- | --- |
+| 2026-10-31 03:43, Forgejo unit 3, ffmpeg-stemsplit run 13 | 8 GiB | 174 MiB | 8.06 GB | `node` (upload-artifact), 104 MiB RSS |
+| 2026-10-31 03:20, Forgejo unit 2, ffmpeg-stemsplit run 12 | 8 GiB | 0.8 GB | 6.9 GB | `ffmpeg`, 756 MiB |
+| 2026-10-30 09:42, GitHub unit | 16 GiB | 1.6 GB | 13.9 GB | `docker` (9 MiB), two `php-fpm` (2 MiB) |
+| 2026-10-28 04:41, GitHub unit | 16 GiB | 0.2 GB | 15.3 GB | `git`, 0 MiB |
 
-**When to raise it:** any Forgejo unit showing `oom_kill` above 0 in
-`memory.events`, or anonymous memory above 4 GiB during a measured job. A
-raise has to fit the Linux worker's admission - 72 GiB RAM and 640 GiB swap,
-bounded overcommit - counted against the ten GitHub units at 32 GiB + 32 GiB
-each. Read `anon` before deciding: a unit sitting at its limit is not
-evidence on its own.
+So a raise moves the kill, it does not remove it: 14 of the 16 were units at
+16 GiB. The fix is direct I/O on the loop device: the agent runs
+`losetup --direct-io=on` on every filesystem it ensures (create, start,
+restart, boot), the backing file is no longer cached, and the kernel worker no
+longer charges the cgroup. A device switched while mounted is flushed first;
+the inner ext4 cache stays and is reclaimed the ordinary way. `losetup -l`
+must show `DIO 1` on every `/dev/loopN` under `/var/lib/runner-data`.
+
+The dashboard cannot show this state: `docker stats` subtracts inactive
+file cache, so a unit whose cgroup sits at 6 GB reads as 0.5 GB used. Read
+the cgroup directly:
+
+```
+P=/sys/fs/cgroup/system.slice/docker-<container id>.scope
+grep -E '^(anon|file|file_dirty|shmem) ' $P/memory.stat; cat $P/memory.events
+```
+
+**When to raise a limit:** `anon` above about three quarters of the limit
+during a measured job, with `DIO 1` on the device. An `oom_kill` with `anon`
+small and `file` at the limit is the loop path again, never a reason to raise.
+The 2026-09-22 measurement that set 6 GiB for Forgejo (page cache at the
+limit, `oom_kill 0`, tens of MiB of anon) was taken on Docker volumes, before
+the per-runner images; the fleets have been 8 GiB (Forgejo) and 16 GiB
+(GitHub) since the rebuild.
 
 ## 2. Gates
 
@@ -226,7 +248,7 @@ six minutes.
 | Thing | Where |
 | --- | --- |
 | Control store and history | volume `runner-platform_controller-data` on `rnr-control` (`/data/control.db`, `/data/history.db`) |
-| Linux runner data | `/var/lib/runner-data/runners/<runner_id>/` on `rnr-linux-1`, one ext4 image each; swap file on the same disk |
+| Linux runner data | `/var/lib/runner-data/runners/<runner_id>/` on `rnr-linux-1`, one ext4 image each on a direct-I/O loop device (1.3); swap file on the same disk |
 | Windows runner disks | `D:\runner-disks\<runner_id>.vhdx`, mounted at `D:\runners\<runner_id>` |
 | Windows templates | `C:\ProgramData\nomercy\templates\` |
 | macOS runner | inside the QEMU guest of VM `macos-runner`, `/Users/runner/templates/` |
