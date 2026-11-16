@@ -126,7 +126,9 @@
             # runners at 8 GiB is 184 GB. MemoryGB is the startup amount and
             # what the budget check counts.
             MemoryGB  = 32
-            DynamicMemory = @{ MinGB = 16; MaxGB = 184; BufferPct = 100 }
+            # 2026-11-16: more cache headroom under concurrent CI disk traffic.
+            # The online change was admitted against host physical/commit reserves.
+            DynamicMemory = @{ MinGB = 16; MaxGB = 184; BufferPct = 150 }
             Cpus      = 56
             DiskGB    = 400
             # The runners' own disk (one ext4 image each, and the swap file),

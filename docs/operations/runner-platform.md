@@ -102,6 +102,20 @@ limit, `oom_kill 0`, tens of MiB of anon) was taken on Docker volumes, before
 the per-runner images; the fleets have been 8 GiB (Forgejo) and 16 GiB
 (GitHub) since the rebuild.
 
+### 1.4 Startup and storage corrections (2026-11-16)
+
+The 2026-11-16 startup/storage incident and the approved live corrections
+are documented in [the incident record](incidents/2026-11-16-linux-runner-startup.md).
+GitHub Linux now uses the locally derived Worker in
+`nomercy/runner-unit-github:20261116-startup1`: the official Worker's separate
+30-second receive timeout did not honor the Listener's setting of 300.
+Existing registrations received an atomic DLL replacement; future runners
+use the fleet's new image default. See [startup and build/rollback details](runner-startup.md).
+The Linux data disk also has bounded writeback and prioritizes read requests,
+and the Linux VM's dynamic-memory buffer is 150%, admitted against live host
+reserves. None of these changes increases the shared HDD array's physical
+I/O capacity. The physical host must never be restarted.
+
 ## 2. Gates
 
 Every task in the plan carries a gate. Nothing past LOCAL runs unattended.
