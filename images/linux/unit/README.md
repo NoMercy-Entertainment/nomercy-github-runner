@@ -30,6 +30,24 @@ The controller is told which image a cell's units use by
 `RUNNER_UNIT_IMAGE_<PROVIDER>_<PLATFORM>`, for example
 `RUNNER_UNIT_IMAGE_FORGEJO_LINUX=nomercy/runner-unit-forgejo:<version>`.
 
+For GitHub Linux, `Dockerfile.php-apt` extends the Worker startup image
+with the maintainer's current PHP source for Ubuntu Noble (#59). It takes
+the deprecated Launchpad PPA out of APT and keeps PHP 8.5 available via
+`packages.sury.org`. APT restricts the vendor key to this source.
+Build the image on the Linux worker and verify a normal update in a
+fresh, unregistered container:
+
+```sh
+docker build -f images/linux/unit/Dockerfile.php-apt \
+  -t nomercy/runner-unit-github:20261123-php-apt images/linux/unit
+docker run --rm --entrypoint apt-get \
+  nomercy/runner-unit-github:20261123-php-apt update
+```
+
+Use that tag as the GitHub Linux fleet's unit template for new runners
+and recreations. On an existing idle runner, the same script moves the
+old source to `/var/backups/nomercy/` without changing installed packages.
+
 The GitHub unit runs `/runner/cleanup` synchronously after each job and at
 startup. It removes unused nested Docker build cache and images without an age
 limit, plus previous job workspaces, while retaining the active workspace and

@@ -1,0 +1,10 @@
+ARG BASE=nomercy/runner-unit-github:20261116-startup1
+FROM ${BASE}
+
+COPY migrate-php-apt-source.sh /tmp/migrate-php-apt-source.sh
+RUN sh /tmp/migrate-php-apt-source.sh \
+    && apt-get -o APT::Update::Error-Mode=any -o Acquire::Retries=3 \
+      -o Dir::Etc::sourcelist=/etc/apt/sources.list.d/nomercy-sury-php.sources \
+      -o Dir::Etc::sourceparts=- -o APT::Get::List-Cleanup=false update \
+    && apt-cache policy php8.5-cli | grep -F 'https://packages.sury.org/php' \
+    && rm /tmp/migrate-php-apt-source.sh
