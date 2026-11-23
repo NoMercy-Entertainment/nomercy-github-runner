@@ -6,7 +6,11 @@
 #     --build-arg BASE=<the GitHub runner image> -t <name>:unit images/linux/unit
 ARG BASE=ghcr.io/nomercy-entertainment/nomercy-github-runner@sha256:1934fdb1c641fc88007f344f54acb3dc89409a852d7e87a25f21a13cf18d1436
 FROM ${BASE}
-RUN apt-get update && apt-get install -y --no-install-recommends \
+COPY migrate-php-apt-source.sh /tmp/migrate-php-apt-source.sh
+RUN sh /tmp/migrate-php-apt-source.sh \
+    && rm /tmp/migrate-php-apt-source.sh \
+    && apt-get -o APT::Update::Error-Mode=any -o Acquire::Retries=3 update \
+    && apt-get install -y --no-install-recommends \
         python3 util-linux clang clang-format clang-tidy \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
