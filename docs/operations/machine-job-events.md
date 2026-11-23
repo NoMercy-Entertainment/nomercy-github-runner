@@ -30,6 +30,11 @@ processed; consumers must be idempotent. A connection keepalive does not
 query the job database. Native database notifications wake the event stream
 and dashboard WebSocket subscribers. Revocation closes the machine's stream.
 
+For CI results, consume `finished` events that carry a `result`. The GitHub
+worker's completion observation can arrive with a null result. The signed
+GitHub event carries the conclusion under `source: forge`. Forgejo currently
+delivers its conclusion under `source: worker`.
+
 A worker event is authenticated by the worker's pinned certificate and
 checked against its runner ownership. It cannot grant itself the authority
 of a signed forge event. A missing conclusion remains unknown.
@@ -46,6 +51,12 @@ GitHub signs the exact request body using a private key in
 the signature before decoding the payload and matches the upstream runner
 registration ID to an owned runner UUID. Unmanaged runners are ignored.
 Repeated deliveries are deduplicated in the durable event ledger.
+
+Include `job-webhook-github.key` in the protected backup of the dashboard
+data volume. If a restore leaves the key missing, GitHub can still show
+the webhook as active while deliveries fail with HTTP 403. Restore the
+key or use **Access** to configure the same GitHub hook again, then
+verify a real signed completion in the job event stream.
 
 The deployed GitHub feed received genuine signed job deliveries on
 2026-10-11, including repository, commit and the upstream conclusion. This

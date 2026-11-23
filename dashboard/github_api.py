@@ -77,7 +77,7 @@ class GitHub:
         if e.code == 429 or retry or "rate limit" in body:
             self.throttled = int(retry) if retry.isdigit() else 0
 
-    def _get(self, path, params=None, conditional=False):
+    def _get(self, path, params=None, conditional=False, *, empty_on_404=False):
         """GET and parse, or None. `conditional` sends the ETag of the last
         answer to the same URL and takes a 304 as that answer again."""
         url = API + path
@@ -101,6 +101,8 @@ class GitHub:
             self._note_rate(e.headers or {})
             if e.code == 304 and cached:
                 return cached[1]
+            if e.code == 404 and empty_on_404:
+                return {}
             if e.code in (403, 429):
                 self._note_throttle(e)
             # 404 on a repo without Actions is normal, not worth logging.
@@ -447,9 +449,11 @@ class GitHub:
         """
         if not repo or not run_id or not runner_name:
             return None
+        # A 404 can mean a removed run or missing access. Either way the
+        # conclusion is unavailable. Keep transport failures retryable.
         data = self._get(
             f"/repos/{repo}/actions/runs/{run_id}/attempts/{attempt or 1}/jobs",
-            {"per_page": 100})
+            {"per_page": 100}, empty_on_404=True)
         if not isinstance(data, dict):
             # Not "no such job": GitHub did not answer (a DNS failure
             # closed a stale run as Unknown, 2026-10-27). Asked again later.
