@@ -94,14 +94,15 @@ if (-not $SkipData) {
 set -e
 docker exec -i SOURCE python - <<'PY'
 import os, shutil, sqlite3
-os.makedirs("/data/copy", exist_ok=True)
+os.makedirs("/data/copy", mode=0o700, exist_ok=True)
 # A backup, not a file copy: history.db is being written to right now, and
 # half a WAL is not a database.
 src = sqlite3.connect("file:/data/history.db?mode=ro", uri=True)
 dst = sqlite3.connect("/data/copy/history.db")
 src.backup(dst)
 dst.close(); src.close()
-for name in ("users.json", "auth.json", "secret.key", "state.json"):
+for name in ("users.json", "auth.json", "secret.key", "state.json",
+             "job-webhook-github.key", "job-webhook-forgejo.key"):
     path = os.path.join("/data", name)
     if os.path.exists(path):
         shutil.copy2(path, "/data/copy/" + name)
@@ -109,7 +110,7 @@ runs = sqlite3.connect("file:/data/copy/history.db?mode=ro", uri=True)
 print("runs:", runs.execute("select count(*) from runs").fetchone()[0])
 PY
 docker exec SOURCE sh -c "rm -f /data/copy/history.db-wal /data/copy/history.db-shm"
-docker exec SOURCE tar -C /data/copy -cf /tmp/dash.tar .
+docker exec SOURCE sh -c "umask 077; tar -C /data/copy -cf /tmp/dash.tar ."
 docker cp SOURCE:/tmp/dash.tar TARBALL
 docker exec SOURCE sh -c "rm -rf /data/copy /tmp/dash.tar"
 '@ -replace "`r`n", "`n" -replace 'SOURCE', $Source -replace 'TARBALL', (ConvertTo-WslPath (Join-Path $stage 'dash.tar'))

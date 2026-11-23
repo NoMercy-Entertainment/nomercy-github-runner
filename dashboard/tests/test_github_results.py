@@ -156,7 +156,7 @@ def _client_with_jobs(monkeypatch, jobs):
     client = cls.__new__(cls)
     seen = []
 
-    def fake_get(path, params=None, conditional=False):
+    def fake_get(path, params=None, conditional=False, **kwargs):
         seen.append(path)
         return {"jobs": jobs}
 
@@ -356,6 +356,24 @@ def test_job_result_is_false_when_github_does_not_answer(monkeypatch):
     client, _ = _client_with_jobs(monkeypatch, [])
     monkeypatch.setattr(client, "_get", lambda *a, **k: None, raising=False)
     assert client.job_result("o/r", 4242, "1", "gh-1", "2026-10-26T10:00:00Z") is False
+
+
+def test_stale_github_run_with_404_records_an_unavailable_result(tmp_path, monkeypatch):
+    import urllib.error
+
+    _fresh_db(tmp_path, monkeypatch)
+    rid = _native_github_row("gh-1", "build", "2026-10-20T10:00:00.1Z", "2026-10-20T10:05:00.1Z")
+
+    def not_found(request, timeout):
+        raise urllib.error.HTTPError(request.full_url, 404, "Not Found", {}, None)
+
+    monkeypatch.setattr(github_api.urllib.request, "urlopen", not_found)
+    _wire(monkeypatch, github_api.GitHub("fixture-token", "NoMercy-Entertainment"))
+
+    dash._enrich_pending({}, stale_before="2026-10-25T00:00:00Z")
+
+    assert _result_of(rid)["result"] == "Unknown"
+    assert _result_of(rid)["gh_conclusion"] is None
 
 
 def test_a_run_that_just_ended_is_asked_again_on_every_sweep(tmp_path, monkeypatch):
